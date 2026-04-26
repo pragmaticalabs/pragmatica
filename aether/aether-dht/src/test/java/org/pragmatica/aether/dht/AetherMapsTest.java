@@ -96,7 +96,7 @@ class AetherMapsTest {
             var artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
             var nodeId = NodeId.nodeId("node-2").unwrap();
             var key = new SliceNodeKey(artifact, nodeId);
-            var value = new SliceNodeValue(SliceState.ACTIVE, Option.none(), false);
+            var value = new SliceNodeValue(SliceState.ACTIVE, Option.none(), false, 0L);
 
             maps.sliceNodes().put(key, value).await()
                 .onFailure(_ -> fail("Put should succeed"));
@@ -112,7 +112,7 @@ class AetherMapsTest {
             var artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
             var nodeId = NodeId.nodeId("node-2").unwrap();
             var key = new SliceNodeKey(artifact, nodeId);
-            var value = new SliceNodeValue(SliceState.FAILED, Option.some("ClassNotFound"), true);
+            var value = new SliceNodeValue(SliceState.FAILED, Option.some("ClassNotFound"), true, 0L);
 
             maps.sliceNodes().put(key, value).await()
                 .onFailure(_ -> fail("Put should succeed"));

@@ -2355,8 +2355,9 @@ class SliceProcessorTest {
         assertThat(manifestFile.isPresent()).isTrue();
         var manifestContent = manifestFile.get().getCharContent(false).toString();
 
-        // Verify envelope version was bumped to 1001
-        assertThat(manifestContent).contains("envelope.version=1001");
+        // Verify envelope version was bumped (Theme K #1: SliceNodeValue + NodeArtifactValue
+        // gained transitionedAt field).
+        assertThat(manifestContent).contains("envelope.version=1004");
 
         // Verify stream publisher metadata
         assertThat(manifestContent).contains("stream.publishers.count=1");

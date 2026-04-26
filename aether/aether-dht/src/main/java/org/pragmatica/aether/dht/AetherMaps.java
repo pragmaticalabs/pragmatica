@@ -110,17 +110,21 @@ public interface AetherMaps {
 
     private static byte[] serializeSliceNodeValue(SliceNodeValue value) {
         var reason = value.failureReason().or("");
-        return (value.state().name() + "|" + reason + "|" + value.fatal()).getBytes(StandardCharsets.UTF_8);
+        return (value.state().name() + "|" + reason + "|" + value.fatal() + "|" + value.transitionedAt()).getBytes(StandardCharsets.UTF_8);
     }
 
     @SuppressWarnings("JBCT-EX-01") private static SliceNodeValue deserializeSliceNodeValue(byte[] bytes) {
-        var parts = new String(bytes, StandardCharsets.UTF_8).split("\\|", 3);
+        var parts = new String(bytes, StandardCharsets.UTF_8).split("\\|", 4);
         var state = SliceState.valueOf(parts[0]);
         var reason = parts.length > 1 && !parts[1].isEmpty()
                     ? Option.some(parts[1])
                     : Option.<String>none();
         var fatal = parts.length > 2 && Boolean.parseBoolean(parts[2]);
-        return new SliceNodeValue(state, reason, fatal);
+        // Legacy (3-field) atoms predate the schema bump and carry no transitionedAt: read as 0L.
+        var transitionedAt = parts.length > 3 && !parts[3].isEmpty()
+                            ? Long.parseLong(parts[3])
+                            : 0L;
+        return new SliceNodeValue(state, reason, fatal, transitionedAt);
     }
 
     public static byte[] serializeHttpRouteKey(HttpNodeRouteKey key) {

@@ -1076,13 +1076,17 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                 int attempt) {
             log.debug("updateSliceState: {} -> {} (attempt {})", sliceKey, value.state(), attempt);
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
+            // Stamp transitionedAt with this node's nowMs() when the new state is transitional
+            // so the cluster leader can re-derive the stuck-slice timer after a handoff (Theme K #1).
+            var transitionedAt = value.state().isTransitional() ? ctx.nowMs() : 0L;
             var nodeArtifactValue = value.state() == SliceState.FAILED
                                     ? new NodeArtifactValue(SliceState.FAILED,
                                                             value.failureReason(),
                                                             value.fatal(),
                                                             0,
-                                                            List.of())
-                                    : NodeArtifactValue.nodeArtifactValue(value.state());
+                                                            List.of(),
+                                                            0L)
+                                    : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
             KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
             return ctx.cluster().apply(List.of(putArtifact)).timeout(CONSENSUS_OPERATION_TIMEOUT)
                                           .map(_ -> sliceKey)

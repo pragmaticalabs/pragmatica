@@ -23,7 +23,7 @@ A simple integer that identifies the **format version** of the generated envelop
 
 ## Current Version
 
-`ENVELOPE_FORMAT_VERSION = 7` (defined in `ManifestGenerator.java`)
+`ENVELOPE_FORMAT_VERSION = 1004` (defined in `ManifestGenerator.java`)
 
 ### Version History
 
@@ -36,6 +36,8 @@ A simple integer that identifies the **format version** of the generated envelop
 | 5 | Added publisher message classes (`publish.message.classes`) to manifest |
 | 6 | Added topology data: resources (`resource.*`), HTTP routes (`route.*`), publisher topics (`publish.topic.*`) |
 | 7 | Added streaming infrastructure: stream publishers, stream subscriptions, stream access, stream event codecs |
+| 1003 | (re-numbered series) |
+| 1004 | Theme K #1: `SliceNodeValue` and `NodeArtifactValue` gained `transitionedAt: long` field — enables `ClusterDeploymentState.Active` to re-derive `transitionalStateTimestamps` from KV after a leader handoff (avoids 3× stuck-slice timer reset). Wire format readers accept both legacy (no field) and new (with field) atoms; legacy atoms read with `transitionedAt = 0L` and the consumer falls back to `nowMs()`. |
 
 ## When to Bump
 

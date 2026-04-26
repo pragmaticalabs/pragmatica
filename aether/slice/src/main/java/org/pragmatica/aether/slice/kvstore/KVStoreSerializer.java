@@ -255,7 +255,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static String serializeSliceNode(SliceNodeValue v) {
-        return v.state().name() + PIPE + v.failureReason().or("") + PIPE + v.fatal();
+        return v.state().name() + PIPE + v.failureReason().or("") + PIPE + v.fatal() + PIPE + v.transitionedAt();
     }
 
     private static String serializeScheduledTask(ScheduledTaskValue v) {
@@ -314,7 +314,7 @@ import static org.pragmatica.lang.Result.success;
 
     private static String serializeNodeArtifact(NodeArtifactValue v) {
         var methodsJoined = String.join(",", v.methods());
-        return v.state().name() + PIPE + v.failureReason().or("") + PIPE + v.fatal() + PIPE + v.instanceNumber() + PIPE + methodsJoined;
+        return v.state().name() + PIPE + v.failureReason().or("") + PIPE + v.fatal() + PIPE + v.instanceNumber() + PIPE + methodsJoined + PIPE + v.transitionedAt();
     }
 
     private static String serializeNodeRoutes(NodeRoutesValue v) {
@@ -437,7 +437,7 @@ import static org.pragmatica.lang.Result.success;
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSliceNodeEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 3) {return parseFailure("slices value requires 3 fields, got " + parts.length);}
+        if (parts.length != 3 && parts.length != 4) {return parseFailure("slices value requires 3 or 4 fields, got " + parts.length);}
         return SliceNodeKey.sliceNodeKey("slices/" + identity)
                                         .flatMap(key -> SliceState.sliceState(parts[0]).map(state -> buildSliceNodeValue(state,
                                                                                                                          parts))
@@ -448,7 +448,11 @@ import static org.pragmatica.lang.Result.success;
         var reason = parts[1].isEmpty()
                     ? Option.<String>none()
                     : Option.some(parts[1]);
-        return new SliceNodeValue(state, reason, Boolean.parseBoolean(parts[2]));
+        // Legacy (3-field) atoms predate the schema bump and carry no transitionedAt: read as 0L.
+        var transitionedAt = parts.length >= 4 && !parts[3].isEmpty()
+                            ? Long.parseLong(parts[3])
+                            : 0L;
+        return new SliceNodeValue(state, reason, Boolean.parseBoolean(parts[2]), transitionedAt);
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseEndpointEntry(String identity, String raw) {
@@ -681,7 +685,7 @@ import static org.pragmatica.lang.Result.success;
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeArtifactEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 5) {return parseFailure("node-artifact value requires 5 fields, got " + parts.length);}
+        if (parts.length != 5 && parts.length != 6) {return parseFailure("node-artifact value requires 5 or 6 fields, got " + parts.length);}
         return NodeArtifactKey.nodeArtifactKey("node-artifact/" + identity)
                                               .flatMap(key -> SliceState.sliceState(parts[0]).map(state -> buildNodeArtifactValue(state,
                                                                                                                                   parts))
@@ -695,7 +699,16 @@ import static org.pragmatica.lang.Result.success;
         var methods = parts[4].isEmpty()
                      ? List.<String>of()
                      : Arrays.asList(parts[4].split(","));
-        return new NodeArtifactValue(state, reason, Boolean.parseBoolean(parts[2]), Integer.parseInt(parts[3]), methods);
+        // Legacy (5-field) atoms predate the schema bump and carry no transitionedAt: read as 0L.
+        var transitionedAt = parts.length >= 6 && !parts[5].isEmpty()
+                            ? Long.parseLong(parts[5])
+                            : 0L;
+        return new NodeArtifactValue(state,
+                                     reason,
+                                     Boolean.parseBoolean(parts[2]),
+                                     Integer.parseInt(parts[3]),
+                                     methods,
+                                     transitionedAt);
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeRoutesEntry(String identity, String raw) {

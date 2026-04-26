@@ -172,35 +172,22 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
     /// All per-activation mutable collections are created fresh on entry via
     /// [`ClusterDeploymentContext#newActive`]. The reconcile timer is started in [`#onEntry`] and
     /// cancelled in [`#onExit`].
-    /// Theme K #1 (DEFERRED to rc2): the three fields `restoringBlueprints`,
-    /// `permanentlyFailed`, and `transitionalStateTimestamps` are local in-memory state on
-    /// the `Active` record. They violate the architectural invariant that all state must be
-    /// reconstructible from the KV-Store: on every leader handoff the new leader's `Active`
-    /// record is created with empty sets/maps, losing whatever was tracked.
+    /// Theme K #1: the original concern was that `restoringBlueprints`, `permanentlyFailed`,
+    /// and `transitionalStateTimestamps` are local in-memory state on the `Active` record and
+    /// would be lost on every leader handoff (the new leader's `Active` is created with empty
+    /// sets/maps).
     ///
-    /// Migrating each requires schema extensions:
-    ///   - `transitionalStateTimestamps` → would need a `transitionedAt: long` field on
-    ///     `SliceNodeValue` (currently the value carries only `state`, `failureReason`,
-    ///     `fatal` — see AetherValue.java:139). Adding that would touch `SliceNodeValue`
-    ///     plus every site that constructs it (~40+ in this file alone) and the
-    ///     `ENVELOPE_FORMAT_VERSION` envelope-versioning rule.
-    ///   - `restoringBlueprints` → would need either a new `BlueprintRestoreStatusKey`
-    ///     namespace or a `restoring: bool` flag on the existing `AppBlueprintValue`.
-    ///   - `permanentlyFailed` → would need a `permanentlyFailed: bool` on
-    ///     `SliceTargetValue` (or a new `SlicePermanentFailureKey` namespace).
-    ///
-    /// These migrations are tracked under rc2 GitHub issue #189 and are out of scope for
-    /// the current FSM-coordination wave. The runtime impact is bounded:
-    ///   - Stuck-slice timer (`detectStuckTransitionalStates`) loses tracking on handoff,
-    ///     so a slice that became stuck just before the handoff has its stuck-detection
-    ///     timer reset; the new leader observes it for `STUCK_TIMEOUT_MULTIPLIER * timeout`
-    ///     before remediating. Worst-case: ~1 minute extra latency for stuck remediation.
-    ///   - `restoringBlueprints` is short-lived (single reconcile cycle); a leader-handoff
-    ///     mid-restore may cause a second restore attempt — idempotent at the consensus
-    ///     level so no incorrect state, just one extra apply.
-    ///   - `permanentlyFailed` causes a node that previously refused a slice (fatal
-    ///     classification) to retry once after handoff. Self-healing if the failure is
-    ///     transient; redundant if not. Bounded by `MAX_RETRIES` on the new leader.
+    /// Status:
+    ///   - `transitionalStateTimestamps` → **fixed (rc1)**. `SliceNodeValue` and
+    ///     `NodeArtifactValue` carry a `transitionedAt: long` stamped at write time;
+    ///     `Active.onEntry → rebuildStateFromKVStore → restoreSliceStateFromNodeArtifact`
+    ///     re-derives the map from the persisted atoms. Atoms predating the schema bump
+    ///     (`transitionedAt == 0L`) fall back to `nowMs()` — equivalent to the legacy
+    ///     "fresh timer at handoff" behaviour for upgrade compatibility.
+    ///   - `restoringBlueprints` → still in-memory. Tracked under rc2 #189; impact bounded
+    ///     to one extra (idempotent) restore attempt across a handoff.
+    ///   - `permanentlyFailed` → still in-memory. Tracked under rc2 #189; impact bounded
+    ///     to one extra retry after handoff before `MAX_RETRIES` re-surfaces the failure.
     record Active(ClusterDeploymentContext ctx,
                   Map<Artifact, Blueprint> blueprints,
                   Map<SliceNodeKey, SliceState> sliceStates,
@@ -400,7 +387,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
             trackSliceState(SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId()),
-                            new SliceNodeValue(value.state(), value.failureReason(), value.fatal()));
+                            new SliceNodeValue(value.state(),
+                                               value.failureReason(),
+                                               value.fatal(),
+                                               value.transitionedAt()));
         }
 
         private void handleNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove,
@@ -586,7 +576,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void restoreSliceStateFromNodeArtifact(NodeArtifactKey key, NodeArtifactValue value) {
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
             sliceStates.put(sliceKey, value.state());
-            updateTransitionalTimestamp(sliceKey, value.state());
+            // Theme K #1: re-derive transitional timestamps from the persisted atom so a leader
+            // handoff does not reset the stuck-slice timer to 3x the configured timeout. Atoms
+            // predating the schema bump carry transitionedAt = 0L; treat as "unknown" and fall
+            // back to nowMs() — equivalent to the legacy behaviour for upgrade compatibility.
+            updateTransitionalTimestamp(sliceKey, value.state(), value.transitionedAt());
         }
 
         // --- Schema handlers ---
@@ -1047,7 +1041,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void trackSliceState(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
             var state = sliceNodeValue.state();
             var previousState = sliceStates.put(sliceKey, state);
-            updateTransitionalTimestamp(sliceKey, state);
+            updateTransitionalTimestamp(sliceKey, state, sliceNodeValue.transitionedAt());
             log.trace("Slice {} on {} state: {} -> {}",
                       sliceKey.artifact(),
                       sliceKey.nodeId(),
@@ -1214,9 +1208,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private Promise<Unit> applyStateWrite(SliceNodeKey sliceKey, SliceState state) {
+            // Stamp transitionedAt with the leader's nowMs() so a subsequent leader can re-derive
+            // the stuck-slice timer without resetting it (Theme K #1).
+            var transitionedAt = state.isTransitional() ? ctx.nowMs() : 0L;
             KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
                                                                                                     sliceKey.artifact()),
-                                                                    NodeArtifactValue.nodeArtifactValue(state));
+                                                                    NodeArtifactValue.nodeArtifactValue(state, transitionedAt));
             return ctx.cluster().apply(List.of(putArtifact)).mapToUnit();
         }
 
@@ -1551,9 +1548,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             return state != SliceState.FAILED && state != SliceState.UNLOAD && state != SliceState.UNLOADING;
         }
 
-        private void updateTransitionalTimestamp(SliceNodeKey sliceKey, SliceState state) {
+        private void updateTransitionalTimestamp(SliceNodeKey sliceKey, SliceState state, long persistedTransitionedAt) {
             if (state.isTransitional()) {
-                transitionalStateTimestamps.putIfAbsent(sliceKey, ctx.nowMs());
+                // Use persisted timestamp when available so a leader-handoff preserves the
+                // stuck-detection clock; fall back to nowMs() for legacy atoms (transitionedAt=0L)
+                // — same conservative semantics as before the schema bump.
+                var effectiveTimestamp = persistedTransitionedAt > 0L
+                                         ? persistedTransitionedAt
+                                         : ctx.nowMs();
+                transitionalStateTimestamps.putIfAbsent(sliceKey, effectiveTimestamp);
             } else {
                 transitionalStateTimestamps.remove(sliceKey);
             }

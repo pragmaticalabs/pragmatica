@@ -136,16 +136,37 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal) implements AetherValue {
+    /// Per-slice deployment state value used in cluster-side projections.
+    ///
+    /// `transitionedAt` is unix-epoch millis stamped at the moment the slice entered
+    /// `state`; for non-transitional states (e.g. ACTIVE, LOADED) it is 0L. Theme K #1
+    /// — re-derivation of `ClusterDeploymentState.Active.transitionalStateTimestamps`
+    /// from KV after a leader handoff. Atoms persisted before the schema bump carry
+    /// `transitionedAt = 0L` and are treated as "unknown" by the consumer (fallback to
+    /// `nowMs()` so the stuck-slice timer starts at handoff time, equivalent to the
+    /// legacy behaviour).
+    record SliceNodeValue(SliceState state,
+                          Option<String> failureReason,
+                          boolean fatal,
+                          long transitionedAt) implements AetherValue {
         public static SliceNodeValue sliceNodeValue(SliceState state) {
-            return new SliceNodeValue(state, none(), false);
+            return new SliceNodeValue(state, none(), false, defaultTransitionedAt(state));
+        }
+
+        public static SliceNodeValue sliceNodeValue(SliceState state, long transitionedAt) {
+            return new SliceNodeValue(state, none(), false, transitionedAt);
         }
 
         public static SliceNodeValue failedSliceNodeValue(Cause cause) {
             var classified = SliceLoadingFailure.classify(cause);
             return new SliceNodeValue(SliceState.FAILED,
                                       Option.option(classified.message()),
-                                      classified.isFatal());
+                                      classified.isFatal(),
+                                      0L);
+        }
+
+        private static long defaultTransitionedAt(SliceState state) {
+            return state.isTransitional() ? System.currentTimeMillis() : 0L;
         }
     }
 
@@ -735,13 +756,25 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
+    /// Per-node, per-artifact deployment state — the authoritative KV-persisted
+    /// projection consumed by `ClusterDeploymentState` and `NodeDeploymentState`.
+    ///
+    /// `transitionedAt` is unix-epoch millis stamped when the slice entered `state`;
+    /// 0L for non-transitional states. Theme K #1 — enables the cluster leader to
+    /// re-derive `transitionalStateTimestamps` after handoff. Pre-schema-bump atoms
+    /// carry 0L and are treated as "unknown" (fallback to `nowMs()` on read).
     record NodeArtifactValue(SliceState state,
                              Option<String> failureReason,
                              boolean fatal,
                              int instanceNumber,
-                             List<String> methods) implements AetherValue {
+                             List<String> methods,
+                             long transitionedAt) implements AetherValue {
         public static NodeArtifactValue nodeArtifactValue(SliceState state) {
-            return new NodeArtifactValue(state, Option.none(), false, 0, List.of());
+            return new NodeArtifactValue(state, Option.none(), false, 0, List.of(), defaultTransitionedAt(state));
+        }
+
+        public static NodeArtifactValue nodeArtifactValue(SliceState state, long transitionedAt) {
+            return new NodeArtifactValue(state, Option.none(), false, 0, List.of(), transitionedAt);
         }
 
         public static NodeArtifactValue failedNodeArtifactValue(Cause cause) {
@@ -750,11 +783,17 @@ import static org.pragmatica.lang.Option.none;
                                          Option.option(classified.message()),
                                          classified.isFatal(),
                                          0,
-                                         List.of());
+                                         List.of(),
+                                         0L);
         }
 
         public static NodeArtifactValue activeNodeArtifactValue(int instanceNumber, List<String> methods) {
-            return new NodeArtifactValue(SliceState.ACTIVE, Option.none(), false, instanceNumber, List.copyOf(methods));
+            return new NodeArtifactValue(SliceState.ACTIVE,
+                                         Option.none(),
+                                         false,
+                                         instanceNumber,
+                                         List.copyOf(methods),
+                                         0L);
         }
 
         public NodeArtifactValue withState(SliceState newState) {
@@ -762,12 +801,22 @@ import static org.pragmatica.lang.Option.none;
                                                                              Option.none(),
                                                                              false,
                                                                              instanceNumber,
-                                                                             methods);}
-            return new NodeArtifactValue(newState, Option.none(), false, 0, List.of());
+                                                                             methods,
+                                                                             0L);}
+            return new NodeArtifactValue(newState,
+                                         Option.none(),
+                                         false,
+                                         0,
+                                         List.of(),
+                                         defaultTransitionedAt(newState));
         }
 
         public boolean hasEndpoints() {
             return state == SliceState.ACTIVE && !methods.isEmpty();
+        }
+
+        private static long defaultTransitionedAt(SliceState state) {
+            return state.isTransitional() ? System.currentTimeMillis() : 0L;
         }
     }
 
