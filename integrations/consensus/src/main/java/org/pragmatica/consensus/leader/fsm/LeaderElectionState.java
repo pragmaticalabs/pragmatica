@@ -71,8 +71,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 // the SSOT for consensus readiness is the consensus engine itself, queried on
                 // entry to QuorumWaiting via `ctx.consensusReadySupplier()`.
                 case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
-                case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
-                case ClusterFsmEvent.NodeGone ng -> ctx.setCurrentTopology(ng.topology());
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> ctx.setCurrentTopology(na.topology()));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> ctx.setCurrentTopology(ng.topology()));
                 default -> tx.ignore();
             }
         }
@@ -132,8 +132,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ElectionTick _ -> trySubmitProposal(ctx);
-                case ProposalSettled ps -> handleProposalSettled(ctx, ps);
+                case ElectionTick _ -> tx.handle(() -> trySubmitProposal(ctx));
+                case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
@@ -212,8 +212,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ElectionTick _ -> trySubmitProposal(ctx);
-                case ProposalSettled ps -> handleProposalSettled(ctx, ps);
+                case ElectionTick _ -> tx.handle(() -> trySubmitProposal(ctx));
+                case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());

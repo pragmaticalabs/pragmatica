@@ -190,6 +190,36 @@ class ControlLoopFsmTest {
     }
 
     @Nested
+    class HandledObservability {
+        @Test
+        void cooldownRequestedInCooldown_recordedAsHandledNotIgnored() {
+            var h = harness();
+            h.dispatch(new Activate());
+            h.dispatch(new ActivationTimeReached());
+            var artifact = Artifact.artifact("org.test:demo:1.0.0").unwrap();
+            h.dispatch(new CooldownRequested(artifact, System.currentTimeMillis()));
+            assertThat(h.state()).isInstanceOf(ControlLoopState.Cooldown.class);
+
+            // Re-arm cooldown timer — arm performs a side effect (rearmExpiryTick) without
+            // changing state. MUST be observed as `handled` for dashboards to count it.
+            h.dispatch(new CooldownRequested(artifact, System.currentTimeMillis()));
+
+            var cooldownHandled = h.handled().stream()
+                                   .filter(rec -> rec.event() instanceof CooldownRequested
+                                                  && rec.state() instanceof ControlLoopState.Cooldown)
+                                   .count();
+            assertThat(cooldownHandled).isEqualTo(1L);
+            // No ignored CooldownRequested in Cooldown.
+            var cooldownIgnored = h.ignored().stream()
+                                   .filter(rec -> rec.event() instanceof CooldownRequested
+                                                  && rec.state() instanceof ControlLoopState.Cooldown)
+                                   .count();
+            assertThat(cooldownIgnored).isZero();
+        }
+
+    }
+
+    @Nested
     class CasContention {
         @Test
         void concurrentActivate_fromDormant_exactlyOneWins() throws InterruptedException {

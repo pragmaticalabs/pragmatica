@@ -191,7 +191,7 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
         public void handle(ClusterFsmEvent event, TransitionRequest<ControlLoopState, ClusterFsmEvent> tx) {
             switch (event) {
                 case CooldownExpired _ -> handleCooldownExpired(tx);
-                case CooldownRequested _ -> rearmExpiryTick();
+                case CooldownRequested _ -> tx.handle(this::rearmExpiryTick);
                 case Deactivate _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.dormant());
@@ -202,11 +202,17 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
 
         private void handleCooldownExpired(TransitionRequest<ControlLoopState, ClusterFsmEvent> tx) {
             var now = ctx.nowMs();
-            ctx.cleanupExpiredCooldowns(now);
             if (ctx.allCooldownsExpired(now)) {
-                tx.transitionToOrDrop(Evaluating.evaluating(ctx));
+                // Cleanup runs INSIDE the transition action so it only fires on CAS success,
+                // not on every dispatch attempt.
+                tx.transitionToOrDrop(Evaluating.evaluating(ctx), () -> ctx.cleanupExpiredCooldowns(now));
                 return;
             }
+            tx.handle(() -> cleanupAndRearm(now));
+        }
+
+        private void cleanupAndRearm(long now) {
+            ctx.cleanupExpiredCooldowns(now);
             rearmExpiryTick();
         }
 

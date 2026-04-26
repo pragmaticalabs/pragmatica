@@ -200,6 +200,48 @@ class SwimHealthFsmTest {
     }
 
     @Nested
+    class HandledObservability {
+        @Test
+        void peerJoined_inRunning_recordsHandledNotIgnored() {
+            buildHarness(true);
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(),
+                                                                 new StubTransport(),
+                                                                 GossipEncryptor.none()));
+            assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
+
+            harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_A)));
+
+            // The arm performs a side effect (resetFaultyWindow + reportHint) without changing
+            // state. It MUST be observed as `handled`, not as `ignored`, so dashboards count it.
+            assertThat(harness.handled()).hasSize(1);
+            assertThat(harness.handled().getFirst().event())
+                .isInstanceOf(SwimHealthEvents.PeerJoined.class);
+            assertThat(harness.ignored().stream()
+                              .filter(i -> i.event() instanceof SwimHealthEvents.PeerJoined))
+                .isEmpty();
+        }
+
+        @Test
+        void peerSuspectAndReportHint_inRunning_recordedAsHandled() {
+            buildHarness(true);
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(),
+                                                                 new StubTransport(),
+                                                                 GossipEncryptor.none()));
+
+            harness.dispatch(new SwimHealthEvents.PeerSuspect(faulty(PEER_A)));
+            harness.dispatch(new SwimHealthEvents.ReportHint(PEER_B,
+                                                              org.pragmatica.aether.slice.generation.HealthHint.HEALTHY));
+
+            // Both arms produce `handled` records, no `ignored`.
+            assertThat(harness.handled()).hasSize(2);
+            assertThat(harness.handled().get(0).event()).isInstanceOf(SwimHealthEvents.PeerSuspect.class);
+            assertThat(harness.handled().get(1).event()).isInstanceOf(SwimHealthEvents.ReportHint.class);
+        }
+    }
+
+    @Nested
     class LeaderRouting {
         @Test
         void follower_running_peerFaultyIsCurrentLeader_routesDisconnectLocally() throws InterruptedException {

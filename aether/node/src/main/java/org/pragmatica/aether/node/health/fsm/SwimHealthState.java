@@ -99,12 +99,12 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
             switch (event) {
                 case StopRequested _ -> tx.transitionTo(ctx.stopped(), this::stopProtocolAndTransport);
                 case LeaderChanged lc -> handleLeaderChanged(lc, tx);
-                case PeerJoined pj -> handlePeerJoined(pj.member());
-                case PeerSuspect ps -> ctx.reportHint(ps.member().nodeId(), HealthHint.SUSPECTED);
+                case PeerJoined pj -> tx.handle(() -> handlePeerJoined(pj.member()));
+                case PeerSuspect ps -> tx.handle(() -> ctx.reportHint(ps.member().nodeId(), HealthHint.SUSPECTED));
                 case PeerFaulty pf -> handlePeerFaulty(pf.member(), tx);
-                case PeerLeft pl -> handlePeerLeft(pl.peer());
-                case PeerConnected pc -> handlePeerConnected(pc);
-                case ReportHint rh -> ctx.reportHint(rh.peer(), rh.hint());
+                case PeerLeft pl -> tx.handle(() -> handlePeerLeft(pl.peer()));
+                case PeerConnected pc -> tx.handle(() -> handlePeerConnected(pc));
+                case ReportHint rh -> tx.handle(() -> ctx.reportHint(rh.peer(), rh.hint()));
                 case StartRequested _, ProtocolReady _, StartFailed _ -> tx.ignore();
             }
         }
@@ -130,6 +130,10 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                 tx.transitionTo(new LocalDisconnect(ctx, swim, transport, encryptor, currentLeader));
                 return;
             }
+            tx.handle(() -> routeFaultyPeer(member));
+        }
+
+        private void routeFaultyPeer(SwimMember member) {
             LOG.warn("SWIM member faulty: {} (currentLeader={})", member.nodeId(), currentLeader);
             // Per plan §"follower routes DisconnectNode when the faulty peer is the current
             // leader": inspect state.currentLeader, not any external atomic. `ctx.routeFaulty`

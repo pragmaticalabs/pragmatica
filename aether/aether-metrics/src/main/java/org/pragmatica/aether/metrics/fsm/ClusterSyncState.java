@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 
@@ -180,27 +181,34 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             var maybeSnapshot = ctx.currentSnapshot();
             var currentEpoch = maybeSnapshot.map(s -> s.epoch()).or(event.currentEpoch());
             var rabiaTerm = ctx.currentRabiaTerm();
+            // Build the next state record without any I/O. `sendOnePing` always returns the
+            // `currentEpoch` it was given, so we can compute `nextLastSent` deterministically
+            // ahead of the actual send.
             var nextLastSent = new HashMap<>(lastSentEpoch);
             var nextMissed = new HashMap<>(missedPings);
             for (var peer : topology) {
                 if (peer.equals(ctx.self())) { continue; }
-                sendAndAccount(peer, currentEpoch, maybeSnapshot, rabiaTerm, nextLastSent, nextMissed);
+                nextLastSent.put(peer, currentEpoch);
+                nextMissed.put(peer, nextMissed.getOrDefault(peer, 0) + 1);
             }
-            tx.transitionToOrDrop(with(ctx, Map.copyOf(nextLastSent), Map.copyOf(nextMissed)));
+            // I/O (sendOnePing + emitPingTimeoutIfExceeded) runs INSIDE the transition action so
+            // it only fires on CAS success — avoids duplicate pings when CAS loses to another
+            // dispatch.
+            tx.transitionToOrDrop(with(ctx, Map.copyOf(nextLastSent), Map.copyOf(nextMissed)),
+                                  () -> dispatchPings(topology, currentEpoch, maybeSnapshot, rabiaTerm, nextMissed));
         }
 
-        private void sendAndAccount(NodeId peer,
-                                    Epoch currentEpoch,
-                                    Option<ClusterGenerationSnapshot> maybeSnapshot,
-                                    long rabiaTerm,
-                                    Map<NodeId, Epoch> nextLastSent,
-                                    Map<NodeId, Integer> nextMissed) {
-            var priorLastSent = Option.option(lastSentEpoch.get(peer));
-            var sent = ctx.sendOnePing(peer, currentEpoch, priorLastSent, maybeSnapshot, rabiaTerm);
-            nextLastSent.put(peer, sent);
-            var newCount = nextMissed.getOrDefault(peer, 0) + 1;
-            nextMissed.put(peer, newCount);
-            ctx.emitPingTimeoutIfExceeded(peer, newCount);
+        private void dispatchPings(List<NodeId> topology,
+                                   Epoch currentEpoch,
+                                   Option<ClusterGenerationSnapshot> maybeSnapshot,
+                                   long rabiaTerm,
+                                   Map<NodeId, Integer> nextMissed) {
+            for (var peer : topology) {
+                if (peer.equals(ctx.self())) { continue; }
+                var priorLastSent = Option.option(lastSentEpoch.get(peer));
+                ctx.sendOnePing(peer, currentEpoch, priorLastSent, maybeSnapshot, rabiaTerm);
+                ctx.emitPingTimeoutIfExceeded(peer, nextMissed.get(peer));
+            }
         }
 
         private static <V> Map<NodeId, V> withoutKey(Map<NodeId, V> source, NodeId key) {
