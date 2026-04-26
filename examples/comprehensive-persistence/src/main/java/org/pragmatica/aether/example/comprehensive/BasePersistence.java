@@ -10,18 +10,6 @@ import java.util.List;
 import java.util.UUID;
 
 
-/// Analytical queries over the primary schema.
-///
-/// Showcases:
-/// - JOINs across three tables with alias resolution
-/// - Aggregations (`count`, `sum`, `min`, `max`) with `GROUP BY`
-/// - Subqueries in WHERE and in SELECT
-/// - Complex WHERE combining `AND` and `OR`
-/// - Common Table Expressions (`WITH`)
-/// - `TEXT[]` array columns mapped to `String[]`
-/// - Non-primitive `@Query` parameters (`BigDecimal`, `Instant`, `UUID`)
-/// - Non-primitive scalar returns (`Promise<BigDecimal>` from an aggregate query)
-/// - Narrow projections for each shape so the validator rewrites `SELECT *`.
 @PgSql public interface BasePersistence {
     record CustomerOrder(long orderId,
                          long customerId,

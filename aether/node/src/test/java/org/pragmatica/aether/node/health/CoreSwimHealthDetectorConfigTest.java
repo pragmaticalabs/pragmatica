@@ -62,13 +62,15 @@ class CoreSwimHealthDetectorConfigTest {
     }
 
     @Test
-    void fromTimeouts_swimTimeoutsDefaults_haveLowerSuspectTimeoutThanLegacyDefault() {
-        // Sanity gate: the toml default suspectTimeout (5s) must be strictly faster than the
-        // legacy SwimConfig.DEFAULT (15s) — this is the actual SLA win the wiring enables.
+    void fromTimeouts_swimTimeoutsDefaults_matchLegacySwimConfigDefault() {
+        // The toml default suspectTimeout matches `SwimConfig.DEFAULT` (15s) — conservative
+        // for cold-boot Docker containers. The wiring win is that operators can lower it via
+        // `[timeouts.swim] suspect_timeout = "5s"` for faster detection on stable hardware,
+        // without code change.
         var defaults = SwimTimeouts.swimTimeouts();
 
         assertThat(defaults.suspectTimeout().millis())
-                .isLessThan(SwimConfig.DEFAULT.suspectTimeout().millis());
+                .isEqualTo(SwimConfig.DEFAULT.suspectTimeout().millis());
     }
 
     @Test

@@ -10,22 +10,6 @@ import java.time.Instant;
 import java.util.List;
 
 
-/// Full CRUD with every auto-generated operator suffix the validator supports.
-///
-/// Operator suffixes emit SQL as:
-/// - no suffix   → `col = $N`
-/// - `Not`       → `col != $N`
-/// - `Like`      → `col LIKE $N`
-/// - `IsNull`    → `col IS NULL` (zero params)
-/// - `IsNotNull` → `col IS NOT NULL` (zero params)
-///
-/// Operator suffixes requiring non-String parameter types (Between on
-/// timestamptz, GreaterThan on numeric) are exercised through @Query in
-/// BasePersistence where method parameter types can be primitives.
-///
-/// The `customers` table is used as the CRUD target since it has columns of
-/// all interesting shapes: text, boolean, timestamptz (nullable via
-/// deleted_at), plus a UNIQUE constraint on email.
 @PgSql public interface CrudPersistence {
     record CustomerRow(long id,
                        String name,

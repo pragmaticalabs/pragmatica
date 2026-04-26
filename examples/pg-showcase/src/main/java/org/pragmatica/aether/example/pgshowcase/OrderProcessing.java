@@ -11,7 +11,6 @@ import org.pragmatica.lang.Verify;
 import java.math.BigDecimal;
 
 
-/// Order processing slice demonstrating @PgSql persistence usage.
 @Slice public interface OrderProcessing {
     record PlaceOrderRequest(String userId, String total) {
         private static final Cause EMPTY_USER_ID = OrderError.validationFailed("User ID cannot be empty");

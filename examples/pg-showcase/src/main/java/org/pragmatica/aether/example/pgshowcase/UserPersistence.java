@@ -10,10 +10,6 @@ import java.time.Instant;
 import java.util.List;
 
 
-/// User persistence adapter.
-///
-/// Demonstrates CRUD auto-generation with a variety of operator suffixes
-/// (Like, IsNull, IsNotNull) and ORDER BY narrowing.
 @PgSql public interface UserPersistence {
     record UserRow(long id,
                    String name,

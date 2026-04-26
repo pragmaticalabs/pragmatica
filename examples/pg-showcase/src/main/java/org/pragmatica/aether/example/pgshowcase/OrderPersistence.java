@@ -13,18 +13,6 @@ import java.util.List;
 import java.util.UUID;
 
 
-/// Order persistence adapter.
-///
-/// Exercises the @PgSql surface against realistic SQL:
-/// - @Query with JOIN
-/// - @Query with subquery in WHERE
-/// - Explicit @Query INSERT / UPDATE
-/// - Auto-generated CRUD `save()` with full-row record expansion
-/// - Auto-generated CRUD with operator suffix `Not` and `OrderBy` narrowing
-/// - Advanced column types in return records: JSONB, UUID, GENERATED column.
-///
-/// All @Query parameters are String/Long/double so the generated factory's
-/// short-form type names resolve without requiring extra imports.
 @PgSql public interface OrderPersistence {
     record OrderRow(long id,
                     long userId,

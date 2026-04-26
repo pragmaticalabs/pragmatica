@@ -145,7 +145,7 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
 
     public record SwimTimeouts(TimeSpan period, TimeSpan probeTimeout, TimeSpan suspectTimeout) {
         public static SwimTimeouts swimTimeouts() {
-            return new SwimTimeouts(timeSpan(1).seconds(), timeSpan(500).millis(), timeSpan(5).seconds());
+            return new SwimTimeouts(timeSpan(1).seconds(), timeSpan(500).millis(), timeSpan(15).seconds());
         }
     }
 

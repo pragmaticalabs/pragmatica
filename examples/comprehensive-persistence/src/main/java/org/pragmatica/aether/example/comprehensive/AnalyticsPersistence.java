@@ -12,16 +12,6 @@ import java.time.LocalDate;
 import java.util.List;
 
 
-/// Persistence for the analytics datasource.
-///
-/// Bound via the custom `@AnalyticsPgSql` qualifier, which carries
-/// `@ResourceQualifier(type = PgSqlConnector.class, config = "database.analytics")`.
-/// The QueryAnnotationProcessor recognises the meta-annotation and:
-/// 1. Provisions a PgSqlConnector from `[database.analytics]` in resources.toml.
-/// 2. Reads migrations from `schema/analytics/` for compile-time validation.
-///
-/// All queries here validate against the analytics schema and cannot reach
-/// tables from the primary schema.
 @AnalyticsPgSql public interface AnalyticsPersistence {
     record OrderMetric(long id,
                        LocalDate eventDate,

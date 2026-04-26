@@ -13,9 +13,6 @@ import java.time.Instant;
 import java.util.List;
 
 
-/// Orchestrates operations across three persistence adapters bound to two
-/// datasources. The slice processor follows the dependency chain and
-/// provisions both PgSqlConnectors transitively.
 @Slice public interface OrderSlice {
     Promise<List<CustomerOrder>> customerOrders(String status);
     Promise<List<CustomerRevenue>> revenue(Boolean active);
