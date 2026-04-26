@@ -120,7 +120,18 @@ public final class HealthReconcilerContext {
     private final HealthReconcilerState following;
     private final HealthReconcilerState stopped;
 
-    private final Map<NodeId, HealthHint> swimHints = new ConcurrentHashMap<>();
+    /// Per-NodeId leader-projection SWIM hints with write-time TTL. Each entry records the
+    /// hint AND the wall-clock instant it was written. `swimHintsView()` and all internal
+    /// reads filter entries older than `autoHealConfig.swimHintsTtl()` — they are treated as
+    /// absent (HEALTHY default per `ClusterGenerationProjector.deriveHealthHint`).
+    /// Defense-in-depth against sticky SUSPECTED state from transient SWIM probes during boot
+    /// when SWIM doesn't re-emit HEALTHY for peers it considers stable. Does NOT mask SWIM
+    /// SUSPECT/FAULT signals — those refresh `writeMs` on every emission.
+    private final Map<NodeId, TimestampedHint> swimHints = new ConcurrentHashMap<>();
+
+    /// `swimHints` entry: a hint plus the wall-clock instant (ms) at which it was last
+    /// written. Used by `effectiveSwimHints()` to evict expired entries from the read view.
+    private record TimestampedHint(HealthHint hint, long writeMs) {}
 
     private final Set<NodeId> pendingRemovals = ConcurrentHashMap.newKeySet();
 
@@ -345,11 +356,49 @@ public final class HealthReconcilerContext {
         return ambientSnapshot.get();
     }
 
-    /// Read-only view over the leader-projection SWIM hints map. Exposed for tests and
-    /// diagnostics — callers must not mutate. Mutations to `swimHints` go through
-    /// `handleSwimHint` / `promoteToFaultyIfThresholdReached` / `clearLeaderData`.
+    /// Read-only view over the leader-projection SWIM hints map, filtered by the configured
+    /// TTL. Entries whose `writeMs` predates `now - autoHealConfig.swimHintsTtl()` are
+    /// excluded — the projector then defaults to `HEALTHY` per
+    /// `ClusterGenerationProjector.deriveHealthHint`. Exposed for tests and diagnostics —
+    /// callers must not mutate. Mutations go through `handleSwimHint` /
+    /// `promoteToFaultyIfThresholdReached` / `clearLeaderData`.
     public Map<NodeId, HealthHint> swimHintsView() {
-        return Collections.unmodifiableMap(swimHints);
+        return effectiveSwimHints();
+    }
+
+    /// Return a read-only snapshot of `swimHints` with expired entries filtered out. An
+    /// entry is "expired" when `nowMs() - writeMs > swimHintsTtl().millis()`. The map is
+    /// rebuilt on every call — cheap (hint count is bounded by core size, ≤ ~10s in
+    /// practice) and reflects the freshest TTL state. Internal callers
+    /// (`shouldEvict` / `promoteToFaultyIfThresholdReached` / `handleRemoteConnected`)
+    /// use [`#effectiveHint`] for single-key lookups instead of materialising the map.
+    private Map<NodeId, HealthHint> effectiveSwimHints() {
+        var ttlMs = autoHealConfig.swimHintsTtl().millis();
+        var cutoffMs = nowMs() - ttlMs;
+        var result = new HashMap<NodeId, HealthHint>(swimHints.size());
+        for (var entry : swimHints.entrySet()) {
+            var stamped = entry.getValue();
+            if (stamped.writeMs() >= cutoffMs) {
+                result.put(entry.getKey(), stamped.hint());
+            }
+        }
+        return Collections.unmodifiableMap(result);
+    }
+
+    /// Single-key lookup that respects the TTL — returns `HEALTHY` (default-when-absent) for
+    /// expired or absent entries, mirroring the contract of `effectiveSwimHints()`.
+    private HealthHint effectiveHint(NodeId nodeId) {
+        var stamped = swimHints.get(nodeId);
+        if (stamped == null) {return HealthHint.HEALTHY;}
+        var ttlMs = autoHealConfig.swimHintsTtl().millis();
+        if ((nowMs() - stamped.writeMs()) > ttlMs) {return HealthHint.HEALTHY;}
+        return stamped.hint();
+    }
+
+    /// Idempotent write to `swimHints` that records the current write timestamp. Subsequent
+    /// reads return the hint unless `swimHintsTtl` elapses without re-emission.
+    private void putHint(NodeId nodeId, HealthHint hint) {
+        swimHints.put(nodeId, new TimestampedHint(hint, nowMs()));
     }
 
     @Contract public void setAmbientSnapshot(ClusterGenerationSnapshot snapshot) {
@@ -797,7 +846,7 @@ public final class HealthReconcilerContext {
     }
 
     private boolean shouldEvict(int missed, CoreMember member, NodeId nodeId) {
-        return missed >= DEFAULT_REMOVE_THRESHOLD && swimHints.getOrDefault(nodeId, HealthHint.HEALTHY) == HealthHint.FAULTY && member.lifecycle() == NodeLifecycleState.ON_DUTY;
+        return missed >= DEFAULT_REMOVE_THRESHOLD && effectiveHint(nodeId) == HealthHint.FAULTY && member.lifecycle() == NodeLifecycleState.ON_DUTY;
     }
 
     private boolean shouldMarkSuspected(int missed, CoreMember member) {
@@ -807,7 +856,7 @@ public final class HealthReconcilerContext {
     private SignalOutcome handleSwimHint(ClusterGenerationSnapshot current,
                                          HealthSignal.SwimHint swim,
                                          TermAdvance termAdvance) {
-        swimHints.put(swim.nodeId(), swim.state());
+        putHint(swim.nodeId(), swim.state());
         return switch (swim.state()){
             case SUSPECTED, FAULTY -> markSuspectedInMemory(current, swim.nodeId(), termAdvance);
             case HEALTHY -> clearSuspectedInMemory(current, swim.nodeId(), termAdvance);
@@ -834,8 +883,8 @@ public final class HealthReconcilerContext {
     /// (`handleRemoteConnectivity`).
     @Contract private void promoteToFaultyIfThresholdReached(NodeId peer, int missed) {
         if (missed < autoHealConfig.quicMissPromotionThreshold()) {return;}
-        if (swimHints.get(peer) == HealthHint.FAULTY) {return;}
-        swimHints.put(peer, HealthHint.FAULTY);
+        if (effectiveHint(peer) == HealthHint.FAULTY) {return;}
+        putHint(peer, HealthHint.FAULTY);
         log.warn("Promoting peer {} to FAULTY based on {} sustained QUIC ping-misses (threshold={})",
                  peer, missed, autoHealConfig.quicMissPromotionThreshold());
     }
@@ -1034,7 +1083,7 @@ public final class HealthReconcilerContext {
                                                 NodeId peer,
                                                 TermAdvance termAdvance) {
         peerObservationStore.clearPingMisses(peer);
-        if (swimHints.get(peer) == HealthHint.SUSPECTED) {
+        if (effectiveHint(peer) == HealthHint.SUSPECTED) {
             log.info("Clearing sticky SUSPECTED for peer {} on positive QUIC liveness (CONNECTED, missed=0)", peer);
             swimHints.remove(peer);
             return clearSuspectedInMemory(current, peer, termAdvance);

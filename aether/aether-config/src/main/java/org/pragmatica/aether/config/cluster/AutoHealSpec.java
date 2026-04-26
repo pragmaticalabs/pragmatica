@@ -11,7 +11,8 @@ public record AutoHealSpec(boolean enabled,
                            int quicMissPromotionThreshold,
                            String provisioningTimeout,
                            String provisionStabilityWindow,
-                           String decommissionedRetention) {
+                           String decommissionedRetention,
+                           String swimHintsTtl) {
     public static final String DEFAULT_STALE_OBSERVATION_TTL = "30s";
 
     public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
@@ -26,6 +27,13 @@ public record AutoHealSpec(boolean enabled,
     /// unbounded accumulation over the cluster's lifetime.
     public static final String DEFAULT_DECOMMISSIONED_RETENTION = "24h";
 
+    /// Per-entry TTL on the leader-projection `swimHints` map. After this elapses without
+    /// re-emission the entry is treated as absent (HEALTHY default). Closes the sticky
+    /// SUSPECTED window when transient SWIM probes during boot leave a peer marked but
+    /// SWIM never re-emits HEALTHY. Default 60s — long enough for any healthy retry to
+    /// refresh the entry, short enough that orphaned entries self-heal in the smoke window.
+    public static final String DEFAULT_SWIM_HINTS_TTL = "60s";
+
     public static AutoHealSpec autoHealSpec(boolean enabled, String retryInterval, String startupCooldown) {
         return new AutoHealSpec(enabled,
                                 retryInterval,
@@ -34,7 +42,8 @@ public record AutoHealSpec(boolean enabled,
                                 DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
                                 DEFAULT_PROVISIONING_TIMEOUT,
                                 DEFAULT_PROVISION_STABILITY_WINDOW,
-                                DEFAULT_DECOMMISSIONED_RETENTION);
+                                DEFAULT_DECOMMISSIONED_RETENTION,
+                                DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
@@ -48,7 +57,8 @@ public record AutoHealSpec(boolean enabled,
                                 DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
                                 DEFAULT_PROVISIONING_TIMEOUT,
                                 DEFAULT_PROVISION_STABILITY_WINDOW,
-                                DEFAULT_DECOMMISSIONED_RETENTION);
+                                DEFAULT_DECOMMISSIONED_RETENTION,
+                                DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
@@ -63,7 +73,8 @@ public record AutoHealSpec(boolean enabled,
                                 quicMissPromotionThreshold,
                                 DEFAULT_PROVISIONING_TIMEOUT,
                                 DEFAULT_PROVISION_STABILITY_WINDOW,
-                                DEFAULT_DECOMMISSIONED_RETENTION);
+                                DEFAULT_DECOMMISSIONED_RETENTION,
+                                DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
@@ -79,7 +90,8 @@ public record AutoHealSpec(boolean enabled,
                                 quicMissPromotionThreshold,
                                 provisioningTimeout,
                                 DEFAULT_PROVISION_STABILITY_WINDOW,
-                                DEFAULT_DECOMMISSIONED_RETENTION);
+                                DEFAULT_DECOMMISSIONED_RETENTION,
+                                DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
@@ -96,7 +108,8 @@ public record AutoHealSpec(boolean enabled,
                                 quicMissPromotionThreshold,
                                 provisioningTimeout,
                                 provisionStabilityWindow,
-                                DEFAULT_DECOMMISSIONED_RETENTION);
+                                DEFAULT_DECOMMISSIONED_RETENTION,
+                                DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
@@ -114,7 +127,28 @@ public record AutoHealSpec(boolean enabled,
                                 quicMissPromotionThreshold,
                                 provisioningTimeout,
                                 provisionStabilityWindow,
-                                decommissionedRetention);
+                                decommissionedRetention,
+                                DEFAULT_SWIM_HINTS_TTL);
+    }
+
+    public static AutoHealSpec autoHealSpec(boolean enabled,
+                                             String retryInterval,
+                                             String startupCooldown,
+                                             String staleObservationTtl,
+                                             int quicMissPromotionThreshold,
+                                             String provisioningTimeout,
+                                             String provisionStabilityWindow,
+                                             String decommissionedRetention,
+                                             String swimHintsTtl) {
+        return new AutoHealSpec(enabled,
+                                retryInterval,
+                                startupCooldown,
+                                staleObservationTtl,
+                                quicMissPromotionThreshold,
+                                provisioningTimeout,
+                                provisionStabilityWindow,
+                                decommissionedRetention,
+                                swimHintsTtl);
     }
 
     public static AutoHealSpec defaultAutoHealSpec() {
@@ -125,6 +159,7 @@ public record AutoHealSpec(boolean enabled,
                                 DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
                                 DEFAULT_PROVISIONING_TIMEOUT,
                                 DEFAULT_PROVISION_STABILITY_WINDOW,
-                                DEFAULT_DECOMMISSIONED_RETENTION);
+                                DEFAULT_DECOMMISSIONED_RETENTION,
+                                DEFAULT_SWIM_HINTS_TTL);
     }
 }

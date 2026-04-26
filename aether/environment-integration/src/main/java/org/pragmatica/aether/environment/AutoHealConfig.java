@@ -50,13 +50,22 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                                    `KVCommand.Remove`. Theme K #4 — without this sweep, terminated
 ///                                    nodes accumulate as tombstones over the cluster's lifetime.
 ///                                    Defaults to 24h.
+/// @param swimHintsTtl                per-entry TTL for the leader-projection `swimHints` map in
+///                                    `HealthReconcilerContext`. Defense-in-depth against sticky
+///                                    SUSPECTED state from transient SWIM probes during boot —
+///                                    when a hint is older than `swimHintsTtl` without re-emission
+///                                    the projector treats it as absent (defaults to HEALTHY) so
+///                                    the membership view self-heals. Does not mask actual SWIM
+///                                    SUSPECT/FAULT signals — those continue to refresh the hint
+///                                    on every emission. Defaults to 60s.
 public record AutoHealConfig(TimeSpan retryInterval,
                               TimeSpan startupCooldown,
                               TimeSpan staleObservationTtl,
                               int quicMissPromotionThreshold,
                               TimeSpan provisioningTimeout,
                               TimeSpan provisionStabilityWindow,
-                              TimeSpan decommissionedRetention) {
+                              TimeSpan decommissionedRetention,
+                              TimeSpan swimHintsTtl) {
     public static final TimeSpan DEFAULT_STALE_OBSERVATION_TTL = timeSpan(30).seconds();
 
     public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
@@ -67,13 +76,16 @@ public record AutoHealConfig(TimeSpan retryInterval,
 
     public static final TimeSpan DEFAULT_DECOMMISSIONED_RETENTION = timeSpan(24).hours();
 
+    public static final TimeSpan DEFAULT_SWIM_HINTS_TTL = timeSpan(60).seconds();
+
     public static final AutoHealConfig DEFAULT = autoHealConfig(timeSpan(10).seconds(),
                                                                  timeSpan(15).seconds(),
                                                                  DEFAULT_STALE_OBSERVATION_TTL,
                                                                  DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
                                                                  DEFAULT_PROVISIONING_TIMEOUT,
                                                                  DEFAULT_PROVISION_STABILITY_WINDOW,
-                                                                 DEFAULT_DECOMMISSIONED_RETENTION).unwrap();
+                                                                 DEFAULT_DECOMMISSIONED_RETENTION,
+                                                                 DEFAULT_SWIM_HINTS_TTL).unwrap();
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval, TimeSpan startupCooldown) {
         return autoHealConfig(retryInterval,
@@ -82,7 +94,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                               DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
                               DEFAULT_PROVISIONING_TIMEOUT,
                               DEFAULT_PROVISION_STABILITY_WINDOW,
-                              DEFAULT_DECOMMISSIONED_RETENTION);
+                              DEFAULT_DECOMMISSIONED_RETENTION,
+                              DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
@@ -94,7 +107,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                               DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
                               DEFAULT_PROVISIONING_TIMEOUT,
                               DEFAULT_PROVISION_STABILITY_WINDOW,
-                              DEFAULT_DECOMMISSIONED_RETENTION);
+                              DEFAULT_DECOMMISSIONED_RETENTION,
+                              DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
@@ -107,7 +121,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                               quicMissPromotionThreshold,
                               DEFAULT_PROVISIONING_TIMEOUT,
                               DEFAULT_PROVISION_STABILITY_WINDOW,
-                              DEFAULT_DECOMMISSIONED_RETENTION);
+                              DEFAULT_DECOMMISSIONED_RETENTION,
+                              DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
@@ -121,7 +136,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                               quicMissPromotionThreshold,
                               provisioningTimeout,
                               DEFAULT_PROVISION_STABILITY_WINDOW,
-                              DEFAULT_DECOMMISSIONED_RETENTION);
+                              DEFAULT_DECOMMISSIONED_RETENTION,
+                              DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
@@ -136,7 +152,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
                               quicMissPromotionThreshold,
                               provisioningTimeout,
                               provisionStabilityWindow,
-                              DEFAULT_DECOMMISSIONED_RETENTION);
+                              DEFAULT_DECOMMISSIONED_RETENTION,
+                              DEFAULT_SWIM_HINTS_TTL);
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
@@ -146,12 +163,31 @@ public record AutoHealConfig(TimeSpan retryInterval,
                                                          TimeSpan provisioningTimeout,
                                                          TimeSpan provisionStabilityWindow,
                                                          TimeSpan decommissionedRetention) {
+        return autoHealConfig(retryInterval,
+                              startupCooldown,
+                              staleObservationTtl,
+                              quicMissPromotionThreshold,
+                              provisioningTimeout,
+                              provisionStabilityWindow,
+                              decommissionedRetention,
+                              DEFAULT_SWIM_HINTS_TTL);
+    }
+
+    public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
+                                                         TimeSpan startupCooldown,
+                                                         TimeSpan staleObservationTtl,
+                                                         int quicMissPromotionThreshold,
+                                                         TimeSpan provisioningTimeout,
+                                                         TimeSpan provisionStabilityWindow,
+                                                         TimeSpan decommissionedRetention,
+                                                         TimeSpan swimHintsTtl) {
         return success(new AutoHealConfig(retryInterval,
                                           startupCooldown,
                                           staleObservationTtl,
                                           quicMissPromotionThreshold,
                                           provisioningTimeout,
                                           provisionStabilityWindow,
-                                          decommissionedRetention));
+                                          decommissionedRetention,
+                                          swimHintsTtl));
     }
 }

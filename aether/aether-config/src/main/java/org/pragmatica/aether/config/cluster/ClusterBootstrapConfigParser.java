@@ -366,6 +366,8 @@ import static org.pragmatica.lang.Result.success;
                                                 .or(AutoHealSpec.DEFAULT_PROVISION_STABILITY_WINDOW);
         var decommissionedRetention = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "decommissioned_retention")
                                                 .or(AutoHealSpec.DEFAULT_DECOMMISSIONED_RETENTION);
+        var swimHintsTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "swim_hints_ttl")
+                                  .or(AutoHealSpec.DEFAULT_SWIM_HINTS_TTL);
         return AutoHealSpec.autoHealSpec(enabled,
                                          retryInterval,
                                          startupCooldown,
@@ -373,7 +375,8 @@ import static org.pragmatica.lang.Result.success;
                                          quicMissPromotionThreshold,
                                          provisioningTimeout,
                                          provisionStabilityWindow,
-                                         decommissionedRetention);
+                                         decommissionedRetention,
+                                         swimHintsTtl);
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {
