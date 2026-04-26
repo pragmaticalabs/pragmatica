@@ -56,6 +56,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -91,9 +92,10 @@ import static org.pragmatica.lang.Unit.unit;
 /// pause lets the remaining lifecycles converge before auto-heal fires. Slot-based
 /// timeout (per-attempt deadlines via `ProvisioningSlot`) recovers from stalled waves.
 ///
-/// TODO(theme-H): Replace direct `System::currentTimeMillis` with an injected
-/// `LongSupplier clock`. This context does not yet have a clock supplier; once Theme H
-/// lands the clock pattern across all FSM contexts, swap it in here.
+/// Theme H clock injection: `clock` is the canonical wall-clock supplier — all timestamping
+/// (stability anchor, slot deadlines, lifecycle atom transitionedAt, ClusterConfigValue.updatedAt,
+/// nodeJoinTimes anchor) reads from this supplier. Tests pass a deterministic clock; production
+/// passes `System::currentTimeMillis`.
 ///
 /// @SuppressWarnings: void callbacks required by TopologyManager/ClusterTopologyManager interfaces
 @SuppressWarnings("JBCT-RET-01") record ClusterTopologyManagerRecord(TopologyObserver observer,
@@ -111,7 +113,8 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
                                                                      CancellableTask safetyNetTimer,
                                                                      AtomicLong realActualStableSinceMs,
-                                                                     AtomicInteger lastObservedRealActual) implements ClusterTopologyManager {
+                                                                     AtomicInteger lastObservedRealActual,
+                                                                     LongSupplier clock) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
 
     private static final int MINIMUM_CLUSTER_SIZE = 3;
@@ -129,6 +132,29 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      DrainCoordinator drainCoordinator) {
+        return clusterTopologyManagerRecord(observer,
+                                             lifecycleManager,
+                                             config,
+                                             deploymentMap,
+                                             snapshotSource,
+                                             clusterConfigReader,
+                                             lifecycleReader,
+                                             commandApplier,
+                                             drainCoordinator,
+                                             System::currentTimeMillis);
+    }
+
+    /// Full-arity factory with injectable clock — for tests that need deterministic time.
+    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
+                                                                     NodeLifecycleManager lifecycleManager,
+                                                                     AutoHealConfig config,
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     DrainCoordinator drainCoordinator,
+                                                                     LongSupplier clock) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
@@ -143,8 +169,9 @@ import static org.pragmatica.lang.Unit.unit;
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 CancellableTask.cancellableTask(),
-                                                new AtomicLong(System.currentTimeMillis()),
-                                                new AtomicInteger(UNINITIALIZED_REAL_ACTUAL));
+                                                new AtomicLong(clock.getAsLong()),
+                                                new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
+                                                clock);
     }
 
     /// Backward-compatible factory: constructs a CTM with the rc1 [`NoOpDrainCoordinator`].
@@ -167,6 +194,17 @@ import static org.pragmatica.lang.Unit.unit;
                                              lifecycleReader,
                                              commandApplier,
                                              new NoOpDrainCoordinator());
+    }
+
+    /// Current wall-clock millis from the injected supplier. Production: `System::currentTimeMillis`.
+    private long nowMs() {
+        return clock.getAsLong();
+    }
+
+    /// Current Instant derived from the injected millis-supplier so all timestamps share one
+    /// canonical clock source.
+    private Instant nowInstant() {
+        return Instant.ofEpochMilli(nowMs());
     }
 
     @Override public NodeReconcilerState reconcilerState() {
@@ -195,7 +233,7 @@ import static org.pragmatica.lang.Unit.unit;
         return Result.success(unit());
     }
 
-    private static ClusterConfigValue withCoreCount(ClusterConfigValue existing, int newCoreCount) {
+    private ClusterConfigValue withCoreCount(ClusterConfigValue existing, int newCoreCount) {
         return new ClusterConfigValue(existing.tomlContent(),
                                       existing.clusterName(),
                                       existing.version(),
@@ -204,7 +242,7 @@ import static org.pragmatica.lang.Unit.unit;
                                       existing.coreMax(),
                                       existing.deploymentType(),
                                       existing.configVersion() + 1,
-                                      System.currentTimeMillis());
+                                      nowMs());
     }
 
     @Override public int desiredSize() {
@@ -254,7 +292,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void handleNodeAdded(NodeAdded added) {
-        nodeJoinTimes.putIfAbsent(added.nodeId(), Instant.now());
+        nodeJoinTimes.putIfAbsent(added.nodeId(), nowInstant());
         bumpRealActualStability("node-added " + added.nodeId());
         log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());
         reconcile();
@@ -277,7 +315,7 @@ import static org.pragmatica.lang.Unit.unit;
     /// (the snapshot's healthy ON_DUTY count). The next `handleDeficit` invocation will be deferred
     /// until `provisionStabilityWindow` has elapsed since this reset.
     private void bumpRealActualStability(String reason) {
-        var nowMs = System.currentTimeMillis();
+        var nowMs = nowMs();
         realActualStableSinceMs.set(nowMs);
         log.debug("CTM: stability anchor reset ({}), nowMs={}", reason, nowMs);
     }
@@ -291,7 +329,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void seedJoinTimesForExistingNodes() {
-        for (var nodeId : observer.topology()) {nodeJoinTimes.putIfAbsent(nodeId, Instant.now());}
+        for (var nodeId : observer.topology()) {nodeJoinTimes.putIfAbsent(nodeId, nowInstant());}
     }
 
     private void activateWithCurrentTopology() {
@@ -327,7 +365,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void activateWithFormation() {
-        transitionTo(new NodeReconcilerState.Forming(Instant.now()));
+        transitionTo(new NodeReconcilerState.Forming(nowInstant()));
         SharedScheduler.schedule(this::checkFormationComplete, autoHealConfig.startupCooldown());
     }
 
@@ -492,7 +530,7 @@ import static org.pragmatica.lang.Unit.unit;
     /// expired, the original state is left untouched. Returns the slot list visible after
     /// expiry so the caller can compute `inFlightCount` without re-reading the state.
     private List<NodeReconcilerState.ProvisioningSlot> expireSlots(NodeReconcilerState.Reconciling reconciling) {
-        var nowMs = System.currentTimeMillis();
+        var nowMs = nowMs();
         var alive = reconciling.inFlight().stream()
                                                   .filter(slot -> slot.deadlineMs() >= nowMs)
                                                   .toList();
@@ -540,7 +578,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void handleDeficit(int actual, int desired) {
-        var nowMs = System.currentTimeMillis();
+        var nowMs = nowMs();
         if (!stabilityElapsed(nowMs)) {
             var elapsed = nowMs - realActualStableSinceMs.get();
             log.info("CTM: stability window not yet elapsed (elapsed={}ms, required={}ms, actual={}, desired={}); deferring provisioning dispatch",
@@ -611,7 +649,7 @@ import static org.pragmatica.lang.Unit.unit;
     private void handleDeficitFromConverged(NodeReconcilerState current, int actual, int desired) {
         var deficit = desired - actual;
         if (!lifecycleManager.isCloudManaged()) {
-            var next = new NodeReconcilerState.Reconciling(desired, actual, List.of(), List.of(), Instant.now());
+            var next = new NodeReconcilerState.Reconciling(desired, actual, List.of(), List.of(), nowInstant());
             if (!stateRef.compareAndSet(current, next)) {
                 log.warn("CTM: state CAS lost (deficit, no-cloud) — observed={}, expected={}, next={}",
                          stateRef.get(),
@@ -627,7 +665,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                        actual,
                                                        buildInFlightList(batchSize),
                                                        List.of(),
-                                                       Instant.now());
+                                                       nowInstant());
         if (!stateRef.compareAndSet(current, next)) {
             log.warn("CTM: state CAS lost (deficit, provision) — observed={}, expected={}, next={}",
                      stateRef.get(),
@@ -656,7 +694,7 @@ import static org.pragmatica.lang.Unit.unit;
             log.warn("CTM: {} surplus nodes but no candidates for termination", surplus);
             return;
         }
-        var next = new NodeReconcilerState.Reconciling(configured, actual, List.of(), nodesToTerminate, Instant.now());
+        var next = new NodeReconcilerState.Reconciling(configured, actual, List.of(), nodesToTerminate, nowInstant());
         if (!stateRef.compareAndSet(current, next)) {
             log.warn("CTM: state CAS lost (surplus, terminate) — observed={}, expected={}, next={}",
                      stateRef.get(),
@@ -824,7 +862,7 @@ import static org.pragmatica.lang.Unit.unit;
         }
         var p = prior.unwrap();
         return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING,
-                                                     System.currentTimeMillis(),
+                                                     nowMs(),
                                                      p.host(),
                                                      p.port(),
                                                      p.observedCoreEpoch(),
@@ -874,7 +912,7 @@ import static org.pragmatica.lang.Unit.unit;
         }
         var p = prior.unwrap();
         return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
-                                                     System.currentTimeMillis(),
+                                                     nowMs(),
                                                      p.host(),
                                                      p.port(),
                                                      p.observedCoreEpoch(),
@@ -987,7 +1025,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private List<NodeReconcilerState.ProvisioningSlot> buildInFlightList(int count) {
-        var nowMs = System.currentTimeMillis();
+        var nowMs = nowMs();
         var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
         var list = new ArrayList<NodeReconcilerState.ProvisioningSlot>(count);
         for (var i = 0;i <count;i++) {list.add(new NodeReconcilerState.ProvisioningSlot(nowMs, deadlineMs));}
@@ -999,7 +1037,7 @@ import static org.pragmatica.lang.Unit.unit;
     /// original wave's deadlines (each slot times out on its own clock).
     private List<NodeReconcilerState.ProvisioningSlot> mergeSlots(List<NodeReconcilerState.ProvisioningSlot> existing,
                                                                    int count) {
-        var nowMs = System.currentTimeMillis();
+        var nowMs = nowMs();
         var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
         var merged = new ArrayList<NodeReconcilerState.ProvisioningSlot>(existing.size() + count);
         merged.addAll(existing);

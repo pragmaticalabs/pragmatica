@@ -1058,7 +1058,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                   sliceKey.nodeId(),
                                                                   SliceState.FAILED,
                                                                   failureReason,
-                                                                  System.currentTimeMillis()));
+                                                                  ctx.nowMs()));
             if (ctx.atomicity() == DeploymentAtomicity.ALL_OR_NOTHING) {rollbackBlueprintForArtifact(artifact);}
         }
 
@@ -1090,7 +1090,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                   sliceKey.nodeId(),
                                                                   SliceState.FAILED,
                                                                   failureReason,
-                                                                  System.currentTimeMillis()));
+                                                                  ctx.nowMs()));
         }
 
         private boolean areSchemasReady(SliceNodeKey sliceKey) {
@@ -1163,7 +1163,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void issueLoadCommand(SliceNodeKey sliceKey) {
             log.debug("Issuing LOAD command for {}", sliceKey);
-            var timestamp = System.currentTimeMillis();
+            var timestamp = ctx.nowMs();
             applyStateWrite(sliceKey, SliceState.LOAD)
                     .withSuccess(_ -> ctx.router().route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
                                                                                               sliceKey.nodeId(),
@@ -1519,14 +1519,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void updateTransitionalTimestamp(SliceNodeKey sliceKey, SliceState state) {
             if (state.isTransitional()) {
-                transitionalStateTimestamps.putIfAbsent(sliceKey, System.currentTimeMillis());
+                transitionalStateTimestamps.putIfAbsent(sliceKey, ctx.nowMs());
             } else {
                 transitionalStateTimestamps.remove(sliceKey);
             }
         }
 
         private void detectStuckTransitionalStates() {
-            var now = System.currentTimeMillis();
+            var now = ctx.nowMs();
             var stuckEntries = transitionalStateTimestamps.entrySet().stream()
                                                           .filter(entry -> isStuckTransitional(entry.getKey(),
                                                                                                 entry.getValue(),

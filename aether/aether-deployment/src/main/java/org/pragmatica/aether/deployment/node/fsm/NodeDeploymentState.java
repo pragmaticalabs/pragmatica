@@ -298,7 +298,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void recordDeployment(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
             var state = sliceNodeValue.state();
-            var timestamp = System.currentTimeMillis();
+            var timestamp = ctx.nowMs();
             var previousDeployment = Option.option(deployments.get(sliceKey));
             var previousState = previousDeployment.map(SliceDeployment::state);
             var deployment = SliceDeployment.sliceDeployment(sliceKey, state, timestamp);
@@ -464,7 +464,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             routingEpochAckTracker.clear(sliceKey);
             ctx.router().route(DeploymentCompleted.deploymentCompleted(sliceKey.artifact(),
                                                                        ctx.self(),
-                                                                       System.currentTimeMillis()));
+                                                                       ctx.nowMs()));
         }
 
         private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {

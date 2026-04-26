@@ -27,6 +27,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /// Shared context for the ClusterDeploymentManager FSM. Holds long-lived configuration and
@@ -51,6 +52,7 @@ public final class ClusterDeploymentContext {
     private final DeploymentAtomicity atomicity;
     private final int coreMax;
     private final TimeSpan reconcileInterval;
+    private final LongSupplier clock;
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;
 
@@ -67,6 +69,26 @@ public final class ClusterDeploymentContext {
                                     DeploymentAtomicity atomicity,
                                     int coreMax,
                                     TimeSpan reconcileInterval) {
+        this(fsm, self, cluster, kvStore, router, topologyManager, schemaOrchestrator,
+             healthSignalSink, snapshotSupplier, seedNodes, atomicity, coreMax, reconcileInterval,
+             System::currentTimeMillis);
+    }
+
+    /// Full-arity constructor with injectable clock — for tests that need deterministic time.
+    public ClusterDeploymentContext(Fsm<ClusterDeploymentState, ClusterFsmEvent> fsm,
+                                    NodeId self,
+                                    ClusterNode<KVCommand<AetherKey>> cluster,
+                                    KVStore<AetherKey, AetherValue> kvStore,
+                                    MessageRouter router,
+                                    TopologyManager topologyManager,
+                                    SchemaOrchestratorService schemaOrchestrator,
+                                    HealthSignalSink healthSignalSink,
+                                    Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
+                                    Set<NodeId> seedNodes,
+                                    DeploymentAtomicity atomicity,
+                                    int coreMax,
+                                    TimeSpan reconcileInterval,
+                                    LongSupplier clock) {
         this.fsm = fsm;
         this.self = self;
         this.cluster = cluster;
@@ -80,8 +102,15 @@ public final class ClusterDeploymentContext {
         this.atomicity = atomicity;
         this.coreMax = coreMax;
         this.reconcileInterval = reconcileInterval;
+        this.clock = clock;
         this.dormant = new ClusterDeploymentState.Dormant(this);
         this.stopped = new ClusterDeploymentState.Stopped(this);
+    }
+
+    /// Current time in milliseconds. Reads from the injected clock so tests can make FSM
+    /// transitions deterministic. Equivalent to `System.currentTimeMillis()` in production.
+    public long nowMs() {
+        return clock.getAsLong();
     }
 
     // --- FSM access ---

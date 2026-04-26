@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 
 /// Shared context for the NodeDeploymentManager FSM. Holds:
 ///
@@ -66,6 +67,7 @@ public final class NodeDeploymentContext {
     private final TimeSpan transitionRetryDelay;
     private final AtomicLong quorumSequence;
     private final AtomicReference<Runnable> shutdownCallback;
+    private final LongSupplier clock;
     private final NodeDeploymentState dormant;
     private final NodeDeploymentState stopped;
 
@@ -83,6 +85,27 @@ public final class NodeDeploymentContext {
                                  Option<SliceInvokerFacade> sliceInvokerFacade,
                                  TimeSpan activationChainTimeout,
                                  TimeSpan transitionRetryDelay) {
+        this(fsm, self, selfAddress, sliceStore, configuration, nodeCodec, cluster, kvStore,
+             invocationHandler, router, httpRoutePublisher, sliceInvokerFacade,
+             activationChainTimeout, transitionRetryDelay, System::currentTimeMillis);
+    }
+
+    /// Full-arity constructor with injectable clock — for tests that need deterministic time.
+    public NodeDeploymentContext(Fsm<NodeDeploymentState, ClusterFsmEvent> fsm,
+                                 NodeId self,
+                                 NodeAddress selfAddress,
+                                 SliceStore sliceStore,
+                                 SliceActionConfig configuration,
+                                 SliceCodec nodeCodec,
+                                 ClusterNode<KVCommand<AetherKey>> cluster,
+                                 KVStore<AetherKey, AetherValue> kvStore,
+                                 InvocationHandler invocationHandler,
+                                 MessageRouter router,
+                                 Option<HttpRoutePublisher> httpRoutePublisher,
+                                 Option<SliceInvokerFacade> sliceInvokerFacade,
+                                 TimeSpan activationChainTimeout,
+                                 TimeSpan transitionRetryDelay,
+                                 LongSupplier clock) {
         this.fsm = fsm;
         this.self = self;
         this.selfAddress = selfAddress;
@@ -99,8 +122,15 @@ public final class NodeDeploymentContext {
         this.transitionRetryDelay = transitionRetryDelay;
         this.quorumSequence = new AtomicLong(0);
         this.shutdownCallback = new AtomicReference<>();
+        this.clock = clock;
         this.dormant = new NodeDeploymentState.Dormant(this, List.of());
         this.stopped = new NodeDeploymentState.Stopped(this);
+    }
+
+    /// Current time in milliseconds. Reads from the injected clock so tests can make FSM
+    /// transitions deterministic. Equivalent to `System.currentTimeMillis()` in production.
+    public long nowMs() {
+        return clock.getAsLong();
     }
 
     // --- FSM access ---

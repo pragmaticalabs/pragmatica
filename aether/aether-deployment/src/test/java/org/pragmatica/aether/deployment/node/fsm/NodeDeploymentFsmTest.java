@@ -44,8 +44,10 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 
 import io.netty.buffer.ByteBuf;
 
@@ -181,6 +183,48 @@ class NodeDeploymentFsmTest {
             assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Stopped.class);
             harness.dispatch(new Shutdown());
             assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Stopped.class);
+        }
+    }
+
+    /// Theme H clock-injection coverage: confirms the full-arity `NodeDeploymentContext`
+    /// constructor wires an injected `LongSupplier` through to `nowMs()`.
+    @Nested
+    class ClockInjection {
+        @Test
+        void nowMs_returnsInjectedClockValue_notSystemClock() {
+            var injected = new AtomicLong(42_000L);
+            LongSupplier clock = injected::get;
+            var router = MessageRouter.mutable();
+            var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+            ClusterNode<KVCommand<AetherKey>> cluster = stubClusterNode(SELF);
+            SliceStore sliceStore = stubSliceStore();
+            var ctxHolder = new AtomicReference<NodeDeploymentContext>();
+            Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> factory =
+                    fsm -> {
+                        var ctx = new NodeDeploymentContext(fsm,
+                                                            SELF,
+                                                            new NodeAddress("localhost", 9000),
+                                                            sliceStore,
+                                                            SliceActionConfig.sliceActionConfig(),
+                                                            SliceCodec.sliceCodec(List.of()),
+                                                            cluster,
+                                                            kvStore,
+                                                            stubInvocationHandler(),
+                                                            router,
+                                                            Option.none(),
+                                                            Option.none(),
+                                                            timeSpan(120_000).millis(),
+                                                            timeSpan(2_000).millis(),
+                                                            clock);
+                        ctxHolder.set(ctx);
+                        return ctx.dormant();
+                    };
+            FsmTestHarness.harness("node-deployment-clock-test-" + SELF.id(), factory);
+
+            var injectedCtx = ctxHolder.get();
+            assertThat(injectedCtx.nowMs()).isEqualTo(42_000L);
+            injected.set(99_999L);
+            assertThat(injectedCtx.nowMs()).isEqualTo(99_999L);
         }
     }
 

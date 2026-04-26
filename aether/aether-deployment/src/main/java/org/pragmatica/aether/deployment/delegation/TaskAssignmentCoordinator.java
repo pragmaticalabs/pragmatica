@@ -43,6 +43,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,10 +96,21 @@ public sealed interface TaskAssignmentCoordinator {
                                                                KVStore<AetherKey, AetherValue> kvStore,
                                                                TopologyManager topologyManager,
                                                                TimeSpan reconcileInterval) {
+        return taskAssignmentCoordinator(self, clusterNode, kvStore, topologyManager,
+                                         reconcileInterval, System::currentTimeMillis);
+    }
+
+    /// Full-arity factory with injectable clock — for tests that need deterministic time.
+    static TaskAssignmentCoordinator taskAssignmentCoordinator(NodeId self,
+                                                               ClusterNode<KVCommand<AetherKey>> clusterNode,
+                                                               KVStore<AetherKey, AetherValue> kvStore,
+                                                               TopologyManager topologyManager,
+                                                               TimeSpan reconcileInterval,
+                                                               LongSupplier clock) {
         var ctxHolder = new AtomicReference<Context>();
         Function<Fsm<CoordinatorState, ClusterFsmEvent>, CoordinatorState> initialStateFactory =
             f -> buildContextAndInitialState(ctxHolder, f, self, clusterNode, kvStore,
-                                             topologyManager, reconcileInterval);
+                                             topologyManager, reconcileInterval, clock);
         var fsm = Fsm.fsm("task-assignment", self.id(), initialStateFactory);
         return new TaskAssignmentCoordinatorAdapter(ctxHolder.get(), fsm);
     }
@@ -109,8 +121,9 @@ public sealed interface TaskAssignmentCoordinator {
                                                                 ClusterNode<KVCommand<AetherKey>> clusterNode,
                                                                 KVStore<AetherKey, AetherValue> kvStore,
                                                                 TopologyManager topologyManager,
-                                                                TimeSpan reconcileInterval) {
-        var ctx = new Context(fsm, self, clusterNode, kvStore, topologyManager, reconcileInterval);
+                                                                TimeSpan reconcileInterval,
+                                                                LongSupplier clock) {
+        var ctx = new Context(fsm, self, clusterNode, kvStore, topologyManager, reconcileInterval, clock);
         ctxHolder.set(ctx);
         return ctx.dormant;
     }
@@ -135,6 +148,7 @@ public sealed interface TaskAssignmentCoordinator {
         final KVStore<AetherKey, AetherValue> kvStore;
         final TopologyManager topologyManager;
         final TimeSpan reconcileInterval;
+        final LongSupplier clock;
         final Dormant dormant;
 
         Context(Fsm<CoordinatorState, ClusterFsmEvent> fsm,
@@ -142,14 +156,20 @@ public sealed interface TaskAssignmentCoordinator {
                 ClusterNode<KVCommand<AetherKey>> clusterNode,
                 KVStore<AetherKey, AetherValue> kvStore,
                 TopologyManager topologyManager,
-                TimeSpan reconcileInterval) {
+                TimeSpan reconcileInterval,
+                LongSupplier clock) {
             this.fsm = fsm;
             this.self = self;
             this.clusterNode = clusterNode;
             this.kvStore = kvStore;
             this.topologyManager = topologyManager;
             this.reconcileInterval = reconcileInterval;
+            this.clock = clock;
             this.dormant = new Dormant(this);
+        }
+
+        long nowMs() {
+            return clock.getAsLong();
         }
     }
 
@@ -310,7 +330,7 @@ public sealed interface TaskAssignmentCoordinator {
         }
 
         private Option<NodeId> selectLeastLoadedNode(TaskGroup group, List<NodeId> healthyNodes) {
-            var cooldownExpiry = System.currentTimeMillis() - FAILURE_COOLDOWN_MS;
+            var cooldownExpiry = ctx.nowMs() - FAILURE_COOLDOWN_MS;
             var recentlyFailed = failedNodes.getOrDefault(group, Set.of());
             return Option.from(healthyNodes.stream()
                                            .filter(node -> !isRecentlyFailed(node, recentlyFailed, cooldownExpiry))

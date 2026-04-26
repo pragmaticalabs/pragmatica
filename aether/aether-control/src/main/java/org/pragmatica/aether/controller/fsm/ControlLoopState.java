@@ -51,10 +51,10 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<ControlLoopState, ClusterFsmEvent> tx) {
             switch (event) {
-                case Activate _ -> tx.transitionTo(Warmup.warmup(ctx, System.currentTimeMillis()));
+                case Activate _ -> tx.transitionTo(Warmup.warmup(ctx, ctx.nowMs()));
                 case ClusterFsmEvent.QuorumEstablished _ -> tx.ignore();
                 case ClusterFsmEvent.LeaderChange lc when lc.localIsLeader() ->
-                        tx.transitionTo(Warmup.warmup(ctx, System.currentTimeMillis()));
+                        tx.transitionTo(Warmup.warmup(ctx, ctx.nowMs()));
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
             }
@@ -201,7 +201,7 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
         }
 
         private void handleCooldownExpired(TransitionRequest<ControlLoopState, ClusterFsmEvent> tx) {
-            var now = System.currentTimeMillis();
+            var now = ctx.nowMs();
             ctx.cleanupExpiredCooldowns(now);
             if (ctx.allCooldownsExpired(now)) {
                 tx.transitionToOrDrop(Evaluating.evaluating(ctx));
