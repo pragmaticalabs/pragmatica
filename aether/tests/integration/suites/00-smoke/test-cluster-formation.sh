@@ -8,21 +8,33 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_nodes_formed() {
     wait_for_cluster 120
+    local expected="${NODE_COUNT:-5}"
     local count
     count=$(cluster_node_count)
-    assert_ge "$count" "${NODE_COUNT:-5}" "Cluster has >= ${NODE_COUNT:-5} nodes (got ${count}, may include passive LB)"
+    # Equality, not ≥ — `coreCount > NODE_COUNT` indicates phantom KV state
+    # (e.g., persisted aether_pgdata from a previous run replaying ghost ON_DUTY
+    # peers). Vacuous "≥ 5" hides cluster contamination.
+    assert_eq "$count" "$expected" "Cluster has exactly ${expected} nodes (got ${count})"
 }
 
 test_leader_elected() {
     local leader
     leader=$(cluster_leader)
-    assert_ne "$leader" "" "Leader elected: ${leader}"
+    # Reject empty AND the literal "none" — the management API returns "none"
+    # when no leader is elected, which `assert_ne "" ""` previously accepted.
+    if [ -z "$leader" ] || [ "$leader" = "none" ] || [ "$leader" = "null" ]; then
+        log_fail "Leader elected: got '${leader:-<empty>}' — expected a real node id"
+        return 1
+    fi
+    log_pass "Leader elected: ${leader}"
 }
 
 test_quorum_established() {
     local node_count
     node_count=$(cluster_node_count)
-    assert_ge "$node_count" "3" "Quorum established (${node_count} nodes >= 3)"
+    local expected="${NODE_COUNT:-5}"
+    # Tight: quorum is established only when count == expected, not just ≥ 3.
+    assert_eq "$node_count" "$expected" "Quorum established (${node_count} nodes == ${expected})"
 }
 
 test_liveness_probe() {
@@ -32,7 +44,8 @@ test_liveness_probe() {
 test_all_nodes_visible() {
     local count
     count=$(cluster_node_count)
-    assert_ge "$count" "${NODE_COUNT:-5}" "All nodes visible (${count} >= ${NODE_COUNT:-5})"
+    local expected="${NODE_COUNT:-5}"
+    assert_eq "$count" "$expected" "All nodes visible (${count} == ${expected})"
 }
 
 test_status_endpoint() {

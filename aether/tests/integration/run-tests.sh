@@ -407,15 +407,25 @@ deploy_docker() {
     fi
 
     log_step "Deploying Cluster A (non-destructive)"
+    # CRITICAL: drop persisted state volumes BEFORE compose up. The aether_pgdata
+    # volume holds the consensus snapshot and KV-store; if it survives between runs
+    # (it does — `down -v` doesn't touch externally-named volumes), fresh containers
+    # replay phantom peers from prior CTM-provisioned ON_DUTY entries — observed as
+    # `coreCount=37` with only 5 containers running. Also wipe ad-hoc CTM-provisioned
+    # `aether-core-node-*` containers from prior runs that compose doesn't manage.
     if [ "$host" = "localhost" ]; then
+        docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-core-node-") 2>/dev/null || true
+        docker volume rm -f aether_pgdata 2>/dev/null || true
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
         scp -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$COMPOSE_A" "${AETHER_SSH_USER:-root}@${host}:~/docker-compose-a.yml"
-        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
+        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true; docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
     fi
 
     log_step "Deploying Cluster B (destructive)"
     if [ "$host" = "localhost" ]; then
+        docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
         scp -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$COMPOSE_B" "${AETHER_SSH_USER:-root}@${host}:~/docker-compose-b.yml"
