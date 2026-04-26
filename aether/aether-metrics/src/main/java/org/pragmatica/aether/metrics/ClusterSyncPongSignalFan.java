@@ -38,6 +38,15 @@ import org.pragmatica.lang.Contract;
 
     private static void fanIfLeader(ClusterSyncPong pong, HealthSignalSink sink, LeaderManager leaderManager) {
         if (!leaderManager.isLeader()) {return;}
+        // Self-evident liveness: the pong itself proves the sender is alive on the wire.
+        // Emit `SwimHint(HEALTHY)` for the sender so the leader's HealthReconciler clears
+        // any sticky SUSPECTED state for that peer (from transient SWIM-probe-too-early during
+        // boot). Without this, peers transiently SWIM-suspected before they were ready stay
+        // SUSPECTED forever — followers don't push HEALTHY to the observation buffer (only
+        // SUSPECT/FAULTY), so the piggybacked observations alone never lift SUSPECTED.
+        sink.emit(new HealthSignal.SwimHint(pong.sender(),
+                                            HealthHint.HEALTHY,
+                                            Epoch.epoch(pong.observedEpochTerm(), pong.observedEpochCounter())));
         pong.peerHealth().forEach(observation -> emitHealth(pong, observation, sink));
         pong.peerConnectivity().forEach(observation -> emitConnectivity(pong, observation, sink));
     }

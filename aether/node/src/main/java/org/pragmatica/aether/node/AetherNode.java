@@ -1472,7 +1472,11 @@ public interface AetherNode extends ManageableNode {
                                                     ClusterTopologyManager ctm,
                                                     HealthSignalSink healthSink,
                                                     Supplier<Epoch> epochSupplier) {
-        if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
+        LOG.info("attachQuicPeerStateListener: network class={}", network == null ? "null" : network.getClass().getName());
+        if (! (network instanceof QuicClusterNetwork quicNetwork)) {
+            LOG.warn("attachQuicPeerStateListener: network is NOT QuicClusterNetwork — skipping listener attachment");
+            return;
+        }
         var listener = new QuicPeerStateListener() {
             @Override public void onPeerJoined(NodeId nodeId) {
                 LOG.info("QuicPeerState: onPeerJoined({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
