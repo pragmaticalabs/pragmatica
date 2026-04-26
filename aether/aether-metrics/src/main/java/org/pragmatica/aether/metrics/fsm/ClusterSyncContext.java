@@ -22,6 +22,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.Fsm;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -57,6 +59,7 @@ import java.util.function.Supplier;
 /// FSM reference is `final` and safe for publication once the initial-state factory returns.
 public final class ClusterSyncContext {
 
+    private static final Logger log = LoggerFactory.getLogger(ClusterSyncContext.class);
     private static final int PER_PEER_BURST = 4;
     private static final int MIN_BUFFER_CAP = 8;
 
@@ -191,8 +194,7 @@ public final class ClusterSyncContext {
                                        currentEpoch.rabiaTerm(),
                                        currentEpoch.localCounter(),
                                        payload);
-        org.slf4j.LoggerFactory.getLogger(ClusterSyncContext.class)
-            .info("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",
+        log.debug("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",
                   peer, rabiaTerm, currentEpoch.rabiaTerm(), currentEpoch.localCounter());
         network.send(peer, ping);
         return currentEpoch;

@@ -1472,26 +1472,26 @@ public interface AetherNode extends ManageableNode {
                                                     ClusterTopologyManager ctm,
                                                     HealthSignalSink healthSink,
                                                     Supplier<Epoch> epochSupplier) {
-        LOG.info("attachQuicPeerStateListener: network class={}", network == null ? "null" : network.getClass().getName());
+        LOG.debug("attachQuicPeerStateListener: network class={}", network == null ? "null" : network.getClass().getName());
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {
             LOG.warn("attachQuicPeerStateListener: network is NOT QuicClusterNetwork — skipping listener attachment");
             return;
         }
         var listener = new QuicPeerStateListener() {
             @Override public void onPeerJoined(NodeId nodeId) {
-                LOG.info("QuicPeerState: onPeerJoined({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
+                LOG.debug("QuicPeerState: onPeerJoined({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
                 ctm.onQuicPeerJoined(nodeId);
                 emitHealthyHint(nodeId);
             }
 
             @Override public void onPeerReconnected(NodeId nodeId) {
-                LOG.info("QuicPeerState: onPeerReconnected({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
+                LOG.debug("QuicPeerState: onPeerReconnected({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
                 ctm.onQuicPeerJoined(nodeId);
                 emitHealthyHint(nodeId);
             }
 
             @Override public void onPeerLeft(NodeId nodeId) {
-                LOG.info("QuicPeerState: onPeerLeft({}) — notifying CTM", nodeId);
+                LOG.debug("QuicPeerState: onPeerLeft({}) — notifying CTM", nodeId);
                 ctm.onQuicPeerLeft(nodeId);
             }
 
@@ -1514,7 +1514,7 @@ public interface AetherNode extends ManageableNode {
         // peer so the HealthReconciler's swimHints map is initialized to HEALTHY rather than
         // sticky SUSPECTED carried over from any earlier signal.
         quicNetwork.connectedPeers().forEach(peer -> {
-            LOG.info("QuicPeerState: catch-up SwimHint(HEALTHY) for already-connected peer {}", peer);
+            LOG.debug("QuicPeerState: catch-up SwimHint(HEALTHY) for already-connected peer {}", peer);
             healthSink.emit(new HealthSignal.SwimHint(peer, HealthHint.HEALTHY, epochSupplier.get()));
         });
     }

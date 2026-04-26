@@ -1084,7 +1084,7 @@ public final class HealthReconcilerContext {
                                                 TermAdvance termAdvance) {
         peerObservationStore.clearPingMisses(peer);
         if (effectiveHint(peer) == HealthHint.SUSPECTED) {
-            log.info("Clearing sticky SUSPECTED for peer {} on positive QUIC liveness (CONNECTED, missed=0)", peer);
+            log.debug("Clearing sticky SUSPECTED for peer {} on positive QUIC liveness (CONNECTED, missed=0)", peer);
             swimHints.remove(peer);
             return clearSuspectedInMemory(current, peer, termAdvance);
         }
@@ -1121,7 +1121,7 @@ public final class HealthReconcilerContext {
     private SignalOutcome markSuspectedInMemory(ClusterGenerationSnapshot current, NodeId nodeId, TermAdvance termAdvance) {
         return Option.option(current.coreMembers().get(nodeId)).filter(member -> member.healthHint() != HealthHint.SUSPECTED)
                             .map(member -> {
-                                log.info("Marking peer {} healthHint=SUSPECTED (was {})", nodeId, member.healthHint());
+                                log.debug("Marking peer {} healthHint=SUSPECTED (was {})", nodeId, member.healthHint());
                                 return applyHealthHintChange(current,
                                                              nodeId,
                                                              member.withHealthHint(HealthHint.SUSPECTED),
@@ -1140,7 +1140,7 @@ public final class HealthReconcilerContext {
                                               NodeId nodeId,
                                               CoreMember member,
                                               TermAdvance termAdvance) {
-        log.info("Clearing peer {} healthHint=HEALTHY (was {})", nodeId, member.healthHint());
+        log.debug("Clearing peer {} healthHint=HEALTHY (was {})", nodeId, member.healthHint());
         peerObservationStore.clearPingMisses(nodeId);
         return applyHealthHintChange(current, nodeId, member.withHealthHint(HealthHint.HEALTHY), termAdvance);
     }

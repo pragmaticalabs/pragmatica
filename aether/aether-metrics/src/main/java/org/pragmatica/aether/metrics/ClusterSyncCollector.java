@@ -202,8 +202,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     }
 
     @Override@Contract public void onClusterSyncPing(ClusterSyncPing ping) {
-        log.info("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{})",
-                 ping.sender(), ping.rabiaTerm(), ping.epochTerm(), ping.epochCounter());
+        log.debug("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{})",
+                  ping.sender(), ping.rabiaTerm(), ping.epochTerm(), ping.epochCounter());
         if (!acceptPingFencing(ping)) {
             log.warn("ClusterSync: PING from {} rejected by fencing (rabiaTerm={} < observed={})",
                      ping.sender(), ping.rabiaTerm(), observedRabiaTerm.get());
@@ -213,12 +213,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
         advanceEpochAndCacheSnapshot(incomingEpoch, ping.snapshot());
         var pong = buildPong();
-        log.info("ClusterSync: sending PONG to {} (epoch={}:{})", ping.sender(), pong.observedEpochTerm(), pong.observedEpochCounter());
+        log.debug("ClusterSync: sending PONG to {} (epoch={}:{})", ping.sender(), pong.observedEpochTerm(), pong.observedEpochCounter());
         network.send(ping.sender(), pong);
     }
 
     @Override@Contract public void onClusterSyncPong(ClusterSyncPong pong) {
-        log.info("ClusterSync: received PONG from {} (epoch={}:{})", pong.sender(), pong.observedEpochTerm(), pong.observedEpochCounter());
+        log.debug("ClusterSync: received PONG from {} (epoch={}:{})", pong.sender(), pong.observedEpochTerm(), pong.observedEpochCounter());
         if (!pong.sender().equals(self)) {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());

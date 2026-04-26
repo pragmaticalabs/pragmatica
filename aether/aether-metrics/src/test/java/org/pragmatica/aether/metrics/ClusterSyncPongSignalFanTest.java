@@ -118,13 +118,18 @@ class ClusterSyncPongSignalFanTest {
         }
 
         @Test
-        void fan_emptyPong_producesNoSignals() {
+        void fan_emptyPong_emitsOnlySenderHealthyHint() {
             var leaderManager = new TestLeaderManager(true);
             var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
 
             fan.fan(new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "ON_DUTY", List.of(), List.of(), List.of()));
 
-            assertThat(emitted).isEmpty();
+            assertThat(emitted).filteredOn(HealthSignal.SwimHint.class::isInstance)
+                               .extracting(HealthSignal.SwimHint.class::cast)
+                               .extracting(HealthSignal.SwimHint::nodeId, HealthSignal.SwimHint::state)
+                               .containsExactly(org.assertj.core.groups.Tuple.tuple(OBSERVER, HealthHint.HEALTHY));
+            assertThat(emitted).filteredOn(HealthSignal.RemoteSwimHint.class::isInstance).isEmpty();
+            assertThat(emitted).filteredOn(HealthSignal.RemoteConnectivity.class::isInstance).isEmpty();
         }
     }
 
