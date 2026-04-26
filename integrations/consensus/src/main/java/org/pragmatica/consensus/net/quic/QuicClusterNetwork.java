@@ -131,6 +131,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final ClusterFormationConfig formationConfig;
     private volatile QuicDisconnectListener disconnectListener;
 
+    /// Late-bound listener for QUIC peer-state changes (join / reconnect / leave).
+    /// Higher layers (e.g. `ClusterTopologyManager`) consume these to keep stability
+    /// bookkeeping aligned with the transport's view. Defaults to no-op so consensus-
+    /// only fixtures and unit tests do not need to wire this.
+    private volatile QuicPeerStateListener peerStateListener = QuicPeerStateListener.noop();
+
     /// Leader-gate supplier. When `false`, REMOVE view-changes report a
     /// connectivity observation upstream via `PeerConnectivityReporter`
     /// instead of invoking the local disconnect listener (which feeds the
@@ -167,7 +173,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     enum ViewChangeOperation {
         ADD,
         REMOVE,
-        SHUTDOWN
+        SHUTDOWN,
+        /// Reconnect after a transient eviction. The peer is already known to upstream
+        /// consumers (TopologyObserver, CTM, Rabia) via a prior `ADD`, so we MUST NOT emit
+        /// a duplicate `nodeAdded` notification. Used to refresh QUIC peer-state without
+        /// re-triggering downstream membership recomputation.
+        RECONNECT
     }
 
     public QuicClusterNetwork(TopologyObserver topologyManager,
@@ -255,6 +266,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.disconnectListener = listener == null
                                  ? QuicDisconnectListener.noop()
                                  : listener;
+    }
+
+    /// Attach a QUIC peer-state listener post-construction. Fires on join/reconnect/leave
+    /// so higher layers (e.g. CTM) can track peer-state churn even when the upstream
+    /// `TopologyChangeNotification.NodeAdded` is suppressed for transient reconnects.
+    /// A `null` argument resets the listener to the no-op implementation.
+    @Contract public void setPeerStateListener(QuicPeerStateListener listener) {
+        this.peerStateListener = listener == null
+                                ? QuicPeerStateListener.noop()
+                                : listener;
     }
 
     @Override
@@ -532,6 +553,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         var outcome = state.attach(connection, System.nanoTime());
+        boolean isReconnect;
         switch (outcome) {
             case PeerState.AttachResult.REJECTED -> {
                 log.debug("Rejecting connection from REMOVED peer {}", peerId);
@@ -543,7 +565,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 connection.close();
                 return;
             }
-            case PeerState.AttachResult.ACCEPTED -> quicMetrics.onConnectionEstablished();
+            case PeerState.AttachResult.ACCEPTED -> {
+                quicMetrics.onConnectionEstablished();
+                isReconnect = false;
+            }
+            case PeerState.AttachResult.RECONNECTED -> {
+                quicMetrics.onConnectionEstablished();
+                isReconnect = true;
+            }
+            default -> {
+                // Exhaustive — unreachable but required for definite assignment.
+                connection.close();
+                return;
+            }
         }
 
         // Successful attach — clear any reconnect backoff so a future flap starts at the
@@ -551,6 +585,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
         resetReconnectBackoff(peerId);
         installWritabilityHandler(connection, peerId);
         drainOfflineBufferInto(state, connection);
+
+        if (isReconnect) {
+            // Peer is already known to upstream consumers. Suppress duplicate ADD; emit a
+            // transparent RECONNECT view-change so QUIC-aware components (e.g. CTM via
+            // onQuicPeerJoined) can refresh peer-state without bumping membership stability.
+            router.route(new NetworkServiceMessage.ConnectionEstablished(peerId));
+            processViewChange(RECONNECT, peerId);
+            log.debug("Node {} reconnected via QUIC Hello handshake (suppressed duplicate ADD)", peerId);
+            return;
+        }
 
         // Register BEFORE ConnectionEstablished if unknown — direct call on topology observer.
         unknownNodeInfo.onPresent(topologyManager::registerPeer);
@@ -918,6 +962,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // is now the canonical "peer is reachable" signal that flows into the
                 // node-level PeerObservationStore via the higher-layer reporter.
                 reportPeerHealthy(peerId);
+                peerStateListener.onPeerJoined(peerId);
                 yield TopologyChangeNotification.nodeAdded(peerId, currentView());
             }
             case REMOVE -> {
@@ -932,6 +977,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // PeerObservationStore observes a coherent peer-departure signal even when
                 // SWIM is pre-Running.
                 reportPeerFaulty(peerId);
+                peerStateListener.onPeerLeft(peerId);
                 topologyManager.unregisterPeer(peerId);
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
                     log.warn("Quorum lost — {} active peer(s), need {}", activePeerCount, quorumSize);
@@ -944,8 +990,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 router.route(QuorumStateNotification.disappeared());
                 yield TopologyChangeNotification.nodeDown(peerId);
             }
+            case RECONNECT -> {
+                // Transparent reconnect — peer is already known to upstream consumers.
+                // Refresh QUIC-level health observation only (no membership change emitted).
+                // Quorum is unaffected because EVICTED peers were already counted as active.
+                reportPeerHealthy(peerId);
+                peerStateListener.onPeerReconnected(peerId);
+                log.debug("processViewChange RECONNECT for {} — suppressed duplicate ADD", peerId);
+                yield null;
+            }
         };
 
+        if (viewChange == null) {
+            return;
+        }
         log.info("Routing topology change: {}", viewChange);
         router.route(viewChange);
     }

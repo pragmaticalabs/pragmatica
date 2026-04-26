@@ -56,8 +56,10 @@ test_operator_reassign() {
     # Reassign via PUT API
     reassign_task_group "METRICS" "$target"
 
-    # Wait for METRICS to become ACTIVE on new node
-    wait_for_task_active "METRICS" 30
+    # Wait for METRICS to become ACTIVE on new node — must check BOTH target node
+    # AND ACTIVE status, otherwise the stale ACTIVE entry from the prior assignment
+    # satisfies the predicate immediately and we read the old node back.
+    wait_for_task_assigned "METRICS" "$target" 30
 
     local new_node
     new_node=$(task_group_node "METRICS")
@@ -107,7 +109,7 @@ test_node_failure_reassignment() {
         local alt_node
         alt_node=$(get_different_node "$leader")
         reassign_task_group "SCALING" "$alt_node"
-        wait_for_task_active "SCALING" 30
+        wait_for_task_assigned "SCALING" "$alt_node" 30
         scaling_node="$alt_node"
         log_info "SCALING now on: ${scaling_node}"
     fi

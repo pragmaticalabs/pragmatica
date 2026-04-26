@@ -88,8 +88,15 @@ public final class PeerState {
     }
 
     public enum AttachResult {
-        /// Connection accepted; peer is now CONNECTED. Caller should drain the offline buffer.
+        /// First-time connection accepted; peer transitioned INIT/CONNECTING → CONNECTED.
+        /// Caller should drain the offline buffer and emit a fresh `nodeAdded` view-change.
         ACCEPTED,
+        /// Reconnection accepted; peer transitioned EVICTED → CONNECTED, OR replaced a stale
+        /// (already-dead) CONNECTED link with a fresh one. The peer is already known to upstream
+        /// consumers — caller should drain the offline buffer but MUST NOT emit a duplicate
+        /// `nodeAdded` view-change. Closes the flap-loop where eviction-then-handshake fires
+        /// `processViewChange(ADD)` against a peer that never left the topology.
+        RECONNECTED,
         /// Peer already has a live CONNECTED link. Caller should close the new connection.
         DUPLICATE,
         /// Peer is REMOVED. Caller should close the new connection.
@@ -153,7 +160,9 @@ public final class PeerState {
     }
 
     /// Transitions CONNECTING (or INIT/EVICTED — accepted inbound before explicit connect) → CONNECTED.
-    /// Returns ACCEPTED on success, DUPLICATE if a live link already exists, REJECTED if REMOVED.
+    /// Returns ACCEPTED on first-time success, RECONNECTED when transitioning from EVICTED or
+    /// replacing a stale CONNECTED link (peer was already known to upstream consumers),
+    /// DUPLICATE if a live link already exists, REJECTED if REMOVED.
     public synchronized AttachResult attach(QuicPeerConnection newConnection, long nowNanos) {
         return switch (phase) {
             case REMOVED -> AttachResult.REJECTED;
@@ -161,11 +170,19 @@ public final class PeerState {
                 if (connection != null && connection.isActive()) {
                     yield AttachResult.DUPLICATE;
                 }
+                // Stale CONNECTED link replaced — peer is already known upstream.
                 this.connection = newConnection;
                 this.phaseChangedAtNanos = nowNanos;
-                yield AttachResult.ACCEPTED;
+                yield AttachResult.RECONNECTED;
             }
-            case INIT, CONNECTING, EVICTED -> {
+            case EVICTED -> {
+                // Reconnect after eviction — peer never left topology, suppress duplicate ADD.
+                this.connection = newConnection;
+                changePhase(Phase.CONNECTED, nowNanos);
+                yield AttachResult.RECONNECTED;
+            }
+            case INIT, CONNECTING -> {
+                // First-time accept (no prior CONNECTED link).
                 this.connection = newConnection;
                 changePhase(Phase.CONNECTED, nowNanos);
                 yield AttachResult.ACCEPTED;

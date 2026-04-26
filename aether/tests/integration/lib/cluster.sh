@@ -623,6 +623,18 @@ wait_for_task_active() {
         "$timeout"
 }
 
+# Predicate that requires both an exact node assignment AND ACTIVE status. Use
+# this after `reassign_task_group target` to avoid the stale-ACTIVE race where
+# `wait_for_task_active` returns immediately on the prior ACTIVE entry before
+# consensus has propagated the new assignment, leading the test to read the old
+# `task_group_node` value.
+wait_for_task_assigned() {
+    local group="$1" target="$2" timeout="${3:-30}"
+    wait_for "task group ${group} ACTIVE on ${target}" \
+        "[ \"\$(task_group_node ${group})\" = '${target}' ] && [ \"\$(task_group_status ${group})\" = 'ACTIVE' ]" \
+        "$timeout"
+}
+
 # ---------------------------------------------------------------------------
 # Docker container helpers on target host
 # ---------------------------------------------------------------------------

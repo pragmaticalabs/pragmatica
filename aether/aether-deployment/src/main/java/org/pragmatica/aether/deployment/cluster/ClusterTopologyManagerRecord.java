@@ -313,6 +313,23 @@ import static org.pragmatica.lang.Unit.unit;
         }
     }
 
+    /// QUIC peer-state hook — invoked on every `processViewChange` ADD/RECONNECT/REMOVE
+    /// emitted by `QuicClusterNetwork`. Bumps the stability anchor on every QUIC-level
+    /// peer-state change (not just KV-derived `NodeAdded`/`NodeRemoved`) so the
+    /// provisioning gate observes the same churn as the transport layer. Without this
+    /// hook, transient eviction-then-reconnect cycles (which suppress duplicate ADD
+    /// emissions per Issue 1) would leave the CTM stability anchor stale and could
+    /// allow phantom provisioning during a reconnect storm.
+    @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerJoined(NodeId peerId) {
+        if (!active.get()) {return;}
+        bumpRealActualStability("quic-peer-joined " + peerId);
+    }
+
+    @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerLeft(NodeId peerId) {
+        if (!active.get()) {return;}
+        bumpRealActualStability("quic-peer-left " + peerId);
+    }
+
     private void handleNodeAdded(NodeAdded added) {
         bumpRealActualStability("node-added " + added.nodeId());
         log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());

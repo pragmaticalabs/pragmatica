@@ -368,23 +368,31 @@ public final class HealthReconcilerContext {
     private final AtomicReference<ClusterGenerationSnapshot> pendingBarrierSnapshot = new AtomicReference<>();
 
     /// First-publish barrier (Theme B Item 1): on the FIRST publish of a new Leading tenure
-    /// the snapshot is held back until a 1-second grace timer expires. Subsequent publishes
-    /// within the same tenure that arrive BEFORE the grace timer fires update the pending
-    /// snapshot pointer (so the freshest is published at grace expiry). Once the timer has
-    /// fired, all subsequent publishes are immediate. Reset by `clearLeaderData()` on
-    /// demote/shutdown.
+    /// the snapshot is held back until a grace timer expires. Subsequent publishes within
+    /// the same tenure that arrive BEFORE the grace timer fires update the pending snapshot
+    /// pointer (so the freshest is published at grace expiry). Once the timer has fired,
+    /// all subsequent publishes are immediate. Reset by `clearLeaderData()` on demote/shutdown.
     ///
     /// The publish itself just sets `ambientSnapshot`; the barrier exists so external readers
     /// (CTM, dashboard, REST) cannot observe a stale-replication-window snapshot before the
     /// new leader's term has been replicated.
+    ///
+    /// Grace duration: previously 1 second; extended to 3 seconds as a defensive stopgap
+    /// for QUIC backpressure / consensus-drain latency under load. The original 1s window
+    /// expired before consensus had drained on slow paths (heavy QUIC backpressure) and
+    /// allowed external readers to observe a stale ambient snapshot, racing CTM into
+    /// phantom-provision territory. 3s is conservative — replication on a healthy 5-node
+    /// cluster completes in <100ms; the elongated window only matters on the pathological
+    /// path and remains short enough to keep first-publish latency acceptable.
     ///
     /// TODO(rc2): replace the time-based grace with a real consensus-drain barrier. The
     /// straightforward approach (`cluster.apply(List.of())` as a no-op probe) breaks fake
     /// `ClusterNode` test fixtures that count `apply` invocations — every Leading entry would
     /// emit an empty batch into their recorded history. Either introduce a `KVCommand.NoOp`
     /// sentinel that fixtures can ignore OR expose a dedicated drain primitive on
-    /// `ClusterNode`. Until then, the time-based grace is best-effort and assumes that 1
-    /// second is sufficient for replication to catch up after leader-gain.
+    /// `ClusterNode`. Until then, the time-based grace is best-effort.
+    private static final long FIRST_PUBLISH_GRACE_SECONDS = 3L;
+
     @Contract public void publishLeadingSnapshotWithBarrier(ClusterGenerationSnapshot snapshot) {
         if (firstPublishCompleted.get()) {
             ambientSnapshot.set(snapshot);
@@ -394,8 +402,10 @@ public final class HealthReconcilerContext {
         pendingBarrierSnapshot.set(snapshot);
         // Schedule the grace timer ONCE per tenure. CAS ensures exactly one timer is armed.
         if (barrierTimerScheduled.compareAndSet(false, true)) {
+            log.warn("First-publish barrier armed with {}s time-based grace (rc2 TODO: replace with consensus-drain barrier)",
+                     FIRST_PUBLISH_GRACE_SECONDS);
             org.pragmatica.lang.utils.SharedScheduler.schedule(this::releaseFirstPublishBarrier,
-                                                                org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds());
+                                                                org.pragmatica.lang.io.TimeSpan.timeSpan(FIRST_PUBLISH_GRACE_SECONDS).seconds());
         }
     }
 

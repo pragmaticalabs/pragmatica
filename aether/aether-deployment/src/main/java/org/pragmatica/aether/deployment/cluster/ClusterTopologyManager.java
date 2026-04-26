@@ -49,6 +49,18 @@ public interface ClusterTopologyManager extends TopologyManager {
     void onNodeReady(NodeId nodeId);
     void onTopologyChange(TopologyChangeNotification topologyChange);
     void onClusterConfigChanged();
+
+    /// Hook for QUIC-level peer connectivity changes that do NOT flow through
+    /// `TopologyChangeNotification.NodeAdded`/`NodeRemoved` (e.g., transient eviction-driven
+    /// reconnects suppressed at `QuicClusterNetwork.processViewChange`). The two systems —
+    /// KV-derived membership events and QUIC peer-state — can disagree during reconnect
+    /// storms; bumping stability on QUIC peer-state changes ensures the CTM provisioning
+    /// gate observes the same churn as the topology layer. Default implementations are
+    /// no-ops so test fixtures and non-QUIC paths are unaffected.
+    @org.pragmatica.lang.Contract default void onQuicPeerJoined(NodeId peerId) {}
+    @org.pragmatica.lang.Contract default void onQuicPeerLeft(NodeId peerId) {}
+
+
     void activate();
     void deactivate();
     TopologyObserver observer();

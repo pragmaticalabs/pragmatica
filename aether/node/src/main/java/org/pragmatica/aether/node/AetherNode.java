@@ -1165,6 +1165,7 @@ public interface AetherNode extends ManageableNode {
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
         attachQuicHealthReporter(clusterNode.network(), peerObservationStore);
+        attachQuicPeerStateListener(clusterNode.network(), clusterTopologyManager);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForReconciler(change,
                                                                                        leaderTerm,
@@ -1457,6 +1458,29 @@ public interface AetherNode extends ManageableNode {
                                                                                                   epochSupplier.get()));
             quicNetwork.setDisconnectListener(listener);
         }
+    }
+
+    /// Wires the QUIC peer-state listener to bump CTM stability on every transport-level
+    /// peer-state change (join/reconnect/leave). Required because the flap-loop fix
+    /// (Issue 1) suppresses duplicate `TopologyChangeNotification.NodeAdded` for transient
+    /// reconnects — without this hook, CTM would not observe reconnect churn at all.
+    private static void attachQuicPeerStateListener(ClusterNetwork network,
+                                                    org.pragmatica.aether.deployment.cluster.ClusterTopologyManager ctm) {
+        if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
+        var listener = new org.pragmatica.consensus.net.quic.QuicPeerStateListener() {
+            @Override public void onPeerJoined(NodeId nodeId) {
+                ctm.onQuicPeerJoined(nodeId);
+            }
+
+            @Override public void onPeerReconnected(NodeId nodeId) {
+                ctm.onQuicPeerJoined(nodeId);
+            }
+
+            @Override public void onPeerLeft(NodeId nodeId) {
+                ctm.onQuicPeerLeft(nodeId);
+            }
+        };
+        quicNetwork.setPeerStateListener(listener);
     }
 
     private static void attachQuicFollowerWiring(ClusterNetwork network,

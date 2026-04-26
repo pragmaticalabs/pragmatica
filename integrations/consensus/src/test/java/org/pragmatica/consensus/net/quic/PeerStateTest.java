@@ -83,6 +83,41 @@ class PeerStateTest {
     }
 
     @Test
+    void attach_fromEVICTED_returns_RECONNECTED_and_transitions_to_CONNECTED() {
+        // Issue 1 regression: eviction-then-handshake must NOT signal a fresh ADD upstream.
+        // The new RECONNECTED outcome lets QuicClusterNetwork.onPeerConnected suppress the
+        // duplicate processViewChange(ADD) emission — peer never left the topology.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        s.attach(liveConnection(), T0 + 2);
+        s.evict(T0 + 3);
+        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
+
+        var result = s.attach(liveConnection(), T0 + 4);
+        assertThat(result).as("attach from EVICTED is a reconnect, not a fresh accept")
+                          .isEqualTo(AttachResult.RECONNECTED);
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+    }
+
+    @Test
+    void attach_replacingStaleConnectedLink_returns_RECONNECTED() {
+        // The other reconnect path: a CONNECTED peer whose live connection became inactive
+        // (without an explicit evict). The replacement is also a transparent reconnect from
+        // upstream's perspective — peer was already known.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var stale = mock(QuicChannel.class);
+        when(stale.isActive()).thenReturn(false);
+        var staleConn = QuicPeerConnection.quicPeerConnection(PEER, stale);
+        s.attach(staleConn, T0 + 2);
+        // Now the peer is CONNECTED but the held connection reports !isActive — replacing
+        // it must return RECONNECTED, not a duplicate-rejection or fresh ACCEPTED.
+        var result = s.attach(liveConnection(), T0 + 3);
+        assertThat(result).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+    }
+
+    @Test
     void evict_from_CONNECTED_moves_to_EVICTED_and_returns_the_connection() {
         var s = state();
         s.beginConnecting(T0 + 1);
