@@ -30,7 +30,8 @@ import java.util.Set;
                                                                  StorageStatusKey.class,
                                                                  ConsumerGroupKey.class,
                                                                  DhtPartitionOwnershipKey.class,
-                                                                 SpokesmanKey.class);
+                                                                 SpokesmanKey.class,
+                                                                 ProvisioningSlotKey.class);
 
     Set<String> EPHEMERAL_SECTIONS = Set.of("node-artifact",
                                             "node-routes",
@@ -44,7 +45,8 @@ import java.util.Set;
                                             "storage-status",
                                             "consumer-group",
                                             "dht-partition-ownership",
-                                            "spokesman");
+                                            "spokesman",
+                                            "provisioning-slot");
 
     static boolean isEphemeral(AetherKey key) {
         return EPHEMERAL_KEY_TYPES.contains(key.getClass());

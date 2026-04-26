@@ -167,6 +167,7 @@ import static org.pragmatica.lang.Result.success;
             case ApiKeyAuditKey _ -> "api-key-audit";
             case DhtPartitionOwnershipKey _ -> "dht-partition-ownership";
             case SpokesmanKey _ -> "spokesman";
+            case ProvisioningSlotKey _ -> "provisioning-slot";
         };
     }
 
@@ -231,7 +232,12 @@ import static org.pragmatica.lang.Result.success;
             case ApiKeyAuditValue v -> serializeApiKeyAudit(v);
             case DhtPartitionOwnershipValue v -> serializeDhtPartitionOwnership(v);
             case SpokesmanValue v -> serializeSpokesman(v);
+            case ProvisioningSlotValue v -> serializeProvisioningSlot(v);
         };
+    }
+
+    private static String serializeProvisioningSlot(ProvisioningSlotValue v) {
+        return v.spawnedAtMs() + PIPE + v.deadlineMs() + PIPE + v.assignedNodeId().map(NodeId::id).or("");
     }
 
     private static String serializeDhtPartitionOwnership(DhtPartitionOwnershipValue v) {

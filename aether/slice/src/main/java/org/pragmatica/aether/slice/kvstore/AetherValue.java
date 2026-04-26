@@ -1340,6 +1340,34 @@ import static org.pragmatica.lang.Option.none;
         FAILED
     }
 
+    /// KV-mirrored CTM in-flight provisioning slot — Fix D (synthesis-fixes-to-15.md).
+    /// Each `provisionNodes(N)` dispatch creates one of these atoms per slot so that on leader
+    /// handoff the new leader can re-derive its `inFlightProvisions` view from KV instead of
+    /// dispatching a duplicate wave. `assignedNodeId` is set by post-provision wiring once the
+    /// new container's NodeLifecycleValue arrives so the slot can be correlated to ON_DUTY and
+    /// cleaned up on completion.
+    record ProvisioningSlotValue(long spawnedAtMs,
+                                 long deadlineMs,
+                                 Option<NodeId> assignedNodeId) implements AetherValue {
+        public ProvisioningSlotValue {
+            if (assignedNodeId == null) {assignedNodeId = Option.none();}
+        }
+
+        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs, long deadlineMs) {
+            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.none());
+        }
+
+        public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs,
+                                                                  long deadlineMs,
+                                                                  NodeId assignedNodeId) {
+            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.option(assignedNodeId));
+        }
+
+        public ProvisioningSlotValue withAssignedNode(NodeId nodeId) {
+            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.option(nodeId));
+        }
+    }
+
     record SpokesmanValue(List<String> communities,
                           Epoch assignedEpoch,
                           HlcTimestamp assignedAt,

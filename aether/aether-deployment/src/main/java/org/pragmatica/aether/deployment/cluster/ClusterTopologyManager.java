@@ -8,8 +8,10 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
@@ -22,6 +24,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -101,5 +104,32 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          lifecycleReader,
                                                                          commandApplier,
                                                                          drainCoordinator);
+    }
+
+    /// Fix D — production overload that injects the `ProvisioningSlotValue` reader. CTM mirrors
+    /// each in-flight provisioning slot to KV (via `commandApplier`) and re-derives the
+    /// in-memory `inFlightProvisions` view from these atoms on `activate()` so a new leader
+    /// taking over mid-wave does not double-dispatch.
+    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
+                                                         NodeLifecycleManager lifecycleManager,
+                                                         AutoHealConfig config,
+                                                         DeploymentMap deploymentMap,
+                                                         GenerationSnapshotSource snapshotSource,
+                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                         Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
+                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                         DrainCoordinator drainCoordinator) {
+        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
+                                                                         lifecycleManager,
+                                                                         config,
+                                                                         deploymentMap,
+                                                                         snapshotSource,
+                                                                         clusterConfigReader,
+                                                                         lifecycleReader,
+                                                                         slotReader,
+                                                                         commandApplier,
+                                                                         drainCoordinator,
+                                                                         System::currentTimeMillis);
     }
 }

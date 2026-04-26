@@ -883,6 +883,19 @@ public interface AetherNode extends ManageableNode {
         // for the real ConsensusDrainCoordinator. Wiring is performed once here so the
         // structural shape is in place from rc1.
         var drainCoordinator = new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator();
+        // Fix D: KV-mirrored CTM provisioning slots so they survive leader handoff. The reader
+        // collects all `ProvisioningSlotValue` atoms keyed by `ProvisioningSlotKey` from the
+        // local kvStore replica; CTM uses this on `activate()` to re-derive the in-memory
+        // `inFlightProvisions` view and avoid double-dispatching a wave the prior leader had
+        // already kicked off.
+        java.util.function.Supplier<java.util.Map<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>> slotReader =
+            () -> {
+                var collected = new java.util.LinkedHashMap<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>();
+                kvStore.forEach(AetherKey.ProvisioningSlotKey.class,
+                                AetherValue.ProvisioningSlotValue.class,
+                                collected::put);
+                return collected;
+            };
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -890,6 +903,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    leaderAwareSnapshotSource,
                                                                                    clusterConfigReader,
                                                                                    lifecycleReader,
+                                                                                   slotReader,
                                                                                    clusterCommandApplier,
                                                                                    drainCoordinator);
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());

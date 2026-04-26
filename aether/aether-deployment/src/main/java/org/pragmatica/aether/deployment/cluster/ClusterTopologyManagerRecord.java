@@ -16,10 +16,12 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
@@ -114,11 +116,13 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                                      Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                                     Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      DrainCoordinator drainCoordinator,
                                                                      AtomicReference<NodeReconcilerState> stateRef,
                                                                      AtomicBoolean active,
                                                                      ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
+                                                                     ConcurrentHashMap<NodeId, ProvisioningSlotKey> slotKeyByNodeId,
                                                                      CancellableTask safetyNetTimer,
                                                                      AtomicLong realActualStableSinceMs,
                                                                      AtomicInteger lastObservedRealActual,
@@ -156,12 +160,16 @@ import static org.pragmatica.lang.Unit.unit;
                                              snapshotSource,
                                              clusterConfigReader,
                                              lifecycleReader,
+                                             Map::of,
                                              commandApplier,
                                              drainCoordinator,
                                              System::currentTimeMillis);
     }
 
     /// Full-arity factory with injectable clock — for tests that need deterministic time.
+    /// `slotReader` returns the current set of `ProvisioningSlotValue` atoms in KV. Used on
+    /// `activate()` to re-derive the in-memory `inFlightProvisions` view after leader handoff
+    /// so a new leader does not double-dispatch a provisioning wave (Fix D).
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
@@ -169,6 +177,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                                      Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                                     Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      DrainCoordinator drainCoordinator,
                                                                      LongSupplier clock) {
@@ -179,10 +188,12 @@ import static org.pragmatica.lang.Unit.unit;
                                                 snapshotSource,
                                                 clusterConfigReader,
                                                 lifecycleReader,
+                                                slotReader,
                                                 commandApplier,
                                                 drainCoordinator,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
+                                                new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 CancellableTask.cancellableTask(),
                                                 new AtomicLong(clock.getAsLong()),
@@ -280,10 +291,37 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     @Override public void onNodeReady(NodeId nodeId) {
+        deleteCompletedSlotAtomsForNode(nodeId);
         if (stateRef.get() instanceof NodeReconcilerState.Reconciling) {
             log.info("Node {} reached ON_DUTY, checking reconciliation progress", nodeId);
             reconcile();
         }
+    }
+
+    /// Fix D — slot completion. When a node reaches ON_DUTY, delete any KV
+    /// `ProvisioningSlotValue` atoms that recorded `nodeId` as their assigned node so the slot
+    /// no longer counts toward the in-flight count. Also prunes any slot whose assigned node
+    /// is observed as ON_DUTY in the lifecycle KV (defense-in-depth: a slot might be assigned
+    /// to a node that joined slightly before this hook fired).
+    private void deleteCompletedSlotAtomsForNode(NodeId nodeId) {
+        if (!active.get()) {return;}
+        var allSlots = slotReader.get();
+        if (allSlots.isEmpty()) {return;}
+        var deletes = allSlots.entrySet().stream()
+                                       .filter(e -> slotIsAssignedAndComplete(e.getValue())
+                                                        || e.getValue().assignedNodeId().map(nodeId::equals).or(false))
+                                       .map(e -> deleteSlotCommand(e.getKey()))
+                                       .toList();
+        if (deletes.isEmpty()) {return;}
+        commandApplier.apply(deletes)
+                            .onFailure(cause -> log.warn("CTM: failed to delete {} completed slot atom(s) for {}: {}",
+                                                         deletes.size(),
+                                                         nodeId,
+                                                         cause.message()))
+                            .onSuccess(_ -> log.debug("CTM: deleted {} completed slot atom(s) on ON_DUTY arrival of {}",
+                                                      deletes.size(),
+                                                      nodeId));
+        slotKeyByNodeId.remove(nodeId);
     }
 
     /// Hook invoked by the host node (`AetherNode`) when a `ValuePut` for
@@ -360,8 +398,78 @@ import static org.pragmatica.lang.Unit.unit;
     @Override public void activate() {
         if (!active.compareAndSet(false, true)) {return;}
         bumpRealActualStability("activate");
-        activateWithCurrentTopology();
+        var hadRehydratedSlots = rehydrateInFlightSlotsFromKV();
+        if (!hadRehydratedSlots) {activateWithCurrentTopology();}
         scheduleSafetyNetPoll();
+    }
+
+    /// Fix D — leader-handoff re-derivation. Reads all `ProvisioningSlotValue` atoms from KV
+    /// and reconstructs the in-memory `Reconciling` state so the new leader does not
+    /// double-dispatch a provisioning wave. Each non-expired slot is restored; slots whose
+    /// `assignedNodeId` has already reached `ACTIVE` (ON_DUTY equivalent) lifecycle state are
+    /// pruned from KV (the work is already complete). Slots whose deadline has lapsed are
+    /// also pruned. This is leader-only — only the active CTM writes to the slot family.
+    private boolean rehydrateInFlightSlotsFromKV() {
+        var nowMs = nowMs();
+        var allSlots = slotReader.get();
+        if (allSlots.isEmpty()) {return false;}
+        var deletes = new ArrayList<KVCommand<AetherKey>>();
+        var aliveSlots = new ArrayList<NodeReconcilerState.ProvisioningSlot>();
+        allSlots.forEach((key, value) -> classifySlotForRehydration(key, value, nowMs, deletes, aliveSlots));
+        if (!deletes.isEmpty()) {
+            commandApplier.apply(deletes)
+                                .onFailure(cause -> log.warn("CTM: failed to clean up {} stale provisioning slot(s) on rehydrate: {}",
+                                                             deletes.size(),
+                                                             cause.message()))
+                                .onSuccess(_ -> log.info("CTM: cleaned up {} stale provisioning slot(s) on rehydrate", deletes.size()));
+        }
+        if (aliveSlots.isEmpty()) {return false;}
+        var configured = activationDesiredSize();
+        var actual = snapshotHealthyOnDutyCount();
+        var reconciling = new NodeReconcilerState.Reconciling(configured > 0
+                                                                  ? configured
+                                                                  : actual + aliveSlots.size(),
+                                                              actual,
+                                                              List.copyOf(aliveSlots),
+                                                              List.of(),
+                                                              nowInstant());
+        stateRef.set(reconciling);
+        log.info("CTM: rehydrated {} in-flight provisioning slot(s) from KV after leader handoff", aliveSlots.size());
+        return true;
+    }
+
+    private void classifySlotForRehydration(ProvisioningSlotKey key,
+                                            ProvisioningSlotValue value,
+                                            long nowMs,
+                                            List<KVCommand<AetherKey>> deletes,
+                                            List<NodeReconcilerState.ProvisioningSlot> alive) {
+        if (slotIsAssignedAndComplete(value)) {
+            deletes.add(deleteSlotCommand(key));
+            return;
+        }
+        if (value.deadlineMs() < nowMs) {
+            deletes.add(deleteSlotCommand(key));
+            return;
+        }
+        alive.add(new NodeReconcilerState.ProvisioningSlot(value.spawnedAtMs(), value.deadlineMs()));
+        value.assignedNodeId().onPresent(nodeId -> slotKeyByNodeId.put(nodeId, key));
+    }
+
+    private boolean slotIsAssignedAndComplete(ProvisioningSlotValue value) {
+        return value.assignedNodeId().fold(() -> false, this::nodeReachedOnDuty);
+    }
+
+    private boolean nodeReachedOnDuty(NodeId nodeId) {
+        return lifecycleReader.apply(nodeId).map(lv -> lv.state() == NodeLifecycleState.ON_DUTY).or(false);
+    }
+
+    @SuppressWarnings("unchecked") private static KVCommand<AetherKey> deleteSlotCommand(ProvisioningSlotKey key) {
+        return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<AetherKey>(key);
+    }
+
+    @SuppressWarnings("unchecked") private static KVCommand<AetherKey> putSlotCommand(ProvisioningSlotKey key,
+                                                                                       ProvisioningSlotValue value) {
+        return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(key, value);
     }
 
     private void activateWithCurrentTopology() {
@@ -546,6 +654,7 @@ import static org.pragmatica.lang.Unit.unit;
             } else {
                 log.info("CTM converged: actual={} matches desired={}, transitioning to Converged", actual, configured);
                 transitionTo(new NodeReconcilerState.Converged());
+                deleteAllSlotAtoms("converged");
             }
             return;
         }
@@ -579,6 +688,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                   .filter(slot -> slot.deadlineMs() >= nowMs)
                                                   .toList();
         if (alive.size() == reconciling.inFlight().size()) {return reconciling.inFlight();}
+        deleteExpiredSlotAtoms(nowMs);
         var expiredCount = reconciling.inFlight().size() - alive.size();
         var refreshed = new NodeReconcilerState.Reconciling(reconciling.targetSize(),
                                                              reconciling.currentSize(),
@@ -1005,13 +1115,48 @@ import static org.pragmatica.lang.Unit.unit;
                                                    buildProvisionTags())
         .unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
-        var slotKey = NodeId.nodeId("ctm-inflight-" + System.nanoTime() + "-" + Math.abs(spec.hashCode())).unwrap();
+        var localTag = NodeId.nodeId("ctm-inflight-" + System.nanoTime() + "-" + Math.abs(spec.hashCode())).unwrap();
+        var slotKvKey = ProvisioningSlotKey.provisioningSlotKey(java.util.UUID.randomUUID().toString());
+        writeProvisioningSlotAtom(slotKvKey);
         var promise = lifecycleManager.provisionNode(spec)
                                             .onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
                                             .onFailure(cause -> log.warn("CTM: Node provisioning failed: {}",
                                                                          cause.message()));
-        inFlightProvisions.put(slotKey, promise);
-        promise.onResult(_ -> inFlightProvisions.remove(slotKey));
+        inFlightProvisions.put(localTag, promise);
+        promise.onResult(_ -> inFlightProvisions.remove(localTag));
+    }
+
+    /// Fix D — leader-side single-writer KV mirror of an in-flight provisioning slot. Only the
+    /// active CTM (leader) reaches this code via `provisionSingleNode`, so the single-writer
+    /// rule is preserved by the activation guard (`active.get()` in all reconcile paths).
+    private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey) {
+        var nowMs = nowMs();
+        var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
+        var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs);
+        commandApplier.apply(List.of(putSlotCommand(slotKvKey, value)))
+                            .onFailure(cause -> log.warn("CTM: failed to mirror provisioning slot {} to KV: {}",
+                                                         slotKvKey.slotId(),
+                                                         cause.message()))
+                            .onSuccess(_ -> log.debug("CTM: mirrored provisioning slot {} to KV (deadlineMs={})",
+                                                      slotKvKey.slotId(),
+                                                      deadlineMs));
+    }
+
+    /// Fix D — deletes all KV `ProvisioningSlotValue` atoms whose deadline has lapsed. Called
+    /// from `expireSlots` so that timed-out slots are dropped from BOTH in-memory state and KV.
+    private void deleteExpiredSlotAtoms(long nowMs) {
+        var snapshotSlots = slotReader.get();
+        if (snapshotSlots.isEmpty()) {return;}
+        var deletes = snapshotSlots.entrySet().stream()
+                                            .filter(e -> e.getValue().deadlineMs() < nowMs)
+                                            .map(e -> deleteSlotCommand(e.getKey()))
+                                            .toList();
+        if (deletes.isEmpty()) {return;}
+        commandApplier.apply(deletes)
+                            .onFailure(cause -> log.warn("CTM: failed to delete {} expired slot atom(s) from KV: {}",
+                                                         deletes.size(),
+                                                         cause.message()))
+                            .onSuccess(_ -> log.debug("CTM: deleted {} expired slot atom(s) from KV", deletes.size()));
     }
 
     /// Cancels all in-flight `provisionNode` Promises captured during the current Reconciling
@@ -1027,6 +1172,24 @@ import static org.pragmatica.lang.Unit.unit;
         inFlightProvisions.values()
                                   .forEach(Promise::cancel);
         inFlightProvisions.clear();
+        deleteAllSlotAtoms("cancel: " + reason);
+    }
+
+    /// Fix D — wipes every KV `ProvisioningSlotValue` atom (used when the CTM cancels
+    /// in-flight provisions because the operator shrank the target below `realActual`).
+    private void deleteAllSlotAtoms(String reason) {
+        var allSlots = slotReader.get();
+        if (allSlots.isEmpty()) {return;}
+        var deletes = allSlots.keySet().stream()
+                                     .map(ClusterTopologyManagerRecord::deleteSlotCommand)
+                                     .toList();
+        commandApplier.apply(deletes)
+                            .onFailure(cause -> log.warn("CTM: failed to wipe {} slot atom(s) ({}): {}",
+                                                         deletes.size(),
+                                                         reason,
+                                                         cause.message()))
+                            .onSuccess(_ -> log.info("CTM: wiped {} slot atom(s) ({})", deletes.size(), reason));
+        slotKeyByNodeId.clear();
     }
 
     private Map<String, String> buildProvisionTags() {

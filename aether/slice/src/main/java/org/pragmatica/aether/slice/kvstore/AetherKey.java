@@ -1220,6 +1220,34 @@ import static org.pragmatica.lang.Result.success;
 
     Fn1<Cause, String> SPOKESMAN_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid spokesman key format: %s");
 
+    Fn1<Cause, String> PROVISIONING_SLOT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid provisioning-slot key format: %s");
+
+    /// Mirrors a single CTM in-flight provisioning attempt to KV so the slot survives leader handoff.
+    /// `slotId` is a unique identifier (UUID-string) generated when `provisionNodes` dispatches.
+    /// Theme: Fix D — see synthesis-fixes-to-15.md and investigation-ssot-topology.md.
+    record ProvisioningSlotKey(String slotId) implements AetherKey {
+        private static final String PREFIX = "provisioning-slot/";
+
+        @Override public String asString() {
+            return PREFIX + slotId;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02") public static ProvisioningSlotKey provisioningSlotKey(String slotId) {
+            return new ProvisioningSlotKey(slotId);
+        }
+
+        public static Result<ProvisioningSlotKey> provisioningSlotKey(String key, boolean isKey) {
+            if (!key.startsWith(PREFIX)) {return PROVISIONING_SLOT_KEY_FORMAT_ERROR.apply(key).result();}
+            var id = key.substring(PREFIX.length());
+            if (id.isEmpty()) {return PROVISIONING_SLOT_KEY_FORMAT_ERROR.apply(key).result();}
+            return success(new ProvisioningSlotKey(id));
+        }
+    }
+
     record ConsumerGroupKey(String groupId, String streamName, int partition) implements AetherKey {
         private static final String PREFIX = "consumer-group/";
 
