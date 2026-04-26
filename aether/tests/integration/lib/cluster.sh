@@ -97,9 +97,18 @@ assert_cluster_healthy() {
 }
 
 is_cluster_ready() {
+    # Fix J: gate cluster-readiness on BOTH node count AND a real elected leader.
+    # The previous count-only check returned TRUE for "5 nodes connected, no leader",
+    # which silently masked failures into downstream `await-quiesced` 500s — a leaderless
+    # cluster has CTM dormant, so blueprint/scale/task ops are no-ops that look like passes
+    # via `none == none` matches in `cluster_leader` comparisons. Requiring a non-empty,
+    # non-"none" leaderId restores fail-fast behaviour for genuine leader-election regressions.
     local count
     count=$(cluster_node_count)
-    [ -n "$count" ] && [ "$count" -ge "${NODE_COUNT:-5}" ] 2>/dev/null
+    [ -n "$count" ] && [ "$count" -ge "${NODE_COUNT:-5}" ] 2>/dev/null || return 1
+    local leader
+    leader=$(cluster_leader 2>/dev/null)
+    [ -n "$leader" ] && [ "$leader" != "none" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -161,7 +170,30 @@ wait_for_node_count() {
 }
 
 wait_for_leader() {
-    wait_for "leader elected" "[ -n \"\$(cluster_leader)\" ] && [ \"\$(cluster_leader)\" != 'none' ]" "${1:-60}"
+    # Fix I: cluster-B destructive suites observe legitimate cold-boot leader-election
+    # of 60–120s after `restart_all_nodes` (5x JVM cold start + QUIC mesh formation +
+    # Rabia activation + LeaderElectionState.QuorumWaiting re-entry). The historical
+    # 60s default was one cache-miss away from failing. Cluster-A non-destructive
+    # suites continue to enforce the 60s budget as a fast-fail signal for real
+    # election regressions.
+    #
+    # Selection order:
+    #   1. Explicit env override `WAIT_FOR_LEADER_TIMEOUT` (per-suite escape hatch).
+    #   2. Caller-supplied positional argument (callers like test-kill-leader pass 150).
+    #   3. Cluster-B floor: 120s when CLUSTER_ID=b.
+    #   4. Default: 60s (cluster A and unspecified).
+    local default_timeout=60
+    if [ "${CLUSTER_ID:-}" = "b" ]; then
+        default_timeout=120
+    fi
+    local timeout="${WAIT_FOR_LEADER_TIMEOUT:-${1:-${default_timeout}}}"
+    # When running on cluster B, never accept a caller-supplied timeout below the
+    # cluster-B floor — destructive suites pass `wait_for_leader 60` literally and
+    # those callers should inherit the bump without per-site edits.
+    if [ "${CLUSTER_ID:-}" = "b" ] && [ -z "${WAIT_FOR_LEADER_TIMEOUT:-}" ] && [ "$timeout" -lt 120 ] 2>/dev/null; then
+        timeout=120
+    fi
+    wait_for "leader elected" "[ -n \"\$(cluster_leader)\" ] && [ \"\$(cluster_leader)\" != 'none' ]" "$timeout"
 }
 
 wait_for_slices_active() {
