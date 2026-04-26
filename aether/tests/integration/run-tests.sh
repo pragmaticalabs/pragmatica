@@ -201,7 +201,12 @@ collect_blueprints() {
 # ---------------------------------------------------------------------------
 run_suite() {
     local suite_prefix="$1"
-    local cluster="$2"  # "a" or "b"
+    # CRITICAL: name this `target_cluster` not `cluster`. `parse_suite_conf` sources
+    # suite.conf which sets `cluster=non-destructive|destructive` at function-scope
+    # via Bash dynamic scoping — clobbering a local named `cluster` here. Result
+    # before this fix: cluster A suites silently fell through to cluster B's
+    # endpoints + container names, killing cluster B nodes from cluster A tests.
+    local target_cluster="$2"  # "a" or "b"
 
     # Resolve suite directory
     local suite_dir
@@ -214,7 +219,7 @@ run_suite() {
     local suite_name
     suite_name=$(basename "$suite_dir")
 
-    # Check requirements
+    # Check requirements (sources suite.conf — see scoping note above).
     if ! check_requirements "$suite_dir"; then
         log_info "SKIP: ${suite_name} (missing capabilities)"
         echo "{\"suite\":\"${suite_name}\",\"status\":\"skipped\",\"pass\":0,\"fail\":0,\"duration\":0}" >> "$RESULTS_FILE"
@@ -224,10 +229,8 @@ run_suite() {
     # Set cluster-specific endpoints. App-HTTP fallback points to the node-1
     # direct app port (8070/8080 per compose), not the mgmt port — slice routes
     # are only served on the app HTTP listener.
-    # Note: $cluster may be overwritten by suite.conf (`cluster=destructive`
-    # sets it to a semantic label). Normalize to a/b based on the MGMT target.
     local cluster_endpoint lb_app lb_mgmt cluster_id node_base
-    if [ "$cluster" = "a" ]; then
+    if [ "$target_cluster" = "a" ]; then
         cluster_endpoint="$CLUSTER_A_MGMT"
         lb_app="${CLUSTER_A_LB_APP:-$CLUSTER_A_APP_DIRECT}"
         lb_mgmt="${CLUSTER_A_LB_MGMT:-$CLUSTER_A_MGMT}"
@@ -260,7 +263,7 @@ run_suite() {
     local start_time
     start_time=$(date +%s)
     log_info "============================================"
-    log_info "  SUITE: ${suite_name} (cluster ${cluster})"
+    log_info "  SUITE: ${suite_name} (cluster ${target_cluster})"
     log_info "============================================"
 
     local suite_pass=0 suite_fail=0

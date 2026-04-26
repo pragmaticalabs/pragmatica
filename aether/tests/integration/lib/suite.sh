@@ -9,14 +9,19 @@ parse_suite_conf() {
         echo "WARN: No suite.conf in ${suite_dir}" >&2
         return 1
     fi
-    # Reset defaults
-    tags=""
-    cluster="non-destructive"
-    destructive="false"
-    requires=""
-    blueprint="test-echo"
-    estimated_duration="1m"
-    description=""
+    # Reset defaults — `declare -g` forces these into global scope so sourcing
+    # suite.conf (which is plain `key=value` lines) cannot accidentally clobber a
+    # caller's local variable of the same name via Bash dynamic scoping. Prior
+    # bug: `cluster=non-destructive` from suite.conf overwrote run_suite's local
+    # `cluster="a"` argument, silently routing cluster-A suites to cluster-B
+    # endpoints and container names.
+    declare -g tags=""
+    declare -g cluster="non-destructive"
+    declare -g destructive="false"
+    declare -g requires=""
+    declare -g blueprint="test-echo"
+    declare -g estimated_duration="1m"
+    declare -g description=""
     # Source the conf file
     source "$conf_file"
 }
