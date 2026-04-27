@@ -105,6 +105,21 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return Option.option(storage.get(key));
     }
 
+    /// Typed lookup that tolerates the runtime mixed-storage model (e.g., a `KVStore<AetherKey,
+    /// AetherValue>` also stores `LeaderKey`/`LeaderValue` entries via the unchecked-cast path in
+    /// `process`). Used by callers that need to read foreign-typed atoms (e.g., the leader-election
+    /// FSM pulls `LeaderKey`/`LeaderValue` even though its kvStore is parameterized for AetherKey).
+    /// Returns `Option.none()` when the key is absent OR the stored value isn't an instance of
+    /// `valueClass`.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
+        var raw = ((Map) storage).get(key);
+        if (raw == null || !valueClass.isInstance(raw)) {
+            return Option.none();
+        }
+        return Option.some((VV) raw);
+    }
+
     /// Iterates over entries matching the specified key and value types.
     /// This avoids ClassCastException when the store contains mixed key types (e.g., AetherKey and LeaderKey).
     ///

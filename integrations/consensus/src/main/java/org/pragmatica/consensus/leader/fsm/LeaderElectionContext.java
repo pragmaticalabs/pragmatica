@@ -63,6 +63,16 @@ public final class LeaderElectionContext {
     /// `ConsensusReady` event between FSM states.
     public static final Supplier<Boolean> DEFAULT_CONSENSUS_READY_SUPPLIER = () -> false;
 
+    /// Default current-leader-from-KV supplier — returns `Option.none()` when not injected.
+    /// Production wiring reads `LeaderKey` from the cluster KV-Store
+    /// (`kvStore.get(LeaderKey.INSTANCE).map(LeaderValue::leader)`). The FSM consults this on
+    /// entry to `Electing` / `ReElecting` to short-circuit to `Led(thatLeader)` when consensus
+    /// has already committed a leader that this node missed via the notification path (e.g.
+    /// a snapshot-restored state didn't re-fire `KVStoreNotification.ValuePut<LeaderKey>` for
+    /// the current leader, OR a Decision arrived before the KV-store listener was wired).
+    /// KV is the cluster's source of truth — pulling complements the push-notification path.
+    public static final Supplier<Option<NodeId>> DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER = Option::none;
+
     private final NodeId self;
     private final Option<LeaderProposalHandler> proposalHandler;
     private final List<NodeId> expectedCluster;
@@ -75,6 +85,7 @@ public final class LeaderElectionContext {
     private final DoubleSupplier jitterSource;
     private final Supplier<Long> rabiaTermSupplier;
     private final Supplier<Boolean> consensusReadySupplier;
+    private final Supplier<Option<NodeId>> currentLeaderFromKvSupplier;
 
     // Per-FSM "singletons" — one instance per state class, shared for the lifetime of this FSM.
     // Built in the constructor via the constructor-driven initial-state factory, so the fields
@@ -114,7 +125,8 @@ public final class LeaderElectionContext {
                           int stuckElectionThreshold) {
         this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
              baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             DEFAULT_JITTER_SOURCE, DEFAULT_RABIA_TERM_SUPPLIER, DEFAULT_CONSENSUS_READY_SUPPLIER);
+             DEFAULT_JITTER_SOURCE, DEFAULT_RABIA_TERM_SUPPLIER, DEFAULT_CONSENSUS_READY_SUPPLIER,
+             DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
     /// Full-arity constructor that accepts an injectable [`DoubleSupplier`] jitter source — for
@@ -132,7 +144,8 @@ public final class LeaderElectionContext {
                           DoubleSupplier jitterSource) {
         this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
              baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, DEFAULT_RABIA_TERM_SUPPLIER, DEFAULT_CONSENSUS_READY_SUPPLIER);
+             jitterSource, DEFAULT_RABIA_TERM_SUPPLIER, DEFAULT_CONSENSUS_READY_SUPPLIER,
+             DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
     /// Full-arity constructor with jitter source and rabia-term supplier — uses the default
@@ -152,14 +165,13 @@ public final class LeaderElectionContext {
                           Supplier<Long> rabiaTermSupplier) {
         this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
              baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
-             jitterSource, rabiaTermSupplier, DEFAULT_CONSENSUS_READY_SUPPLIER);
+             jitterSource, rabiaTermSupplier, DEFAULT_CONSENSUS_READY_SUPPLIER,
+             DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
-    /// Full-arity constructor with all injectable suppliers — production wiring (Aether's
-    /// `RabiaNode`) calls this overload to plumb both the rabia-term counter and the
-    /// consensus-engine readiness accessor (e.g. `RabiaEngine::isActive`). The latter is the
-    /// SSOT consulted by [`LeaderElectionState.QuorumWaiting#onEntry`] — eliminating the
-    /// previous flag-based event buffering between FSM states.
+    /// Constructor with rabia-term + consensus-readiness suppliers; defaults the KV-leader
+    /// supplier to `Option.none()`. Existing callers (and tests) that don't need the
+    /// pull-from-KV path stay on this overload.
     LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
                           NodeId self,
                           Option<LeaderProposalHandler> proposalHandler,
@@ -173,6 +185,35 @@ public final class LeaderElectionContext {
                           DoubleSupplier jitterSource,
                           Supplier<Long> rabiaTermSupplier,
                           Supplier<Boolean> consensusReadySupplier) {
+        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
+             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
+             jitterSource, rabiaTermSupplier, consensusReadySupplier,
+             DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
+    }
+
+    /// Full-arity constructor with all injectable suppliers — production wiring (Aether's
+    /// `RabiaNode`) calls this overload to plumb the rabia-term counter, the consensus-engine
+    /// readiness accessor (e.g. `RabiaEngine::isActive`), AND the KV-store leader accessor
+    /// (`kvStore.get(LeaderKey).map(LeaderValue::leader)`). The KV-store accessor is the
+    /// pull-side complement to the push-based `KVStoreNotification.ValuePut<LeaderKey>` path:
+    /// `Electing` / `ReElecting` consult it on entry to short-circuit to `Led(leader)` when
+    /// consensus has already committed a leader that this node missed via the notification path
+    /// (e.g. snapshot-restored state didn't re-fire the notification, or a Decision arrived
+    /// before the listener was wired). KV is the cluster's source of truth.
+    LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                          NodeId self,
+                          Option<LeaderProposalHandler> proposalHandler,
+                          List<NodeId> expectedCluster,
+                          MessageRouter router,
+                          TimeSpan proposalRetryDelay,
+                          TimeSpan baseElectionDelay,
+                          TimeSpan perRankDelay,
+                          TimeSpan proposalTimeout,
+                          int stuckElectionThreshold,
+                          DoubleSupplier jitterSource,
+                          Supplier<Long> rabiaTermSupplier,
+                          Supplier<Boolean> consensusReadySupplier,
+                          Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
         this.fsm = fsm;
         this.self = self;
         this.proposalHandler = proposalHandler;
@@ -186,6 +227,7 @@ public final class LeaderElectionContext {
         this.jitterSource = jitterSource;
         this.rabiaTermSupplier = rabiaTermSupplier;
         this.consensusReadySupplier = consensusReadySupplier;
+        this.currentLeaderFromKvSupplier = currentLeaderFromKvSupplier;
         this.dormant = new LeaderElectionState.Dormant(this);
         this.quorumLost = new LeaderElectionState.QuorumLost(this);
         this.stopped = new LeaderElectionState.Stopped(this);
@@ -248,6 +290,14 @@ public final class LeaderElectionContext {
     /// [`LeaderElectionState.QuorumWaiting#onEntry`]. When `true`, the FSM self-dispatches a
     /// [`LeaderElectionEvents.ConsensusReady`] to immediately advance to `Electing`/`ReElecting`.
     public Supplier<Boolean> consensusReadySupplier() { return consensusReadySupplier; }
+
+    /// Live accessor for the cluster's current leader as recorded in the KV-Store
+    /// (`LeaderKey` → `LeaderValue.leader()`). Consulted by `Electing.onEntry` /
+    /// `ReElecting.onEntry` to short-circuit to `Led(leader)` whenever consensus has already
+    /// committed a leader. Pull-side complement to the push-based
+    /// `KVStoreNotification.ValuePut<LeaderKey>` listener — the FSM never gets stuck waiting
+    /// for a notification that already fired (or never will).
+    public Supplier<Option<NodeId>> currentLeaderFromKvSupplier() { return currentLeaderFromKvSupplier; }
 
     public boolean hasEverHadLeader() { return hasEverHadLeader.get(); }
     public void markHasEverHadLeader() { hasEverHadLeader.set(true); }

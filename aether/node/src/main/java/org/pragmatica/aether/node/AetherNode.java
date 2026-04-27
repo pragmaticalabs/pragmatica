@@ -321,6 +321,14 @@ public interface AetherNode extends ManageableNode {
                    .map(v -> (AetherValue.NodeLifecycleValue) v)
                    .map(v -> v.state() == AetherValue.NodeLifecycleState.DECOMMISSIONED)
                    .or(false);
+        // Pull-side complement to the push-based KVStoreNotification.ValuePut<LeaderKey>
+        // path. The leader-election FSM consults this on entry to Electing / ReElecting (and on
+        // each election tick) to short-circuit to Led(leader) whenever the cluster KV-Store
+        // already records a committed leader — closes the gap where the rejoining node missed
+        // the notification (e.g. snapshot-restored state didn't include LeaderKey).
+        Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () ->
+            kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                   .map(LeaderValue::leader);
         return RabiaNode.rabiaNode(nodeConfig,
                                    delegateRouter,
                                    kvStore,
@@ -331,7 +339,8 @@ public interface AetherNode extends ManageableNode {
                                    persistence,
                                    config.quicTls(),
                                    rabiaTermSupplier,
-                                   isDecommissioned)
+                                   isDecommissioned,
+                                   currentLeaderFromKvSupplier)
         .flatMap(clusterNode -> assembleNode(config,
                                              delegateRouter,
                                              kvStore,

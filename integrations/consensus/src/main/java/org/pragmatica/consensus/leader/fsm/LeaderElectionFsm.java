@@ -79,10 +79,9 @@ public final class LeaderElectionFsm {
                                  LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
     }
 
-    /// Full-arity factory accepting both the rabia-term supplier and the consensus-readiness
-    /// supplier. Production wiring (Aether's `RabiaNode`) plumbs the live `RabiaEngine::isActive`
-    /// accessor as `consensusReadySupplier`; tests pass an injectable `AtomicBoolean::get`-style
-    /// latch when they need to drive `QuorumWaiting → Electing` advancement deterministically.
+    /// Factory accepting rabia-term + consensus-readiness suppliers; defaults the KV-leader
+    /// supplier to `Option.none()`. Existing callers (and tests) that don't need the pull-from-KV
+    /// path stay on this overload.
     public static FsmWithContext leaderElectionFsm(NodeId self,
                                                    Option<LeaderProposalHandler> proposalHandler,
                                                    List<NodeId> expectedCluster,
@@ -93,13 +92,37 @@ public final class LeaderElectionFsm {
                                                    FsmObserver<LeaderElectionState, ClusterFsmEvent> observer,
                                                    Supplier<Long> rabiaTermSupplier,
                                                    Supplier<Boolean> consensusReadySupplier) {
+        return leaderElectionFsm(self, proposalHandler, expectedCluster, router,
+                                 proposalRetryDelay, baseElectionDelay, perRankDelay,
+                                 observer, rabiaTermSupplier, consensusReadySupplier,
+                                 LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
+    }
+
+    /// Full-arity factory accepting all injectable suppliers including the cluster KV-Store
+    /// leader accessor. Production wiring (Aether's `RabiaNode`) plumbs:
+    ///   - `RabiaEngine::isActive` as `consensusReadySupplier` (push-side: ready-state poll)
+    ///   - `() -> kvStore.get(LeaderKey).map(LeaderValue::leader)` as `currentLeaderFromKvSupplier`
+    ///     (pull-side: cluster's source-of-truth leader read)
+    /// Together they make the FSM pull-and-push on every `Electing`/`ReElecting` entry + tick:
+    /// the FSM never gets stuck waiting for a notification that already fired (or never will).
+    public static FsmWithContext leaderElectionFsm(NodeId self,
+                                                   Option<LeaderProposalHandler> proposalHandler,
+                                                   List<NodeId> expectedCluster,
+                                                   MessageRouter router,
+                                                   TimeSpan proposalRetryDelay,
+                                                   TimeSpan baseElectionDelay,
+                                                   TimeSpan perRankDelay,
+                                                   FsmObserver<LeaderElectionState, ClusterFsmEvent> observer,
+                                                   Supplier<Long> rabiaTermSupplier,
+                                                   Supplier<Boolean> consensusReadySupplier,
+                                                   Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
         var ctxHolder = new AtomicReference<LeaderElectionContext>();
         var timeout = LeaderElectionContext.proposalTimeoutFor(proposalRetryDelay);
         Function<Fsm<LeaderElectionState, ClusterFsmEvent>, LeaderElectionState> initialStateFactory =
             f -> buildContextAndInitialState(ctxHolder, f, self, proposalHandler, expectedCluster,
                                              router, proposalRetryDelay, baseElectionDelay,
                                              perRankDelay, timeout, rabiaTermSupplier,
-                                             consensusReadySupplier);
+                                             consensusReadySupplier, currentLeaderFromKvSupplier);
         var fsm = Fsm.fsm("leader-election", self.id(), initialStateFactory, observer);
         return new FsmWithContext(fsm, ctxHolder.get());
     }
@@ -115,14 +138,16 @@ public final class LeaderElectionFsm {
                                                                    TimeSpan perRankDelay,
                                                                    TimeSpan proposalTimeout,
                                                                    Supplier<Long> rabiaTermSupplier,
-                                                                   Supplier<Boolean> consensusReadySupplier) {
+                                                                   Supplier<Boolean> consensusReadySupplier,
+                                                                   Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
         var ctx = new LeaderElectionContext(fsm, self, proposalHandler, expectedCluster, router,
                                             proposalRetryDelay, baseElectionDelay, perRankDelay,
                                             proposalTimeout,
                                             LeaderElectionContext.DEFAULT_STUCK_ELECTION_THRESHOLD,
                                             LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                                             rabiaTermSupplier,
-                                            consensusReadySupplier);
+                                            consensusReadySupplier,
+                                            currentLeaderFromKvSupplier);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }

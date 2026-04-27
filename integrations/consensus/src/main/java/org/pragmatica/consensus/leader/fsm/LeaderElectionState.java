@@ -195,6 +195,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         public void onEntry() {
             ctx.resetElectionRetryCount();
             ctx.resetStuckElectionCount();
+            adoptLeaderFromKvIfPresent(ctx);
         }
 
         @Override
@@ -214,7 +215,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ElectionTick _ -> tx.handle(() -> trySubmitProposal(ctx, this));
+                case ElectionTick _ -> tx.handle(() -> {
+                    adoptLeaderFromKvIfPresent(ctx);
+                    trySubmitProposal(ctx, this);
+                });
                 case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
@@ -294,6 +298,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         public void onEntry() {
             ctx.resetStuckElectionCount();
             clearLeaderAndNotify(ctx);
+            adoptLeaderFromKvIfPresent(ctx);
         }
 
         @Override
@@ -313,7 +318,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ElectionTick _ -> tx.handle(() -> trySubmitProposal(ctx, this));
+                case ElectionTick _ -> tx.handle(() -> {
+                    adoptLeaderFromKvIfPresent(ctx);
+                    trySubmitProposal(ctx, this);
+                });
                 case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
@@ -384,6 +392,28 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             log.warn("Rejecting stale LeaderCommitted({}) — leader not in topology {}",
                      event.leader(), ctx.currentTopology());
         }
+    }
+
+    /// Pull-side complement to the push-based `KVStoreNotification.ValuePut<LeaderKey>` listener.
+    /// Reads the cluster's KV-Store via the injected supplier and, if a leader is recorded AND in
+    /// the current topology, dispatches a synthetic `LeaderCommitted` to self. The standard
+    /// `LeaderCommitted` handler in `Electing` / `ReElecting` then transitions to `Led(leader)`.
+    /// This closes the gap where the notification path doesn't fire (e.g. the rejoining node's
+    /// snapshot-restored state didn't include `LeaderKey`, or the listener wired after a Decision
+    /// for the current leader was already applied). KV is the cluster's source of truth — pulling
+    /// it once per state-entry and once per election tick guarantees the FSM cannot stay in
+    /// `Electing` while consensus has already named a leader visible to this node's local KV.
+    private static void adoptLeaderFromKvIfPresent(LeaderElectionContext ctx) {
+        ctx.currentLeaderFromKvSupplier().get().onPresent(leader -> {
+            if (!ctx.currentTopology().contains(leader)) {
+                return;
+            }
+            if (ctx.currentLeader().filter(leader::equals).isPresent()) {
+                return;
+            }
+            log.info("Adopting leader from KV-Store: {} (push-notification path missed)", leader);
+            dispatchSelf(ctx, new LeaderCommitted(leader));
+        });
     }
 
     private static void notifyLeaderChange(LeaderElectionContext ctx) {

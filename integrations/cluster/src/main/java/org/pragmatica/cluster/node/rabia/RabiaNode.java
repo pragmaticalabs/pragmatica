@@ -170,6 +170,28 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier,
                                                               Predicate<NodeId> isDecommissioned) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
+                          metrics, useConsensusLeaderElection, persistence, tlsConfig,
+                          rabiaTermSupplier, isDecommissioned, Option::none);
+    }
+
+    /// Full-arity overload accepting a `currentLeaderFromKvSupplier` — pull-side complement
+    /// to the push-based `KVStoreNotification.ValuePut<LeaderKey>` listener. Production wiring
+    /// (Aether's `AetherNode`) plumbs `() -> kvStore.get(LeaderKey.INSTANCE).map(LeaderValue::leader)`
+    /// so the leader-election FSM can adopt the cluster-committed leader on entry to
+    /// `Electing` / `ReElecting`, even when the rejoining node missed the notification path.
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence,
+                                                              TlsConfig tlsConfig,
+                                                              Supplier<Long> rabiaTermSupplier,
+                                                              Predicate<NodeId> isDecommissioned,
+                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
         return Result.all(
             TopologyObserver.topologyObserver(config.topology(), delegateRouter, isDecommissioned),
             QuicTlsProvider.serverContext(tlsConfig),
@@ -185,7 +207,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                        clientSsl,
                                                                        useConsensusLeaderElection,
                                                                        persistence,
-                                                                       rabiaTermSupplier));
+                                                                       rabiaTermSupplier,
+                                                                       currentLeaderFromKvSupplier));
     }
 
     @SuppressWarnings("unchecked")
@@ -200,7 +223,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                  QuicSslContext clientSsl,
                                                                  boolean useConsensusLeaderElection,
                                                                  RabiaPersistence<C> persistence,
-                                                                 Supplier<Long> rabiaTermSupplier) {
+                                                                 Supplier<Long> rabiaTermSupplier,
+                                                                 Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
         var network = new QuicClusterNetwork(topologyManager,
                                              serializer,
                                              deserializer,
@@ -220,8 +244,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         LeaderManager leaderManager;
         if (useConsensusLeaderElection) {
             // Consensus-based leader election: submit proposals through consensus.
-            // `consensus::isActive` is the SSOT for "consensus engine is ready" — the FSM consults
-            // it on entry to `QuorumWaiting` to decide whether to immediately advance to electing.
+            // `consensus::isActive` is the push-side SSOT for "consensus engine is ready" — the
+            // FSM consults it on entry to `QuorumWaiting` to decide whether to immediately
+            // advance to electing.
+            // `currentLeaderFromKvSupplier` is the pull-side SSOT for "cluster has elected a
+            // leader" — the FSM consults it on entry to `Electing` / `ReElecting` (and on each
+            // election tick) to short-circuit to `Led(leader)` whenever the local KV-Store
+            // already records a committed leader. Closes the gap where the
+            // `KVStoreNotification.ValuePut<LeaderKey>` push notification didn't fire (e.g.
+            // snapshot-restored state didn't include LeaderKey, or listener wired late).
             LeaderManager.LeaderProposalHandler proposalHandler =
             (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate, DEFAULT_PROPOSAL_TIMEOUT);
             leaderManager = LeaderManager.leaderManager(config.topology()
@@ -230,7 +261,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                         proposalHandler,
                                                         expectedCluster,
                                                         rabiaTermSupplier,
-                                                        consensus::isActive);
+                                                        consensus::isActive,
+                                                        currentLeaderFromKvSupplier);
         } else {
             // Local election mode: backward compatible
             leaderManager = LeaderManager.leaderManager(config.topology()

@@ -90,7 +90,8 @@ public interface LeaderManager {
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
                      LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
-                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
     static LeaderManager leaderManager(NodeId self, MessageRouter router, LeaderProposalHandler proposalHandler) {
@@ -99,7 +100,8 @@ public interface LeaderManager {
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
                      LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
-                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
     static LeaderManager leaderManager(NodeId self,
@@ -111,7 +113,8 @@ public interface LeaderManager {
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
                      LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
-                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
     static LeaderManager leaderManager(NodeId self,
@@ -124,7 +127,8 @@ public interface LeaderManager {
         return build(self, router, Option.some(proposalHandler), expectedCluster,
                      proposalRetryDelay, baseElectionDelay, perRankDelay,
                      LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
-                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
     /// Factory accepting the `rabiaTermSupplier` consumed by [`#currentLeaderEpoch`]. The
@@ -141,14 +145,13 @@ public interface LeaderManager {
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
                      rabiaTermSupplier,
-                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER);
+                     LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
     }
 
-    /// Full-arity factory accepting both the rabia-term supplier and the consensus-engine
-    /// readiness supplier. Production wiring (Aether's `RabiaNode`) calls this overload to plumb
-    /// `RabiaEngine::isActive` as the SSOT for consensus readiness — eliminating the previous
-    /// flag-based event buffering between FSM states. Tests can pass an `AtomicBoolean::get`-style
-    /// latch when they need to drive `QuorumWaiting → Electing` advancement deterministically.
+    /// Factory accepting rabia-term + consensus-readiness suppliers; defaults the KV-leader
+    /// supplier to `Option.none()`. Existing callers (and tests) that don't need the
+    /// pull-from-KV path stay on this overload.
     static LeaderManager leaderManager(NodeId self,
                                        MessageRouter router,
                                        LeaderProposalHandler proposalHandler,
@@ -160,7 +163,32 @@ public interface LeaderManager {
                      LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
                      LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
                      rabiaTermSupplier,
-                     consensusReadySupplier);
+                     consensusReadySupplier,
+                     LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER);
+    }
+
+    /// Full-arity factory accepting all injectable suppliers including the cluster KV-Store
+    /// leader accessor. Production wiring (Aether's `RabiaNode`) plumbs:
+    ///   - `RabiaEngine::isActive` as `consensusReadySupplier` (push-side: ready-state poll)
+    ///   - `() -> kvStore.get(LeaderKey).map(LeaderValue::leader)` as `currentLeaderFromKvSupplier`
+    ///     (pull-side: cluster's source-of-truth leader read)
+    /// The pull-side closes the gap where a rejoining node misses the
+    /// `KVStoreNotification.ValuePut<LeaderKey>` notification (e.g. snapshot-restored state didn't
+    /// include the LeaderKey, or the listener wired after the Decision was already applied).
+    static LeaderManager leaderManager(NodeId self,
+                                       MessageRouter router,
+                                       LeaderProposalHandler proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       Supplier<Long> rabiaTermSupplier,
+                                       Supplier<Boolean> consensusReadySupplier,
+                                       Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+        return build(self, router, Option.some(proposalHandler), expectedCluster,
+                     LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                     LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                     LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                     rabiaTermSupplier,
+                     consensusReadySupplier,
+                     currentLeaderFromKvSupplier);
     }
 
     private static LeaderManager build(NodeId self,
@@ -171,12 +199,14 @@ public interface LeaderManager {
                                        TimeSpan baseElectionDelay,
                                        TimeSpan perRankDelay,
                                        Supplier<Long> rabiaTermSupplier,
-                                       Supplier<Boolean> consensusReadySupplier) {
+                                       Supplier<Boolean> consensusReadySupplier,
+                                       Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
         var built = LeaderElectionFsm.leaderElectionFsm(self, proposalHandler, expectedCluster,
                                                         router, proposalRetryDelay,
                                                         baseElectionDelay, perRankDelay,
                                                         FsmObserver.noop(), rabiaTermSupplier,
-                                                        consensusReadySupplier);
+                                                        consensusReadySupplier,
+                                                        currentLeaderFromKvSupplier);
         return new FsmBackedLeaderManager(built.fsm(), built.context(), proposalHandler.isEmpty());
     }
 
