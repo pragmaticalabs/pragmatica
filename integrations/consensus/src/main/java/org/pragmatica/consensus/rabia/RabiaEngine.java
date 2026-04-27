@@ -1071,8 +1071,38 @@ public class RabiaEngine<C extends Command> {
             }
             return;
         }
+        // Phase-gap detection. A Decision for a phase materially ahead of `currentPhase` means
+        // we missed intermediate phases' Decisions (and their commands). `commitDecision` would
+        // call `advancePhase(decision.phase().successor())` and JUMP the counter, skipping the
+        // intermediate phases entirely — their KV mutations are lost and the local state
+        // machine diverges from peers. Mirror `handlePropose`'s `isFarFuturePhase` check (a
+        // pre-existing pattern at line 822-826), but with a smaller threshold: a single phase
+        // of jitter is normal, more than a few means the node is genuinely behind. Buffer the
+        // Decision and trigger resync; the post-resync drain (Fix A) applies it filtered by
+        // `phase >= currentPhase` so phases captured in the restored snapshot are correctly
+        // skipped while phases past the snapshot are correctly applied.
+        var current = currentPhase.get();
+        var gap = decision.phase().value() - current.value();
+        if (gap > MAX_DECISION_PHASE_GAP) {
+            log.warn("Node {} received Decision for phase {} while at phase {} (gap={}). Buffering and triggering resync.",
+                     self, decision.phase(), current, gap);
+            bufferedDecisions.offer(decision);
+            if (bufferedDecisionCount.incrementAndGet() > MAX_BUFFERED_DECISIONS) {
+                bufferedDecisions.pollFirst();
+                bufferedDecisionCount.decrementAndGet();
+            }
+            triggerResync();
+            return;
+        }
         commitDecision(getOrCreatePhaseData(decision.phase()), decision);
     }
+
+    /// Threshold for `handleDecision` phase-gap detection. Above this gap, we treat the node
+    /// as genuinely behind (peers progressed several phases ahead while our Decision delivery
+    /// was stalled) and trigger resync rather than fast-forwarding via single-Decision phase
+    /// jump. Compare to `MAX_PHASE_AHEAD = 100` for `handlePropose` (line 822) — Decisions
+    /// arrive at end-of-phase and should be tightly ordered; Proposes can arrive much earlier.
+    private static final long MAX_DECISION_PHASE_GAP = 3;
 
     /// Drains the buffered Decisions queue after `activate()` has transitioned the engine
     /// to `Idle`. Decisions are applied in phase-ascending order, filtered to phases at or
