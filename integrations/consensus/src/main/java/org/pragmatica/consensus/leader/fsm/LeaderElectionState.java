@@ -435,19 +435,32 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     private static void trySubmitProposal(LeaderElectionContext ctx,
                                           LeaderElectionState owner) {
-        ctx.proposalHandler().onPresent(handler -> submitProposalWith(ctx, owner, handler));
+        ctx.proposalHandler()
+           .onPresent(handler -> submitProposalWith(ctx, owner, handler))
+           .onEmpty(() -> {
+               log.info("No proposal handler configured — rescheduling tick");
+               rescheduleCurrentTick(ctx);
+           });
     }
 
     private static void submitProposalWith(LeaderElectionContext ctx,
                                            LeaderElectionState owner,
                                            LeaderProposalHandler handler) {
+        // Each silent early-return path below MUST reschedule the tick, otherwise the FSM
+        // gets permanently stuck in Electing/ReElecting: the prior tick fired, no proposal
+        // was sent, no `ProposalSettled` will arrive (no proposal in flight), no topology
+        // event will trigger `rescheduleCurrentTick`. Concrete production stall observed
+        // when a single rejoining node sees ghost SWIM peers (cross-cluster gossip) at
+        // tick time — `submitProposalWith` exits, FSM never re-fires.
         if (ctx.currentTopology().isEmpty()) {
-            log.debug("Topology empty — skipping proposal");
+            log.info("Topology empty — skipping proposal, rescheduling tick");
+            rescheduleCurrentTick(ctx);
             return;
         }
         var pool = ctx.candidatePool().stream().sorted().toList();
         if (pool.isEmpty()) {
-            log.debug("Candidate pool empty — skipping proposal");
+            log.info("Candidate pool empty — skipping proposal, rescheduling tick");
+            rescheduleCurrentTick(ctx);
             return;
         }
         var candidate = pool.getFirst();
@@ -459,7 +472,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         // Rabia engine is the slowest to reach `Idle`/`InPhase` after a cold restart —
         // any peer whose Rabia activates first can drive the proposal forward.
         if (!ctx.tryStartProposal()) {
-            log.debug("Proposal already in flight — skipping");
+            // Proposal already in flight — DO NOT reschedule. The proposal-timeout future
+            // (set in `sendProposal`) will fire `ProposalSettled.failure`, which triggers
+            // `rescheduleCurrentTick` via `handleProposalSettled`. Rescheduling here would
+            // burst-tick during a normal in-flight proposal.
+            log.info("Proposal already in flight — skipping (timeout will reschedule)");
             return;
         }
         sendProposal(ctx, owner, handler, candidate);
