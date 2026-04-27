@@ -103,6 +103,19 @@ public class RabiaEngine<C extends Command> {
     @SuppressWarnings("rawtypes")
     private final Map<CorrelationId, Promise> correlationMap = new ConcurrentHashMap<>();
 
+    /// Decisions delivered to a node whose engine is `Stopped` / `Syncing` are buffered here
+    /// instead of applied immediately. Applying them in those states causes asymmetric apply:
+    /// the Decision mutates KV state via `commitDecision → advancePhase`, then the imminent
+    /// `restoreSnapshot` wipes the mutation, and `applyRestoredState` regresses
+    /// `currentPhase`. Net effect: KV writes from the live phase silently disappear from the
+    /// rejoiner's local state machine. Buffer is drained at the tail of `activate()` once the
+    /// engine is `Idle`, in phase-ascending order, filtered to phases at or above the
+    /// post-restore `currentPhase` (older Decisions are safely discarded — they're already
+    /// captured in the restored snapshot).
+    private static final int MAX_BUFFERED_DECISIONS = 256;
+    private final java.util.concurrent.ConcurrentLinkedDeque<Decision<C>> bufferedDecisions = new java.util.concurrent.ConcurrentLinkedDeque<>();
+    private final java.util.concurrent.atomic.AtomicInteger bufferedDecisionCount = new java.util.concurrent.atomic.AtomicInteger();
+
     //--------------------------------- Node State Start
     private final Map<Phase, PhaseData<C>> phases = new ConcurrentHashMap<>();
     private final AtomicReference<Phase> currentPhase = new AtomicReference<>(Phase.ZERO);
@@ -324,6 +337,8 @@ public class RabiaEngine<C extends Command> {
         stateMachine.reset();
         startPromise.set(Promise.promise());
         pendingBatches.clear();
+        bufferedDecisions.clear();
+        bufferedDecisionCount.set(0);
         correlationMap.forEach((_, promise) -> promise.fail(ConsensusError.nodeInactive(self)));
         correlationMap.clear();
     }
@@ -617,7 +632,14 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void applyRestoredState(SavedState<C> state) {
-        currentPhase.set(state.lastCommittedPhase());
+        // Advance-only: never regress currentPhase below where it already is. A live Decision
+        // applied during the Stopped/Syncing window (now buffered via `handleDecision`'s state
+        // guard) could have advanced the counter past the candidate snapshot's phase; an
+        // unconditional `set` would drop the rejoiner back behind the cluster and cause
+        // `commitDecision` to ignore subsequent same-phase Decisions as duplicates.
+        currentPhase.updateAndGet(existing -> existing.compareTo(state.lastCommittedPhase()) >= 0
+                                                ? existing
+                                                : state.lastCommittedPhase());
         state.pendingBatches()
              .forEach(batch -> pendingBatches.put(batch.id(),
                                                   batch));
@@ -639,6 +661,10 @@ public class RabiaEngine<C extends Command> {
         syncResponses.clear();
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in phase {}", self, currentPhase.get());
+        // Drain any Decisions that were buffered while the engine was Stopped/Syncing.
+        // Must happen AFTER engineState=Idle so that `handleDecision`'s state guard accepts
+        // re-applied Decisions, and AFTER the Idle-restore so phase-filter math is correct.
+        drainBufferedDecisions();
         executor.execute(this::startPhase);
     }
 
@@ -1022,9 +1048,60 @@ public class RabiaEngine<C extends Command> {
 
     /// Handles a decision message from another node.
     /// Observers also process decisions to keep their state machine in sync.
+    ///
+    /// Engine-state guard: Decisions delivered while the engine is `Stopped` / `Syncing` are
+    /// buffered for replay after `activate()`. Applying them eagerly causes asymmetric apply
+    /// — the Decision mutates state via `commitDecision → advancePhase`, then the imminent
+    /// `stateMachine.restoreSnapshot` wipes the mutation and `applyRestoredState` regresses
+    /// `currentPhase`. Live KV writes from the cluster's current phase silently disappear
+    /// from the rejoiner's local state machine, leaving it stuck (its FSM proposes against a
+    /// phantom phase counter and never commits because the cluster is at a different phase).
     private void handleDecision(Decision<C> decision) {
         log.trace("Node {} received decision {}", self, decision);
+        var state = engineState.get();
+        if (state instanceof EngineState.Stopped || state instanceof EngineState.Syncing) {
+            // Bound the buffer: when full, drop the OLDEST entry. The post-restore drain
+            // filters by phase >= currentPhase, so older entries are the most likely to be
+            // discarded anyway. Triggering a fresh resync on overflow would defeat the
+            // purpose; the buffer is a transient holding cell during normal sync windows.
+            bufferedDecisions.offer(decision);
+            if (bufferedDecisionCount.incrementAndGet() > MAX_BUFFERED_DECISIONS) {
+                bufferedDecisions.pollFirst();
+                bufferedDecisionCount.decrementAndGet();
+            }
+            return;
+        }
         commitDecision(getOrCreatePhaseData(decision.phase()), decision);
+    }
+
+    /// Drains the buffered Decisions queue after `activate()` has transitioned the engine
+    /// to `Idle`. Decisions are applied in phase-ascending order, filtered to phases at or
+    /// above the post-restore `currentPhase` — older Decisions are safely discarded because
+    /// they're already captured in the restored snapshot's KV state. Idempotent: applying
+    /// the same Decision twice is a no-op (`PhaseData.tryMarkDecided` returns false on the
+    /// second call). Runs on the executor thread, so concurrent commits are serialized.
+    private void drainBufferedDecisions() {
+        if (bufferedDecisions.isEmpty()) {
+            return;
+        }
+        var sorted = bufferedDecisions.stream()
+                                       .sorted(java.util.Comparator.comparing(Decision::phase))
+                                       .toList();
+        bufferedDecisions.clear();
+        bufferedDecisionCount.set(0);
+        var minPhase = currentPhase.get();
+        var applied = 0;
+        var skipped = 0;
+        for (var decision : sorted) {
+            if (decision.phase().compareTo(minPhase) < 0) {
+                skipped++;
+                continue;
+            }
+            commitDecision(getOrCreatePhaseData(decision.phase()), decision);
+            applied++;
+        }
+        log.info("Node {} drained buffered decisions: applied={}, skipped={}, post-currentPhase={}",
+                 self, applied, skipped, currentPhase.get());
     }
 
     /// Advances to the next phase after decision or carry-forward.
