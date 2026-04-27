@@ -451,11 +451,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
         var candidate = pool.getFirst();
-        if (!ctx.hasEverHadLeader() && !ctx.self().equals(candidate)) {
-            log.debug("Not initial-election candidate (self={}, candidate={})",
-                      ctx.self(), candidate);
-            return;
-        }
+        // All nodes propose in parallel during initial election. Rabia phase resolution
+        // is leaderless and handles concurrent proposals natively — only one commits per
+        // phase. `candidate` is `pool.getFirst()` after sorting, so every proposer picks
+        // the same NodeId, eliminating split-vote risk. Removing the prior single-proposer
+        // gate (lex-first only) ensures the cluster does not stall on `node-1` whenever its
+        // Rabia engine is the slowest to reach `Idle`/`InPhase` after a cold restart —
+        // any peer whose Rabia activates first can drive the proposal forward.
         if (!ctx.tryStartProposal()) {
             log.debug("Proposal already in flight — skipping");
             return;

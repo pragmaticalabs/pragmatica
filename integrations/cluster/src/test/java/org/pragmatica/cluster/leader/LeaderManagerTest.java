@@ -217,8 +217,11 @@ class LeaderManagerTest {
         }
 
         @Test
-        void triggerElection_nonMinNode_doesNotSubmit() throws InterruptedException {
-            // Create manager for node-b (NOT min node) with expectedCluster
+        void triggerElection_nonMinNode_proposesLexFirstCandidate() throws InterruptedException {
+            // Initial-election proposers are no longer restricted to the lex-first node.
+            // All nodes propose the same `pool.getFirst()` candidate; Rabia phase resolution
+            // dedupes naturally. This test validates that a non-min node (node-b) DOES submit,
+            // and submits for the canonical candidate `node-a` (not for itself).
             var localRouter = MessageRouter.mutable();
             var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
             LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> {
@@ -226,7 +229,6 @@ class LeaderManagerTest {
                 return Promise.unitPromise();
             };
             // self=node-b (rank 1), expectedCluster=[node-a, node-b, node-c]
-            // Only the min node (node-a) should submit proposals
             var localManager = LeaderManager.leaderManager(self, localRouter, handler, nodes);
             localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
@@ -241,14 +243,17 @@ class LeaderManagerTest {
             // Establish quorum (sets active=true)
             localRouter.route(QuorumStateNotification.established());
 
-            // Trigger election — node-b is not the designated candidate, should not submit
+            // Trigger election — node-b should submit a proposal for the lex-first candidate.
             localManager.triggerElection();
 
-            // Wait for stagger delay + several retries
+            // Wait for stagger delay so the first ElectionTick fires.
             Thread.sleep(5_000);
 
-            // node-b should NOT have submitted any proposals (only min node submits)
-            assertThat(localProposals).isEmpty();
+            var expectedCandidate = nodes.stream().sorted().toList().getFirst();
+            assertThat(localProposals).isNotEmpty()
+                                       .first()
+                                       .extracting(LeaderProposal::candidate)
+                                       .isEqualTo(expectedCandidate);
         }
 
         @Test
