@@ -12,6 +12,7 @@ import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.linter.LintConfig;
 import org.pragmatica.aether.pg.schema.linter.LintDiagnostic;
 import org.pragmatica.aether.pg.schema.linter.LintEngine;
+import org.pragmatica.lang.Contract;
 
 import javax.annotation.processing.Messager;
 import javax.lang.model.element.Element;
@@ -22,22 +23,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/// Runs [LintEngine] over migration schema events during annotation processing,
-/// mapping each [LintDiagnostic] to a javac [Messager] diagnostic.
-/// The [LintEngine] operates on [SchemaEvent] lists, so only migration-scope
-/// lint is currently wired. Per-query lint is a future extension when the
-/// engine grows query-aware rules.
-public sealed interface LintRunner {
 
-    /// Processor configuration for lint execution.
+public sealed interface LintRunner {
     enum Severity {
         OFF,
         WARNING,
         ERROR;
-
         public static Severity parse(String raw, Severity fallback) {
             if (raw == null || raw.isBlank()) {return fallback;}
-            return switch (raw.trim().toUpperCase()) {
+            return switch (raw.trim().toUpperCase()){
                 case "OFF" -> OFF;
                 case "WARNING", "WARN" -> WARNING;
                 case "ERROR" -> ERROR;
@@ -46,7 +40,6 @@ public sealed interface LintRunner {
         }
     }
 
-    /// Immutable options derived from processor annotation options.
     record LintOptions(Severity severity, Set<String> disabledRules) {
         public static LintOptions defaults() {
             return new LintOptions(Severity.WARNING, Set.of());
@@ -61,49 +54,35 @@ public sealed interface LintRunner {
         }
     }
 
-    /// Lints the given migration scripts once per compilation unit.
-    /// Parses each script, analyzes DDL events, then runs the [LintEngine].
-    /// Failures to parse or analyze individual scripts are reported as plain notes
-    /// — schema load errors are surfaced separately by [SchemaLoader].
-    static void runOnMigrations(Messager messager, List<String> migrationScripts, LintOptions options) {
+    @Contract static void runOnMigrations(Messager messager, List<String> migrationScripts, LintOptions options) {
         if (options.isOff()) {return;}
-        var events = collectEvents(migrationScripts);
+        var events = collectEvents(messager, migrationScripts);
         if (events.isEmpty()) {return;}
         var diagnostics = LintEngine.create(options.toConfig()).lint(events);
-        for (var diag : diagnostics) {
-            emitDiagnostic(messager, diag, options.severity());
-        }
+        for (var diag : diagnostics) {emitDiagnostic(messager, diag, options.severity());}
     }
 
-    /// Placeholder for future query-aware lint support. Currently a no-op:
-    /// [LintEngine] only accepts [SchemaEvent] lists, not query CSTs.
-    static void runOnQuery(Messager messager, Element element, CstNode cst, LintOptions options) {
-        // No-op until LintEngine gains query-level rules.
-    }
+    @Contract static void runOnQuery(Messager messager, Element element, CstNode cst, LintOptions options) {}
 
-    private static List<SchemaEvent> collectEvents(List<String> migrationScripts) {
+    private static List<SchemaEvent> collectEvents(Messager messager, List<String> migrationScripts) {
         var parser = PostgresParser.create();
         var events = new ArrayList<SchemaEvent>();
-        for (var script : migrationScripts) {
-            parser.parseCst(script)
-                  .flatMap(DdlAnalyzer::analyze)
-                  .onSuccess(events::addAll);
-        }
+        for (var script : migrationScripts) {parser.parseCst(script).flatMap(DdlAnalyzer::analyze)
+                                                            .onSuccess(events::addAll)
+                                                            .onFailure(cause -> messager.printMessage(Diagnostic.Kind.WARNING,
+                                                                                                      "pg-lint: failed to parse migration: " + cause.message()));}
         return events;
     }
 
-    private static void emitDiagnostic(Messager messager, LintDiagnostic diag, Severity severity) {
-        var message = ProcessorError.lintFinding(diag.ruleId(),
-                                                  diag.message(),
-                                                  line(diag.span()),
-                                                  column(diag.span()));
+    @Contract private static void emitDiagnostic(Messager messager, LintDiagnostic diag, Severity severity) {
+        var message = ProcessorError.lintFinding(diag.ruleId(), diag.message(), line(diag.span()), column(diag.span()));
         messager.printMessage(toKind(severity, diag.severity()), message);
     }
 
     private static Diagnostic.Kind toKind(Severity optionSeverity, LintDiagnostic.Severity diagSeverity) {
         if (optionSeverity == Severity.ERROR) {return Diagnostic.Kind.ERROR;}
-        return switch (diagSeverity) {
-            case ERROR -> Diagnostic.Kind.WARNING; // downgrade: option WARNING clamps rule ERROR
+        return switch (diagSeverity){
+            case ERROR -> Diagnostic.Kind.WARNING;
             case WARNING -> Diagnostic.Kind.WARNING;
             case INFO -> Diagnostic.Kind.NOTE;
         };
@@ -117,9 +96,8 @@ public sealed interface LintRunner {
         return span.start().column();
     }
 
-    record unused() implements LintRunner {}
+    record unused() implements LintRunner{}
 
-    /// Helper cache for LintOptions derived from a [ProcessingEnvironment]'s options map.
     final class OptionsReader {
         private OptionsReader() {}
 
@@ -140,14 +118,6 @@ public sealed interface LintRunner {
             return Set.copyOf(set);
         }
 
-        /// Defaults: disable rules known to be noisy or stylistic during compile-time annotation processing.
-        /// Users can re-enable a specific rule by NOT including it in `-Apg.lint.disabled`.
-        /// The `pg.lint.disabled` option merges with this set rather than replacing it, but users
-        /// who want these rules back can override severity via `-Apg.lint.severity=ERROR` on specific rules
-        /// once per-rule severity overrides are exposed.
-        private static final Set<String> DEFAULT_DISABLED = Set.of(
-            "PG203", // Unnamed PRIMARY KEY constraint — stylistic
-            "PG206"  // Missing updated_at column — stylistic
-        );
+        private static final Set<String> DEFAULT_DISABLED = Set.of("PG203", "PG206");
     }
 }

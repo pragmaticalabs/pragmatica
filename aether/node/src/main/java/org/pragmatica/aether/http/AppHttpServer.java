@@ -86,44 +86,28 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Application HTTP server for cluster-wide HTTP routing.
-///
-/// Handles HTTP requests by:
-/// <ol>
-///   - Looking up routes locally via HttpRoutePublisher
-///   - If not local, forwarding to remote nodes via HttpForwarder
-/// </ol>
-///
-/// Separate from ManagementServer for security isolation.
-///
-/// Lifecycle is owned by an internal FSM ([`AppHttpState`] + [`AppHttpContext`]) —
-/// `Stopped → Starting → (H1Only | H3Only | Dual) → RouteReady ↔ CertRotating → Stopped`. The FSM
-/// is the single source of truth; server refs, the current [`RouteTable`], and the "routes
-/// published" boolean are all carried as fields on state records (no parallel atomic holders).
 public interface AppHttpServer {
     Promise<Unit> start();
-
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(CertificateBundle newBundle);
     Option<Integer> boundPort();
-    @MessageReceiver void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
-    @MessageReceiver void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
+    @MessageReceiver@Contract void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
+    @MessageReceiver@Contract void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
     @Contract void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
     @Contract void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
-    @MessageReceiver void onHttpForwardRequest(HttpForwardRequest request);
-    @MessageReceiver void onHttpForwardResponse(HttpForwardResponse response);
+    @MessageReceiver@Contract void onHttpForwardRequest(HttpForwardRequest request);
+    @MessageReceiver@Contract void onHttpForwardResponse(HttpForwardResponse response);
     @Contract void rebuildRouter();
     boolean isRouteReady();
     @Contract void onQuorumStateChange(QuorumStateNotification notification);
-    @MessageReceiver void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
-    @MessageReceiver void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
+    @MessageReceiver@Contract void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
+    @MessageReceiver@Contract void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
     Option<HttpForwarder> httpForwarder();
     Option<HttpRoutePublisher> httpRoutePublisher();
 
     default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
         return new MapSubscription<>() {
-            @Override@Contract public void onPut(HttpNodeRouteKey key,
-                                                 HttpNodeRouteValue value) {
+            @Override@Contract public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
                 onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
             }
 
@@ -245,30 +229,24 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final Option<DeploymentManager> strategyCoordinator;
     private final Option<HttpRequestObserver> requestObserver;
     private final Option<HttpForwarder> httpForwarder;
-
     private final AppHttpContext context;
-
-    /// Snapshot of the most recent quorum-state observation. Updated by [`#onQuorumStateChange`]
-    /// and read by the context's `quorumEstablishedSupplier` so a transition action firing after
-    /// bind completion can re-dispatch `QuorumEstablished` if quorum was already established
-    /// before the server became routable.
     private volatile boolean quorumEstablished;
 
     AppHttpServerAdapter(AppHttpConfig config,
-                      ForwardingTimeouts forwardingTimeouts,
-                      NodeId selfNodeId,
-                      HttpRouteRegistry routeRegistry,
-                      Option<HttpRoutePublisher> httpRoutePublisher,
-                      Option<ClusterNetwork> clusterNetwork,
-                      Option<Serializer> serializer,
-                      Option<Deserializer> deserializer,
-                      Option<TlsConfig> tls,
-                      Option<InvocationMetricsCollector> metricsCollector,
-                      Option<EventLoopGroup> bossGroup,
-                      Option<EventLoopGroup> workerGroup,
-                      Option<DeploymentManager> strategyCoordinator,
-                      Option<HttpRequestObserver> requestObserver,
-                      Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
+                         ForwardingTimeouts forwardingTimeouts,
+                         NodeId selfNodeId,
+                         HttpRouteRegistry routeRegistry,
+                         Option<HttpRoutePublisher> httpRoutePublisher,
+                         Option<ClusterNetwork> clusterNetwork,
+                         Option<Serializer> serializer,
+                         Option<Deserializer> deserializer,
+                         Option<TlsConfig> tls,
+                         Option<InvocationMetricsCollector> metricsCollector,
+                         Option<EventLoopGroup> bossGroup,
+                         Option<EventLoopGroup> workerGroup,
+                         Option<DeploymentManager> strategyCoordinator,
+                         Option<HttpRequestObserver> requestObserver,
+                         Option<Fn1<Result<NodeId>, TaskGroup>> taskGroupOwnerResolver) {
         this.config = config;
         this.selfNodeId = selfNodeId;
         this.routeRegistry = routeRegistry;
@@ -293,11 +271,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         this.context = buildContext(selfNodeId, this::computeRouteTable, () -> quorumEstablished);
     }
 
-    /// Pair of the built Fsm and its context. The Fsm reference is also captured inside
-    /// [`AppHttpContext`]; returning both here keeps the `Fsm.fsm(...)` return value consumed
-    /// instead of silently discarded, and mirrors the [`FsmWithContext`] pattern used by the
-    /// leader-election FSM.
-    private record FsmAndContext(Fsm<AppHttpState, ClusterFsmEvent> fsm, AppHttpContext context) {}
+    private record FsmAndContext(Fsm<AppHttpState, ClusterFsmEvent> fsm, AppHttpContext context){}
 
     private static AppHttpContext buildContext(NodeId selfNodeId,
                                                java.util.function.Supplier<RouteTable> routeTableSupplier,
@@ -309,8 +283,10 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                     java.util.function.Supplier<RouteTable> routeTableSupplier,
                                                     java.util.function.BooleanSupplier quorumEstablishedSupplier) {
         var ctxHolder = new AtomicReference<AppHttpContext>();
-        Function<Fsm<AppHttpState, ClusterFsmEvent>, AppHttpState> initialStateFactory =
-                fsm -> buildContextAndStopped(fsm, ctxHolder, routeTableSupplier, quorumEstablishedSupplier);
+        Function<Fsm<AppHttpState, ClusterFsmEvent>, AppHttpState> initialStateFactory = fsm -> buildContextAndStopped(fsm,
+                                                                                                                       ctxHolder,
+                                                                                                                       routeTableSupplier,
+                                                                                                                       quorumEstablishedSupplier);
         var fsm = Fsm.fsm("app-http", selfNodeId.id(), initialStateFactory);
         return new FsmAndContext(fsm, ctxHolder.get());
     }
@@ -367,39 +343,28 @@ class AppHttpServerAdapter implements AppHttpServer {
             log.info("App HTTP server is disabled");
             return Promise.success(unit());
         }
-        // Theme M / M2 — fail fast if RouteRegistry / route table supplier wiring was missed.
         verifyRouteTableSupplierWired(routeRegistry, context);
         log.info("Starting App HTTP server on port {} (protocol: {})", config.port(), config.httpProtocol());
         context.dispatch(new AppHttpEvents.StartRequested());
         var protocol = config.httpProtocol();
         var startPromise = protocol.includesH1()
                           ? startH1Server().flatMap(_ -> protocol.includesH3()
-                                                         ? startH3Server()
-                                                         : Promise.success(unit()))
+                                                        ? startH3Server()
+                                                        : Promise.success(unit()))
                           : startH3Server();
         return startPromise.onSuccess(_ -> onStartCompleted());
     }
 
-    /// Theme M / M2 — package-private precondition exposed for unit testing. Production
-    /// wiring goes through [`#start`]; tests call this directly to verify the guard.
-    static void verifyRouteTableSupplierWired(HttpRouteRegistry routeRegistry, AppHttpContext context) {
-        java.util.Objects.requireNonNull(routeRegistry,
-                                         "routeRegistry must be wired before AppHttpServer.start()");
-        java.util.Objects.requireNonNull(context,
-                                         "AppHttpContext must be wired before AppHttpServer.start()");
+    @Contract@SuppressWarnings("JBCT-EX-01") static void verifyRouteTableSupplierWired(HttpRouteRegistry routeRegistry,
+                                                                                       AppHttpContext context) {
+        java.util.Objects.requireNonNull(routeRegistry, "routeRegistry must be wired before AppHttpServer.start()");
+        java.util.Objects.requireNonNull(context, "AppHttpContext must be wired before AppHttpServer.start()");
         java.util.Objects.requireNonNull(context.routeTableSupplier(),
                                          "context.routeTableSupplier must be wired before AppHttpServer.start()");
-        if (context.routeTableSupplier() == AppHttpContext.EMPTY_ROUTE_TABLE_SENTINEL) {
-            throw new IllegalStateException("AppHttpServer.start(): routeTableSupplier is the default "
-                                            + "RouteTable::empty sentinel — RouteRegistry wiring missed");
-        }
+        if (context.routeTableSupplier() == AppHttpContext.EMPTY_ROUTE_TABLE_SENTINEL) {throw new IllegalStateException("AppHttpServer.start(): routeTableSupplier is the default " + "RouteTable::empty sentinel — RouteRegistry wiring missed");}
     }
 
     private void onStartCompleted() {
-        // Always compute and publish the current route table snapshot from the registry so the FSM
-        // reaches RouteReady with the freshest data. When `httpRoutePublisher` is absent there is
-        // no quorum/sync dependency, so the first publish is all that's required to enable route
-        // dispatch; when present, subsequent KV callbacks keep it up to date.
         publishRouteTable();
     }
 
@@ -421,10 +386,10 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(QuicSslContextFactory::createServer).or(QuicSslContextFactory.createSelfSignedServer());
-        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}", cause.message()))
-                      .map(this::startH3WithSslContext)
-                      .or(Promise::unitPromise)
-                      .recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit);
+        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}",
+                                                    cause.message())).map(this::startH3WithSslContext)
+                                .or(Promise::unitPromise)
+                                .recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit);
     }
 
     private static Unit logH3DisabledAndReturnUnit(Cause cause) {
@@ -475,8 +440,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Override public Promise<Unit> stop() {
         var servers = context.currentServers();
         context.dispatch(new AppHttpEvents.StopRequested());
-        return context.stopServersAsync(servers.server(), servers.h3())
-                      .onSuccessRun(() -> log.info("App HTTP server stopped"));
+        return context.stopServersAsync(servers.server(),
+                                        servers.h3())
+        .onSuccessRun(() -> log.info("App HTTP server stopped"));
     }
 
     @Override public Promise<Unit> rotateCertificate(CertificateBundle newBundle) {
@@ -485,41 +451,36 @@ class AppHttpServerAdapter implements AppHttpServer {
         var previous = context.currentServers();
         var currentRoutes = context.currentRoutes();
         context.dispatch(new AppHttpEvents.CertRotationRequested(newBundle));
-        return context.stopServersAsync(previous.server(), previous.h3())
-                      .flatMap(_ -> restartWithNewBundle(newBundle))
-                      .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
-                                                                                                 pair.h3(),
-                                                                                                 currentRoutes)))
-                      .mapToUnit();
+        return context.stopServersAsync(previous.server(),
+                                        previous.h3()).flatMap(_ -> restartWithNewBundle(newBundle))
+                                       .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
+                                                                                                                 pair.h3(),
+                                                                                                                 currentRoutes)))
+                                       .mapToUnit();
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
         var protocol = config.httpProtocol();
-        if (protocol.includesH1() && protocol.includesH3()) {
-            return restartDualWithBundle(newBundle);
-        }
-        if (protocol.includesH1()) {
-            return restartH1OnlyWithBundle(newBundle);
-        }
+        if (protocol.includesH1() && protocol.includesH3()) {return restartDualWithBundle(newBundle);}
+        if (protocol.includesH1()) {return restartH1OnlyWithBundle(newBundle);}
         return restartH3OnlyWithBundle(newBundle);
     }
 
     private Promise<AppHttpContext.ServerPair> restartDualWithBundle(CertificateBundle newBundle) {
         var newTlsConfig = buildTlsFromBundle(newBundle);
-        return restartH1WithTls(newTlsConfig)
-                .flatMap(serverOpt -> restartH3WithBundle(newBundle)
-                        .map(h3Opt -> new AppHttpContext.ServerPair(serverOpt, h3Opt)));
+        return restartH1WithTls(newTlsConfig).flatMap(serverOpt -> restartH3WithBundle(newBundle).map(h3Opt -> new AppHttpContext.ServerPair(serverOpt,
+                                                                                                                                             h3Opt)));
     }
 
     private Promise<AppHttpContext.ServerPair> restartH1OnlyWithBundle(CertificateBundle newBundle) {
         var newTlsConfig = buildTlsFromBundle(newBundle);
-        return restartH1WithTls(newTlsConfig)
-                .map(serverOpt -> new AppHttpContext.ServerPair(serverOpt, Option.<HttpServer>none()));
+        return restartH1WithTls(newTlsConfig).map(serverOpt -> new AppHttpContext.ServerPair(serverOpt,
+                                                                                             Option.<HttpServer>none()));
     }
 
     private Promise<AppHttpContext.ServerPair> restartH3OnlyWithBundle(CertificateBundle newBundle) {
-        return restartH3WithBundle(newBundle)
-                .map(h3Opt -> new AppHttpContext.ServerPair(Option.<HttpServer>none(), h3Opt));
+        return restartH3WithBundle(newBundle).map(h3Opt -> new AppHttpContext.ServerPair(Option.<HttpServer>none(),
+                                                                                         h3Opt));
     }
 
     private Promise<Option<HttpServer>> restartH1WithTls(Option<TlsConfig> newTls) {
@@ -535,19 +496,17 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                 bg,
                                                                                                 wg)))
         .or(HttpServer.httpServer(finalConfig, handler));
-        return serverPromise.map(Option::some)
-                            .onSuccessRun(() -> log.info("App HTTP/1.1 server restarted with new certificate"))
-                            .onFailure(cause -> log.error("Failed to restart app HTTP/1.1 server: {}",
-                                                          cause.message()));
+        return serverPromise.map(Option::some).onSuccessRun(() -> log.info("App HTTP/1.1 server restarted with new certificate"))
+                                .onFailure(cause -> log.error("Failed to restart app HTTP/1.1 server: {}",
+                                                              cause.message()));
     }
 
     private Promise<Option<HttpServer>> restartH3WithBundle(CertificateBundle newBundle) {
         var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle);
         return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
-                                                    cause.message()))
-                      .map(this::startH3WithSslContextReturningServer)
-                      .or(() -> Promise.success(Option.<HttpServer>none()))
-                      .recover(AppHttpServerAdapter::logH3RotationDisabledAndReturnNone);
+                                                    cause.message())).map(this::startH3WithSslContextReturningServer)
+                                .or(() -> Promise.success(Option.<HttpServer>none()))
+                                .recover(AppHttpServerAdapter::logH3RotationDisabledAndReturnNone);
     }
 
     private static Option<HttpServer> logH3RotationDisabledAndReturnNone(Cause cause) {
@@ -577,27 +536,21 @@ class AppHttpServerAdapter implements AppHttpServer {
         return context.boundPort();
     }
 
-    @Override public void rebuildRouter() {
+    @Override@Contract public void rebuildRouter() {
         publishRouteTable();
     }
 
-    /// Thin delegate over [`AppHttpContext#publishRouteTable`] — the context owns the recompute +
-    /// dispatch path. The supplier passed at context construction (`this::computeRouteTable`)
-    /// provides the authoritative snapshot. Adapter-side call sites (KV callbacks, quorum
-    /// transitions, start completion) log their own arrival reason; the context logs the
-    /// resulting route counts.
-    @Contract
-    private void publishRouteTable() {
+    @Contract private void publishRouteTable() {
         context.publishRouteTable();
     }
 
     private RouteTable computeRouteTable() {
         var localRoutes = httpRoutePublisher.map(HttpRoutePublisher::allLocalRoutes).or(Set.of());
         var localIdentities = localRoutes.stream().map(HttpNodeRouteKey::routeIdentity)
-                                                  .collect(java.util.stream.Collectors.toSet());
+                                                .collect(java.util.stream.Collectors.toSet());
         var remoteRoutes = routeRegistry.allRoutes().stream()
-                                                    .filter(route -> !localIdentities.contains(route.httpMethod() + ":" + route.pathPrefix()))
-                                                    .toList();
+                                                  .filter(route -> !localIdentities.contains(route.httpMethod() + ":" + route.pathPrefix()))
+                                                  .toList();
         return RouteTable.routeTable(localRoutes, remoteRoutes);
     }
 
@@ -605,7 +558,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         return context.isRouteReady() || httpRoutePublisher.isEmpty();
     }
 
-    @Override public void onQuorumStateChange(QuorumStateNotification notification) {
+    @Override@Contract public void onQuorumStateChange(QuorumStateNotification notification) {
         var established = notification.state() == QuorumStateNotification.State.ESTABLISHED;
         quorumEstablished = established;
         if (established) {
@@ -613,32 +566,27 @@ class AppHttpServerAdapter implements AppHttpServer {
             context.dispatch(new ClusterFsmEvent.QuorumEstablished());
             publishRouteTable();
         } else {
-            // Theme C — split-brain protection: on quorum loss the FSM transitions
-            // RouteReady/CertRotating → Quiesced so AppHttpContext.currentRoutes returns
-            // RouteTable.empty(). Existing dispatch path returns 503/404 for application
-            // traffic until quorum is reestablished. Servers stay bound so the management
-            // plane and existing connections are not abruptly torn down.
             log.warn("Quorum disappeared — quiescing app HTTP routing (split-brain protection)");
             context.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
     }
 
-    @Override public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
+    @Override@Contract public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
         log.debug("HttpNodeRouteKey added, rebuilding router");
         publishRouteTable();
     }
 
-    @Override public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
+    @Override@Contract public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
         log.debug("HttpNodeRouteKey removed, rebuilding router");
         publishRouteTable();
     }
 
-    @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+    @Override@Contract public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
         log.debug("NodeRoutesKey added, rebuilding router");
         publishRouteTable();
     }
 
-    @Override public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+    @Override@Contract public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
         log.debug("NodeRoutesKey removed, rebuilding router");
         publishRouteTable();
     }
@@ -722,9 +670,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                  RouteTable routeTable,
                                                  SecurityContext securityContext,
                                                  String method,
-                                                                        String normalizedPath,
-                                                                        String path,
-                                                                        String requestId) {
+                                                 String normalizedPath,
+                                                 String path,
+                                                 String requestId) {
         var principal = securityContext.principal().value();
         if (config.securityEnabled()) {AuditLog.authSuccess(requestId, principal, method, path);}
         ScopedValue.where(SecurityContextHolder.scopedValue(),
@@ -751,8 +699,13 @@ class AppHttpServerAdapter implements AppHttpServer {
         if (httpRoutePublisher.isPresent()) {
             var localRouteOpt = findMatchingLocalRoute(routeTable.localRoutes(), method, normalizedPath);
             if (localRouteOpt.isPresent()) {
-                dispatchLocalRoute(request, response, routeTable, method, normalizedPath,
-                                   localRouteOpt.unwrap(), requestId);
+                dispatchLocalRoute(request,
+                                   response,
+                                   routeTable,
+                                   method,
+                                   normalizedPath,
+                                   localRouteOpt.unwrap(),
+                                   requestId);
                 return;
             }
         }
@@ -775,7 +728,9 @@ class AppHttpServerAdapter implements AppHttpServer {
             var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
             if (remoteRouteOpt.isPresent()) {
                 log.debug("Deployment strategy routing — forwarding {} {} to remote [{}]",
-                          method, normalizedPath, requestId);
+                          method,
+                          normalizedPath,
+                          requestId);
                 dispatchRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
                 return;
             }
@@ -790,13 +745,12 @@ class AppHttpServerAdapter implements AppHttpServer {
         handleRemoteRoute(request, response, route, requestId);
     }
 
-    private void sendNoRouteFound(ResponseWriter response,
-                                  RequestContext request,
-                                  String method,
-                                  String requestId) {
+    private void sendNoRouteFound(ResponseWriter response, RequestContext request, String method, String requestId) {
         if (!isRouteReady() && httpRoutePublisher.isPresent()) {
             log.debug("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
-                      method, request.path(), requestId);
+                      method,
+                      request.path(),
+                      requestId);
             sendProblem(response,
                         HttpStatus.SERVICE_UNAVAILABLE,
                         "Node starting, routes not yet synchronized",
@@ -812,30 +766,27 @@ class AppHttpServerAdapter implements AppHttpServer {
                     requestId);
     }
 
-    /// Accumulated routing context built up by [`#shouldForwardForStrategy`]. Each stage resolves
-    /// an additional piece (local route info → artifact → active routing) so the evaluator only
-    /// runs when all pieces are present.
-    private record RoutingDecision(Artifact artifact, ActiveRouting activeRouting) {}
+    private record RoutingDecision(Artifact artifact, ActiveRouting activeRouting){}
 
     private boolean shouldForwardForStrategy(HttpNodeRouteKey localRouteKey,
                                              String method,
                                              String normalizedPath,
                                              RouteTable routeTable) {
-        return resolveRoutingDecision(method, normalizedPath)
-                .map(decision -> evaluateRoutingDecision(decision.artifact(),
-                                                         decision.activeRouting(),
-                                                         method,
-                                                         normalizedPath,
-                                                         routeTable))
-                .or(false);
+        return resolveRoutingDecision(method, normalizedPath).map(decision -> evaluateRoutingDecision(decision.artifact(),
+                                                                                                      decision.activeRouting(),
+                                                                                                      method,
+                                                                                                      normalizedPath,
+                                                                                                      routeTable))
+                                     .or(false);
     }
 
     private Option<RoutingDecision> resolveRoutingDecision(String method, String normalizedPath) {
-        return strategyCoordinator.flatMap(coordinator ->
-                httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath))
-                                  .flatMap(info -> Artifact.artifact(info.artifactCoord()).option())
-                                  .flatMap(artifact -> coordinator.activeRouting(artifact.base())
-                                                                  .map(routing -> new RoutingDecision(artifact, routing))));
+        return strategyCoordinator.flatMap(coordinator -> httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method,
+                                                                                                               normalizedPath)).flatMap(info -> Artifact.artifact(info.artifactCoord())
+                                                                                                                                                                 .option())
+                                                                                    .flatMap(artifact -> coordinator.activeRouting(artifact.base())
+                                                                                                                                  .map(routing -> new RoutingDecision(artifact,
+                                                                                                                                                                      routing))));
     }
 
     private boolean evaluateRoutingDecision(Artifact artifact,
@@ -886,17 +837,13 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
     }
 
-    @Contract
-    private void recordSecurityDenial(Cause cause, String path, String requestId, String method) {
+    @Contract private void recordSecurityDenial(Cause cause, String path, String requestId, String method) {
         AuditLog.authFailure(requestId, cause.message(), method, path);
         requestObserver.onPresent(obs -> obs.recordSecurityDenial(classifyDenialType(cause), method, path));
     }
 
-    @Contract
-    private void maybeAddAuthenticateHeader(ResponseWriter response, HttpStatus status) {
-        if (status == HttpStatus.UNAUTHORIZED) {
-            addAuthenticateHeader(response);
-        }
+    @Contract private void maybeAddAuthenticateHeader(ResponseWriter response, HttpStatus status) {
+        if (status == HttpStatus.UNAUTHORIZED) {addAuthenticateHeader(response);}
     }
 
     private static String classifyDenialType(Cause cause) {
@@ -957,16 +904,19 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private String normalizePath(String path) {
-        return Option.option(path)
-                     .map(String::strip)
-                     .filter(s -> !s.isEmpty())
-                     .map(AppHttpServerAdapter::ensureLeadingAndTrailingSlash)
-                     .or("/");
+        return Option.option(path).map(String::strip)
+                            .filter(s -> !s.isEmpty())
+                            .map(AppHttpServerAdapter::ensureLeadingAndTrailingSlash)
+                            .or("/");
     }
 
     private static String ensureLeadingAndTrailingSlash(String path) {
-        var withLeading = path.startsWith("/") ? path : "/" + path;
-        return withLeading.endsWith("/") ? withLeading : withLeading + "/";
+        var withLeading = path.startsWith("/")
+                         ? path
+                         : "/" + path;
+        return withLeading.endsWith("/")
+              ? withLeading
+              : withLeading + "/";
     }
 
     private static boolean isHealthEndpoint(String normalizedPath) {
@@ -1121,7 +1071,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                             requestId));
     }
 
-    @Override public void onHttpForwardRequest(HttpForwardRequest request) {
+    @Override@Contract public void onHttpForwardRequest(HttpForwardRequest request) {
         log.trace("Received HttpForwardRequest [{}] correlationId={}", request.requestId(), request.correlationId());
         if (deserializer.isEmpty() || serializer.isEmpty() || clusterNetwork.isEmpty()) {
             log.error("[{}] Cannot handle forward request - missing dependencies", request.requestId());
@@ -1230,15 +1180,15 @@ class AppHttpServerAdapter implements AppHttpServer {
         log.trace("Sent forward error response [{}]: {}", request.requestId(), errorMessage);
     }
 
-    @Override public void onHttpForwardResponse(HttpForwardResponse response) {
+    @Override@Contract public void onHttpForwardResponse(HttpForwardResponse response) {
         httpForwarder.onPresent(fwd -> fwd.onHttpForwardResponse(response));
     }
 
-    @Override public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
+    @Override@Contract public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
         httpForwarder.onPresent(fwd -> fwd.onNodeRemoved(nodeRemoved));
     }
 
-    @Override public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
+    @Override@Contract public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
         httpForwarder.onPresent(fwd -> fwd.onNodeDown(nodeDown));
     }
 

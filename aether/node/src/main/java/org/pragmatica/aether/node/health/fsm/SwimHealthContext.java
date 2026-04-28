@@ -30,21 +30,8 @@ import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
-/// Shared context for the SWIM health-detector FSM. Holds:
-/// - Immutable configuration (router, topology, serializer/deserializer, signal sink, epoch
-///   supplier, leader-gate supplier, observation buffer, SWIM config).
-/// - Per-FSM "singleton" state instances (`stopped`, `starting`) so CAS comparisons against them
-///   are stable.
-/// - Long-lived accounting that survives `Running ↔ LocalDisconnect` cycles: the global rolling-
-///   window faulty counter and the window-start timestamp. Explicitly NOT on the state record
-///   because they must outlive individual state entries (see plan: "long-lived accounting on
-///   Context").
-/// - The bound `Fsm` reference for self-dispatch.
-///
-/// Thread safety: atomic fields are thread-safe on their own. Callers MUST NOT invoke `dispatch`
-/// from the initial-state factory.
-public final class SwimHealthContext {
 
+public final class SwimHealthContext {
     private final Fsm<SwimHealthState, SwimHealthEvents> fsm;
     private final MessageRouter router;
     private final TopologyConfig topologyConfig;
@@ -57,14 +44,10 @@ public final class SwimHealthContext {
     private final SwimConfig swimConfig;
     private final LongSupplier clock;
 
-    // Global rolling-window faulty counter + window-start timestamp. Kept on Context (not on
-    // the state record) so that counts survive Running → LocalDisconnect → Running cycles.
-    // Matches the pre-FSM semantic of a single shared faulty-within-window count across all
-    // peers — any majority-FAULTY gust within `suspectTimeout` triggers local disconnect.
     private final AtomicInteger faultyCountInWindow = new AtomicInteger();
+
     private final AtomicLong faultyWindowStart = new AtomicLong();
 
-    // Per-FSM singletons.
     private final SwimHealthState stopped;
     private final SwimHealthState starting;
 
@@ -78,11 +61,19 @@ public final class SwimHealthContext {
                              BooleanSupplier isLeaderSupplier,
                              PeerObservationStore observationStore,
                              SwimConfig swimConfig) {
-        this(fsm, router, topologyConfig, serializer, deserializer, signalSink, epochSupplier,
-             isLeaderSupplier, observationStore, swimConfig, System::currentTimeMillis);
+        this(fsm,
+             router,
+             topologyConfig,
+             serializer,
+             deserializer,
+             signalSink,
+             epochSupplier,
+             isLeaderSupplier,
+             observationStore,
+             swimConfig,
+             System::currentTimeMillis);
     }
 
-    /// Full constructor with injectable clock — for tests that need deterministic time.
     public SwimHealthContext(Fsm<SwimHealthState, SwimHealthEvents> fsm,
                              MessageRouter router,
                              TopologyConfig topologyConfig,
@@ -109,50 +100,54 @@ public final class SwimHealthContext {
         this.starting = new SwimHealthState.Starting(this);
     }
 
-    /// Current time in milliseconds. Reads from the injected clock so tests can make FSM
-    /// transitions deterministic. Equivalent to `System.currentTimeMillis()` in production.
     public long nowMs() {
         return clock.getAsLong();
     }
 
-    // --- FSM / state access ---
+    public Fsm<SwimHealthState, SwimHealthEvents> fsm() {
+        return fsm;
+    }
 
-    public Fsm<SwimHealthState, SwimHealthEvents> fsm() { return fsm; }
+    @Contract public void dispatch(SwimHealthEvents event) {
+        fsm.dispatch(event);
+    }
 
-    public void dispatch(SwimHealthEvents event) { fsm.dispatch(event); }
+    public SwimHealthState stopped() {
+        return stopped;
+    }
 
-    public SwimHealthState stopped() { return stopped; }
+    public SwimHealthState starting() {
+        return starting;
+    }
 
-    public SwimHealthState starting() { return starting; }
+    public MessageRouter router() {
+        return router;
+    }
 
-    // --- Configuration accessors ---
+    public TopologyConfig topologyConfig() {
+        return topologyConfig;
+    }
 
-    public MessageRouter router() { return router; }
+    public Serializer serializer() {
+        return serializer;
+    }
 
-    public TopologyConfig topologyConfig() { return topologyConfig; }
+    public Deserializer deserializer() {
+        return deserializer;
+    }
 
-    public Serializer serializer() { return serializer; }
+    public BooleanSupplier isLeaderSupplier() {
+        return isLeaderSupplier;
+    }
 
-    public Deserializer deserializer() { return deserializer; }
+    public SwimConfig swimConfig() {
+        return swimConfig;
+    }
 
-    public BooleanSupplier isLeaderSupplier() { return isLeaderSupplier; }
-
-    public SwimConfig swimConfig() { return swimConfig; }
-
-    // --- Routing helpers ---
-
-    public void routeDisconnect(NodeId nodeId) {
+    @Contract public void routeDisconnect(NodeId nodeId) {
         router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(nodeId));
     }
 
-    // --- Health reporting ---
-
-    /// Route a health hint to BOTH the local signal sink (HealthReconciler — leader-active)
-    /// and the node-level observation store (drained into outbound pongs / consumed by future
-    /// LeadingSteady subscribers — Q3). Role-gating is gone: both writes happen unconditionally
-    /// because the destinations themselves no-op on the wrong role (the reconciler ignores
-    /// signals when this node is not the leader; the store outlives leader/follower toggles).
-    /// Both writes use the current epoch from [`epochSupplier`].
     @Contract public void reportHint(NodeId nodeId, HealthHint hint) {
         emitLeaderHint(nodeId, hint);
         bufferHealthObservation(nodeId, hint);
@@ -165,27 +160,20 @@ public final class SwimHealthContext {
     @Contract public void bufferHealthObservation(NodeId nodeId, HealthHint hint) {
         var epoch = epochSupplier.get();
         observationStore.pushHealth(new PeerHealthObservation(nodeId,
-                                                               toWire(hint),
-                                                               epoch.rabiaTerm(),
-                                                               epoch.localCounter(),
-                                                               nowMs()));
+                                                              toWire(hint),
+                                                              epoch.rabiaTerm(),
+                                                              epoch.localCounter(),
+                                                              nowMs()));
     }
 
     private static HealthHintWire toWire(HealthHint hint) {
-        return switch (hint) {
+        return switch (hint){
             case HEALTHY -> HealthHintWire.HEALTHY;
             case SUSPECTED -> HealthHintWire.SUSPECTED;
             case FAULTY -> HealthHintWire.FAULTY;
         };
     }
 
-    // --- Shared routing policy (works without a live protocol) ---
-
-    /// Shared FAULTY-routing policy used by both `onMemberFaulty` (FSM Running or legacy Stopped)
-    /// and `onMemberLeft`. Leader: emits health hint locally and routes DisconnectNode. Follower:
-    /// buffers the observation upstream for the leader's HealthReconciler and, when the faulty
-    /// peer IS the current leader (buffer-upstream cannot work), also routes DisconnectNode
-    /// locally so LeaderManager detects NodeRemoved and proposes a new leader.
     @Contract public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
         if (isLeaderSupplier.getAsBoolean()) {
             routeDisconnect(peer);
@@ -193,42 +181,28 @@ public final class SwimHealthContext {
             bufferHealthObservation(peer, HealthHint.FAULTY);
             return;
         }
-        if (currentLeader.filter(peer::equals).isPresent()) {
-            routeDisconnect(peer);
-        }
+        if (currentLeader.filter(peer::equals).isPresent()) {routeDisconnect(peer);}
         emitLeaderHint(peer, HealthHint.FAULTY);
         bufferHealthObservation(peer, HealthHint.FAULTY);
     }
 
-    // --- Faulty-window accounting ---
-
-    /// Increment the global rolling-window faulty counter. If the window elapsed
-    /// ([`SwimConfig#suspectTimeout`]) has passed, reset the counter and restart the window
-    /// before counting. The counter is shared across all peers to match the pre-FSM semantic.
     public int incrementAndGetFaulty(long nowMillis) {
         var suspectTimeoutMs = swimConfig.suspectTimeout().millis();
         var start = faultyWindowStart.get();
-        if (nowMillis - start > suspectTimeoutMs
-            && faultyWindowStart.compareAndSet(start, nowMillis)) {
-            faultyCountInWindow.set(0);
-        }
+        if (nowMillis - start > suspectTimeoutMs && faultyWindowStart.compareAndSet(start, nowMillis)) {faultyCountInWindow.set(0);}
         return faultyCountInWindow.incrementAndGet();
     }
 
-    /// Reset the rolling window — invoked when the detector observes recovery
-    /// (onNodeConnected / onMemberJoined). Restarts the window start timestamp as well.
-    public void resetFaultyWindow(long nowMillis) {
+    @Contract public void resetFaultyWindow(long nowMillis) {
         faultyCountInWindow.set(0);
         faultyWindowStart.set(nowMillis);
     }
 
-    // --- Topology helpers ---
-
     public Option<InetSocketAddress> resolveSwimAddress(NodeId nodeId, int swimPortOffset) {
         return Option.from(topologyConfig.coreNodes().stream()
-                                         .filter(node -> node.id().equals(nodeId))
-                                         .map(node -> toSwimAddress(node, swimPortOffset))
-                                         .findFirst());
+                                                   .filter(node -> node.id().equals(nodeId))
+                                                   .map(node -> toSwimAddress(node, swimPortOffset))
+                                                   .findFirst());
     }
 
     public static InetSocketAddress toSwimAddress(NodeInfo node, int swimPortOffset) {
@@ -238,7 +212,7 @@ public final class SwimHealthContext {
 
     public Option<NodeInfo> findSelfNode() {
         return Option.from(topologyConfig.coreNodes().stream()
-                                         .filter(node -> node.id().equals(topologyConfig.self()))
-                                         .findFirst());
+                                                   .filter(node -> node.id().equals(topologyConfig.self()))
+                                                   .findFirst());
     }
 }

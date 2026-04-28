@@ -15,13 +15,6 @@ import java.util.List;
 import java.util.Set;
 
 
-/// Generates `{Interface}Factory.java` source code for a persistence interface.
-///
-/// The generated factory contains:
-/// - A static factory method returning a local record implementation
-/// - SQL string constants for each method
-/// - Row mapper methods using `Result.all()` composition
-/// - Method implementations delegating to `PgSqlConnector`
 public final class FactoryGenerator {
     private FactoryGenerator() {}
 
@@ -187,11 +180,9 @@ public final class FactoryGenerator {
             sb.append(",\n                    ").append(factoryClassName)
                      .append("::map");
             sb.append(toMapperMethodSuffix(method.innerTypeName));
-        } else if (method.scalarAccessor().isPresent()) {
-            appendGenericScalarMapper(sb, method);
-        } else if (method.returnKind == MethodAnalyzer.ReturnKind.LONG || method.returnKind == MethodAnalyzer.ReturnKind.BOOLEAN) {
-            appendScalarMapper(sb, method.returnKind, method.sql);
-        }
+        } else if (method.scalarAccessor().isPresent()) {appendGenericScalarMapper(sb, method);} else if (method.returnKind == MethodAnalyzer.ReturnKind.LONG || method.returnKind == MethodAnalyzer.ReturnKind.BOOLEAN) {appendScalarMapper(sb,
+                                                                                                                                                                                                                                             method.returnKind,
+                                                                                                                                                                                                                                             method.sql);}
         for (var param : method.params) {sb.append(", ").append(param.accessor());}
         sb.append(");\n");
     }
@@ -203,28 +194,24 @@ public final class FactoryGenerator {
                  .append("(\"")
                  .append(columnName)
                  .append('"');
-        if (!accessor.typeArg().isEmpty()) {
-            sb.append(", ").append(simplifyAccessorTypeArg(accessor.typeArg()));
-        }
+        if (!accessor.typeArg().isEmpty()) {sb.append(", ").append(simplifyAccessorTypeArg(accessor.typeArg()));}
         sb.append(")");
     }
 
     private static String simplifyAccessorTypeArg(String typeArg) {
-        // The stored type arg is always a class literal, e.g. "java.math.BigDecimal.class".
-        // Since the factory imports the FQN, emit the simple class literal for readability.
-        if (!typeArg.endsWith(".class")) {
-            return typeArg;
-        }
-        var withoutClass = typeArg.substring(0, typeArg.length() - ".class".length());
-        // Handle array class literals: "Integer[]", "java.time.Instant[]"
+        if (!typeArg.endsWith(".class")) {return typeArg;}
+        var withoutClass = typeArg.substring(0,
+                                             typeArg.length() - ".class".length());
         var isArray = withoutClass.endsWith("[]");
-        var base = isArray ? withoutClass.substring(0, withoutClass.length() - 2) : withoutClass;
+        var base = isArray
+                  ? withoutClass.substring(0, withoutClass.length() - 2)
+                  : withoutClass;
         var lastDot = base.lastIndexOf('.');
-        if (lastDot < 0) {
-            return typeArg;
-        }
+        if (lastDot <0) {return typeArg;}
         var simple = base.substring(lastDot + 1);
-        return simple + (isArray ? "[]" : "") + ".class";
+        return simple + (isArray
+                         ? "[]"
+                         : "") + ".class";
     }
 
     private static void appendUnitMethodBody(StringBuilder sb, MethodInfo method) {
@@ -253,15 +240,12 @@ public final class FactoryGenerator {
             var afterAs = outer.substring(asIdx + 4).trim();
             var spaceIdx = afterAs.indexOf(' ');
             var alias = spaceIdx >= 0
-                  ? afterAs.substring(0, spaceIdx).toLowerCase()
-                  : afterAs.toLowerCase();
-            // Strip surrounding parens/quotes/commas if the alias ended at one of them.
+                       ? afterAs.substring(0, spaceIdx).toLowerCase()
+                       : afterAs.toLowerCase();
             return cleanIdentifier(alias);
         }
         var firstSelectItem = firstSelectItem(outer);
-        if (firstSelectItem != null) {
-            return firstSelectItem;
-        }
+        if (firstSelectItem.isPresent()) {return firstSelectItem.unwrap();}
         if (kind == MethodAnalyzer.ReturnKind.BOOLEAN && upper.contains("EXISTS")) {return "exists";}
         if (kind == MethodAnalyzer.ReturnKind.LONG && upper.contains("COUNT")) {return "count";}
         return kind == MethodAnalyzer.ReturnKind.BOOLEAN
@@ -269,104 +253,59 @@ public final class FactoryGenerator {
               : "count";
     }
 
-    /// Extracts the outer (top-level) SELECT clause text, skipping over CTE bodies and
-    /// other parenthesised subqueries. Used to infer the column name for a scalar
-    /// `@Query` return where `SELECT ... AS alias` is inside the outer projection.
     private static String outerSelectClause(String sql) {
-        // Walk the SQL tracking parenthesis depth; record every top-level "SELECT " occurrence
-        // and return the substring starting at the last one.
-        var lastSelect = -1;
+        var lastSelect = - 1;
         var depth = 0;
         var upper = sql.toUpperCase();
         var n = sql.length();
-        for (var i = 0; i < n; i++) {
+        for (var i = 0;i <n;i++) {
             var c = sql.charAt(i);
-            if (c == '(') {
-                depth++;
-            } else if (c == ')') {
-                depth--;
-            } else if (depth == 0 && (c == 'S' || c == 's')) {
-                if (i + 6 <= n && upper.startsWith("SELECT", i)
-                    && (i == 0 || !Character.isLetterOrDigit(sql.charAt(i - 1)))
-                    && (i + 6 == n || !Character.isLetterOrDigit(sql.charAt(i + 6)))) {
-                    lastSelect = i;
-                }
-            }
+            if (c == '(') {depth++;} else if (c == ')') {depth--;} else if (depth == 0 && (c == 'S' || c == 's')) {if (i + 6 <= n && upper.startsWith("SELECT",
+                                                                                                                                                      i) && (i == 0 || !Character.isLetterOrDigit(sql.charAt(i - 1))) && (i + 6 == n || !Character.isLetterOrDigit(sql.charAt(i + 6)))) {lastSelect = i;}}
         }
-        return lastSelect >= 0 ? sql.substring(lastSelect) : sql;
+        return lastSelect >= 0
+              ? sql.substring(lastSelect)
+              : sql;
     }
 
     private static String cleanIdentifier(String raw) {
         var sb = new StringBuilder();
-        for (var c : raw.toCharArray()) {
-            if (Character.isLetterOrDigit(c) || c == '_') {
-                sb.append(c);
-            } else {
-                break;
-            }
-        }
+        for (var c : raw.toCharArray()) {if (Character.isLetterOrDigit(c) || c == '_') {sb.append(c);} else {break;}}
         return sb.toString();
     }
 
-    /// Extracts the PostgreSQL-assigned column name for the first item of a scalar SELECT.
-    ///
-    /// Handles:
-    ///  - `SELECT col FROM ...`                  -> `col`
-    ///  - `SELECT t.col FROM ...`                -> `col`
-    ///  - `SELECT sum(x) FROM ...`               -> `sum`
-    ///  - `SELECT max(x) FROM ...`               -> `max`
-    ///  - `SELECT EXISTS(...) FROM ...`          -> `exists`
-    ///
-    /// Returns null when the shape is not recognisable; the caller falls back to the kind-based
-    /// default (`count` / `exists`).
-    private static String firstSelectItem(String sql) {
+    private static Option<String> firstSelectItem(String sql) {
         var upper = sql.toUpperCase();
         var selectIdx = upper.indexOf("SELECT");
-        if (selectIdx < 0) {
-            return null;
-        }
+        if (selectIdx <0) {return Option.none();}
         var rest = sql.substring(selectIdx + "SELECT".length()).trim();
-        // Skip DISTINCT modifier.
-        if (rest.toUpperCase().startsWith("DISTINCT ")) {
-            rest = rest.substring("DISTINCT ".length()).trim();
-        }
-        // Find end of first projection item (comma at depth 0, or FROM).
+        if (rest.toUpperCase().startsWith("DISTINCT ")) {rest = rest.substring("DISTINCT ".length()).trim();}
         var depth = 0;
         var end = rest.length();
-        for (var i = 0; i < rest.length(); i++) {
+        for (var i = 0;i <rest.length();i++) {
             var c = rest.charAt(i);
-            if (c == '(') {
-                depth++;
-            } else if (c == ')') {
-                depth--;
-            } else if (depth == 0 && (c == ',' || (c == ' ' && startsWithFrom(rest, i)))) {
+            if (c == '(') {depth++;} else if (c == ')') {depth--;} else if (depth == 0 && (c == ',' || (c == ' ' && startsWithFrom(rest,
+                                                                                                                                   i)))) {
                 end = i;
                 break;
             }
         }
         var item = rest.substring(0, end).trim();
-        if (item.isEmpty() || item.equals("*")) {
-            return null;
-        }
-        // Function call → postgres names the column by the function.
+        if (item.isEmpty() || item.equals("*")) {return Option.none();}
         var openParen = item.indexOf('(');
-        if (openParen > 0) {
-            return item.substring(0, openParen).trim().toLowerCase();
-        }
-        // Bare column reference, possibly qualified.
+        if (openParen > 0) {return Option.some(item.substring(0, openParen).trim()
+                                                             .toLowerCase());}
         var lastDot = item.lastIndexOf('.');
-        var bare = lastDot >= 0 ? item.substring(lastDot + 1) : item;
-        // Strip trailing cast/modifier noise.
-        return bare.toLowerCase();
+        var bare = lastDot >= 0
+                  ? item.substring(lastDot + 1)
+                  : item;
+        return Option.some(bare.toLowerCase());
     }
 
     private static boolean startsWithFrom(String text, int index) {
         var i = index;
-        while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
-            i++;
-        }
-        return i + 4 <= text.length() && text.substring(i, i + 4).equalsIgnoreCase("FROM")
-               && (i + 4 == text.length() || Character.isWhitespace(text.charAt(i + 4)));
+        while (i <text.length() && Character.isWhitespace(text.charAt(i))) {i++;}
+        return i + 4 <= text.length() && text.substring(i, i + 4).equalsIgnoreCase("FROM") && (i + 4 == text.length() || Character.isWhitespace(text.charAt(i + 4)));
     }
 
     private static void appendRecordClose(StringBuilder sb, String factoryMethod) {
