@@ -84,11 +84,14 @@ await_generation_quiesced() {
         log_warn "await-quiesced CLI rc=${rc} after ${elapsed}ms — falling back to REST"
     fi
 
-    # Fallback: direct REST POST
+    # Fallback: direct REST POST. Server caps internally at 120s (MAX_TIMEOUT in
+    # ClusterAwaitQuiescedRoute) so curl needs to outlast min(timeout,120s)+slack.
+    local server_budget=$(( timeout > 120 ? 120 : timeout ))
+    local curl_budget=$(( server_budget + 10 ))
     local http_status
     http_status=$(curl -s -o /dev/null -w "%{http_code}" \
         -X POST -H "X-API-Key: ${API_KEY}" \
-        -m $(( timeout + 5 )) \
+        -m "${curl_budget}" \
         "${endpoint}/api/cluster/await-quiesced?epoch=${target_epoch}&timeout=${timeout}s" 2>/dev/null)
     local elapsed=$(( $(_now_ms) - start_ns ))
     if [ "$http_status" = "200" ]; then

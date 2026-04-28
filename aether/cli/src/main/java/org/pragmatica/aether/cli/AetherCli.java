@@ -63,7 +63,7 @@ import static org.pragmatica.lang.Option.some;
 
     @CommandLine.Option(names = {"-k", "--tls-skip-verify"}, description = "Skip TLS certificate verification (insecure)") private boolean tlsSkipVerify;
 
-    @CommandLine.Option(names = {"--request-timeout"}, description = "Per-request timeout in seconds (default 60). 0 disables.") private int requestTimeoutSeconds = 60;
+    @CommandLine.Option(names = {"--request-timeout"}, description = "Per-request timeout in seconds (default 130, must exceed server-side max of 120). 0 disables.") private int requestTimeoutSeconds = 130;
 
     @CommandLine.Mixin private OutputOptions outputOptions = new OutputOptions();
 

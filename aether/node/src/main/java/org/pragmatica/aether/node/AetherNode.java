@@ -1181,10 +1181,36 @@ public interface AetherNode extends ManageableNode {
                                                             generationSnapshotPublisher.markDirty();
                                                             bootstrapModule.retryIfNeeded();
                                                         })
+                                                 .onRemove(AetherKey.NodeLifecycleKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         _ -> generationSnapshotPublisher.markDirty())
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> clusterTopologyManager.onClusterConfigChanged())
+                                                 .onPut(AetherKey.NodeArtifactKey.class,
+                                                        _ -> generationSnapshotPublisher.markDirty())
+                                                 .onRemove(AetherKey.NodeArtifactKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
+                                                 .onPut(AetherKey.SliceTargetKey.class,
+                                                        _ -> generationSnapshotPublisher.markDirty())
+                                                 .onRemove(AetherKey.SliceTargetKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
+                                                 .onPut(AetherKey.SliceNodeKey.class,
+                                                        _ -> generationSnapshotPublisher.markDirty())
+                                                 .onRemove(AetherKey.SliceNodeKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
+                                                 .onPut(AetherKey.AppBlueprintKey.class,
+                                                        _ -> generationSnapshotPublisher.markDirty())
+                                                 .onRemove(AetherKey.AppBlueprintKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
+                                                 .onPut(AetherKey.BlueprintResourcesKey.class,
+                                                        _ -> generationSnapshotPublisher.markDirty())
+                                                 .onRemove(AetherKey.BlueprintResourcesKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
+                                                 .onPut(AetherKey.DhtPartitionOwnershipKey.class,
+                                                        _ -> generationSnapshotPublisher.markDirty())
+                                                 .onRemove(AetherKey.DhtPartitionOwnershipKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
                                                  .build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
         Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = snapshotSupplier;
