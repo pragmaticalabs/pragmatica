@@ -20,14 +20,10 @@ import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.http.routing.Handler;
-import org.pragmatica.http.routing.HttpError;
-import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -38,8 +34,6 @@ import static org.pragmatica.aether.api.ManagementApiResponses.ClusterTopologySt
 
 
 public final class ClusterTopologyRoutes implements RouteSource {
-    private static final Cause SNAPSHOT_NOT_PUBLISHED = Causes.cause("Cluster generation snapshot not yet published — leader is bootstrapping or no quorum");
-
     private final Supplier<ManageableNode> nodeSupplier;
 
     private ClusterTopologyRoutes(Supplier<ManageableNode> nodeSupplier) {
@@ -80,10 +74,34 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
     private Promise<ClusterTopologyStatusResponse> buildTopologyStatus() {
         var node = nodeSupplier.get();
-        return node.currentGenerationSnapshot()
-                                             .fold(() -> Promise.<ClusterTopologyStatusResponse>failure(HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE,
-                                                                                                                            SNAPSHOT_NOT_PUBLISHED)),
-                                                   snapshot -> Promise.success(assembleTopologyStatus(node, snapshot)));
+        return Promise.success(node.currentGenerationSnapshot().map(snapshot -> assembleTopologyStatus(node, snapshot))
+                                                             .or(() -> assembleFromTopologyManager(node)));
+    }
+
+    private static ClusterTopologyStatusResponse assembleFromTopologyManager(ManageableNode node) {
+        var topologyConfig = node.topologyConfig();
+        var topologyManager = node.topologyManager();
+        var connectedPeers = node.connectedPeerIds();
+        var allNodeIds = topologyManager.topology();
+        var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
+                                           .filter(id -> isHealthy(topologyManager, id))
+                                           .map(NodeId::id)
+                                           .toList();
+        var coreCount = coreNodeIds.size();
+        var workerCount = Math.max(0, connectedPeers.size() - coreCount);
+        var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
+                                                                        id,
+                                                                        connectedPeers.contains(id)))
+                                           .toList();
+        return new ClusterTopologyStatusResponse(coreCount,
+                                                 topologyConfig.coreMax(),
+                                                 topologyConfig.coreMin(),
+                                                 workerCount,
+                                                 topologyConfig.clusterSize(),
+                                                 coreNodeIds,
+                                                 connectedPeers.size(),
+                                                 nodeDetails,
+                                                 Option.<String>none());
     }
 
     private static ClusterTopologyStatusResponse assembleTopologyStatus(ManageableNode node,

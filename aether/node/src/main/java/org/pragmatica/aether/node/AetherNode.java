@@ -1132,7 +1132,9 @@ public interface AetherNode extends ManageableNode {
         publisherRef.set(generationSnapshotPublisher);
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
                                                               rabiaTermSupplier,
-                                                              () -> Option.<Long>none(),
+                                                              () -> isLeaderSupplier.getAsBoolean()
+                                                                   ? Option.some(leaderTerm.get())
+                                                                   : Option.<Long>none(),
                                                               hlcClockEarly,
                                                               projectorEarly,
                                                               kvStore::snapshot,
@@ -1176,6 +1178,8 @@ public interface AetherNode extends ManageableNode {
                                                             generationSnapshotPublisher.markDirty();
                                                             bootstrapModule.retryIfNeeded();
                                                         })
+                                                 .onRemove(AetherKey.SpokesmanKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
                                                  .onPut(AetherKey.NodeLifecycleKey.class,
                                                         _ -> {
                                                             generationSnapshotPublisher.markDirty();
@@ -1185,8 +1189,14 @@ public interface AetherNode extends ManageableNode {
                                                            _ -> generationSnapshotPublisher.markDirty())
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         _ -> generationSnapshotPublisher.markDirty())
+                                                 .onRemove(AetherKey.ClusterConfigKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> clusterTopologyManager.onClusterConfigChanged())
+                                                 .onPut(AetherKey.VersionRoutingKey.class,
+                                                        _ -> generationSnapshotPublisher.markDirty())
+                                                 .onRemove(AetherKey.VersionRoutingKey.class,
+                                                           _ -> generationSnapshotPublisher.markDirty())
                                                  .onPut(AetherKey.NodeArtifactKey.class,
                                                         _ -> generationSnapshotPublisher.markDirty())
                                                  .onRemove(AetherKey.NodeArtifactKey.class,

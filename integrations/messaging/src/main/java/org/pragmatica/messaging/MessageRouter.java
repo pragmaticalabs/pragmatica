@@ -126,10 +126,21 @@ public sealed interface MessageRouter {
             @SuppressWarnings("unchecked")
             public <R extends Message> void route(R message) {
                 Option.option(routingTable.get(message.getClass()))
-                      .onPresent(list -> list.forEach(fn -> fn.accept((T) message)))
+                      .onPresent(list -> list.forEach(fn -> dispatchOne(fn, (T) message)))
                       .onEmpty(() -> log.warn("No route for message type: {}",
                                               message.getClass()
                                                      .getSimpleName()));
+            }
+
+            private void dispatchOne(Consumer<T> handler, T message) {
+                try {
+                    handler.accept(message);
+                } catch (RuntimeException e) {
+                    log.error("Listener for {} threw {}; continuing dispatch chain",
+                              message.getClass().getSimpleName(),
+                              e.getClass().getSimpleName(),
+                              e);
+                }
             }
 
             @Override
@@ -146,13 +157,26 @@ public sealed interface MessageRouter {
 
     /// Immutable router with fixed routes.
     non-sealed interface ImmutableRouter<T extends Message> extends MessageRouter {
+        Logger LOG = LoggerFactory.getLogger(ImmutableRouter.class);
+
         Map<Class<T>, List<Consumer<T>>> routingTable();
 
         @Override
         @SuppressWarnings("unchecked")
         default <R extends Message> void route(R message) {
-            routingTable().get(message.getClass())
-                        .forEach(fn -> fn.accept((T) message));
+            Option.option(routingTable().get(message.getClass()))
+                  .onPresent(list -> list.forEach(fn -> dispatchOne(fn, (T) message)));
+        }
+
+        private void dispatchOne(Consumer<T> handler, T message) {
+            try {
+                handler.accept(message);
+            } catch (RuntimeException e) {
+                LOG.error("Listener for {} threw {}; continuing dispatch chain",
+                          message.getClass().getSimpleName(),
+                          e.getClass().getSimpleName(),
+                          e);
+            }
         }
     }
 

@@ -16,6 +16,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
@@ -350,6 +351,8 @@ public sealed interface TaskAssignmentCoordinator {
         private List<NodeId> collectHealthyCoreNodes() {
             return ctx.topologyManager.topology().stream()
                                                .filter(id -> !ctx.topologyManager.isPassive(id))
+                                               .filter(id -> ctx.topologyManager.getState(id).map(s -> s.health() == NodeHealth.HEALTHY)
+                                                                                         .or(false))
                                                .sorted()
                                                .toList();
         }
