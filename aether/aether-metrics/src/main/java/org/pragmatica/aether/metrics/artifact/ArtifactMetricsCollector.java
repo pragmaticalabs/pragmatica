@@ -11,20 +11,6 @@ import java.util.Map;
 import java.util.Set;
 
 
-/// Collects and exposes artifact storage and deployment metrics.
-///
-///
-/// Provides the following metrics:
-///
-///   - `artifact_chunks_total` - Total chunks stored on this node
-///   - `artifact_memory_bytes` - Memory used (chunks x 64KB)
-///   - `artifact_count` - Number of distinct artifacts stored
-///   - `artifact_deployed_count` - Number of artifacts deployed in cluster
-///
-///
-///
-/// Combines storage metrics from {@link ArtifactStore} and deployment tracking
-/// from {@link ArtifactDeploymentTracker}.
 public interface ArtifactMetricsCollector {
     String ARTIFACT_CHUNKS_TOTAL = "artifact.chunks.total";
 

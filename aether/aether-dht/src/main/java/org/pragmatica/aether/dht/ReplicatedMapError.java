@@ -7,7 +7,6 @@ package org.pragmatica.aether.dht;
 import org.pragmatica.lang.Cause;
 
 
-/// Error causes for ReplicatedMap operations.
 public sealed interface ReplicatedMapError extends Cause {
     record SerializationFailed(String detail) implements ReplicatedMapError {
         @Override public String message() {

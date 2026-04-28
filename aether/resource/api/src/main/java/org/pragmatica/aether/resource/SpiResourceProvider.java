@@ -24,17 +24,6 @@ import java.util.function.Function;
 import static org.pragmatica.lang.Option.option;
 
 
-/// SPI-based implementation of ResourceProvider.
-///
-/// Discovers {@link ResourceFactory} implementations via ServiceLoader
-/// and caches created instances by (resourceType, configSection) key.
-///
-/// When multiple factories are registered for the same resource type,
-/// they are sorted by priority (descending). At provision time, the config
-/// is loaded once and factories are tried in order — the first one where
-/// {@code supports(config)} returns true is selected.
-///
-/// Thread-safe: Uses ConcurrentHashMap.computeIfAbsent for atomic caching.
 public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, List<ResourceFactory<?, ?>>> factories;
     private final Map<CacheKey, Promise<?>> promiseCache;

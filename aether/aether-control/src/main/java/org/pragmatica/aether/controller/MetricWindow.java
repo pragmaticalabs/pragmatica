@@ -8,31 +8,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Immutable sliding window for relative change calculation.
-///
-/// Uses circular buffer approach for O(1) operations.
-/// Creates new instance on each {@link #record(double)} call to maintain immutability.
-///
-/// The relative change model compares current value against rolling average:
-///
-///   - `relativeLoad = currentValue / rollingAverage`
-///   - `relativeLoad > 1.5` suggests scale up
-///   - `relativeLoad < 0.5` suggests scale down
-///
-/// Implementation note: The array is cloned on each {@link #record(double)} call to
-/// maintain immutability. This creates GC pressure but is necessary for thread safety
-/// and functional semantics. The trade-off is acceptable given the low frequency of
-/// metric sampling (typically every 5 seconds).
-///
-/// **WARNING:** Do not use `valuesInternal()` directly - it exposes
-/// the mutable backing array which breaks immutability. Always use {@link #values()} for
-/// safe read-only access. This is a limitation of records with array fields.
-///
-/// @param valuesInternal Circular buffer of recorded values (INTERNAL - use {@link #values()} instead)
-/// @param head           Next write position in the buffer
-/// @param count          Number of values recorded (capped at windowSize)
-/// @param sum            Running sum of values in the window
-/// @param recordCount    Total records since creation (for periodic sum recalculation)
 public record MetricWindow(double[] valuesInternal, int head, int count, double sum, long recordCount) {
     private static final int SUM_RECALCULATION_INTERVAL = 100;
 

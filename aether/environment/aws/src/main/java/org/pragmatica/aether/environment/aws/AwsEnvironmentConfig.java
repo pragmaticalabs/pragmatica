@@ -14,8 +14,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for the AWS environment integration.
-/// Contains AWS API credentials and default EC2 provisioning parameters.
 public record AwsEnvironmentConfig(AwsConfig awsConfig,
                                    String amiId,
                                    String instanceType,

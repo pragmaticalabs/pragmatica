@@ -25,7 +25,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for dynamic configuration management: get, set, remove config overrides.
 public final class ConfigRoutes implements RouteSource {
     private final DynamicConfigManager configManager;
     private final Supplier<ManageableNode> nodeSupplier;

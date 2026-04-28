@@ -28,14 +28,6 @@ import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForw
 import static org.pragmatica.lang.Option.option;
 
 
-/// Caller-side client for forwarding stream publishes and reads to remote nodes.
-///
-/// Publish (existing): sends [org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward]
-/// to the governor, awaits [PublishForwardResponse].
-///
-/// Read (SPEC: §4): sends [ReadForward] to a caught-up replica, awaits [ReadForwardResponse].
-/// Pending reads are tracked in a separate map to avoid type-erasure hazards from unifying
-/// `ConcurrentHashMap<String, Promise<?>>` (SPEC: §4.3).
 public interface StreamForwardClient {
     Promise<Long> publishRemote(NodeId governorId, String streamName, int partition, byte[] payload, long timestamp);
     Promise<ReadForwardResult> readRemote(NodeId replicaId,

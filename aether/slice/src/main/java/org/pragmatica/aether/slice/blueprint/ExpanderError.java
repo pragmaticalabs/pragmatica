@@ -10,7 +10,6 @@ import org.pragmatica.lang.Cause;
 import java.util.List;
 
 
-/// Errors that can occur during blueprint expansion.
 public sealed interface ExpanderError extends Cause {
     record ArtifactMismatch(Artifact requested, Artifact declared) implements ExpanderError {
         public static ArtifactMismatch artifactMismatch(Artifact requested, Artifact declared) {

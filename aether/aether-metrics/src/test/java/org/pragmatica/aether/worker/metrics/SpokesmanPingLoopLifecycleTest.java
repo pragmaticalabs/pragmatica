@@ -50,16 +50,13 @@ class SpokesmanPingLoopLifecycleTest {
     void setUp() {
         var network = new NoopNetwork();
         var rabiaTerm = new AtomicLong(7L);
-        Option<ClusterGenerationSnapshot> snapshot = Option.some(ClusterGenerationSnapshot.empty(7L));
         statusWriter = new RecordingStatusWriter();
         loop = SpokesmanPingLoop.spokesmanPingLoop(SELF,
                                                     network,
                                                     TimeSpan.timeSpan(1).seconds(),
                                                     rabiaTerm::get,
-                                                    () -> snapshot,
                                                     Map::of,
                                                     communityId -> Option.some(GOV_A),
-                                                    _ -> new byte[]{1, 2, 3},
                                                     statusWriter);
         loop.start();
     }

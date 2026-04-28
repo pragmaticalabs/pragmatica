@@ -10,11 +10,6 @@ import org.pragmatica.aether.config.cluster.PortMapping;
 import java.security.SecureRandom;
 
 
-/// Generates a Docker Compose YAML file from cluster configuration.
-///
-/// Designed for single-host testing scenarios where all nodes run on the same machine.
-/// Each node gets sequential host port offsets: node-1 on base ports, node-2 on base+1, etc.
-/// Uses bridge networking with Docker DNS for inter-node discovery.
 sealed interface DockerComposeGenerator {
     record unused() implements DockerComposeGenerator{}
 

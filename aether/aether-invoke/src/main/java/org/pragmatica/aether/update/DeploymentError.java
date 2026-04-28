@@ -7,7 +7,6 @@ package org.pragmatica.aether.update;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors that can occur during deployment operations.
 public sealed interface DeploymentError extends Cause {
     record DeploymentNotFound(String deploymentId) implements DeploymentError {
         public static DeploymentNotFound deploymentNotFound(String deploymentId) {

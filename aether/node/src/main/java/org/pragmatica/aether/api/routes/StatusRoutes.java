@@ -42,7 +42,6 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 
-/// Routes for cluster status: health, status, nodes, events, liveness and readiness probes.
 public final class StatusRoutes implements RouteSource {
     private final Supplier<ManageableNode> nodeSupplier;
     private final Supplier<AppHttpServer> appHttpServerSupplier;

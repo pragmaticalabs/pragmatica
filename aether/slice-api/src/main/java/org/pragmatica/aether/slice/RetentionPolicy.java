@@ -9,16 +9,6 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.lang.Option.none;
 
 
-/// Retention policy for a stream, controlling when events are evicted.
-///
-/// The `mode` field controls how the three dimensions (count, size, age) are combined:
-/// - ANY (default): events are evicted when any single limit is exceeded (whichever triggers first).
-/// - ALL: events are evicted only when all configured limits are exceeded simultaneously.
-///
-/// When tier-aware retention is configured and events have been sealed to persistent storage,
-/// the post-seal limits apply instead, enabling more aggressive eviction of already-persisted data.
-///
-/// Defaults: 100,000 events, 256 MB, 24 hours, ANY mode, no tier-aware retention.
 public record RetentionPolicy(long maxCount,
                               long maxBytes,
                               long maxAgeMs,

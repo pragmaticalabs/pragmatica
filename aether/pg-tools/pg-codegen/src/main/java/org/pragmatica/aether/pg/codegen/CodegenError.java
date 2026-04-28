@@ -7,7 +7,6 @@ package org.pragmatica.aether.pg.codegen;
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for code generation.
 public sealed interface CodegenError extends Cause {
     record UnsupportedType(String typeName) implements CodegenError {
         @Override public String message() {

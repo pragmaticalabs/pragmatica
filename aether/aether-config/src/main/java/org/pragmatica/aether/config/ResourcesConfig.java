@@ -9,12 +9,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Kubernetes resource configuration for pods.
-///
-/// @param cpuRequest    CPU request (e.g., "500m")
-/// @param cpuLimit      CPU limit (e.g., "2")
-/// @param memoryRequest Memory request (e.g., "1Gi")
-/// @param memoryLimit   Memory limit (e.g., "2Gi")
 public record ResourcesConfig(String cpuRequest, String cpuLimit, String memoryRequest, String memoryLimit) {
     public static Result<ResourcesConfig> resourcesConfig(String cpuRequest,
                                                           String cpuLimit,

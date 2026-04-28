@@ -13,9 +13,6 @@ import org.pragmatica.lang.Unit;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Interface for TTM model inference.
-///
-/// Implementations wrap ONNX Runtime or other ML inference engines.
 public interface TTMPredictor {
     Promise<float[]> predict(float[][] input);
     double lastConfidence();

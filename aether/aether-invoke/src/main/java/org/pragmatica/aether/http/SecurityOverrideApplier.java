@@ -15,12 +15,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Applies blueprint security overrides to route definitions at publication time.
-///
-/// Override application is subject to the blueprint's override policy:
-/// - STRENGTHEN_ONLY: override applied only if new strength >= original strength
-/// - FULL: any override is applied
-/// - NONE: all overrides are rejected (logged as warnings)
 @SuppressWarnings({"JBCT-UTIL-02", "JBCT-ZONE-02"}) public interface SecurityOverrideApplier {
     Logger LOG = LoggerFactory.getLogger(SecurityOverrideApplier.class);
 

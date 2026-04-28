@@ -24,11 +24,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Manages ring buffers for locally-owned stream partitions.
-///
-/// This is the core runtime component for single-node streaming.
-/// Each stream is backed by an array of `OffHeapRingBuffer` instances (one per partition).
-/// Remote routing (cross-node produce/consume) is a future layer.
 public final class StreamPartitionManager implements AutoCloseable {
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
 

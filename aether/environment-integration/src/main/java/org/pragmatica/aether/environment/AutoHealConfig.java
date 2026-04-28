@@ -11,61 +11,14 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for cluster auto-healing behavior.
-///
-/// @param retryInterval               interval between snapshot-driven safety-net polls when the
-///                                    cluster is below target size (CTM also reacts immediately to
-///                                    snapshot delta and topology change events)
-/// @param startupCooldown             delay before first auto-heal check during initial cluster
-///                                    formation, allowing all nodes time to join before provisioning
-///                                    replacements
-/// @param staleObservationTtl         maximum age of follower-produced peer observations
-///                                    (`PeerHealthObservation` / `PeerConnectivityObservation`) accepted
-///                                    by the leader's `HealthReconciler`. Observations whose
-///                                    `producedAtMs` is older than `now - staleObservationTtl` at drain
-///                                    time are dropped without affecting the snapshot. Defaults to 30s.
-/// @param quicMissPromotionThreshold  number of consecutive QUIC ping-misses (recorded via
-///                                    `peerObservationStore.recordPingMiss`) at which the leader's
-///                                    `HealthReconciler` promotes a peer's `swimHints` entry to
-///                                    `FAULTY` even if SWIM has not fired. Defense-in-depth: keeps
-///                                    auto-heal viable when SWIM is delayed or wedged. Idempotent —
-///                                    repeat promotions on subsequent misses are no-ops. Defaults to 10.
-/// @param provisioningTimeout         per-slot deadline for in-flight CTM provisioning attempts.
-///                                    When `Reconciling` dispatches a wave of N replacements it tracks
-///                                    one slot per provision with `deadlineMs = now + provisioningTimeout`.
-///                                    On every reconcile tick, expired slots are dropped and the deficit
-///                                    is recomputed against `realActual + nonExpiredSlots`; if a stall
-///                                    leaves the cluster below desired the next tick dispatches a top-up.
-///                                    Sized to cover docker spawn + container start + consensus catch-up
-///                                    + SWIM stabilize (tens of seconds). Defaults to 60s.
-/// @param provisionStabilityWindow    minimum time the real-actual healthy ON_DUTY count must be stable
-///                                    (no node-add or node-remove) before CTM is allowed to dispatch
-///                                    new provisions. Universal stability gate that prevents phantom
-///                                    provisioning during cluster boot when only N of M static nodes
-///                                    have joined: the count is still climbing, so a brief pause lets
-///                                    the remaining lifecycles converge before auto-heal fires.
-///                                    Defaults to 30s.
-/// @param decommissionedRetention     maximum age of `NodeLifecycleValue(state == DECOMMISSIONED)`
-///                                    atoms before the leader-side periodic GC removes them via
-///                                    `KVCommand.Remove`. Theme K #4 — without this sweep, terminated
-///                                    nodes accumulate as tombstones over the cluster's lifetime.
-///                                    Defaults to 24h.
-/// @param swimHintsTtl                per-entry TTL for the leader-projection `swimHints` map in
-///                                    `HealthReconcilerContext`. Defense-in-depth against sticky
-///                                    SUSPECTED state from transient SWIM probes during boot —
-///                                    when a hint is older than `swimHintsTtl` without re-emission
-///                                    the projector treats it as absent (defaults to HEALTHY) so
-///                                    the membership view self-heals. Does not mask actual SWIM
-///                                    SUSPECT/FAULT signals — those continue to refresh the hint
-///                                    on every emission. Defaults to 60s.
 public record AutoHealConfig(TimeSpan retryInterval,
-                              TimeSpan startupCooldown,
-                              TimeSpan staleObservationTtl,
-                              int quicMissPromotionThreshold,
-                              TimeSpan provisioningTimeout,
-                              TimeSpan provisionStabilityWindow,
-                              TimeSpan decommissionedRetention,
-                              TimeSpan swimHintsTtl) {
+                             TimeSpan startupCooldown,
+                             TimeSpan staleObservationTtl,
+                             int quicMissPromotionThreshold,
+                             TimeSpan provisioningTimeout,
+                             TimeSpan provisionStabilityWindow,
+                             TimeSpan decommissionedRetention,
+                             TimeSpan swimHintsTtl) {
     public static final TimeSpan DEFAULT_STALE_OBSERVATION_TTL = timeSpan(30).seconds();
 
     public static final int DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD = 10;
@@ -79,13 +32,13 @@ public record AutoHealConfig(TimeSpan retryInterval,
     public static final TimeSpan DEFAULT_SWIM_HINTS_TTL = timeSpan(60).seconds();
 
     public static final AutoHealConfig DEFAULT = autoHealConfig(timeSpan(10).seconds(),
-                                                                 timeSpan(15).seconds(),
-                                                                 DEFAULT_STALE_OBSERVATION_TTL,
-                                                                 DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                                 DEFAULT_PROVISIONING_TIMEOUT,
-                                                                 DEFAULT_PROVISION_STABILITY_WINDOW,
-                                                                 DEFAULT_DECOMMISSIONED_RETENTION,
-                                                                 DEFAULT_SWIM_HINTS_TTL).unwrap();
+                                                                timeSpan(15).seconds(),
+                                                                DEFAULT_STALE_OBSERVATION_TTL,
+                                                                DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                                                DEFAULT_PROVISIONING_TIMEOUT,
+                                                                DEFAULT_PROVISION_STABILITY_WINDOW,
+                                                                DEFAULT_DECOMMISSIONED_RETENTION,
+                                                                DEFAULT_SWIM_HINTS_TTL).unwrap();
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval, TimeSpan startupCooldown) {
         return autoHealConfig(retryInterval,
@@ -99,8 +52,8 @@ public record AutoHealConfig(TimeSpan retryInterval,
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
-                                                         TimeSpan startupCooldown,
-                                                         TimeSpan staleObservationTtl) {
+                                                        TimeSpan startupCooldown,
+                                                        TimeSpan staleObservationTtl) {
         return autoHealConfig(retryInterval,
                               startupCooldown,
                               staleObservationTtl,
@@ -112,9 +65,9 @@ public record AutoHealConfig(TimeSpan retryInterval,
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
-                                                         TimeSpan startupCooldown,
-                                                         TimeSpan staleObservationTtl,
-                                                         int quicMissPromotionThreshold) {
+                                                        TimeSpan startupCooldown,
+                                                        TimeSpan staleObservationTtl,
+                                                        int quicMissPromotionThreshold) {
         return autoHealConfig(retryInterval,
                               startupCooldown,
                               staleObservationTtl,
@@ -126,10 +79,10 @@ public record AutoHealConfig(TimeSpan retryInterval,
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
-                                                         TimeSpan startupCooldown,
-                                                         TimeSpan staleObservationTtl,
-                                                         int quicMissPromotionThreshold,
-                                                         TimeSpan provisioningTimeout) {
+                                                        TimeSpan startupCooldown,
+                                                        TimeSpan staleObservationTtl,
+                                                        int quicMissPromotionThreshold,
+                                                        TimeSpan provisioningTimeout) {
         return autoHealConfig(retryInterval,
                               startupCooldown,
                               staleObservationTtl,
@@ -141,11 +94,11 @@ public record AutoHealConfig(TimeSpan retryInterval,
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
-                                                         TimeSpan startupCooldown,
-                                                         TimeSpan staleObservationTtl,
-                                                         int quicMissPromotionThreshold,
-                                                         TimeSpan provisioningTimeout,
-                                                         TimeSpan provisionStabilityWindow) {
+                                                        TimeSpan startupCooldown,
+                                                        TimeSpan staleObservationTtl,
+                                                        int quicMissPromotionThreshold,
+                                                        TimeSpan provisioningTimeout,
+                                                        TimeSpan provisionStabilityWindow) {
         return autoHealConfig(retryInterval,
                               startupCooldown,
                               staleObservationTtl,
@@ -157,12 +110,12 @@ public record AutoHealConfig(TimeSpan retryInterval,
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
-                                                         TimeSpan startupCooldown,
-                                                         TimeSpan staleObservationTtl,
-                                                         int quicMissPromotionThreshold,
-                                                         TimeSpan provisioningTimeout,
-                                                         TimeSpan provisionStabilityWindow,
-                                                         TimeSpan decommissionedRetention) {
+                                                        TimeSpan startupCooldown,
+                                                        TimeSpan staleObservationTtl,
+                                                        int quicMissPromotionThreshold,
+                                                        TimeSpan provisioningTimeout,
+                                                        TimeSpan provisionStabilityWindow,
+                                                        TimeSpan decommissionedRetention) {
         return autoHealConfig(retryInterval,
                               startupCooldown,
                               staleObservationTtl,
@@ -174,13 +127,13 @@ public record AutoHealConfig(TimeSpan retryInterval,
     }
 
     public static Result<AutoHealConfig> autoHealConfig(TimeSpan retryInterval,
-                                                         TimeSpan startupCooldown,
-                                                         TimeSpan staleObservationTtl,
-                                                         int quicMissPromotionThreshold,
-                                                         TimeSpan provisioningTimeout,
-                                                         TimeSpan provisionStabilityWindow,
-                                                         TimeSpan decommissionedRetention,
-                                                         TimeSpan swimHintsTtl) {
+                                                        TimeSpan startupCooldown,
+                                                        TimeSpan staleObservationTtl,
+                                                        int quicMissPromotionThreshold,
+                                                        TimeSpan provisioningTimeout,
+                                                        TimeSpan provisionStabilityWindow,
+                                                        TimeSpan decommissionedRetention,
+                                                        TimeSpan swimHintsTtl) {
         return success(new AutoHealConfig(retryInterval,
                                           startupCooldown,
                                           staleObservationTtl,

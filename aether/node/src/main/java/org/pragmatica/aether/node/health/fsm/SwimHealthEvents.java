@@ -13,52 +13,27 @@ import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 
-/// Domain event vocabulary for the SWIM health-detector FSM. Each event is a record and is
-/// dispatched to the FSM via [`SwimHealthContext#dispatch`]. Events drive lifecycle transitions
-/// and per-peer health accounting; no event causes direct state mutation outside the FSM.
+
 public sealed interface SwimHealthEvents {
+    record StartRequested() implements SwimHealthEvents{}
 
-    /// Requested by the public `start()` entry point. Moves the FSM from `Stopped` to `Starting`
-    /// while the caller performs the synchronous-to-asynchronous transport/protocol creation.
-    record StartRequested() implements SwimHealthEvents {}
+    record ProtocolReady(SwimProtocol swim, SwimTransport transport, GossipEncryptor encryptor) implements SwimHealthEvents{}
 
-    /// SWIM transport and protocol creation succeeded. Carries the live collaborators — they
-    /// become fields on the `Running` state record so handlers read them by reference rather than
-    /// through atomic-reference holders.
-    record ProtocolReady(SwimProtocol swim, SwimTransport transport, GossipEncryptor encryptor)
-        implements SwimHealthEvents {}
+    record StartFailed() implements SwimHealthEvents{}
 
-    /// Transport/protocol creation failed — FSM returns to `Stopped`.
-    record StartFailed() implements SwimHealthEvents {}
+    record StopRequested() implements SwimHealthEvents{}
 
-    /// Requested by the public `stop()` entry point.
-    record StopRequested() implements SwimHealthEvents {}
+    record PeerConnected(NodeId peer, Option<NodeInfo> info) implements SwimHealthEvents{}
 
-    /// A peer is now connected (QUIC Hello). If the NodeInfo is present, it carries the freshly
-    /// learned address for dynamic peers that are not in the static `topologyConfig`. The FSM
-    /// re-adds the peer to SWIM membership (or markAlive) and emits a HEALTHY hint.
-    record PeerConnected(NodeId peer, Option<NodeInfo> info) implements SwimHealthEvents {}
+    record PeerJoined(SwimMember member) implements SwimHealthEvents{}
 
-    /// SWIM membership: peer joined.
-    record PeerJoined(SwimMember member) implements SwimHealthEvents {}
+    record PeerSuspect(SwimMember member) implements SwimHealthEvents{}
 
-    /// SWIM membership: peer suspect.
-    record PeerSuspect(SwimMember member) implements SwimHealthEvents {}
+    record PeerFaulty(SwimMember member) implements SwimHealthEvents{}
 
-    /// SWIM membership: peer faulty. The handler evaluates the rolling-window local-disconnect
-    /// check; on faulty-peer-is-current-leader, routes DisconnectNode locally to unblock
-    /// re-election (see [`SwimHealthState.Running`]).
-    record PeerFaulty(SwimMember member) implements SwimHealthEvents {}
+    record PeerLeft(NodeId peer) implements SwimHealthEvents{}
 
-    /// SWIM membership: peer left.
-    record PeerLeft(NodeId peer) implements SwimHealthEvents {}
+    record LeaderChanged(Option<NodeId> leader) implements SwimHealthEvents{}
 
-    /// External leader notification. Updates the authoritative `currentLeader` snapshot carried
-    /// on the `Running` / `LocalDisconnect` state records. Pushed by higher layers that subscribe
-    /// to `LeaderNotification.LeaderChange`.
-    record LeaderChanged(Option<NodeId> leader) implements SwimHealthEvents {}
-
-    /// Report a health hint for a peer that bypasses the membership callback path (used by
-    /// `onNodeConnected` after the FSM has seeded / marked-alive the peer).
-    record ReportHint(NodeId peer, HealthHint hint) implements SwimHealthEvents {}
+    record ReportHint(NodeId peer, HealthHint hint) implements SwimHealthEvents{}
 }

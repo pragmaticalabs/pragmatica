@@ -20,9 +20,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Encapsulates cloud instance lifecycle operations (provision, terminate, restart).
-/// CDM delegates cloud operations through this interface instead of calling ComputeProvider directly.
-/// This enables uniform handling across all cloud providers and future NodeAction extensions.
 public interface NodeLifecycleManager {
     Promise<ActionResult> executeAction(NodeAction action);
     Promise<InstanceInfo> provisionNode(ProvisionSpec spec);
@@ -35,8 +32,6 @@ public interface NodeLifecycleManager {
     }
 }
 
-/// Implementation that delegates to an optional ComputeProvider.
-/// Uses tag-based instance lookup (aether-node-id) for terminate and restart operations.
 record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(NodeLifecycleManagerRecord.class);
 

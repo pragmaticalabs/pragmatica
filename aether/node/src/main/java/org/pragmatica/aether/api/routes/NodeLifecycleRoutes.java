@@ -34,7 +34,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for node lifecycle management: drain, activate, shutdown, and lifecycle state queries.
 public final class NodeLifecycleRoutes implements RouteSource {
     private static final Cause LIFECYCLE_NOT_FOUND = Causes.cause("Node lifecycle not found");
 
@@ -241,13 +240,6 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                .map(v -> (NodeLifecycleValue) v);
     }
 
-    /// Theme E single-writer SSOT: forwards `host`/`port`/`observedCoreEpoch`/
-    /// `provisioningSource` from the prior `NodeLifecycleValue` so operator-driven
-    /// transitions (drain, activate, shutdown) do not erase metadata seeded at
-    /// provision time. Falls back to a metadata-bare atom only when no prior atom
-    /// exists (defensive — emits a warning via the deprecated factory's contract).
-    /// Package-private so tests can exercise the pure pre/post relation without
-    /// constructing the full `ManageableNode` surface.
     static NodeLifecycleValue buildLifecycleAtom(org.pragmatica.lang.Option<NodeLifecycleValue> prior,
                                                  NodeLifecycleState newState) {
         if (prior.isEmpty()) {return NodeLifecycleValue.nodeLifecycleValue(newState);}

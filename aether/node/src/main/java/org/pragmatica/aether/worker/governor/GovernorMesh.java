@@ -12,11 +12,6 @@ import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 import java.util.Map;
 
 
-/// Mesh network between community governors for cross-community DHT traffic.
-/// Each governor maintains connections to governors of other communities.
-/// DHT messages between communities are multiplexed over these governor connections.
-///
-/// Phase 2a provides the infrastructure. Full wiring happens in Phase 2b (multi-group).
 public interface GovernorMesh {
     @SuppressWarnings("JBCT-RET-01") void registerGovernor(String communityId, NodeId governorId);
     @SuppressWarnings("JBCT-RET-01") void registerGovernor(String communityId, NodeId governorId, String tcpAddress);

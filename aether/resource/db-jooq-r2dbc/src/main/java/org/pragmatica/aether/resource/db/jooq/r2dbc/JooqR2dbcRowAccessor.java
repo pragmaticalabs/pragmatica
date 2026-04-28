@@ -12,7 +12,6 @@ import org.pragmatica.lang.Result;
 import io.r2dbc.spi.Row;
 
 
-/// R2DBC Row implementation of RowAccessor for jOOQ R2DBC connector.
 final class JooqR2dbcRowAccessor implements RowAccessor {
     private final Row row;
 

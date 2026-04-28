@@ -21,10 +21,6 @@ import java.util.List;
 import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedState;
 
 
-/// RabiaPersistence implementation backed by ContentStore.
-/// Stores consensus state snapshots as content-addressed blocks.
-/// Each snapshot is stored as: [8 bytes phase (long BE)] + [snapshot bytes].
-/// Faster than Git-backed persistence, no external tooling needed.
 public final class StorageBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     private static final int PHASE_HEADER_SIZE = Long.BYTES;
 

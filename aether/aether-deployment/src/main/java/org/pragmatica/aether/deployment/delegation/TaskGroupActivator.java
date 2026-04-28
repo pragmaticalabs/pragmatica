@@ -29,11 +29,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Node-side component that watches TaskAssignmentKey KV notifications and
-/// activates/deactivates DelegatedComponent instances. Runs on EVERY core node.
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks --- void required by messaging framework
-public sealed interface TaskGroupActivator {
+@SuppressWarnings("JBCT-RET-01") public sealed interface TaskGroupActivator {
     void register(DelegatedComponent component);
     @MessageReceiver void onTaskAssignmentPut(ValuePut<TaskAssignmentKey, TaskAssignmentValue> valuePut);
     @MessageReceiver void onTaskAssignmentRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> valueRemove);

@@ -50,9 +50,6 @@ import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Distributed coordination layer for schema migrations.
-/// Sits between KV-Store notifications and the AetherSchemaManager engine,
-/// handling lock acquisition, artifact resolution, and status updates via consensus.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public interface SchemaOrchestratorService {
     Promise<Unit> migrateIfNeeded(String datasourceName);
     Promise<Unit> undoTo(String datasourceName, int targetVersion);

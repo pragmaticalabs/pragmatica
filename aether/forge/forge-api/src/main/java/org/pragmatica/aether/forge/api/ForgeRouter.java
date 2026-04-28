@@ -19,7 +19,6 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 
-/// Combines all Forge API route sources into a single RequestRouter.
 public final class ForgeRouter {
     private ForgeRouter() {}
 

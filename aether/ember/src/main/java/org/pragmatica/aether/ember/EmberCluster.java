@@ -61,8 +61,6 @@ import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 
-/// Manages a cluster of AetherNodes for Ember.
-/// Supports starting, stopping, adding, and killing nodes.
 @Contract@SuppressWarnings("JBCT-RET-03") public final class EmberCluster {
     private static final Logger log = LoggerFactory.getLogger(EmberCluster.class);
 

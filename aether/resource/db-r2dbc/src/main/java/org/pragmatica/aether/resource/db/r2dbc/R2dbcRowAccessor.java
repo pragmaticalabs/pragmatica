@@ -12,11 +12,6 @@ import org.pragmatica.lang.Result;
 import io.r2dbc.spi.Row;
 
 
-/// R2DBC Row implementation of RowAccessor.
-///
-/// Uses `Result.lift` at the adapter boundary to convert R2DBC exceptions
-/// into typed failures. Reference types use `Option.option()` to handle
-/// nullable column values without smuggling nulls into `Result.success()`.
 final class R2dbcRowAccessor implements RowAccessor {
     private final Row row;
 

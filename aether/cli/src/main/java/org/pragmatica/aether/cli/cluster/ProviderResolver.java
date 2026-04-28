@@ -18,7 +18,6 @@ import java.util.Map;
 import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 
 
-/// Resolves compute providers from source profile configuration via SPI. Section 11.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class ProviderResolver {
     private static final BootstrapError.ProvisionFailed NO_PROVIDER = new BootstrapError.ProvisionFailed("cloud",
                                                                                                          "No cloud provider specified in source profile");

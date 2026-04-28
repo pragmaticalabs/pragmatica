@@ -25,15 +25,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Aggregates worker metrics on the governor and feeds the CommunityScalingEvaluator.
-/// Created on governor election, destroyed on demotion.
-///
-/// Cycle:
-///   1. Send WorkerMetricsPing to all group followers via NCN
-///   2. Collect own CPU/heap via ManagementFactory
-///   3. Aggregate stored follower pongs + own metrics
-///   4. Feed snapshot to CommunityScalingEvaluator
-///   5. If evaluator returns scaling request, send via PassiveNode Broadcast
 @SuppressWarnings({"JBCT-RET-01", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public interface WorkerMetricsAggregator {
     Logger LOG = LoggerFactory.getLogger(WorkerMetricsAggregator.class);
 

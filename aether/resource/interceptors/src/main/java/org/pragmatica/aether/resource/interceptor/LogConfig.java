@@ -10,13 +10,6 @@ import org.pragmatica.lang.Verify;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-/// Configuration for logging interceptor.
-///
-/// @param name        Logger name prefix
-/// @param level       Log level to use
-/// @param logArgs     Whether to log method arguments
-/// @param logResult   Whether to log method results
-/// @param logDuration Whether to log method execution duration
 public record LogConfig(String name, LogLevel level, boolean logArgs, boolean logResult, boolean logDuration) {
     public static Result<LogConfig> logConfig(String name) {
         return ensure(name, Verify.Is::notBlank).map(n -> new LogConfig(n, LogLevel.INFO, true, true, true));

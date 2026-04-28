@@ -31,8 +31,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Package-private implementation of StreamConsumerRuntime.
-/// Manages polling lifecycle and error handling for all subscribed consumers.
 final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private static final System.Logger LOG = System.getLogger(ConsumerRuntimeState.class.getName());
 

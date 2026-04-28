@@ -4,20 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
-public record DerivedMetrics(
-// Rates (per second)
-double requestRate,
-double errorRate,
-double gcRate,
-double latencyP50,
-double latencyP95,
-double latencyP99,
-double eventLoopSaturation,
-double heapSaturation,
-double backpressureRate,
-double cpuTrend,
-double latencyTrend,
-double errorTrend) {
+public record DerivedMetrics(double requestRate,
+                             double errorRate,
+                             double gcRate,
+                             double latencyP50,
+                             double latencyP95,
+                             double latencyP99,
+                             double eventLoopSaturation,
+                             double heapSaturation,
+                             double backpressureRate,
+                             double cpuTrend,
+                             double latencyTrend,
+                             double errorTrend) {
     public static final DerivedMetrics EMPTY = new DerivedMetrics(0.0,
                                                                   0.0,
                                                                   0.0,

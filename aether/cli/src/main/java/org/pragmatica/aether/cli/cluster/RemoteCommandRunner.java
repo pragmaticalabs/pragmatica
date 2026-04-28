@@ -16,10 +16,6 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 
-/// SSH and SCP operations via system ProcessBuilder for on-premises bootstrap.
-///
-/// Uses the host system's `ssh` and `scp` commands with strict host key checking
-/// disabled for automated provisioning.
 @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-RET-01", "JBCT-EX-01"}) sealed interface RemoteCommandRunner {
     record unused() implements RemoteCommandRunner{}
 

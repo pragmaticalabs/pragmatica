@@ -9,13 +9,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Cluster-level configuration.
-///
-/// @param environment Target deployment environment
-/// @param nodes       Number of nodes in the cluster (must be odd: 3, 5, 7)
-/// @param tls         Enable TLS for cluster communication
-/// @param ports       Port configuration
-/// @param coreMax     Maximum number of core consensus nodes (0 = unlimited)
 public record ClusterConfig(Environment environment, int nodes, boolean tls, PortsConfig ports, int coreMax) {
     public static Result<ClusterConfig> clusterConfig(Environment environment,
                                                       int nodes,

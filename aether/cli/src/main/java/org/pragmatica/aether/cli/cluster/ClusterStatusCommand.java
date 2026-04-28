@@ -16,9 +16,6 @@ import picocli.CommandLine.Command;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_STATUS;
 
 
-/// Displays aggregated cluster status from the management API.
-///
-/// Default output is a human-readable table. Use `--format json` for raw JSON.
 @Command(name = "status", description = "Show cluster status") @SuppressWarnings("JBCT-RET-01") class ClusterStatusCommand implements Callable<Integer> {
     @CommandLine.ParentCommand private ClusterCommand parent;
 

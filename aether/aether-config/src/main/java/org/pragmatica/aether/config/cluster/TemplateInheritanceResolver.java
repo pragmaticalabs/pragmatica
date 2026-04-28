@@ -19,7 +19,6 @@ import java.util.Set;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Resolves `inherit` references on source and runtime profiles. REQ-5.3
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class TemplateInheritanceResolver {
     private TemplateInheritanceResolver() {}
 

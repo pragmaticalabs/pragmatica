@@ -18,10 +18,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Strategy for determining when an invocation is considered "slow".
-///
-/// Slow invocations are captured for debugging, while all invocations
-/// contribute to aggregated metrics.
 public sealed interface ThresholdStrategy {
     boolean isSlow(MethodName method, long durationNs);
 

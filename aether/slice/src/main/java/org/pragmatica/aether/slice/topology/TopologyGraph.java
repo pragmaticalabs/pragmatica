@@ -13,10 +13,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Cluster-wide topology graph aggregated from per-slice topologies.
-///
-/// Nodes represent endpoints, slices, topics, and resources.
-/// Edges represent data flow between them.
 public record TopologyGraph(List<TopologyNode> nodes, List<TopologyEdge> edges) {
     public TopologyGraph {
         nodes = List.copyOf(nodes);

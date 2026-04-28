@@ -15,8 +15,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Aggregates metrics for the Forge dashboard.
-/// Thread-safe and designed for high-frequency updates.
 public final class ForgeMetrics {
     private final LongAdder successCount = new LongAdder();
 

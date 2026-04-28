@@ -12,7 +12,6 @@ import java.util.List;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Error types for load configuration parsing and validation.
 public sealed interface LoadConfigError extends Cause {
     record ParseFailed(String details) implements LoadConfigError {
         public static Result<ParseFailed> parseFailed(String details) {

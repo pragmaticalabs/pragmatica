@@ -29,12 +29,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// JDBC implementation of SqlConnector.
-///
-/// Uses a DataSource for connection pooling (typically HikariCP).
-@SuppressWarnings("JBCT-EX-01")
-// Private helpers throw checked exceptions consumed by Promise.lift()
-public final class JdbcSqlConnector implements SqlConnector {
+@SuppressWarnings("JBCT-EX-01") public final class JdbcSqlConnector implements SqlConnector {
     private static final System.Logger LOG = System.getLogger(JdbcSqlConnector.class.getName());
 
     private final DatabaseConnectorConfig config;

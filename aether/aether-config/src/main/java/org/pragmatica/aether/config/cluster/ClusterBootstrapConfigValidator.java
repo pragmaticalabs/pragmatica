@@ -18,7 +18,6 @@ import java.util.regex.Pattern;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Validates ClusterBootstrapConfig against spec section 12 rules.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class ClusterBootstrapConfigValidator {
     private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
 

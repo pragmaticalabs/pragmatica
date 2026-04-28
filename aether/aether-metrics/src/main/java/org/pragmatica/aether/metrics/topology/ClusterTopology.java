@@ -10,15 +10,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Snapshot of cluster topology for observability.
-///
-/// @param totalNodes    Total number of nodes in cluster
-/// @param healthyNodes  Number of healthy nodes
-/// @param quorumSize    Required quorum size
-/// @param hasQuorum     Whether cluster has quorum
-/// @param leaderId      Current leader node ID
-/// @param nodes         Node information list
-/// @param slices        Slice deployment information
 public record ClusterTopology(int totalNodes,
                               int healthyNodes,
                               int quorumSize,

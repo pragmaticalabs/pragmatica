@@ -13,10 +13,6 @@ import java.nio.ByteOrder;
 import java.util.List;
 
 
-/// Captures evicted events from the ring buffer and seals them into immutable segments.
-/// Implements EvictionListener -- wire as the listener on OffHeapRingBuffer.
-///
-/// Serialization format per event: [offset:8][timestamp:8][len:4][data:len]
 public final class SegmentSealer implements EvictionListener {
     private static final int PER_EVENT_HEADER = Long.BYTES + Long.BYTES + Integer.BYTES;
 

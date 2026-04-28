@@ -26,13 +26,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Passive KV-Store watcher maintaining a local cache of topic subscriptions.
-///
-///
-/// Tracks which slice methods subscribe to which topics. Used by TopicPublisher
-/// to discover and invoke subscriber methods. Supports competing consumers:
-/// when multiple instances of the same artifact subscribe to a topic,
-/// only one instance per artifact receives each message (round-robin).
 public interface TopicSubscriptionRegistry {
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onSubscriptionPut(ValuePut<TopicSubscriptionKey, TopicSubscriptionValue> valuePut);
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onSubscriptionRemove(ValueRemove<TopicSubscriptionKey, TopicSubscriptionValue> valueRemove);

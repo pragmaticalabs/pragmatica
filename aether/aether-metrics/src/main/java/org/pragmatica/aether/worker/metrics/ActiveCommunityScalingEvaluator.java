@@ -19,7 +19,6 @@ import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Active implementation of CommunityScalingEvaluator.
 @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01", "JBCT-ZONE-02"}) final class ActiveCommunityScalingEvaluator implements CommunityScalingEvaluator {
     private static final Logger log = LoggerFactory.getLogger(CommunityScalingEvaluator.class);
 

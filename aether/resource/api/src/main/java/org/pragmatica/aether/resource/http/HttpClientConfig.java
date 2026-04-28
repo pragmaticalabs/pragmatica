@@ -16,14 +16,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for HTTP client infrastructure slice.
-///
-/// @param baseUrl         Optional base URL prepended to all requests
-/// @param connectTimeout  Connection timeout
-/// @param requestTimeout  Request timeout
-/// @param followRedirects Redirect policy
-/// @param json            Optional JSON serialization configuration
-/// @param defaultHeaders  Default headers added to every request
 public record HttpClientConfig(Option<String> baseUrl,
                                TimeSpan connectTimeout,
                                TimeSpan requestTimeout,

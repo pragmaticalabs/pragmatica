@@ -15,14 +15,6 @@ import java.lang.foreign.ValueLayout;
 import java.util.function.Function;
 
 
-/// Adapts slice consumer methods to ConsumerCallback for stream subscription.
-///
-/// Bridges between the raw byte-oriented ring buffer delivery and typed
-/// slice method invocations. Handles deserialization and maps the slice
-/// method's return value to the ConsumerCallback contract.
-///
-/// Slice methods return `Promise<Unit>` per spec. The adapter applies a timeout
-/// and returns the promise directly, avoiding any blocking.
 @SuppressWarnings("JBCT-UTIL-02") public interface StreamConsumerAdapter {
     TimeSpan HANDLER_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 

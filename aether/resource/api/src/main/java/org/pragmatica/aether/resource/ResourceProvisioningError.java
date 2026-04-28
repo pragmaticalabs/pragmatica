@@ -10,7 +10,6 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Error types for resource provisioning operations.
 public sealed interface ResourceProvisioningError extends Cause {
     record FactoryNotFound(Class<?> resourceType) implements ResourceProvisioningError {
         public static FactoryNotFound factoryNotFound(Class<?> resourceType) {

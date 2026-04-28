@@ -31,8 +31,6 @@ import static org.pragmatica.lang.Result.unitResult;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Controller for chaos engineering experiments.
-/// Injects failures and disruptions to test system resilience.
 public final class ChaosController {
     private static final Logger log = LoggerFactory.getLogger(ChaosController.class);
 

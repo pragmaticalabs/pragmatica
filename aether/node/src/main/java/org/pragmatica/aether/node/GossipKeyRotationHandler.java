@@ -16,12 +16,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Handles gossip key rotation events from the KV-Store.
-///
-/// When a [GossipKeyRotationKey] put is committed through consensus, this handler
-/// decodes the key material and atomically swaps the [RotatingGossipEncryptor] delegate.
-/// During rotation, both current and previous keys are accepted for decryption,
-/// providing a seamless overlap window.
 public final class GossipKeyRotationHandler {
     private static final Logger log = LoggerFactory.getLogger(GossipKeyRotationHandler.class);
 

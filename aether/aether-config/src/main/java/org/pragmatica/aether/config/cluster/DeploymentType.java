@@ -11,7 +11,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.Arrays;
 
 
-/// Supported deployment provider types.
 public enum DeploymentType {
     HETZNER("hetzner"),
     AWS("aws"),

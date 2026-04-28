@@ -21,10 +21,6 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 
-/// Validates request security based on route policy.
-///
-/// Extensible interface for different authentication mechanisms.
-/// Implementations validate requests and produce {@link SecurityContext}.
 public interface SecurityValidator {
     Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
 

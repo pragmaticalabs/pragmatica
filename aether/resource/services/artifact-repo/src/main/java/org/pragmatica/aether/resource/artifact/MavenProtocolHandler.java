@@ -24,16 +24,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Handler for Maven repository protocol.
-/// Supports GET for artifact resolution and PUT for deployment.
-///
-///
-/// URL patterns:
-///
-///   - `GET /repository/{groupPath`/{artifactId}/{version}/{file}}
-///   - `PUT /repository/{groupPath`/{artifactId}/{version}/{file}}
-///   - `GET /repository/{groupPath`/{artifactId}/maven-metadata.xml}
-///
 public interface MavenProtocolHandler {
     Promise<MavenResponse> handleGet(String path);
     Promise<MavenResponse> handlePut(String path, byte[] content);

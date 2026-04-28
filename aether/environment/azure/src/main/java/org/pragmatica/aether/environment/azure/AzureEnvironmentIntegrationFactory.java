@@ -17,7 +17,6 @@ import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.Azu
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.azureEnvironmentConfig;
 
 
-/// ServiceLoader factory for creating AzureEnvironmentIntegration from generic CloudConfig.
 public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
     @Override public String providerName() {
         return "azure";

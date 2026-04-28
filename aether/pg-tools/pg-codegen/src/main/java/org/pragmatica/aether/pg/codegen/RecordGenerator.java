@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.TreeSet;
 
 
-/// Generates a Java record from a PostgreSQL table definition.
 public final class RecordGenerator {
     private final CodegenConfig config;
 

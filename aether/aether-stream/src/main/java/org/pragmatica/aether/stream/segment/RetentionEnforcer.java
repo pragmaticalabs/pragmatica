@@ -23,14 +23,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Scheduled task that removes expired segments from storage and the segment index.
-///
-/// For each stream/partition tracked by the SegmentIndex, segments whose maxTimestamp
-/// is older than the configured retention age are removed. Both the AHSE data blocks
-/// and named references are deleted.
-///
-/// Supports compound retention policies: in ANY mode, a segment is expired when any limit
-/// is exceeded; in ALL mode, a segment is expired only when all configured limits are exceeded.
 public final class RetentionEnforcer implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(RetentionEnforcer.class);
 

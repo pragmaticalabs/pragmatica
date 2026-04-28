@@ -23,10 +23,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TAS
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TASK_REASSIGN;
 
 
-/// Lists and manages task group assignments across cluster nodes.
-///
-/// Default subcommand lists current assignments by calling `GET /api/cluster/tasks`.
-/// The `reassign` subcommand triggers manual reassignment via `PUT /api/cluster/tasks/{group}/reassign`.
 @Command(name = "tasks", description = "Task group assignment management", subcommands = {ClusterTasksCommand.ReassignCommand.class}) @SuppressWarnings("JBCT-RET-01") class ClusterTasksCommand implements Callable<Integer> {
     private static final TableSpec TASKS_TABLE = new TableSpec("Task Group Assignments",
                                                                List.of(new Column("GROUP", "group", 14),

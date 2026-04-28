@@ -7,11 +7,6 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.lang.Contract;
 
 
-/// Receiver for `GenerationChangedNotice` events emitted by `HealthReconciler`.
-///
-/// `noop()` is the default for tests and code paths that don't yet wire the event bus.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §14.4.
 public interface GenerationChangedSink {
     @Contract void emit(GenerationChangedNotice notice);
 

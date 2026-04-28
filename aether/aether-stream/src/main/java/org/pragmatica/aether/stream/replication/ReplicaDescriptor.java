@@ -7,7 +7,6 @@ package org.pragmatica.aether.stream.replication;
 import org.pragmatica.consensus.NodeId;
 
 
-/// Describes a replica's current state for a specific partition.
 public record ReplicaDescriptor(NodeId nodeId,
                                 String streamName,
                                 int partition,

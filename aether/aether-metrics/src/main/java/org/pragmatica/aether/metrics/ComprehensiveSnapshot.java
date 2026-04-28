@@ -12,32 +12,6 @@ import org.pragmatica.aether.metrics.network.NetworkMetrics;
 import java.util.Map;
 
 
-/// Comprehensive metrics snapshot aggregating all subsystems.
-///
-/// This is the unified view for TTM/LLM analysis, combining:
-///
-///   - JVM metrics (CPU, heap)
-///   - GC metrics (pause times, allocation rate)
-///   - Event loop health (lag, pending tasks)
-///   - Network I/O (bytes, messages, backpressure)
-///   - Consensus state (role, decisions, latency)
-///   - Invocation metrics (calls, latency)
-///   - Custom metrics from slices
-///
-///
-/// @param timestamp            Snapshot timestamp in milliseconds
-/// @param cpuUsage             CPU usage ratio (0.0-1.0)
-/// @param heapUsed             Heap memory used in bytes
-/// @param heapMax              Maximum heap size in bytes
-/// @param gc                   GC metrics snapshot
-/// @param eventLoop            Event loop metrics snapshot
-/// @param network              Network I/O metrics snapshot
-/// @param consensus            Rabia consensus metrics snapshot
-/// @param totalInvocations     Total method invocations
-/// @param successfulInvocations Successful method invocations
-/// @param failedInvocations    Failed method invocations
-/// @param avgLatencyMs         Average invocation latency in milliseconds
-/// @param custom               Custom metrics from slices
 public record ComprehensiveSnapshot(long timestamp,
                                     double cpuUsage,
                                     long heapUsed,

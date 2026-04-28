@@ -7,8 +7,6 @@ package org.pragmatica.aether.environment;
 import java.util.Set;
 
 
-/// Placement constraints for node provisioning.
-/// Used by CTM to request specific placement from ComputeProvider.
 public sealed interface PlacementHint {
     record ZoneHint(String zoneName) implements PlacementHint{}
 

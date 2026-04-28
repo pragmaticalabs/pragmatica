@@ -62,9 +62,10 @@ import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
 import org.pragmatica.aether.deployment.generation.ClusterGenerationProjector;
-import org.pragmatica.aether.deployment.generation.HealthReconciler;
-import org.pragmatica.aether.deployment.generation.HealthReconcilerActivator;
-import org.pragmatica.aether.deployment.generation.StopReason;
+import org.pragmatica.aether.deployment.generation.BootstrapModule;
+import org.pragmatica.aether.deployment.generation.GenerationSnapshotPublisher;
+import org.pragmatica.aether.deployment.generation.KvBackedGenerationSnapshotSource;
+import org.pragmatica.aether.deployment.generation.SwimHintsRegistry;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.ClusterSyncPongSignalFan;
 import org.pragmatica.aether.metrics.ClusterSyncScheduler;
@@ -75,7 +76,6 @@ import org.pragmatica.aether.slice.generation.GenerationChangedSink;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
-import org.pragmatica.aether.node.generation.NodeSnapshotCache;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
@@ -164,6 +164,7 @@ import org.pragmatica.consensus.net.quic.QuicDisconnectListener;
 import org.pragmatica.consensus.net.quic.QuicPeerStateListener;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -211,8 +212,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Main entry point for an Aether cluster node.
-/// Assembles all components: consensus, KV-store, slice management, deployment managers.
 public interface AetherNode extends ManageableNode {
     Logger LOG = LoggerFactory.getLogger(AetherNode.class);
 
@@ -304,31 +303,15 @@ public interface AetherNode extends ManageableNode {
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
         var persistence = resolvePersistence(config);
-        // Single source of truth for the cluster-side leader term — incremented in
-        // `onLeaderChangeForReconciler` when this node becomes leader; read by
-        // `LeaderManager.currentLeaderEpoch()` (via the RabiaNode plumbing) AND by
-        // `HealthReconcilerContext.defaultLeaderEpoch()` (via the assembleNode wiring).
         var leaderTerm = new AtomicLong(0L);
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
-        // Fix C: TopologyObserver.initReconcile must consult the KV-Store's
-        // NodeLifecycleValue.DECOMMISSIONED atoms in addition to the in-memory
-        // `tombstonedNodes` set. The set is empty after a process restart, so without
-        // this predicate a DECOMMISSIONED ghost peer is silently re-seeded from
-        // `config.coreNodes()` when consensus replays the lifecycle log.
-        Predicate<NodeId> isDecommissioned = nodeId ->
-            kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId))
-                   .filter(v -> v instanceof AetherValue.NodeLifecycleValue)
-                   .map(v -> (AetherValue.NodeLifecycleValue) v)
-                   .map(v -> v.state() == AetherValue.NodeLifecycleState.DECOMMISSIONED)
-                   .or(false);
-        // Pull-side complement to the push-based KVStoreNotification.ValuePut<LeaderKey>
-        // path. The leader-election FSM consults this on entry to Electing / ReElecting (and on
-        // each election tick) to short-circuit to Led(leader) whenever the cluster KV-Store
-        // already records a committed leader — closes the gap where the rejoining node missed
-        // the notification (e.g. snapshot-restored state didn't include LeaderKey).
-        Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () ->
-            kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-                   .map(LeaderValue::leader);
+        Predicate<NodeId> isDecommissioned = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId)).filter(v -> v instanceof AetherValue.NodeLifecycleValue)
+                                                                  .map(v -> (AetherValue.NodeLifecycleValue) v)
+                                                                  .map(v -> v.state() == AetherValue.NodeLifecycleState.DECOMMISSIONED)
+                                                                  .or(false);
+        Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                      LeaderValue.class)
+        .map(LeaderValue::leader);
         return RabiaNode.rabiaNode(nodeConfig,
                                    delegateRouter,
                                    kvStore,
@@ -486,13 +469,11 @@ public interface AetherNode extends ManageableNode {
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
-                          NodeSnapshotCache nodeSnapshotCache,
                           Supplier<Option<ClusterGenerationSnapshot>> generationSnapshotSupplier,
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
                           HealthSignalSink healthSignalSink,
-                          HealthReconciler healthReconciler,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -534,7 +515,6 @@ public interface AetherNode extends ManageableNode {
                 streamPartitionManager.close();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
-                healthReconciler.stop(StopReason.SHUTDOWN);
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
                 return managementServer.map(ManagementServer::stop).or(Promise.unitPromise())
                                            .flatMap(_ -> appHttpServer.stop())
@@ -664,10 +644,6 @@ public interface AetherNode extends ManageableNode {
                 logCloudBootstrapHintIfNoStaticSeeds(peerCount);
             }
 
-            // Theme M / M4 — when static seed peers = 0, the cluster cannot self-form a quorum
-            // (no nodes to vote). Operator must run `aether cluster bootstrap` after enough
-            // cloud-target nodes have started. Surface this as a single explicit hint at startup
-            // so it isn't lost behind silent "waiting for quorum" loops.
             private void logCloudBootstrapHintIfNoStaticSeeds(int peerCount) {
                 if (peerCount > 0) {return;}
                 log.info("No static seed peers configured — cluster requires operator bootstrap.");
@@ -835,76 +811,35 @@ public interface AetherNode extends ManageableNode {
         var hlcClockEarly = HlcClock.hlcClock(config.self().id()).unwrap();
         var projectorEarly = ClusterGenerationProjector.clusterGenerationProjector();
         var generationChangedSink = buildGenerationChangedSink(delegateRouter);
-        var healthReconciler = HealthReconciler.healthReconciler(config.self(),
-                                                                 clusterNode,
-                                                                 projectorEarly,
-                                                                 hlcClockEarly,
-                                                                 rabiaTermSupplier,
-                                                                 isLeaderSupplier,
-                                                                 config.autoHeal(),
-                                                                 generationChangedSink,
-                                                                 peerObservationStore);
-        java.util.function.Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder = serializer::encode;
-        java.util.function.Function<byte[], Option<ClusterGenerationSnapshot>> snapshotDecoder = bytes -> decodeSnapshot(deserializer,
-                                                                                                                         bytes);
-        var nodeSnapshotCache = NodeSnapshotCache.nodeSnapshotCache(config.self(),
-                                                                    snapshotDecoder,
-                                                                    leader -> {
-                                                                        if (clusterNode.leaderManager().leader()
-                                                                                                     .isEmpty()) {clusterNode.leaderManager()
-                                                                                                                                           .onLeaderCommitted(leader);}
-                                                                    });
-        Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> isLeaderSupplier.getAsBoolean()
-                                                                            ? Option.some(healthReconciler.currentSnapshot())
-                                                                            : nodeSnapshotCache.current();
+        Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> kvStore.getTyped(AetherKey.GenerationSnapshotKey.SINGLETON,
+                                                                                              AetherValue.GenerationSnapshotValue.class)
+        .map(AetherValue.GenerationSnapshotValue::snapshot);
         cdmSnapshotSupplierRef.set(snapshotSupplier);
+        var generationSnapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
         var metricsScheduler = ClusterSyncScheduler.clusterSyncScheduler(config.self(),
                                                                          clusterNode.network(),
                                                                          metricsCollector,
                                                                          config.timeouts().cluster()
                                                                                         .pingInterval(),
                                                                          rabiaTermSupplier,
-                                                                         snapshotSupplier,
-                                                                         snapshotEncoder,
                                                                          stableHealthSink,
                                                                          ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                                          leaderEpochSupplier,
                                                                          peerObservationStore);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
-        // Drain the node-level store directly into outbound pongs. Both leader and follower
-        // eras now read from the same singleton — a freshly-promoted leader can observe its
-        // own SWIM hints without waiting for a peer's ping (Q1 / Q3).
         metricsCollector.setPeerObservationBuffer(peerObservationStore);
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                                                                 .map(v -> (AetherValue.ClusterConfigValue) v);
-        java.util.function.Function<NodeId, Option<AetherValue.NodeLifecycleValue>> lifecycleReader =
-            nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId))
-                             .filter(v -> v instanceof AetherValue.NodeLifecycleValue)
-                             .map(v -> (AetherValue.NodeLifecycleValue) v);
+        java.util.function.Function<NodeId, Option<AetherValue.NodeLifecycleValue>> lifecycleReader = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId)).filter(v -> v instanceof AetherValue.NodeLifecycleValue)
+                                                                                                                           .map(v -> (AetherValue.NodeLifecycleValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
-        var leaderAwareSnapshotSource = org.pragmatica.aether.node.generation.LeaderAwareSnapshotSource.leaderAwareSnapshotSource(isLeaderSupplier,
-                                                                                                                                  () -> isLeaderSupplier.getAsBoolean()
-                                                                                                                                       ? Option.some(healthReconciler.currentSnapshot())
-                                                                                                                                       : Option.none(),
-                                                                                                                                  nodeSnapshotCache);
-        // Theme D #1: scale-down terminates only after a 2-phase drain via DrainCoordinator.
-        // rc1 ships with NoOpDrainCoordinator (immediate-success stub); rc2 #189 swaps it
-        // for the real ConsensusDrainCoordinator. Wiring is performed once here so the
-        // structural shape is in place from rc1.
+        var leaderAwareSnapshotSource = generationSnapshotSource;
         var drainCoordinator = new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator();
-        // Fix D: KV-mirrored CTM provisioning slots so they survive leader handoff. The reader
-        // collects all `ProvisioningSlotValue` atoms keyed by `ProvisioningSlotKey` from the
-        // local kvStore replica; CTM uses this on `activate()` to re-derive the in-memory
-        // `inFlightProvisions` view and avoid double-dispatching a wave the prior leader had
-        // already kicked off.
-        java.util.function.Supplier<java.util.Map<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>> slotReader =
-            () -> {
-                var collected = new java.util.LinkedHashMap<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>();
-                kvStore.forEach(AetherKey.ProvisioningSlotKey.class,
-                                AetherValue.ProvisioningSlotValue.class,
-                                collected::put);
-                return collected;
-            };
+        java.util.function.Supplier<java.util.Map<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>> slotReader = () -> {
+            var collected = new java.util.LinkedHashMap<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>();
+            kvStore.forEach(AetherKey.ProvisioningSlotKey.class, AetherValue.ProvisioningSlotValue.class, collected::put);
+            return collected;
+        };
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -957,7 +892,11 @@ public interface AetherNode extends ManageableNode {
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
         var rollbackManager = config.rollback().enabled()
-                             ? RollbackManager.rollbackManager(config.self(), config.rollback(), clusterNode, kvStore, clusterNode.leaderManager())
+                             ? RollbackManager.rollbackManager(config.self(),
+                                                               config.rollback(),
+                                                               clusterNode,
+                                                               kvStore,
+                                                               clusterNode.leaderManager())
                              : RollbackManager.disabled();
         var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
@@ -1046,7 +985,6 @@ public interface AetherNode extends ManageableNode {
                                                 httpRouteRegistry,
                                                 metricsCollector,
                                                 metricsScheduler,
-                                                nodeSnapshotCache,
                                                 deploymentMetricsCollector,
                                                 deploymentMetricsScheduler,
                                                 controlLoop,
@@ -1157,14 +1095,6 @@ public interface AetherNode extends ManageableNode {
                                                                                isLeaderSupplier,
                                                                                peerObservationStore,
                                                                                swimConfig);
-        // Let the SWIM detector recognise "the faulty peer IS the current leader" on follower
-        // nodes and bypass the buffer-upstream single-writer rule by routing DisconnectNode
-        // locally. Without this, a dead leader pins LeaderKey forever because the buffered
-        // observation has no live leader to fold it. See CoreSwimHealthDetector.onMemberFaulty.
-        //
-        // Event-driven: subscribe to LeaderNotification.LeaderChange and push the authoritative
-        // leader into the detector's FSM. The FSM's Running / LocalDisconnect states hold the
-        // current leader as state data (see plan §"Running ──leaderChange──► Running(…, updatedLeader)").
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
@@ -1178,70 +1108,94 @@ public interface AetherNode extends ManageableNode {
                                                                                   .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
         Supplier<Integer> initialCoreSizeSupplier = () -> config.topology().coreNodes()
                                                                          .size();
-        var healthReconcilerActivator = HealthReconcilerActivator.healthReconcilerActivator(healthReconciler,
-                                                                                            isLeaderSupplier,
-                                                                                            projectorEarly,
-                                                                                            kvStore::snapshot,
-                                                                                            rabiaTermSupplier,
-                                                                                            hlcClockEarly,
-                                                                                            clusterNode,
-                                                                                            config::self,
-                                                                                            initialCoreSizeSupplier);
-        // Theme B Item 2: chain CTM activation AFTER the leader-change bootstrap batch commits.
-        // Without this ordering CTM may dispatch provisioning before the reconciler has seeded
-        // its first snapshot, opening the phantom-provision window. The standalone
-        // `activateOnLeaderChange` LeaderChange route below is reduced to a deactivate-only
-        // path; activation flows exclusively through this callback.
-        healthReconcilerActivator.onBootstrapCommitted(clusterTopologyManager::activate);
-        // Theme K #4: periodic GC of stale DECOMMISSIONED lifecycle atoms. Runs only on the
-        // leader; uses `AutoHealConfig.decommissionedRetention` (default 24h) to decide which
-        // atoms are stale enough to remove. Started here so it shares the node lifecycle —
-        // stop is invoked when the surrounding component lifecycle tears down.
+        var publisherExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+                                                                                           var thread = new Thread(runnable,
+                                                                                                                   "generation-snapshot-publisher");
+                                                                                           thread.setDaemon(true);
+                                                                                           return thread;
+                                                                                       });
+        var publisherRef = new AtomicReference<GenerationSnapshotPublisher>();
+        var swimHints = SwimHintsRegistry.swimHintsRegistry(java.time.Duration.ofMillis(config.autoHeal().swimHintsTtl()
+                                                                                                       .millis()),
+                                                            () -> Option.option(publisherRef.get())
+                                                                               .onPresent(GenerationSnapshotPublisher::markDirty));
+        peerObservationStore.subscribeHealth(swimHints::onPeerHealth);
+        var generationSnapshotPublisher = GenerationSnapshotPublisher.generationSnapshotPublisher(isLeaderSupplier,
+                                                                                                  rabiaTermSupplier,
+                                                                                                  hlcClockEarly,
+                                                                                                  projectorEarly,
+                                                                                                  swimHints,
+                                                                                                  kvStore::snapshot,
+                                                                                                  kvStore,
+                                                                                                  clusterNode,
+                                                                                                  publisherExecutor);
+        publisherRef.set(generationSnapshotPublisher);
+        var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
+                                                              rabiaTermSupplier,
+                                                              () -> Option.<Long>none(),
+                                                              hlcClockEarly,
+                                                              projectorEarly,
+                                                              kvStore::snapshot,
+                                                              config::self,
+                                                              initialCoreSizeSupplier,
+                                                              clusterNode);
+        bootstrapModule.onBootstrapCommitted(clusterTopologyManager::activate);
         var decommissionedAtomGc = org.pragmatica.aether.deployment.generation.DecommissionedAtomGc.decommissionedAtomGc(clusterNode,
-                                                                                                                          kvStore::snapshot,
-                                                                                                                          isLeaderSupplier,
-                                                                                                                          config.autoHeal());
+                                                                                                                         kvStore::snapshot,
+                                                                                                                         isLeaderSupplier,
+                                                                                                                         config.autoHeal());
         decommissionedAtomGc.start();
-        healthSinkRef.set(healthReconcilerActivator.sink());
+        var swimHintsTickExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+                                                                                                        var thread = new Thread(runnable,
+                                                                                                                                "swim-hints-tick");
+                                                                                                        thread.setDaemon(true);
+                                                                                                        return thread;
+                                                                                                    });
+        swimHintsTickExecutor.scheduleAtFixedRate(() -> {
+                                                      if (!swimHints.isEmpty()) {generationSnapshotPublisher.markDirty();}
+                                                  },
+                                                  1,
+                                                  1,
+                                                  java.util.concurrent.TimeUnit.SECONDS);
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
         attachQuicHealthReporter(clusterNode.network(), peerObservationStore);
         attachQuicPeerStateListener(clusterNode.network(), clusterTopologyManager, stableHealthSink, leaderEpochSupplier);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                 change -> onLeaderChangeForReconciler(change,
-                                                                                       leaderTerm,
-                                                                                       healthReconcilerActivator)));
+                                                 change -> onLeaderChangeForPublisher(change,
+                                                                                      leaderTerm,
+                                                                                      generationSnapshotPublisher,
+                                                                                      bootstrapModule)));
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
                                                  .onPut(AetherKey.GovernorAnnouncementKey.class,
-                                                        healthReconcilerActivator::onGovernorAnnouncementPut)
+                                                        _ -> generationSnapshotPublisher.markDirty())
                                                  .onRemove(AetherKey.GovernorAnnouncementKey.class,
-                                                           healthReconcilerActivator::onGovernorAnnouncementRemove)
+                                                           _ -> generationSnapshotPublisher.markDirty())
                                                  .onPut(AetherKey.SpokesmanKey.class,
-                                                        healthReconcilerActivator::onSpokesmanPut)
+                                                        _ -> {
+                                                            generationSnapshotPublisher.markDirty();
+                                                            bootstrapModule.retryIfNeeded();
+                                                        })
                                                  .onPut(AetherKey.NodeLifecycleKey.class,
-                                                        healthReconcilerActivator::onNodeLifecyclePut)
+                                                        _ -> {
+                                                            generationSnapshotPublisher.markDirty();
+                                                            bootstrapModule.retryIfNeeded();
+                                                        })
                                                  .onPut(AetherKey.ClusterConfigKey.class,
-                                                        healthReconcilerActivator::onClusterConfigPut)
-                                                 // Theme D #3: trigger immediate CTM reconcile on ClusterConfigKey
-                                                 // changes — eliminates the up-to-10s safety-net poll lag for
-                                                 // setDesiredSize() and other operator-driven config writes.
+                                                        _ -> generationSnapshotPublisher.markDirty())
                                                  .onPut(AetherKey.ClusterConfigKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> _) -> clusterTopologyManager.onClusterConfigChanged())
+                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> clusterTopologyManager.onClusterConfigChanged())
                                                  .build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
-        Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = () -> isLeaderSupplier.getAsBoolean()
-                                                                                     ? Option.some(healthReconciler.currentSnapshot())
-                                                                                     : nodeSnapshotCache.current();
+        Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = snapshotSupplier;
         var spokesmanPingLoop = org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.spokesmanPingLoop(config.self(),
                                                                                                          clusterNode.network(),
                                                                                                          config.timeouts().cluster()
                                                                                                                         .pingInterval(),
                                                                                                          rabiaTermSupplier,
-                                                                                                         spokesmanSnapshotSupplier,
                                                                                                          metricsCollector::allMetrics,
                                                                                                          communityId -> lookupGovernor(kvStore,
                                                                                                                                        communityId),
-                                                                                                         snapshotEncoder,
                                                                                                          org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
         spokesmanPingLoop.start();
         metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
@@ -1358,13 +1312,11 @@ public interface AetherNode extends ManageableNode {
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
-                                  nodeSnapshotCache,
                                   spokesmanSnapshotSupplier,
                                   Option.empty(),
                                   discoveryProvider,
                                   certRenewalScheduler,
                                   stableHealthSink,
-                                  healthReconciler,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
@@ -1449,13 +1401,11 @@ public interface AetherNode extends ManageableNode {
                                                                               clusterTopologyManager,
                                                                               eventLoopMetricsCollector,
                                                                               swimHealthDetector,
-                                                                              nodeSnapshotCache,
                                                                               spokesmanSnapshotSupplier,
                                                                               Option.some(managementServer),
                                                                               discoveryProvider,
                                                                               certRenewalScheduler,
                                                                               stableHealthSink,
-                                                                              healthReconciler,
                                                                               startTimeMs);
                                                     }
                                                     return node;
@@ -1501,59 +1451,51 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// Wires the QUIC peer-state listener to bump CTM stability on every transport-level
-    /// peer-state change (join/reconnect/leave). Required because the flap-loop fix
-    /// (Issue 1) suppresses duplicate `TopologyChangeNotification.NodeAdded` for transient
-    /// reconnects — without this hook, CTM would not observe reconnect churn at all.
     private static void attachQuicPeerStateListener(ClusterNetwork network,
                                                     ClusterTopologyManager ctm,
                                                     HealthSignalSink healthSink,
                                                     Supplier<Epoch> epochSupplier) {
-        LOG.debug("attachQuicPeerStateListener: network class={}", network == null ? "null" : network.getClass().getName());
+        LOG.debug("attachQuicPeerStateListener: network class={}",
+                  network == null
+                  ? "null"
+                  : network.getClass().getName());
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {
             LOG.warn("attachQuicPeerStateListener: network is NOT QuicClusterNetwork — skipping listener attachment");
             return;
         }
         var listener = new QuicPeerStateListener() {
-            @Override public void onPeerJoined(NodeId nodeId) {
+            @Override@Contract public void onPeerJoined(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerJoined({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
                 ctm.onQuicPeerJoined(nodeId);
                 emitHealthyHint(nodeId);
             }
 
-            @Override public void onPeerReconnected(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerReconnected({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
+            @Override@Contract public void onPeerReconnected(NodeId nodeId) {
+                LOG.debug("QuicPeerState: onPeerReconnected({}) — bumping CTM stability + emitting SwimHint(HEALTHY)",
+                          nodeId);
                 ctm.onQuicPeerJoined(nodeId);
                 emitHealthyHint(nodeId);
             }
 
-            @Override public void onPeerLeft(NodeId nodeId) {
+            @Override@Contract public void onPeerLeft(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerLeft({}) — notifying CTM", nodeId);
                 ctm.onQuicPeerLeft(nodeId);
             }
 
-            /// Emit a local-observation `SwimHint(HEALTHY)` so the existing
-            /// `clearSuspectedInMemory` path triggers when the leader's own QUIC channel to a
-            /// peer becomes alive. Without this, a peer transiently SWIM-suspected during
-            /// boot stays SUSPECTED in the snapshot forever — the only existing clear path
-            /// is `RemoteConnectivity(CONNECTED)` piggybacked on a follower's pong, but
-            /// followers only push SUSPECT/FAULTY observations to the buffer (HEALTHY is
-            /// the implicit baseline that's never broadcast). Local QUIC liveness is
-            /// strictly stronger evidence than any third-party observation — use it.
             private void emitHealthyHint(NodeId peer) {
                 var epoch = epochSupplier.get();
                 healthSink.emit(new HealthSignal.SwimHint(peer, HealthHint.HEALTHY, epoch));
             }
         };
         quicNetwork.setPeerStateListener(listener);
-        // Catch-up emission: peers may have completed handshake BEFORE this listener was
-        // attached (event-loss window). Emit a SwimHint(HEALTHY) for each currently-connected
-        // peer so the HealthReconciler's swimHints map is initialized to HEALTHY rather than
-        // sticky SUSPECTED carried over from any earlier signal.
-        quicNetwork.connectedPeers().forEach(peer -> {
-            LOG.debug("QuicPeerState: catch-up SwimHint(HEALTHY) for already-connected peer {}", peer);
-            healthSink.emit(new HealthSignal.SwimHint(peer, HealthHint.HEALTHY, epochSupplier.get()));
-        });
+        quicNetwork.connectedPeers()
+                                  .forEach(peer -> {
+                                               LOG.debug("QuicPeerState: catch-up SwimHint(HEALTHY) for already-connected peer {}",
+                                                         peer);
+                                               healthSink.emit(new HealthSignal.SwimHint(peer,
+                                                                                         HealthHint.HEALTHY,
+                                                                                         epochSupplier.get()));
+                                           });
     }
 
     private static void attachQuicFollowerWiring(ClusterNetwork network,
@@ -1578,31 +1520,26 @@ public interface AetherNode extends ManageableNode {
         quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
     }
 
-    /// Q6: route QUIC view-change health observations into the node-level
-    /// `PeerObservationStore`. NodeAdded -> HEALTHY, NodeRemoved/NodeDown -> FAULTY. This
-    /// makes QUIC handshake completion the canonical observation source so SWIM Stopped /
-    /// Starting can ignore peer events safely.
     private static void attachQuicHealthReporter(ClusterNetwork network,
                                                  org.pragmatica.aether.metrics.observation.PeerObservationStore store) {
-        if (!(network instanceof QuicClusterNetwork quicNetwork)) {return;}
-        org.pragmatica.consensus.net.quic.PeerHealthReporter reporter =
-            new org.pragmatica.consensus.net.quic.PeerHealthReporter() {
-                @Override public void onPeerHealthy(NodeId peerId, long observedTerm, long observedCounter) {
-                    store.pushHealth(new org.pragmatica.cluster.metrics.PeerHealthObservation(peerId,
-                                                                                              org.pragmatica.cluster.metrics.HealthHintWire.HEALTHY,
-                                                                                              observedTerm,
-                                                                                              observedCounter,
-                                                                                              System.currentTimeMillis()));
-                }
+        if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
+        org.pragmatica.consensus.net.quic.PeerHealthReporter reporter = new org.pragmatica.consensus.net.quic.PeerHealthReporter() {
+            @Override@Contract public void onPeerHealthy(NodeId peerId, long observedTerm, long observedCounter) {
+                store.pushHealth(new org.pragmatica.cluster.metrics.PeerHealthObservation(peerId,
+                                                                                          org.pragmatica.cluster.metrics.HealthHintWire.HEALTHY,
+                                                                                          observedTerm,
+                                                                                          observedCounter,
+                                                                                          System.currentTimeMillis()));
+            }
 
-                @Override public void onPeerFaulty(NodeId peerId, long observedTerm, long observedCounter) {
-                    store.pushHealth(new org.pragmatica.cluster.metrics.PeerHealthObservation(peerId,
-                                                                                              org.pragmatica.cluster.metrics.HealthHintWire.FAULTY,
-                                                                                              observedTerm,
-                                                                                              observedCounter,
-                                                                                              System.currentTimeMillis()));
-                }
-            };
+            @Override@Contract public void onPeerFaulty(NodeId peerId, long observedTerm, long observedCounter) {
+                store.pushHealth(new org.pragmatica.cluster.metrics.PeerHealthObservation(peerId,
+                                                                                          org.pragmatica.cluster.metrics.HealthHintWire.FAULTY,
+                                                                                          observedTerm,
+                                                                                          observedCounter,
+                                                                                          System.currentTimeMillis()));
+            }
+        };
         quicNetwork.setHealthReporter(reporter);
     }
 
@@ -1611,40 +1548,28 @@ public interface AetherNode extends ManageableNode {
                           .map(v -> ((AetherValue.GovernorAnnouncementValue) v).governorId());
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Option<org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot> decodeSnapshot(Deserializer deserializer,
-                                                                                                                                           byte[] bytes) {
-        if (bytes == null || bytes.length == 0) {return Option.none();}
-        try {
-            org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot snapshot = deserializer.decode(bytes);
-            return Option.option(snapshot);
-        } catch (RuntimeException ex) {
-            LoggerFactory.getLogger(AetherNode.class)
-                                   .warn("Failed to decode ClusterGenerationSnapshot payload ({} bytes): {}",
-                                         bytes.length,
-                                         ex.getMessage());
-            return Option.none();
-        }
-    }
-
     private static GenerationChangedSink buildGenerationChangedSink(MessageRouter router) {
         return notice -> router.route(OperationalEvent.GenerationChanged.generationChanged(notice.oldEpoch().toString(),
                                                                                            notice.newEpoch().toString(),
                                                                                            notice.reason().name()));
     }
 
-    private static void onLeaderChangeForReconciler(LeaderNotification.LeaderChange change,
-                                                    AtomicLong leaderTerm,
-                                                    HealthReconcilerActivator activator) {
-        if (change.localNodeIsLeader()) {leaderTerm.incrementAndGet();}
-        activator.onLeaderChange(change);
+    private static void onLeaderChangeForPublisher(LeaderNotification.LeaderChange change,
+                                                   AtomicLong leaderTerm,
+                                                   GenerationSnapshotPublisher publisher,
+                                                   BootstrapModule bootstrap) {
+        if (change.localNodeIsLeader()) {
+            leaderTerm.incrementAndGet();
+            bootstrap.onLeaderGained();
+            publisher.onLeaderGained();
+        } else {
+            bootstrap.onLeaderLost();
+            publisher.onLeaderLost();
+        }
     }
 
-    /// Theme B Item 2: ONLY deactivate via raw `LeaderChange`. CTM activation is chained from
-    /// the `HealthReconcilerActivator.onBootstrapCommitted` callback so it always runs AFTER
-    /// the reconciler's first snapshot has been seeded — eliminating the phantom-provision
-    /// window between leader-gain and reconciler-ready.
     @SuppressWarnings("JBCT-RET-01") private static void deactivateOnLeaderChangeIfNotLeader(LeaderNotification.LeaderChange change,
-                                                                                              ClusterTopologyManager ctm) {
+                                                                                             ClusterTopologyManager ctm) {
         if (!change.localNodeIsLeader()) {ctm.deactivate();}
     }
 
@@ -1940,7 +1865,6 @@ public interface AetherNode extends ManageableNode {
                                                                     HttpRouteRegistry httpRouteRegistry,
                                                                     ClusterSyncCollector metricsCollector,
                                                                     ClusterSyncScheduler metricsScheduler,
-                                                                    NodeSnapshotCache nodeSnapshotCache,
                                                                     DeploymentMetricsCollector deploymentMetricsCollector,
                                                                     DeploymentMetricsScheduler deploymentMetricsScheduler,
                                                                     ControlLoop controlLoop,
@@ -2089,7 +2013,8 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               consumerGroupCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> deactivateOnLeaderChangeIfNotLeader(change, clusterTopologyManager)));
+                                              change -> deactivateOnLeaderChangeIfNotLeader(change,
+                                                                                            clusterTopologyManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()
@@ -2132,8 +2057,6 @@ public interface AetherNode extends ManageableNode {
                                               metricsCollector::onTopologyChange));
         entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class,
                                               metricsCollector::onClusterSyncPing));
-        entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class,
-                                              nodeSnapshotCache::onClusterSyncPing));
         entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPong.class,
                                               metricsCollector::onClusterSyncPong));
         entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPing.class,

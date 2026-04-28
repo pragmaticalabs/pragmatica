@@ -19,10 +19,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Parses topology data from slice .manifest properties files.
-///
-/// Reads `META-INF/slice/{SliceName}.manifest` from the slice's ClassLoader
-/// and extracts route, resource, dependency, and topic information.
 @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) public final class TopologyParser {
     private static final Logger log = LoggerFactory.getLogger(TopologyParser.class);
 

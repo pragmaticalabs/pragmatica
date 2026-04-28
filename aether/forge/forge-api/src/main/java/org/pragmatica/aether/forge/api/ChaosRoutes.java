@@ -42,9 +42,6 @@ import static org.pragmatica.http.routing.Route.in;
 import static org.pragmatica.http.routing.Route.post;
 
 
-/// REST API routes for chaos engineering operations.
-/// Provides endpoints for enabling/disabling chaos, injecting events,
-/// and managing cluster nodes (add, kill, rolling restart).
 public final class ChaosRoutes {
     private ChaosRoutes() {}
 

@@ -7,12 +7,6 @@ package org.pragmatica.aether.api;
 import org.pragmatica.messaging.Message;
 
 
-/// Operational audit events emitted to the cluster event stream.
-/// Covers security, lifecycle, and configuration changes that operators
-/// and AI agents need for full operational awareness.
-///
-/// These events flow through the MessageRouter to ClusterEventAggregator,
-/// which converts them to ClusterEvent records for dashboard and API consumption.
 public sealed interface OperationalEvent extends Message.Local {
     record AccessDenied(String principal,
                         String method,

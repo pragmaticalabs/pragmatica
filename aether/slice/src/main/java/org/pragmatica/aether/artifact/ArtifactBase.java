@@ -11,14 +11,6 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 
 
-/// Version-agnostic artifact identifier.
-///
-///
-/// Used for operations that apply to all versions of an artifact, such as
-/// rolling updates where both old and new versions are managed together.
-///
-///
-/// Format: groupId:artifactId (e.g., "org.pragmatica-lite.aether:example-slice")
 @Codec public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact base format %s");
 

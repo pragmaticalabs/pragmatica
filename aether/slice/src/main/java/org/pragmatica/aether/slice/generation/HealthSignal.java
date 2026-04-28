@@ -9,19 +9,6 @@ import org.pragmatica.consensus.NodeId;
 import java.util.List;
 
 
-/// Inputs to the leader's `HealthReconciler` — exactly the events listed in spec §8.1.
-/// Every atom-mutating decision derives from one of these signals.
-///
-/// Runtime-only value (no `@Codec`). Wire-level encoding for ping/pong integration is
-/// introduced in Commit 3; for now the reconciler consumes these via direct in-process calls.
-///
-/// Every variant carries an `observedAt` epoch so the leader-side reconciler can
-/// epoch-fence stale reports that crossed a leader-change boundary. Signals whose
-/// `observedAt == Epoch.ZERO` bypass the fence — operator actions and KV-atom
-/// notifications are authoritative and not tied to an observation window.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §8.1
-/// and `aether/docs/specs/clustersync-refactor-spec.md` commit 5.
 public sealed interface HealthSignal {
     Epoch observedAt();
 
@@ -64,10 +51,6 @@ public sealed interface HealthSignal {
         }
     }
 
-    /// Remote SWIM health observation from a follower carried via ClusterSyncPong.
-    /// `producedAtMs` is the observer's wall-clock millis at observation time —
-    /// consumers apply a configurable TTL to drop stale reports independent of
-    /// cluster epoch.
     record RemoteSwimHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAtEpoch, long producedAtMs) implements HealthSignal {
         public RemoteSwimHint(NodeId observer, NodeId peer, HealthHint hint, Epoch observedAtEpoch) {
             this(observer, peer, hint, observedAtEpoch, 0L);
@@ -78,11 +61,11 @@ public sealed interface HealthSignal {
         }
     }
 
-    /// Remote QUIC connectivity observation from a follower carried via ClusterSyncPong.
-    /// `producedAtMs` is the observer's wall-clock millis at observation time —
-    /// consumers apply a configurable TTL to drop stale reports independent of
-    /// cluster epoch.
-    record RemoteConnectivity(NodeId observer, NodeId peer, ConnectivityReport state, Epoch observedAtEpoch, long producedAtMs) implements HealthSignal {
+    record RemoteConnectivity(NodeId observer,
+                              NodeId peer,
+                              ConnectivityReport state,
+                              Epoch observedAtEpoch,
+                              long producedAtMs) implements HealthSignal {
         public RemoteConnectivity(NodeId observer, NodeId peer, ConnectivityReport state, Epoch observedAtEpoch) {
             this(observer, peer, state, observedAtEpoch, 0L);
         }

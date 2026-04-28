@@ -14,27 +14,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for alert forwarding.
-///
-///
-/// Example aether.toml:
-/// ```
-/// [alerts]
-/// enabled = true
-///
-/// [alerts.webhook]
-/// enabled = true
-/// urls = ["https://pagerduty.example.com/webhook", "https://slack.example.com/webhook"]
-/// retry_count = 3
-/// timeout = "5s"
-///
-/// [alerts.events]
-/// enabled = true
-/// ```
-///
-/// @param enabled Whether alerting is enabled
-/// @param webhook Webhook configuration
-/// @param events Event stream configuration
 public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig events) {
     private static final AlertConfig DEFAULT = alertConfig(true,
                                                            WebhookConfig.webhookConfig(),

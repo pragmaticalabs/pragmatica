@@ -21,10 +21,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_STATUS;
 
 
-/// Exports the cluster configuration as TOML from the management API.
-///
-/// Default output is the raw TOML content. Use `--with-status` to prepend
-/// runtime state as TOML comments.
 @Command(name = "export", description = "Export cluster configuration as TOML") @SuppressWarnings("JBCT-RET-01") class ClusterExportCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 

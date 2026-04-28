@@ -16,16 +16,6 @@ import org.pragmatica.net.tcp.security.GossipKey;
 import static org.pragmatica.aether.environment.aws.AwsSecretsProvider.awsSecretsProvider;
 
 
-/// AWS Certificate Manager-backed certificate provider.
-///
-/// Fetches pre-provisioned CA certificate, CA private key, and gossip encryption key
-/// from AWS Secrets Manager. Node certificates are issued locally using the fetched CA material.
-///
-/// Expected secrets in AWS Secrets Manager:
-///   - `{prefix}/ca-cert`       — PEM-encoded CA certificate
-///   - `{prefix}/ca-key`        — PEM-encoded CA private key
-///   - `{prefix}/gossip-key`    — Hex-encoded 32-byte gossip encryption key
-///   - `{prefix}/gossip-key-id` — Integer key ID for gossip key rotation
 public final class AwsCertificateProvider implements CertificateProvider {
     private final CertificateProvider delegate;
 

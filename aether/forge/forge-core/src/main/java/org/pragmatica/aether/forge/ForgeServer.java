@@ -41,28 +41,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Main entry point for Aether Forge.
-/// Starts a cluster, load generator, and web dashboard on a single JVM.
-///
-/// CLI arguments:
-/// ```
-/// --config &lt;forge.toml&gt;       Forge cluster configuration
-/// --blueprint &lt;coords&gt;        Artifact coordinates to deploy (groupId:artifactId:version)
-///                              Cluster resolves JAR via configured Repository chain
-/// --load-config &lt;file.toml&gt;   Load test configuration
-/// --auto-start                Start load generation after config loaded
-/// ```
-///
-/// Environment variables (override CLI args):
-/// ```
-/// FORGE_CONFIG        - Path to forge.toml
-/// FORGE_BLUEPRINT     - Artifact coordinates (groupId:artifactId:version)
-/// FORGE_LOAD_CONFIG   - Path to load config file
-/// FORGE_AUTO_START    - Set to "true" to auto-start load
-/// FORGE_PORT          - Dashboard port (backwards compatible)
-/// CLUSTER_SIZE        - Number of nodes (backwards compatible)
-/// LOAD_RATE           - Initial load rate (backwards compatible)
-/// ```
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public final class ForgeServer {
     private static final Logger log = LoggerFactory.getLogger(ForgeServer.class);
 

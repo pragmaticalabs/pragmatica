@@ -7,7 +7,6 @@ package org.pragmatica.aether.config.cluster;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors specific to declarative cluster management operations.
 public sealed interface ClusterConfigError extends Cause {
     record InvalidDeploymentType(String value) implements ClusterConfigError {
         @Override public String message() {

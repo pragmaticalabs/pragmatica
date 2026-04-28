@@ -9,22 +9,7 @@ import java.util.Map;
 import java.util.function.Function;
 
 
-/// Computes a weighted composite load factor from multiple scaling metrics.
-///
-///
-/// The Lizard Brain scaling algorithm uses relative change detection:
-///
-///   - Each metric maintains a sliding window of recent values
-///   - Relative change = current / rolling average
-///   - Composite score = sum of (weight * relative change) for each metric
-///
-///
-///
-/// Scaling decisions are only made when windows are full, providing
-/// natural warm-up protection without explicit timers.
-@SuppressWarnings("JBCT-RET-01")
-// Fire-and-forget metric recording — void is intentional
-public interface CompositeLoadFactor {
+@SuppressWarnings("JBCT-RET-01") public interface CompositeLoadFactor {
     LoadFactorResult computeWithCurrentValues(Map<ScalingMetric, Double> currentValues);
 
     record LoadFactorResult(double compositeScore, boolean canScale, Map<ScalingMetric, Double> components) {

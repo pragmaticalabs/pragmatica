@@ -8,7 +8,6 @@ import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.lang.Result;
 
 
-/// Generates a Java enum from a PostgreSQL enum type.
 public final class EnumGenerator {
     private final CodegenConfig config;
 

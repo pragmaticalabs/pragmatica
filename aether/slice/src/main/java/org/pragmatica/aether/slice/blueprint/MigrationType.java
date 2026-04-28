@@ -7,7 +7,6 @@ package org.pragmatica.aether.slice.blueprint;
 import org.pragmatica.lang.Option;
 
 
-/// Migration script type based on filename prefix (Flyway-style naming convention).
 public enum MigrationType {
     VERSIONED,
     REPEATABLE,

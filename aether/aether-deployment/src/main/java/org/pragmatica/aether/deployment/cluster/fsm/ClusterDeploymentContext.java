@@ -30,14 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
-/// Shared context for the ClusterDeploymentManager FSM. Holds long-lived configuration and
-/// collaborators that survive the Dormant ↔ Active cycle, plus the bound [`Fsm`] reference and
-/// the per-FSM singletons for the data-free [`ClusterDeploymentState.Dormant`] and
-/// [`ClusterDeploymentState.Stopped`] states.
-///
-/// Per-activation mutable state (blueprint map, slice-state maps, retry counters, in-flight
-/// blueprints, reconcile timer, etc.) lives on the [`ClusterDeploymentState.Active`] record — it
-/// is created fresh on every Dormant → Active transition via [`#newActive`].
+
 public final class ClusterDeploymentContext {
     private final Fsm<ClusterDeploymentState, ClusterFsmEvent> fsm;
     private final NodeId self;
@@ -69,12 +62,22 @@ public final class ClusterDeploymentContext {
                                     DeploymentAtomicity atomicity,
                                     int coreMax,
                                     TimeSpan reconcileInterval) {
-        this(fsm, self, cluster, kvStore, router, topologyManager, schemaOrchestrator,
-             healthSignalSink, snapshotSupplier, seedNodes, atomicity, coreMax, reconcileInterval,
+        this(fsm,
+             self,
+             cluster,
+             kvStore,
+             router,
+             topologyManager,
+             schemaOrchestrator,
+             healthSignalSink,
+             snapshotSupplier,
+             seedNodes,
+             atomicity,
+             coreMax,
+             reconcileInterval,
              System::currentTimeMillis);
     }
 
-    /// Full-arity constructor with injectable clock — for tests that need deterministic time.
     public ClusterDeploymentContext(Fsm<ClusterDeploymentState, ClusterFsmEvent> fsm,
                                     NodeId self,
                                     ClusterNode<KVCommand<AetherKey>> cluster,
@@ -107,13 +110,9 @@ public final class ClusterDeploymentContext {
         this.stopped = new ClusterDeploymentState.Stopped(this);
     }
 
-    /// Current time in milliseconds. Reads from the injected clock so tests can make FSM
-    /// transitions deterministic. Equivalent to `System.currentTimeMillis()` in production.
     public long nowMs() {
         return clock.getAsLong();
     }
-
-    // --- FSM access ---
 
     public Fsm<ClusterDeploymentState, ClusterFsmEvent> fsm() {
         return fsm;
@@ -131,27 +130,23 @@ public final class ClusterDeploymentContext {
         return stopped;
     }
 
-    /// Build a fresh [`ClusterDeploymentState.Active`] with new collections, allocation index, and
-    /// reconcile timer. Called on every Dormant → Active transition.
     public ClusterDeploymentState.Active newActive() {
         return new ClusterDeploymentState.Active(this,
-                                                  new ConcurrentHashMap<>(),
-                                                  new ConcurrentHashMap<>(),
-                                                  new ConcurrentHashMap<>(),
-                                                  ConcurrentHashMap.newKeySet(),
-                                                  new ConcurrentHashMap<>(),
-                                                  new ConcurrentHashMap<>(),
-                                                  ConcurrentHashMap.newKeySet(),
-                                                  ConcurrentHashMap.newKeySet(),
-                                                  ConcurrentHashMap.newKeySet(),
-                                                  new ConcurrentHashMap<>(),
-                                                  new ConcurrentHashMap<>(),
-                                                  new AtomicInteger(0),
-                                                  new AtomicBoolean(false),
-                                                  CancellableTask.cancellableTask());
+                                                 new ConcurrentHashMap<>(),
+                                                 new ConcurrentHashMap<>(),
+                                                 new ConcurrentHashMap<>(),
+                                                 ConcurrentHashMap.newKeySet(),
+                                                 new ConcurrentHashMap<>(),
+                                                 new ConcurrentHashMap<>(),
+                                                 ConcurrentHashMap.newKeySet(),
+                                                 ConcurrentHashMap.newKeySet(),
+                                                 ConcurrentHashMap.newKeySet(),
+                                                 new ConcurrentHashMap<>(),
+                                                 new ConcurrentHashMap<>(),
+                                                 new AtomicInteger(0),
+                                                 new AtomicBoolean(false),
+                                                 CancellableTask.cancellableTask());
     }
-
-    // --- Config accessors ---
 
     public NodeId self() {
         return self;
@@ -201,7 +196,6 @@ public final class ClusterDeploymentContext {
         return reconcileInterval;
     }
 
-    /// True iff the FSM's current state is [`ClusterDeploymentState.Active`].
     public boolean isActive() {
         return fsm.current() instanceof ClusterDeploymentState.Active;
     }

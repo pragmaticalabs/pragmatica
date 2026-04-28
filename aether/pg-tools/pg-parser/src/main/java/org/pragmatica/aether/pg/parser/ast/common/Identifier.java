@@ -7,9 +7,6 @@ package org.pragmatica.aether.pg.parser.ast.common;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 
 
-/// A SQL identifier that tracks quoting style.
-/// Unquoted identifiers are case-folded to lowercase per PostgreSQL rules.
-/// Quoted identifiers preserve their original case.
 public record Identifier(SourceSpan span, String value, QuoteStyle style) {
     public enum QuoteStyle {
         UNQUOTED,

@@ -30,9 +30,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Factory for creating hierarchical storage infrastructure from configuration.
-/// Each named config entry produces a StorageSetup containing the storage instance,
-/// snapshot manager, and readiness gate.
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
 

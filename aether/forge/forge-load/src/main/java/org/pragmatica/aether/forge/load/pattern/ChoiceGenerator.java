@@ -17,11 +17,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Randomly selects from a list of choices.
-///
-/// Pattern: `${choice:A,B,C`} where A, B, C are comma-separated options.
-///
-/// Example: `${choice:NYC,LAX,CHI`} randomly picks one of the three values
 public record ChoiceGenerator(List<String> choices) implements PatternGenerator {
     public static final String TYPE = "choice";
 

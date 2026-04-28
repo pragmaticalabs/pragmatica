@@ -8,9 +8,6 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.ScopeType;
 
 
-/// Picocli mixin for output formatting options.
-/// ScopeType.INHERIT propagates options from AetherCli to all subcommands.
-/// Note: picocli requires mutable fields for option injection.
 public class OutputOptions {
     @Option(names = {"--format", "-o"}, description = "Output format: json, table, value, csv", defaultValue = "TABLE", scope = ScopeType.INHERIT, converter = OutputFormatConverter.class) private OutputFormat format;
 

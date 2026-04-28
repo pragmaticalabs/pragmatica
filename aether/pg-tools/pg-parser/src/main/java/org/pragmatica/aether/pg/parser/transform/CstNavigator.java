@@ -14,7 +14,6 @@ import java.util.function.Function;
 import java.util.stream.Stream;
 
 
-/// Utility for navigating CST nodes produced by the PostgreSQL parser.
 public record CstNavigator(CstNode.NonTerminal node) {
     public String rule() {
         return node.ruleName();

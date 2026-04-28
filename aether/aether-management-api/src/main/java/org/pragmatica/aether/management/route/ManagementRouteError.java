@@ -9,7 +9,6 @@ import org.pragmatica.http.routing.HttpMethod;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors returned by the management route registry.
 public sealed interface ManagementRouteError extends Cause {
     static NoMatch noMatch(HttpMethod method, String path) {
         return new NoMatch(method, path);

@@ -7,12 +7,6 @@ package org.pragmatica.aether.config;
 import org.pragmatica.lang.Option;
 
 
-/// HTTP protocol mode for the application HTTP server.
-///
-/// Controls which transport protocols are active:
-/// - H1: HTTP/1.1 only (default, backward compatible)
-/// - H3: HTTP/3 over QUIC only (requires TLS)
-/// - BOTH: dual-stack HTTP/1.1 + HTTP/3 (requires TLS)
 public enum HttpProtocol {
     H1,
     H3,

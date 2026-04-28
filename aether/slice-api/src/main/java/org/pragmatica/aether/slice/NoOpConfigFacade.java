@@ -12,10 +12,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.List;
 
 
-/// No-op implementation of ConfigFacade for backward compatibility.
-///
-/// All `require*` methods return failure; all `get*` methods return empty.
-/// Used when no config service is wired (e.g., testing or slices without config).
 enum NoOpConfigFacade implements ConfigFacade {
     INSTANCE;
     private static final Cause NO_CONFIG = Causes.cause("Config service not available");

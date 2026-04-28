@@ -13,9 +13,6 @@ import java.security.Signature;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Verifies JWT signatures using JDK crypto APIs.
-///
-/// Supports RS256 (RSA with SHA-256) and ES256 (ECDSA with SHA-256).
 @SuppressWarnings("JBCT-RET-03") final class JwtSignatureVerifier {
     private JwtSignatureVerifier() {}
 

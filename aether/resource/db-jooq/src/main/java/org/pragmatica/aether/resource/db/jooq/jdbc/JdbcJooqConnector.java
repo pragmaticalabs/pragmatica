@@ -31,13 +31,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// JDBC implementation of JooqConnector for type-safe jOOQ queries.
-///
-/// Provides jOOQ-specific operations backed by JDBC DataSource with
-/// HikariCP connection pooling.
-@SuppressWarnings("JBCT-EX-01")
-// JDBC/jOOQ adapter -- exceptions are caught at Promise.lift() boundary
-public final class JdbcJooqConnector implements JooqConnector {
+@SuppressWarnings("JBCT-EX-01") public final class JdbcJooqConnector implements JooqConnector {
     private static final System.Logger LOG = System.getLogger(JdbcJooqConnector.class.getName());
 
     private final DatabaseConnectorConfig config;

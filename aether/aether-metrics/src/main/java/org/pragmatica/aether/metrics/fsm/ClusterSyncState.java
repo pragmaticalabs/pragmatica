@@ -6,7 +6,6 @@ package org.pragmatica.aether.metrics.fsm;
 
 import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents.PingTick;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents.PongReceived;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -15,41 +14,27 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumDisappeared;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumEstablished;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 
-/// Sealed state hierarchy for the cluster-sync scheduler FSM.
-///
-/// - [`Dormant`] and [`Stopped`] are per-context singletons (data-free, shared for the FSM's
-///   lifetime so CAS comparisons against them are stable).
-/// - [`Pinging`] is a fresh record per entry, carrying the per-peer `lastSentEpoch` and
-///   `missedPings` counters as immutable maps. Every handler that needs to bump a counter, reset
-///   a counter, or drop a removed peer swaps the whole record (option (a) — see class Javadoc on
-///   `Pinging` for the rationale).
-///
-/// Events ignored in a state fall through to `tx.ignore()` — no silent early-returns.
-public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, ClusterFsmEvent> {
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+
+public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, ClusterFsmEvent> {
     Logger LOG = LoggerFactory.getLogger(ClusterSyncState.class);
 
     ClusterSyncContext ctx();
 
-    /// Dormant: quorum is not established, or quorum disappeared. No pings are sent. The scheduler
-    /// is still observable (buffers, topology, observedEpochs, quorumSequence all live on the
-    /// context), but there are no per-peer counters to maintain.
     record Dormant(ClusterSyncContext ctx) implements ClusterSyncState {
-        @Contract
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
-            switch (event) {
+        @Contract@Override public void handle(ClusterFsmEvent event,
+                                              TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
+            switch (event){
                 case QuorumEstablished _ -> tx.transitionTo(Pinging.fresh(ctx));
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
@@ -57,52 +42,21 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
         }
     }
 
-    /// Terminal state: the scheduler has been stopped. No further transitions. Idempotent: a
-    /// second `Shutdown` is recorded as ignored. Buffer cleanup runs on entry; the ping timer (if
-    /// any) was already cancelled by the prior `Pinging.onExit` / `Pinging.onCasLost`.
     record Stopped(ClusterSyncContext ctx) implements ClusterSyncState {
-        @Contract
-        @Override
-        public void onEntry() {
+        @Contract@Override public void onEntry() {
             ctx.clearObservationBuffers();
         }
 
-        @Contract
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
-            // Terminal state: every event is ignored, no matter which concrete `ClusterFsmEvent`
-            // subtype it is.
+        @Contract@Override public void handle(ClusterFsmEvent event,
+                                              TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             tx.ignore();
         }
     }
 
-    /// Pinging: quorum is established; the scheduler is periodically sending pings to all peers.
-    ///
-    /// Option (a) chosen for `missedPings`: both per-peer maps are immutable. Every mutation
-    /// swaps the whole record via `tx.transitionToOrDrop(Pinging.with(...))` — pure state-swap
-    /// semantics match the Fsm library contract (state identity via reference, fresh record per
-    /// entry). Rationale for picking (a) over (b):
-    ///
-    /// - Quorum disappearance drops counters wholesale: Dormant has no data fields, so returning
-    ///   to Pinging via a later QuorumEstablished starts from `Map.of()` — which IS the pre-FSM
-    ///   semantic (counters were cleared at stopPinging).
-    /// - All counter mutations happen under the FSM's serialized CAS dispatch path. No in-place
-    ///   mutation means no internal synchronization on the record itself.
-    /// - Topology shrink (NodeGone) drops one entry by rebuilding the maps without the gone peer.
-    ///
-    /// Fields:
-    /// - `lastSentEpoch` — epoch of the last ping sent to each peer. Consumed by
-    ///   `ClusterSyncContext.sendOnePing` to decide full-snapshot vs heartbeat-only payloads.
-    /// - `missedPings` — consecutive tick count without a pong per peer. Reset to 0 on
-    ///   `PongReceived`; increments on `PingTick`; emits `HealthSignal.PingTimeout` on threshold.
-    /// - `pingTimer` — scheduled at fixed-rate, eagerly in [`#fresh`] / [`#with`]. Owned by this
-    ///   record: `onExit` cancels on transition out of Pinging; `onCasLost` cancels if the CAS
-    ///   that would make this record current loses to another thread.
     record Pinging(ClusterSyncContext ctx,
                    Map<NodeId, Epoch> lastSentEpoch,
                    Map<NodeId, Integer> missedPings,
                    ScheduledFuture<?> pingTimer) implements ClusterSyncState {
-
         public static Pinging fresh(ClusterSyncContext ctx) {
             return with(ctx, Map.of(), Map.of());
         }
@@ -110,32 +64,27 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
         private static Pinging with(ClusterSyncContext ctx,
                                     Map<NodeId, Epoch> lastSentEpoch,
                                     Map<NodeId, Integer> missedPings) {
-            return new Pinging(ctx, lastSentEpoch, missedPings,
+            return new Pinging(ctx,
+                               lastSentEpoch,
+                               missedPings,
                                ctx.schedulePingTimer(() -> ctx.dispatch(new PingTick(ctx.epochSupplier().get()))));
         }
 
-        @Contract
-        @Override
-        public void onEntry() {
+        @Contract@Override public void onEntry() {
             LOG.debug("ClusterSyncScheduler pinging started for node {}", ctx.self());
         }
 
-        @Contract
-        @Override
-        public void onExit() {
+        @Contract@Override public void onExit() {
             pingTimer.cancel(false);
         }
 
-        @Contract
-        @Override
-        public void onCasLost() {
+        @Contract@Override public void onCasLost() {
             pingTimer.cancel(false);
         }
 
-        @Contract
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
-            switch (event) {
+        @Contract@Override public void handle(ClusterFsmEvent event,
+                                              TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
+            switch (event){
                 case PingTick pt -> handlePingTick(pt, tx);
                 case PongReceived pr -> handlePongReceived(pr, tx);
                 case QuorumDisappeared _ -> handleQuorumDisappeared(tx);
@@ -150,8 +99,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             tx.transitionTo(ctx.dormant());
         }
 
-        private void handleNodeGone(NodeGone event,
-                                    TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
+        private void handleNodeGone(NodeGone event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             if (!lastSentEpoch.containsKey(event.node()) && !missedPings.containsKey(event.node())) {
                 tx.ignore();
                 return;
@@ -161,8 +109,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             tx.transitionToOrDrop(with(ctx, nextLastSent, nextMissed));
         }
 
-        private void handlePongReceived(PongReceived event,
-                                        TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
+        private void handlePongReceived(PongReceived event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             if (!missedPings.containsKey(event.peer())) {
                 tx.ignore();
                 return;
@@ -171,48 +118,38 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             tx.transitionToOrDrop(with(ctx, lastSentEpoch, nextMissed));
         }
 
-        private void handlePingTick(PingTick event,
-                                    TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
+        private void handlePingTick(PingTick event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
             var topology = ctx.topology();
             if (topology.isEmpty()) {
                 tx.ignore();
                 return;
             }
-            var maybeSnapshot = ctx.currentSnapshot();
-            var currentEpoch = maybeSnapshot.map(s -> s.epoch()).or(event.currentEpoch());
+            var currentEpoch = event.currentEpoch();
             var rabiaTerm = ctx.currentRabiaTerm();
-            // Build the next state record without any I/O. `sendOnePing` always returns the
-            // `currentEpoch` it was given, so we can compute `nextLastSent` deterministically
-            // ahead of the actual send.
             var nextLastSent = new HashMap<>(lastSentEpoch);
             var nextMissed = new HashMap<>(missedPings);
             for (var peer : topology) {
-                if (peer.equals(ctx.self())) { continue; }
+                if (peer.equals(ctx.self())) {continue;}
                 nextLastSent.put(peer, currentEpoch);
                 nextMissed.put(peer, nextMissed.getOrDefault(peer, 0) + 1);
             }
-            // I/O (sendOnePing + emitPingTimeoutIfExceeded) runs INSIDE the transition action so
-            // it only fires on CAS success — avoids duplicate pings when CAS loses to another
-            // dispatch.
             tx.transitionToOrDrop(with(ctx, Map.copyOf(nextLastSent), Map.copyOf(nextMissed)),
-                                  () -> dispatchPings(topology, currentEpoch, maybeSnapshot, rabiaTerm, nextMissed));
+                                  () -> dispatchPings(topology, currentEpoch, rabiaTerm, nextMissed));
         }
 
         private void dispatchPings(List<NodeId> topology,
                                    Epoch currentEpoch,
-                                   Option<ClusterGenerationSnapshot> maybeSnapshot,
                                    long rabiaTerm,
                                    Map<NodeId, Integer> nextMissed) {
             for (var peer : topology) {
-                if (peer.equals(ctx.self())) { continue; }
-                var priorLastSent = Option.option(lastSentEpoch.get(peer));
-                ctx.sendOnePing(peer, currentEpoch, priorLastSent, maybeSnapshot, rabiaTerm);
+                if (peer.equals(ctx.self())) {continue;}
+                ctx.sendOnePing(peer, currentEpoch, rabiaTerm);
                 ctx.emitPingTimeoutIfExceeded(peer, nextMissed.get(peer));
             }
         }
 
         private static <V> Map<NodeId, V> withoutKey(Map<NodeId, V> source, NodeId key) {
-            if (!source.containsKey(key)) { return source; }
+            if (!source.containsKey(key)) {return source;}
             var copy = new HashMap<>(source);
             copy.remove(key);
             return Map.copyOf(copy);

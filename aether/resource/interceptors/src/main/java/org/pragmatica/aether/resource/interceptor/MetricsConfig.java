@@ -15,13 +15,6 @@ import static org.pragmatica.lang.Result.all;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-/// Configuration for metrics interceptor.
-///
-/// @param name         Metric name prefix
-/// @param registry     Micrometer meter registry for recording metrics
-/// @param recordTiming Record timing information
-/// @param recordCounts Record success/failure counts
-/// @param tags         Additional tags for metrics (alternating key-value pairs)
 public record MetricsConfig(String name,
                             MeterRegistry registry,
                             boolean recordTiming,

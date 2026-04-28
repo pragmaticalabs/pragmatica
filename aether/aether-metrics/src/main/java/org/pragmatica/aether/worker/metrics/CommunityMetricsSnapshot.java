@@ -11,17 +11,6 @@ import org.pragmatica.serialization.Codec;
 import java.util.List;
 
 
-/// Rich metrics snapshot from a governor, sent on-demand to core.
-/// Contains full sliding window history and per-slice breakdown.
-/// ~1-5KB depending on window size and slice count.
-///
-/// @param communityId  community identifier
-/// @param governorId   governor node ID
-/// @param requestId    correlation ID matching the request
-/// @param memberCount  current community member count
-/// @param sliceMetrics per-slice metrics breakdown
-/// @param slidingWindow sliding window history
-/// @param timestampMs  when the snapshot was created
 @Codec public record CommunityMetricsSnapshot(String communityId,
                                               NodeId governorId,
                                               long requestId,

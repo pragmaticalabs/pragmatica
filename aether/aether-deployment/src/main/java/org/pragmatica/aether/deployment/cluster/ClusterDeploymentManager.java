@@ -75,43 +75,20 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Cluster-wide orchestration component that manages slice deployments across the cluster.
-/// Only active on the leader node.
-///
-///
-/// Key responsibilities:
-///
-///   - Watch for blueprint changes (desired state)
-///   - Allocate slice instances across nodes (round-robin)
-///   - Write LOAD commands directly to slice-node-keys
-///   - Perform reconciliation to ensure actual state matches desired state
-///
-///
-///
-/// Design notes:
-///
-///   - NO separate allocations key - writes directly to slice-node-keys
-///   - NO separate AllocationEngine - allocation logic embedded here
-///   - Reconciliation handles topology changes and leader failover
-///   - Lifecycle + domain dispatch is handled by the
-///     [`org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState`] FSM; this interface
-///     is a thin adapter translating legacy `@MessageReceiver` entry points into FSM events.
-///
 public interface ClusterDeploymentManager extends DelegatedComponent {
-    // MessageReceiver callbacks — void required by messaging framework.
-    @Contract @MessageReceiver void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
-    @Contract @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
-    @Contract @MessageReceiver void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
-    @Contract @MessageReceiver void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove);
-    @Contract @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
-    @Contract @MessageReceiver void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
-    @Contract @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
-    @Contract @MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
-    @Contract @MessageReceiver void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
-    @Contract @MessageReceiver void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove);
-    @Contract @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-    @Contract @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-    @Contract @MessageReceiver void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
+    @Contract@MessageReceiver void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
+    @Contract@MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
+    @Contract@MessageReceiver void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
+    @Contract@MessageReceiver void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove);
+    @Contract@MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
+    @Contract@MessageReceiver void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
+    @Contract@MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
+    @Contract@MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
+    @Contract@MessageReceiver void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
+    @Contract@MessageReceiver void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove);
+    @Contract@MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+    @Contract@MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+    @Contract@MessageReceiver void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
 
     record ReconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) implements Message.Local {
         public static ReconciliationAdjustment reconciliationAdjustment(Artifact artifact,
@@ -126,7 +103,8 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
         ALL_OR_NOTHING;
         public static DeploymentAtomicity parse(String value) {
             if (value == null || value.isBlank()) {return ALL_OR_NOTHING;}
-            return switch (value.trim().toLowerCase().replace("-", "_")) {
+            return switch (value.trim().toLowerCase()
+                                     .replace("-", "_")){
                 case "best_effort" -> BEST_EFFORT;
                 default -> ALL_OR_NOTHING;
             };
@@ -138,7 +116,10 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                      int minInstances,
                      Option<BlueprintId> owner,
                      boolean schemaRequired) {
-        public static Blueprint blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner) {
+        public static Blueprint blueprint(Artifact artifact,
+                                          int instances,
+                                          int minInstances,
+                                          Option<BlueprintId> owner) {
             return new Blueprint(artifact, instances, minInstances, owner, true);
         }
 
@@ -171,17 +152,17 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                              int coreMax,
                                                              SchemaOrchestratorService schemaOrchestrator) {
         return clusterDeploymentManager(self,
-                                         cluster,
-                                         kvStore,
-                                         router,
-                                         initialTopology,
-                                         topologyManager,
-                                         atomicity,
-                                         coreMax,
-                                         DEFAULT_RECONCILE_INTERVAL,
-                                         schemaOrchestrator,
-                                         HealthSignalSink.noop(),
-                                         Option::none);
+                                        cluster,
+                                        kvStore,
+                                        router,
+                                        initialTopology,
+                                        topologyManager,
+                                        atomicity,
+                                        coreMax,
+                                        DEFAULT_RECONCILE_INTERVAL,
+                                        schemaOrchestrator,
+                                        HealthSignalSink.noop(),
+                                        Option::none);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -195,17 +176,17 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                              TimeSpan reconcileInterval,
                                                              SchemaOrchestratorService schemaOrchestrator) {
         return clusterDeploymentManager(self,
-                                         cluster,
-                                         kvStore,
-                                         router,
-                                         initialTopology,
-                                         topologyManager,
-                                         atomicity,
-                                         coreMax,
-                                         reconcileInterval,
-                                         schemaOrchestrator,
-                                         HealthSignalSink.noop(),
-                                         Option::none);
+                                        cluster,
+                                        kvStore,
+                                        router,
+                                        initialTopology,
+                                        topologyManager,
+                                        atomicity,
+                                        coreMax,
+                                        reconcileInterval,
+                                        schemaOrchestrator,
+                                        HealthSignalSink.noop(),
+                                        Option::none);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -220,17 +201,17 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                              SchemaOrchestratorService schemaOrchestrator,
                                                              HealthSignalSink healthSignalSink) {
         return clusterDeploymentManager(self,
-                                         cluster,
-                                         kvStore,
-                                         router,
-                                         initialTopology,
-                                         topologyManager,
-                                         atomicity,
-                                         coreMax,
-                                         reconcileInterval,
-                                         schemaOrchestrator,
-                                         healthSignalSink,
-                                         Option::none);
+                                        cluster,
+                                        kvStore,
+                                        router,
+                                        initialTopology,
+                                        topologyManager,
+                                        atomicity,
+                                        coreMax,
+                                        reconcileInterval,
+                                        schemaOrchestrator,
+                                        healthSignalSink,
+                                        Option::none);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -246,89 +227,82 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                              HealthSignalSink healthSignalSink,
                                                              Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
         var ctx = buildContext(self,
-                                cluster,
-                                kvStore,
-                                router,
-                                Set.copyOf(initialTopology),
-                                topologyManager,
-                                atomicity,
-                                coreMax,
-                                reconcileInterval,
-                                schemaOrchestrator,
-                                healthSignalSink,
-                                snapshotSupplier);
+                               cluster,
+                               kvStore,
+                               router,
+                               Set.copyOf(initialTopology),
+                               topologyManager,
+                               atomicity,
+                               coreMax,
+                               reconcileInterval,
+                               schemaOrchestrator,
+                               healthSignalSink,
+                               snapshotSupplier);
         return new ClusterDeploymentManagerAdapter(ctx);
     }
 
     private static ClusterDeploymentContext buildContext(NodeId self,
-                                                          ClusterNode<KVCommand<AetherKey>> cluster,
-                                                          KVStore<AetherKey, AetherValue> kvStore,
-                                                          MessageRouter router,
-                                                          Set<NodeId> seedNodes,
-                                                          TopologyManager topologyManager,
-                                                          DeploymentAtomicity atomicity,
-                                                          int coreMax,
-                                                          TimeSpan reconcileInterval,
-                                                          SchemaOrchestratorService schemaOrchestrator,
-                                                          HealthSignalSink healthSignalSink,
-                                                          Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
+                                                         ClusterNode<KVCommand<AetherKey>> cluster,
+                                                         KVStore<AetherKey, AetherValue> kvStore,
+                                                         MessageRouter router,
+                                                         Set<NodeId> seedNodes,
+                                                         TopologyManager topologyManager,
+                                                         DeploymentAtomicity atomicity,
+                                                         int coreMax,
+                                                         TimeSpan reconcileInterval,
+                                                         SchemaOrchestratorService schemaOrchestrator,
+                                                         HealthSignalSink healthSignalSink,
+                                                         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
         var ctxHolder = new AtomicReference<ClusterDeploymentContext>();
-        Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> initialStateFactory =
-                fsm -> buildContextAndDormant(fsm,
-                                               ctxHolder,
-                                               self,
-                                               cluster,
-                                               kvStore,
-                                               router,
-                                               seedNodes,
-                                               topologyManager,
-                                               atomicity,
-                                               coreMax,
-                                               reconcileInterval,
-                                               schemaOrchestrator,
-                                               healthSignalSink,
-                                               snapshotSupplier);
-        // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
-        // we only need the context here; the FSM reference lives on ctx.fsm().
+        Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
+                                                                                                                                           ctxHolder,
+                                                                                                                                           self,
+                                                                                                                                           cluster,
+                                                                                                                                           kvStore,
+                                                                                                                                           router,
+                                                                                                                                           seedNodes,
+                                                                                                                                           topologyManager,
+                                                                                                                                           atomicity,
+                                                                                                                                           coreMax,
+                                                                                                                                           reconcileInterval,
+                                                                                                                                           schemaOrchestrator,
+                                                                                                                                           healthSignalSink,
+                                                                                                                                           snapshotSupplier);
         var _fsm = Fsm.fsm("cluster-deployment", self.id(), initialStateFactory);
         return ctxHolder.get();
     }
 
     private static ClusterDeploymentState buildContextAndDormant(Fsm<ClusterDeploymentState, ClusterFsmEvent> fsm,
-                                                                  AtomicReference<ClusterDeploymentContext> ctxHolder,
-                                                                  NodeId self,
-                                                                  ClusterNode<KVCommand<AetherKey>> cluster,
-                                                                  KVStore<AetherKey, AetherValue> kvStore,
-                                                                  MessageRouter router,
-                                                                  Set<NodeId> seedNodes,
-                                                                  TopologyManager topologyManager,
-                                                                  DeploymentAtomicity atomicity,
-                                                                  int coreMax,
-                                                                  TimeSpan reconcileInterval,
-                                                                  SchemaOrchestratorService schemaOrchestrator,
-                                                                  HealthSignalSink healthSignalSink,
-                                                                  Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
+                                                                 AtomicReference<ClusterDeploymentContext> ctxHolder,
+                                                                 NodeId self,
+                                                                 ClusterNode<KVCommand<AetherKey>> cluster,
+                                                                 KVStore<AetherKey, AetherValue> kvStore,
+                                                                 MessageRouter router,
+                                                                 Set<NodeId> seedNodes,
+                                                                 TopologyManager topologyManager,
+                                                                 DeploymentAtomicity atomicity,
+                                                                 int coreMax,
+                                                                 TimeSpan reconcileInterval,
+                                                                 SchemaOrchestratorService schemaOrchestrator,
+                                                                 HealthSignalSink healthSignalSink,
+                                                                 Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier) {
         var ctx = new ClusterDeploymentContext(fsm,
-                                                self,
-                                                cluster,
-                                                kvStore,
-                                                router,
-                                                topologyManager,
-                                                schemaOrchestrator,
-                                                healthSignalSink,
-                                                snapshotSupplier,
-                                                seedNodes,
-                                                atomicity,
-                                                coreMax,
-                                                reconcileInterval);
+                                               self,
+                                               cluster,
+                                               kvStore,
+                                               router,
+                                               topologyManager,
+                                               schemaOrchestrator,
+                                               healthSignalSink,
+                                               snapshotSupplier,
+                                               seedNodes,
+                                               atomicity,
+                                               coreMax,
+                                               reconcileInterval);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }
 
-    /// Thin adapter that bridges the legacy `@MessageReceiver` entry points and the
-    /// [`DelegatedComponent`] `activate`/`deactivate` lifecycle onto the FSM event channel. Holds
-    /// nothing but the [`ClusterDeploymentContext`] — all state lives on
-    /// [`ClusterDeploymentState`].
     final class ClusterDeploymentManagerAdapter implements ClusterDeploymentManager {
         private static final Logger log = LoggerFactory.getLogger(ClusterDeploymentManagerAdapter.class);
 
@@ -362,55 +336,55 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             return ctx.isActive();
         }
 
-        @Contract @Override public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
+        @Contract@Override public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
             ctx.dispatch(new AppBlueprintPutReceived(valuePut));
         }
 
-        @Contract @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+        @Contract@Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
             ctx.dispatch(new SliceTargetPutReceived(valuePut));
         }
 
-        @Contract @Override public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
+        @Contract@Override public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
             ctx.dispatch(new VersionRoutingPutReceived(valuePut));
         }
 
-        @Contract @Override public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
+        @Contract@Override public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
             ctx.dispatch(new AppBlueprintRemoveReceived(valueRemove));
         }
 
-        @Contract @Override public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+        @Contract@Override public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
             ctx.dispatch(new SliceTargetRemoveReceived(valueRemove));
         }
 
-        @Contract @Override public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
+        @Contract@Override public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
             ctx.dispatch(new VersionRoutingRemoveReceived(valueRemove));
         }
 
-        @Contract @Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
+        @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
             ctx.dispatch(new NodeLifecyclePutReceived(valuePut));
         }
 
-        @Contract @Override public void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
+        @Contract@Override public void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
             ctx.dispatch(new ActivationDirectivePutReceived(valuePut));
         }
 
-        @Contract @Override public void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
+        @Contract@Override public void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
             ctx.dispatch(new ActivationDirectiveRemoveReceived(valueRemove));
         }
 
-        @Contract @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        @Contract@Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
             ctx.dispatch(new NodeArtifactPutReceived(valuePut));
         }
 
-        @Contract @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        @Contract@Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             ctx.dispatch(new NodeArtifactRemoveReceived(valueRemove));
         }
 
-        @Contract @Override public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
+        @Contract@Override public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
             ctx.dispatch(new SchemaVersionPutReceived(valuePut));
         }
 
-        @Contract @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
+        @Contract@Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
             ctx.dispatch(new TopologyChangeReceived(topologyChange));
         }
     }

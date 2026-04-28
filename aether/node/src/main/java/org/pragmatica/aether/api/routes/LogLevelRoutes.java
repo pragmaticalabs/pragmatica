@@ -20,7 +20,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for runtime log level management: set, reset, list log levels.
 public final class LogLevelRoutes implements RouteSource {
     private static final Set<String> VALID_LEVELS = Set.of("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF");
 

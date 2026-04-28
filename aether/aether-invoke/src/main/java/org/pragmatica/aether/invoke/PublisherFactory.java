@@ -14,11 +14,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// ResourceFactory SPI implementation for provisioning Publisher instances.
-///
-/// Discovered via ServiceLoader. Creates TopicPublisher instances using
-/// runtime extensions (TopicSubscriptionRegistry, SliceInvoker) from
-/// the ProvisioningContext.
 public final class PublisherFactory implements ResourceFactory<Publisher, TopicConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("Publisher requires ProvisioningContext with runtime extensions");
 

@@ -9,10 +9,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.CircuitBreaker;
 
 
-/// Factory that provisions a {@link CircuitBreakerMethodInterceptor} wrapping calls with circuit breaker logic.
-///
-/// Delegates to the core {@link CircuitBreaker} utility. When the failure threshold is reached,
-/// subsequent calls are rejected immediately until the reset timeout expires.
 public final class CircuitBreakerInterceptorFactory implements ResourceFactory<CircuitBreakerMethodInterceptor, CircuitBreakerConfig> {
     @Override public Class<CircuitBreakerMethodInterceptor> resourceType() {
         return CircuitBreakerMethodInterceptor.class;

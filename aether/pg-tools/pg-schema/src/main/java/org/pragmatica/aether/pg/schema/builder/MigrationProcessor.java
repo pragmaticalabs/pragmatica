@@ -13,7 +13,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-/// End-to-end pipeline: SQL text → parse → analyze → build schema.
 public final class MigrationProcessor {
     private final PostgresParser parser;
 

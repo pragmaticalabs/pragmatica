@@ -10,7 +10,6 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 import java.util.List;
 
 
-/// A potentially schema-qualified name: schema.name or just name.
 public record QualifiedName(SourceSpan span, List<Identifier> parts) {
     public Identifier name() {
         return parts.getLast();

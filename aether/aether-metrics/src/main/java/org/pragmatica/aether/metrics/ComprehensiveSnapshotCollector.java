@@ -32,18 +32,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Collects comprehensive metrics from all subsystems and feeds MinuteAggregator.
-///
-/// This is the missing link that connects all subsystem collectors to the TTM pipeline:
-/// ```
-/// GCMetricsCollector ─────────────┐
-/// EventLoopMetricsCollector ──────┤
-/// NetworkMetricsHandler ──────────┼──► ComprehensiveSnapshotCollector ──► MinuteAggregator ──► TTMManager
-/// RabiaMetricsCollector ──────────┤
-/// InvocationMetricsCollector ─────┘
-/// ```
-///
-/// Runs on a 1-second interval to collect snapshots.
 public final class ComprehensiveSnapshotCollector {
     private static final Logger log = LoggerFactory.getLogger(ComprehensiveSnapshotCollector.class);
 

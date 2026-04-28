@@ -25,15 +25,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Loads Aether configuration from TOML files with environment-aware defaults.
-///
-///
-/// Configuration resolution order (highest priority first):
-/// <ol>
-///   - Explicit overrides via Builder
-///   - Values from TOML file
-///   - Environment-specific defaults
-/// </ol>
 public final class ConfigLoader {
     private ConfigLoader() {}
 

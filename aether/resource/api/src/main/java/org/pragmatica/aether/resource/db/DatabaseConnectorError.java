@@ -15,7 +15,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.fromThrowable;
 
 
-/// Error types for database connector operations.
 public sealed interface DatabaseConnectorError extends Cause {
     record unused() implements DatabaseConnectorError {
         @Override public String message() {

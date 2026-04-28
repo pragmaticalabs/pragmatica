@@ -29,8 +29,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// JDK HttpClient-based implementation of HttpClient.
-/// Delegates to pragmatica-lite's JdkHttpOperations.
 final class JdkHttpClient implements HttpClient {
     private final HttpClientConfig config;
     private final HttpOperations operations;

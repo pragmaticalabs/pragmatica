@@ -12,9 +12,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Adaptive per-node sampler that adjusts sampling rate based on throughput.
-/// At low throughput (below targetTracesPerSec), effectively 100% sampling.
-/// At high throughput, auto-adjusts to maintain target traces/sec.
 public final class AdaptiveSampler {
     private static final long RECALCULATION_INTERVAL_SEC = 5;
 

@@ -16,7 +16,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-/// Aggregates all lint rules and runs them against schema events.
 public final class LintEngine {
     private final List<LintRule> rules;
     private final LintConfig config;

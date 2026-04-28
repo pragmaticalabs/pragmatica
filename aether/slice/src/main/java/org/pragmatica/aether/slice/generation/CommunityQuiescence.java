@@ -7,9 +7,6 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-/// Per-community quiescence state.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §17 (item 12).
 @Codec public enum CommunityQuiescence {
     QUIESCED,
     CONVERGING,

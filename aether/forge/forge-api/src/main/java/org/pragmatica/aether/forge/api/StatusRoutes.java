@@ -18,8 +18,6 @@ import java.util.List;
 import static org.pragmatica.aether.forge.api.ForgeApiResponses.*;
 
 
-/// Status-related routes for the Forge API.
-/// Provides endpoints for cluster status, node metrics, events, and health checks.
 public final class StatusRoutes {
     private StatusRoutes() {}
 

@@ -10,10 +10,6 @@ import java.util.Arrays;
 import java.util.List;
 
 
-/// Handles dead-letter storage for events that failed processing.
-///
-/// When RETRY exhausts retries or SKIP drops an event, the failed event is recorded
-/// here with metadata for later inspection or reprocessing.
 public interface DeadLetterHandler {
     @Contract void record(String streamName,
                           int partition,

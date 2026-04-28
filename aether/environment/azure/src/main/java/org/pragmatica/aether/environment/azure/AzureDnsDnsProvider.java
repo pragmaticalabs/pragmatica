@@ -20,8 +20,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Azure DNS provider.
-/// Manages DNS records via the Azure DNS API for cross-environment migration.
 public record AzureDnsDnsProvider(AzureClient client, String resourceGroup, String dnsZoneName) implements DnsProvider {
     private static final Logger log = LoggerFactory.getLogger(AzureDnsDnsProvider.class);
 

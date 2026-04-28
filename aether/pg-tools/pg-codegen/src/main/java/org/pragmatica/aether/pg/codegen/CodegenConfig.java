@@ -7,7 +7,6 @@ package org.pragmatica.aether.pg.codegen;
 import java.nio.file.Path;
 
 
-/// Configuration for Java code generation from PostgreSQL schema.
 public record CodegenConfig(String targetPackage,
                             Path outputDirectory,
                             NullableStyle nullableStyle,

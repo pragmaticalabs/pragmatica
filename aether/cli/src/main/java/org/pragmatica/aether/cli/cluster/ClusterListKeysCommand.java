@@ -19,7 +19,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEYS_LIST;
 
 
-/// Lists cluster API keys and optionally shows the audit trail.
 @Command(name = "list-keys", description = "List cluster API keys") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterListKeysCommand implements Callable<Integer> {
     @Option(names = "--audit", description = "Show audit trail") private boolean showAudit;
 

@@ -11,8 +11,6 @@ import org.pragmatica.lang.Verify;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Simulator operating modes for different testing scenarios.
-/// Each mode provides different defaults for load generation, backend simulation, and chaos testing.
 public enum SimulatorMode {
     DEVELOPMENT("Development", false, false, false, 0.0),
     LOAD_TEST("Load Test", true, false, false, 1.0),

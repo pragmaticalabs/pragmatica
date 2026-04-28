@@ -14,12 +14,6 @@ import java.util.Objects;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Raw HTTP response data returned through SliceInvoker.
-///
-///
-/// @param statusCode HTTP status code (e.g., 200, 404, 500)
-/// @param headers    response headers
-/// @param body       response body bytes
 @Codec public record HttpResponseData(int statusCode, Map<String, String> headers, byte[] body) {
     private static final byte[] EMPTY_BODY = new byte[0];
 

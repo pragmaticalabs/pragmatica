@@ -11,9 +11,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.net.smtp.SmtpClient;
 
 
-/// ResourceFactory for provisioning NotificationSender instances.
-///
-/// Routes to SMTP or HTTP backend based on configuration.
 public final class NotificationSenderFactory implements ResourceFactory<NotificationSender, NotificationConfig> {
     @Override public Class<NotificationSender> resourceType() {
         return NotificationSender.class;

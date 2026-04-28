@@ -9,18 +9,6 @@ import org.pragmatica.lang.Contract;
 import java.util.concurrent.atomic.AtomicLong;
 
 
-/// Counters for stream read forwarding observability.
-///
-/// SPEC: §10.1 — five counters, no stream-name tag, low cardinality.
-///  - aether.streams.read.forward.attempts   — every readRemote invocation
-///  - aether.streams.read.forward.success    — successful response resolved
-///  - aether.streams.read.forward.retry      — second-replica retry fired
-///  - aether.streams.read.forward.timeout    — timeout path fired
-///  - aether.streams.read.forward.truncated  — server-side cap truncated events
-///
-/// This thin interface avoids a hard Micrometer dependency in aether-stream.
-/// AetherNode (or tests) supplies the implementation. The default uses AtomicLong
-/// counters so metric values are observable without a registry.
 @Contract public interface StreamReadForwardMetrics {
     void recordAttempt();
     void recordSuccess();

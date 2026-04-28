@@ -12,19 +12,6 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.serialization.Codec;
 
 
-/// Ping from governor to followers requesting metrics.
-///
-/// Extended in Commit 3 to carry community term/epoch, the governor's last-
-/// observed core epoch, and an optional `CommunityGenerationSnapshot`.
-/// The snapshot is `Some(...)` on community epoch advance and `None` on
-/// steady-state heartbeat.
-///
-/// @param sender              governor node ID
-/// @param timestampMs         when the ping was sent (wall clock)
-/// @param communityTerm       strictly monotonic community-scope term
-/// @param communityEpoch      current community epoch `(communityTerm, counter)`
-/// @param observedCoreEpoch   governor's most-recently-seen core epoch
-/// @param snapshot            optional community generation snapshot
 @Codec public record WorkerMetricsPing(NodeId sender,
                                        long timestampMs,
                                        long communityTerm,

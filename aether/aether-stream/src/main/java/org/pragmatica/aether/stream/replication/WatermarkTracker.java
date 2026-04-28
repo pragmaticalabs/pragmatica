@@ -15,10 +15,6 @@ import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey
 import static org.pragmatica.lang.Option.option;
 
 
-/// Tracks the latest offset written to each partition on the local node.
-/// Used during governor failover to determine catch-up ranges:
-/// the new governor reads watermarks from replicas and replays
-/// missing events from AHSE segments.
 public sealed interface WatermarkTracker {
     @Contract void advance(String streamName, int partition, long offset);
     Option<Long> watermark(String streamName, int partition);

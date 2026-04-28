@@ -30,9 +30,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// GCP Cloud implementation of the DiscoveryProvider SPI.
-/// Discovers peers by querying instances with a specific `aether-cluster` label.
-/// Watches for peer changes by polling at a configurable interval.
 public final class GcpDiscoveryProvider implements DiscoveryProvider {
     private static final Logger log = LoggerFactory.getLogger(GcpDiscoveryProvider.class);
 

@@ -13,19 +13,6 @@ import static org.pragmatica.lang.Verify.ensure;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for RateGuard resource.
-///
-/// Parsed from TOML config sections like:
-/// ```toml
-/// [rate-limit.orders]
-/// requests_per_second = 100
-/// burst = 20
-/// type = "local"
-/// ```
-///
-/// @param requestsPerSecond Base rate in requests per second
-/// @param burst             Additional burst capacity above the base rate
-/// @param type              Rate limiter type: "local" (per-node) or "distributed" (future, via DHT)
 public record RateGuardConfig(int requestsPerSecond, int burst, String type) {
     public static Result<RateGuardConfig> rateGuardConfig(int requestsPerSecond, int burst) {
         return rateGuardConfig(requestsPerSecond, burst, "local");

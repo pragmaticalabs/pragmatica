@@ -11,16 +11,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Types of slice repositories supported by Aether.
-///
-/// Used in configuration to specify repository order:
-/// ```
-/// [slice]
-/// repositories = ["local"]                    # dev/forge default
-/// repositories = ["builtin"]                  # prod
-/// repositories = ["local", "remote:central"]  # resolve from Maven Central
-/// repositories = ["remote:https://nexus.example.com/repository/releases/"]
-/// ```
 public sealed interface RepositoryType {
     record Local() implements RepositoryType{}
 

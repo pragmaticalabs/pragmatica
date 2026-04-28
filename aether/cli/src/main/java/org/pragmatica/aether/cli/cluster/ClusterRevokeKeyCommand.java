@@ -20,8 +20,6 @@ import picocli.CommandLine.Parameters;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEYS_REVOKE;
 
 
-/// Revokes a specific API key by its key ID.
-/// Optionally skips the grace period with `--immediate`.
 @Command(name = "revoke-key", description = "Revoke an API key") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterRevokeKeyCommand implements Callable<Integer> {
     private static final long DEFAULT_GRACE_PERIOD_MS = 300_000;
 

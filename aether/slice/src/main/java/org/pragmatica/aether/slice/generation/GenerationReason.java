@@ -7,9 +7,6 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-/// Root cause of the most recent `ClusterGenerationSnapshot` mutation.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §6.
 @Codec public enum GenerationReason {
     LEADER_ELECTED,
     MEMBER_ADDED,

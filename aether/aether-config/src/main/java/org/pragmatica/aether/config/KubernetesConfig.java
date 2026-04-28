@@ -9,11 +9,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Kubernetes-specific configuration.
-///
-/// @param namespace    Kubernetes namespace
-/// @param serviceType  Service type (ClusterIP, LoadBalancer, NodePort)
-/// @param storageClass Storage class for persistent volumes (empty = default)
 public record KubernetesConfig(String namespace, String serviceType, String storageClass) {
     public static final String DEFAULT_NAMESPACE = "aether";
 

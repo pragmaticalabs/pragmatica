@@ -14,7 +14,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Supported database types with their default ports and driver information.
 public enum DatabaseType {
     POSTGRESQL("postgresql", 5432, "org.postgresql.Driver", "postgresql"),
     MYSQL("mysql", 3306, "com.mysql.cj.jdbc.Driver", "mysql"),

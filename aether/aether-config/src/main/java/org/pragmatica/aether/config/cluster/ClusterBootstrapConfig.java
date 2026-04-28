@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Top-level cluster bootstrap configuration. S2.1
 public record ClusterBootstrapConfig(String configVersion,
                                      ClusterIdentity cluster,
                                      CoreTopology coreTopology,

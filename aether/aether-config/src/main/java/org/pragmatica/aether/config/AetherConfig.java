@@ -16,46 +16,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Root configuration for Aether cluster.
-///
-///
-/// This is the unified configuration used by all Aether tools:
-///
-///   - aether-up: Reads config to generate deployment artifacts
-///   - AetherNode: Reads config at runtime
-///   - AetherCli: Reads connection info from config
-///
-///
-///
-/// Example aether.toml:
-/// ```
-/// [cluster]
-/// environment = "docker"
-/// nodes = 5
-/// tls = false
-///
-/// [cluster.ports]
-/// management = 8080
-/// cluster = 8090
-///
-/// [node]
-/// heap = "512m"
-/// gc = "zgc"
-/// ```
-///
-/// @param cluster    Cluster-level configuration
-/// @param node       Per-node configuration
-/// @param tls        TLS configuration (when cluster.tls = true)
-/// @param docker     Docker-specific settings
-/// @param kubernetes Kubernetes-specific settings
-/// @param ttm        TTM (Tiny Time Mixers) predictive scaling configuration
-/// @param slice          Slice loading and repository configuration
-/// @param appHttp        Application HTTP server configuration
-/// @param backup         Backup configuration
-/// @param dhtReplication DHT replication behavior configuration
-/// @param timeouts       Centralized timeout configuration
-/// @param storage        Named hierarchical storage instance configurations from [storage.*] sections
-/// @param endpoints      Infrastructure endpoint configurations from [endpoints.*] sections
 public record AetherConfig(ClusterConfig cluster,
                            NodeConfig node,
                            Option<TlsConfig> tls,

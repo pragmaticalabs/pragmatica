@@ -10,12 +10,6 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.serialization.Codec;
 
 
-/// Role for authorization checks.
-///
-/// Value object ensuring valid role names.
-/// Used in conjunction with {@link SecurityContext} for access control.
-///
-/// @param value the role name
 @Codec public record Role(String value) {
     public sealed interface RoleError extends Cause {
         enum General implements RoleError {

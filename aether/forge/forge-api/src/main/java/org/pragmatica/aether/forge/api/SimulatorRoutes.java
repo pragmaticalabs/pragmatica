@@ -26,15 +26,6 @@ import static org.pragmatica.http.routing.Route.in;
 import static org.pragmatica.http.routing.Route.post;
 
 
-/// REST API routes for simulator operations.
-///
-/// Provides endpoints for:
-///
-///   - Entry point listing and rate control
-///   - Inventory mode management (infinite/realistic)
-///   - Simulated order operations (place, status, cancel)
-///   - Simulated inventory and pricing queries
-///
 @SuppressWarnings("JBCT-RET-01") public sealed interface SimulatorRoutes {
     record InventoryState(AtomicLong reservations,
                           AtomicLong releases,

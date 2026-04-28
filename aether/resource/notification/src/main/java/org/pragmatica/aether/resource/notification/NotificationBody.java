@@ -10,7 +10,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Notification body content — either plain text or HTML with optional text fallback.
 public sealed interface NotificationBody {
     record Text(String content) implements NotificationBody {
         public static Text text(String content) {

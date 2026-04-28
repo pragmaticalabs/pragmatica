@@ -14,7 +14,6 @@ import org.pragmatica.aether.ttm.model.TTMForecast;
 import java.util.List;
 
 
-/// Analyzes TTM predictions and generates scaling recommendations.
 public interface ForecastAnalyzer {
     TTMForecast analyze(float[] predictions,
                         double confidence,

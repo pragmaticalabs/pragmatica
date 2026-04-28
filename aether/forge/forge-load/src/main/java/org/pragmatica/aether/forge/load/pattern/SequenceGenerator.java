@@ -15,13 +15,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Generates sequential values starting from a specified number.
-///
-/// Pattern: `${seq:START`} where START is the initial value.
-///
-/// Example: `${seq:1000`} generates 1000, 1001, 1002, ...
-///
-/// Note: This generator is thread-safe and maintains state across calls.
 public final class SequenceGenerator implements PatternGenerator {
     public static final String TYPE = "seq";
 

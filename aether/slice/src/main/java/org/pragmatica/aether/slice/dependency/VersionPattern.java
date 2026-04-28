@@ -13,14 +13,6 @@ import org.pragmatica.lang.utils.Causes;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Version pattern for dependency matching using semantic versioning.
-///
-/// Supported patterns:
-/// - Exact: "1.2.3"
-/// - Range: "[1.0.0,2.0.0)", "(1.0.0,2.0.0]", "[1.0.0,2.0.0]", "(1.0.0,2.0.0)"
-/// - Comparison: ">=1.5.0", ">1.0.0", "<=2.0.0", "<3.0.0"
-/// - Tilde: "~1.2.3" (patch-level: >=1.2.3, <1.3.0)
-/// - Caret: "^1.2.3" (minor-level: >=1.2.3, <2.0.0)
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02"}) public sealed interface VersionPattern {
     boolean matches(Version version);
     String asString();

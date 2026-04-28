@@ -12,11 +12,6 @@ import org.pragmatica.lang.Unit;
 import java.util.function.BiConsumer;
 
 
-/// Typed, namespace-prefixed DHT map abstraction.
-/// Each map has a unique name that prefixes all keys to avoid collision in a shared DHT.
-///
-/// @param <K> key type
-/// @param <V> value type
 public interface ReplicatedMap<K, V> {
     Promise<Unit> put(K key, V value);
     Promise<Option<V>> get(K key);

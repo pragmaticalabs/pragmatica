@@ -12,24 +12,6 @@ import java.util.Arrays;
 import java.util.List;
 
 
-/// Protocol messages for stream publish and read forwarding between nodes.
-///
-/// Publish forwarding: producer on node A forwards publish to the governor on node B.
-/// Read forwarding (SPEC: §3): consumer on node A forwards read to a caught-up replica on node B.
-///
-/// Flow (publish):
-///   - Node A receives publish for stream S, partition P
-///   - Node A does not govern S:P, finds governor Node B
-///   - Node A sends PublishForward to Node B
-///   - Node B calls publishLocal, sends PublishForwardResponse back
-///   - Node A resolves the pending promise with offset or error
-///
-/// Flow (read, SPEC: §3):
-///   - Node A wants to read from S:P with a remote ReadPreference
-///   - Node A selects caught-up replica Node B
-///   - Node A sends ReadForward to Node B
-///   - Node B calls readLocal, sends ReadForwardResponse back (possibly truncated, SPEC: §10.5)
-///   - Node A resolves the pending promise with the event list or error
 @Codec public sealed interface StreamForwardMessage extends ProtocolMessage {
     record PublishForward(NodeId sender,
                           String correlationId,

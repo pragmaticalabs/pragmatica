@@ -75,13 +75,12 @@ public interface NodeDeploymentManager {
         }
     }
 
-    // MessageReceiver callbacks — void required by messaging framework.
-    @Contract @MessageReceiver void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
-    @Contract @MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
-    @Contract @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-    @Contract @MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-    @Contract @MessageReceiver void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
-    @Contract @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+    @Contract@MessageReceiver void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
+    @Contract@MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
+    @Contract@MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+    @Contract@MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+    @Contract@MessageReceiver void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
+    @Contract@MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
     @Contract void setShutdownCallback(Runnable callback);
     boolean isActive();
 
@@ -271,13 +270,6 @@ public interface NodeDeploymentManager {
                                      Option::none);
     }
 
-    /// Theme/Fix B (SSOT topology): factory accepting a `currentEpochSupplier` that the
-    /// adapter consults when writing the first ON_DUTY [`NodeLifecycleValue`] atom. The
-    /// supplier returns the current cluster generation epoch (e.g. derived from
-    /// [`ClusterGenerationSnapshot#epoch`]) so `observedCoreEpoch` carries a real
-    /// (rabiaTerm, localCounter) identity instead of [`Epoch#ZERO`]. Returning
-    /// [`Option#none`] preserves cold-boot behaviour during the pre-leader window: the
-    /// atom is later re-emitted (lifecycle re-registration) once a leader exists.
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
                                                        NodeAddress selfAddress,
                                                        MessageRouter router,
@@ -309,10 +301,6 @@ public interface NodeDeploymentManager {
         return new DeploymentManagerAdapter(ctx);
     }
 
-    /// Convenience factory for production wiring: accepts a snapshot supplier and projects
-    /// the current epoch from [`ClusterGenerationSnapshot#epoch`]. When the snapshot is
-    /// absent (pre-leader bootstrap) the supplier returns [`Option#none`] and the writer
-    /// falls back to [`Epoch#ZERO`].
     static NodeDeploymentManager nodeDeploymentManagerFromSnapshot(NodeId self,
                                                                    NodeAddress selfAddress,
                                                                    MessageRouter router,
@@ -358,25 +346,22 @@ public interface NodeDeploymentManager {
                                                       TimeSpan transitionRetryDelay,
                                                       Supplier<Option<Epoch>> currentEpochSupplier) {
         var ctxHolder = new AtomicReference<NodeDeploymentContext>();
-        Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> initialStateFactory =
-                fsm -> buildContextAndDormant(fsm,
-                                              ctxHolder,
-                                              self,
-                                              selfAddress,
-                                              router,
-                                              sliceStore,
-                                              cluster,
-                                              kvStore,
-                                              invocationHandler,
-                                              configuration,
-                                              nodeCodec,
-                                              httpRoutePublisher,
-                                              sliceInvokerFacade,
-                                              activationChainTimeout,
-                                              transitionRetryDelay,
-                                              currentEpochSupplier);
-        // Fsm constructor publishes itself into ctxHolder via initialStateFactory —
-        // we only need the context here; the FSM reference lives on ctx.fsm().
+        Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
+                                                                                                                                     ctxHolder,
+                                                                                                                                     self,
+                                                                                                                                     selfAddress,
+                                                                                                                                     router,
+                                                                                                                                     sliceStore,
+                                                                                                                                     cluster,
+                                                                                                                                     kvStore,
+                                                                                                                                     invocationHandler,
+                                                                                                                                     configuration,
+                                                                                                                                     nodeCodec,
+                                                                                                                                     httpRoutePublisher,
+                                                                                                                                     sliceInvokerFacade,
+                                                                                                                                     activationChainTimeout,
+                                                                                                                                     transitionRetryDelay,
+                                                                                                                                     currentEpochSupplier);
         var _fsm = Fsm.fsm("node-deployment", self.id(), initialStateFactory);
         return ctxHolder.get();
     }
@@ -416,9 +401,6 @@ public interface NodeDeploymentManager {
         return ctx.dormant();
     }
 
-    /// Thin adapter that bridges the legacy `@MessageReceiver` entry points onto the FSM event
-    /// channel. Holds nothing but the `NodeDeploymentContext` — all state lives on
-    /// [`NodeDeploymentState`].
     final class DeploymentManagerAdapter implements NodeDeploymentManager {
         private static final Logger log = LoggerFactory.getLogger(DeploymentManagerAdapter.class);
 
@@ -428,11 +410,10 @@ public interface NodeDeploymentManager {
 
         DeploymentManagerAdapter(NodeDeploymentContext ctx) {
             this.ctx = ctx;
-            // Theme M / M1 — wire deterministic ON_DUTY registration into Active.onEntry.
             ctx.setActiveOnEntryCallback(this::registerLifecycleOnDuty);
         }
 
-        @Contract @Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
+        @Contract@Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
             if (!quorumStateNotification.advanceSequence(ctx.quorumSequence())) {
                 log.info("Node {} ignoring stale QuorumStateNotification: {}",
                          ctx.self().id(),
@@ -442,28 +423,25 @@ public interface NodeDeploymentManager {
             log.info("Node {} received QuorumStateNotification: {}",
                      ctx.self().id(),
                      quorumStateNotification);
-            switch (quorumStateNotification.state()) {
+            switch (quorumStateNotification.state()){
                 case ESTABLISHED -> dispatchQuorumEstablished();
                 case DISAPPEARED -> ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
         }
 
         private void dispatchQuorumEstablished() {
-            // Theme M / M1 — registerLifecycleOnDuty() now fires deterministically from
-            // Active.onEntry (wired via ctx.setActiveOnEntryCallback in the adapter ctor),
-            // independent of whether FSM dispatch is synchronous.
             ctx.dispatch(new ClusterFsmEvent.QuorumEstablished());
         }
 
-        @Contract @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        @Contract@Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
             ctx.dispatch(new NodeArtifactPutReceived(valuePut));
         }
 
-        @Contract @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        @Contract@Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             ctx.dispatch(new NodeArtifactRemoveReceived(valueRemove));
         }
 
-        @Contract @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+        @Contract@Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
             ctx.dispatch(new NodeRoutesPutReceived(valuePut));
         }
 
@@ -471,7 +449,7 @@ public interface NodeDeploymentManager {
             return ctx.isActive();
         }
 
-        @Contract @Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
+        @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
             if (key.nodeId().equals(ctx.self()) && value.state() == NodeLifecycleState.SHUTTING_DOWN) {
@@ -481,7 +459,7 @@ public interface NodeDeploymentManager {
             }
         }
 
-        @Contract @Override public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
+        @Contract@Override public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
             var key = valueRemove.cause().key();
             if (key.nodeId().equals(ctx.self()) && isActive()) {
                 log.warn("Node {} lifecycle key removed unexpectedly — re-registering ON_DUTY",
@@ -490,28 +468,23 @@ public interface NodeDeploymentManager {
             }
         }
 
-        @Contract @Override public void setShutdownCallback(Runnable callback) {
+        @Contract@Override public void setShutdownCallback(Runnable callback) {
             ctx.setShutdownCallback(callback);
         }
 
         private void registerLifecycleOnDuty() {
             var lifecycleKey = NodeLifecycleKey.nodeLifecycleKey(ctx.self());
             ctx.kvStore().get(lifecycleKey)
-                      .flatMap(v -> v instanceof NodeLifecycleValue lv
-                                   ? Option.some(lv)
-                                   : Option.empty())
-                      .filter(v -> v.state() == NodeLifecycleState.DECOMMISSIONED)
-                      .onEmpty(() -> writeLifecycleOnDuty(lifecycleKey, 1));
+                       .flatMap(v -> v instanceof NodeLifecycleValue lv
+                                    ? Option.some(lv)
+                                    : Option.empty())
+                       .filter(v -> v.state() == NodeLifecycleState.DECOMMISSIONED)
+                       .onEmpty(() -> writeLifecycleOnDuty(lifecycleKey, 1));
         }
 
         private void writeLifecycleOnDuty(NodeLifecycleKey lifecycleKey, int attempt) {
-            // Theme/Fix B (SSOT topology) — seed `observedCoreEpoch` from the current cluster
-            // generation epoch when one is observable, otherwise fall back to `Epoch.ZERO` (the
-            // pre-leader cold-boot window). The atom is later re-emitted via the lifecycle
-            // re-registration path once a leader exists; subsequent transition writers
-            // (HRC DRAINING/DECOMMISSIONED, CTM scale-down) preserve this epoch via
-            // metadata-preserving factories.
-            var seedEpoch = ctx.currentEpochSupplier().get().or(Epoch.ZERO);
+            var seedEpoch = ctx.currentEpochSupplier().get()
+                                                    .or(Epoch.ZERO);
             var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
                                                               System.currentTimeMillis(),
                                                               ctx.selfAddress().host(),
@@ -520,23 +493,22 @@ public interface NodeDeploymentManager {
                                                               HlcTimestamp.ZERO,
                                                               detectProvisioningSource());
             ctx.cluster().apply(List.of(new KVCommand.Put<>(lifecycleKey, value)))
-                      .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY (source={}, observedCoreEpoch={})",
-                                               ctx.self().id(),
-                                               value.provisioningSource(),
-                                               seedEpoch))
-                      .onFailure(cause -> retryLifecycleOnDuty(lifecycleKey, attempt, cause));
+                       .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY (source={}, observedCoreEpoch={})",
+                                                ctx.self().id(),
+                                                value.provisioningSource(),
+                                                seedEpoch))
+                       .onFailure(cause -> retryLifecycleOnDuty(lifecycleKey, attempt, cause));
         }
 
         private static AetherValue.ProvisioningSource detectProvisioningSource() {
-            var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY"))
-                                        .filter(v -> !v.isBlank())
-                                        .map(String::trim)
-                                        .map(String::toLowerCase);
+            var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY")).filter(v -> !v.isBlank())
+                                   .map(String::trim)
+                                   .map(String::toLowerCase);
             return raw.map(DeploymentManagerAdapter::provisioningSourceFrom).or(AetherValue.ProvisioningSource.MANUAL);
         }
 
         private static AetherValue.ProvisioningSource provisioningSourceFrom(String raw) {
-            return switch (raw) {
+            return switch (raw){
                 case "ctm" -> AetherValue.ProvisioningSource.CTM;
                 case "manual" -> AetherValue.ProvisioningSource.MANUAL;
                 default -> AetherValue.ProvisioningSource.UNKNOWN;
@@ -552,7 +524,8 @@ public interface NodeDeploymentManager {
                 return;
             }
             if (!isActive()) {
-                log.debug("Node {} skipping ON_DUTY retry — no longer active", ctx.self().id());
+                log.debug("Node {} skipping ON_DUTY retry — no longer active",
+                          ctx.self().id());
                 return;
             }
             log.warn("Node {} failed to register lifecycle ON_DUTY (attempt {}/{}): {} — retrying in 2s",

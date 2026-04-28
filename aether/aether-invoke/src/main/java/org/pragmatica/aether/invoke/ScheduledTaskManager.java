@@ -43,22 +43,11 @@ import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/// Timer lifecycle and execution manager for scheduled tasks. Backed by an explicit FSM with
-/// four states: `Dormant` (no quorum), `Following` (quorum, not leader — runs ALL-mode tasks),
-/// `Leading` (quorum, leader — runs ALL + SINGLE mode tasks), `Stopped` (terminal).
-///
-/// Every task-scheduling decision queries the current FSM state — there is no separate
-/// `isLeader` / `hasQuorum` flag soup. The registry listener checks `fsm.current()` to decide
-/// whether a newly-registered task should start immediately.
+
 @Contract public interface ScheduledTaskManager {
-    @MessageReceiver
-    void onLeaderChange(LeaderChange leaderChange);
-
-    @MessageReceiver
-    void onQuorumStateChange(QuorumStateNotification notification);
-
+    @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
+    @MessageReceiver void onQuorumStateChange(QuorumStateNotification notification);
     int activeTimerCount();
-
     void stop();
 
     static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
@@ -67,8 +56,13 @@ import org.slf4j.LoggerFactory;
                                                      Consumer<KVCommand<AetherKey>> stateWriter,
                                                      LeaderManager leaderManager) {
         var ctxHolder = new AtomicReference<Context>();
-        Function<Fsm<SchedulerState, ClusterFsmEvent>, SchedulerState> initialStateFactory =
-            f -> buildContextAndInitialState(ctxHolder, f, registry, invoker, self, stateWriter, leaderManager);
+        Function<Fsm<SchedulerState, ClusterFsmEvent>, SchedulerState> initialStateFactory = f -> buildContextAndInitialState(ctxHolder,
+                                                                                                                              f,
+                                                                                                                              registry,
+                                                                                                                              invoker,
+                                                                                                                              self,
+                                                                                                                              stateWriter,
+                                                                                                                              leaderManager);
         var fsm = Fsm.fsm("scheduled-task", self.id(), initialStateFactory);
         var ctx = ctxHolder.get();
         registry.setChangeListener(new RegistryListener(ctx, fsm)::onChange);
@@ -94,8 +88,11 @@ import org.slf4j.LoggerFactory;
         final NodeId self;
         final Consumer<KVCommand<AetherKey>> stateWriter;
         final LeaderManager leaderManager;
+
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
+
         final AtomicLong quorumSequence = new AtomicLong(0);
+
         final Dormant dormant;
         final Following following;
         final Leading leading;
@@ -120,17 +117,16 @@ import org.slf4j.LoggerFactory;
         }
     }
 
-    sealed interface SchedulerState extends FsmState<SchedulerState, ClusterFsmEvent>
-            permits Dormant, Following, Leading, Stopped {}
+    sealed interface SchedulerState extends FsmState<SchedulerState, ClusterFsmEvent> permits Dormant, Following, Leading, Stopped {}
 
     record Dormant(Context ctx) implements SchedulerState {
         private static final Logger log = LoggerFactory.getLogger(Dormant.class);
 
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
-            switch (event) {
-                case ClusterFsmEvent.QuorumEstablished _ ->
-                    tx.transitionTo(ctx.leaderManager.isLeader() ? ctx.leading : ctx.following);
+        @Override public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
+            switch (event){
+                case ClusterFsmEvent.QuorumEstablished _ -> tx.transitionTo(ctx.leaderManager.isLeader()
+                                                                            ? ctx.leading
+                                                                            : ctx.following);
                 case ClusterFsmEvent.LeaderChange _ -> tx.ignore();
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped);
                 default -> tx.ignore();
@@ -141,24 +137,19 @@ import org.slf4j.LoggerFactory;
     record Following(Context ctx) implements SchedulerState {
         private static final Logger log = LoggerFactory.getLogger(Following.class);
 
-        @Override
-        public void onEntry() {
+        @Override public void onEntry() {
             log.info("Node {} entering Following — running ALL-mode scheduled tasks", ctx.self);
             TaskOps.startEligibleTasks(ctx, false);
         }
 
-        @Override
-        public void onExit() {
+        @Override public void onExit() {
             TaskOps.cancelAllTimers(ctx);
         }
 
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
-            switch (event) {
+        @Override public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
+            switch (event){
                 case ClusterFsmEvent.LeaderChange lc -> {
-                    if (lc.localIsLeader()) {
-                        tx.transitionTo(ctx.leading);
-                    }
+                    if (lc.localIsLeader()) {tx.transitionTo(ctx.leading);}
                 }
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant);
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped);
@@ -170,24 +161,19 @@ import org.slf4j.LoggerFactory;
     record Leading(Context ctx) implements SchedulerState {
         private static final Logger log = LoggerFactory.getLogger(Leading.class);
 
-        @Override
-        public void onEntry() {
+        @Override public void onEntry() {
             log.info("Node {} entering Leading — running ALL + SINGLE mode scheduled tasks", ctx.self);
             TaskOps.startEligibleTasks(ctx, true);
         }
 
-        @Override
-        public void onExit() {
+        @Override public void onExit() {
             TaskOps.cancelAllTimers(ctx);
         }
 
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
-            switch (event) {
+        @Override public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
+            switch (event){
                 case ClusterFsmEvent.LeaderChange lc -> {
-                    if (!lc.localIsLeader()) {
-                        tx.transitionTo(ctx.following);
-                    }
+                    if (!lc.localIsLeader()) {tx.transitionTo(ctx.following);}
                 }
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant);
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped);
@@ -199,14 +185,12 @@ import org.slf4j.LoggerFactory;
     record Stopped(Context ctx) implements SchedulerState {
         private static final Logger log = LoggerFactory.getLogger(Stopped.class);
 
-        @Override
-        public void onEntry() {
+        @Override public void onEntry() {
             log.info("Node {} entering Stopped — all scheduled tasks cancelled", ctx.self);
             TaskOps.cancelAllTimers(ctx);
         }
 
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
+        @Override public void handle(ClusterFsmEvent event, TransitionRequest<SchedulerState, ClusterFsmEvent> tx) {
             tx.ignore();
         }
     }
@@ -221,15 +205,12 @@ import org.slf4j.LoggerFactory;
         }
 
         void onChange(ScheduledTaskKey key, Option<ScheduledTask> taskOption) {
-            taskOption.onPresent(task -> handleTaskAdded(key, task))
-                      .onEmpty(() -> handleTaskRemoved(key));
+            taskOption.onPresent(task -> handleTaskAdded(key, task)).onEmpty(() -> handleTaskRemoved(key));
         }
 
         private void handleTaskAdded(ScheduledTaskKey key, ScheduledTask task) {
             TaskOps.cancelTimer(ctx, key);
-            if (shouldRunInCurrentState(task)) {
-                TaskOps.startTimer(ctx, key, task);
-            }
+            if (shouldRunInCurrentState(task)) {TaskOps.startTimer(ctx, key, task);}
         }
 
         private void handleTaskRemoved(ScheduledTaskKey key) {
@@ -237,11 +218,9 @@ import org.slf4j.LoggerFactory;
         }
 
         private boolean shouldRunInCurrentState(ScheduledTask task) {
-            if (task.paused()) {
-                return false;
-            }
+            if (task.paused()) {return false;}
             var state = fsm.current();
-            return switch (task.executionMode()) {
+            return switch (task.executionMode()){
                 case ALL -> state instanceof Following || state instanceof Leading;
                 case SINGLE -> state instanceof Leading;
             };
@@ -255,76 +234,89 @@ import org.slf4j.LoggerFactory;
 
         static void startEligibleTasks(Context ctx, boolean leader) {
             ctx.registry.allTasks().stream()
-                        .filter(task -> !task.paused())
-                        .filter(task -> task.executionMode() == ExecutionMode.ALL
-                                        || (leader && task.executionMode() == ExecutionMode.SINGLE))
-                        .forEach(task -> {
-                            var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(),
-                                                                       task.artifact(),
-                                                                       task.methodName());
-                            if (!ctx.activeTimers.containsKey(key)) {
-                                startTimer(ctx, key, task);
-                            }
-                        });
+                                 .filter(task -> !task.paused())
+                                 .filter(task -> task.executionMode() == ExecutionMode.ALL || (leader && task.executionMode() == ExecutionMode.SINGLE))
+                                 .forEach(task -> {
+                                              var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(),
+                                                                                          task.artifact(),
+                                                                                          task.methodName());
+                                              if (!ctx.activeTimers.containsKey(key)) {startTimer(ctx, key, task);}
+                                          });
         }
 
         static void startTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
-            if (task.isInterval()) {
-                startIntervalTimer(ctx, key, task);
-            } else if (task.isCron()) {
-                startCronTimer(ctx, key, task);
-            }
+            if (task.isInterval()) {startIntervalTimer(ctx, key, task);} else if (task.isCron()) {startCronTimer(ctx,
+                                                                                                                 key,
+                                                                                                                 task);}
         }
 
         private static void startIntervalTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
-            IntervalParser.parse(task.interval())
-                          .onSuccess(interval -> scheduleAtFixedRate(ctx, key, task, interval))
-                          .onFailure(cause -> log.warn("Failed to parse interval '{}' for task {}: {}",
-                                                       task.interval(), key, cause.message()));
+            IntervalParser.parse(task.interval()).onSuccess(interval -> scheduleAtFixedRate(ctx, key, task, interval))
+                                .onFailure(cause -> log.warn("Failed to parse interval '{}' for task {}: {}",
+                                                             task.interval(),
+                                                             key,
+                                                             cause.message()));
         }
 
-        private static void scheduleAtFixedRate(Context ctx, ScheduledTaskKey key, ScheduledTask task, TimeSpan interval) {
+        private static void scheduleAtFixedRate(Context ctx,
+                                                ScheduledTaskKey key,
+                                                ScheduledTask task,
+                                                TimeSpan interval) {
             var future = SharedScheduler.scheduleAtFixedRate(() -> executeTask(ctx, task), interval);
             replaceTimer(ctx, key, future);
             log.info("Started scheduled task {} with interval {}", key, task.interval());
         }
 
         private static void startCronTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
-            CronExpression.parse(task.cron())
-                          .onSuccess(cron -> scheduleNextCronFire(ctx, key, task, cron))
-                          .onFailure(cause -> log.warn("Failed to parse cron '{}' for task {}: {}",
-                                                       task.cron(), key, cause.message()));
+            CronExpression.parse(task.cron()).onSuccess(cron -> scheduleNextCronFire(ctx, key, task, cron))
+                                .onFailure(cause -> log.warn("Failed to parse cron '{}' for task {}: {}",
+                                                             task.cron(),
+                                                             key,
+                                                             cause.message()));
         }
 
-        private static void scheduleNextCronFire(Context ctx, ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
-            cron.delayUntilNext(Instant.now())
-                .onSuccess(delay -> registerCronFire(ctx, key, task, cron, delay))
-                .onFailure(cause -> log.warn("Failed to compute next cron fire for task {}: {}",
-                                             key, cause.message()));
+        private static void scheduleNextCronFire(Context ctx,
+                                                 ScheduledTaskKey key,
+                                                 ScheduledTask task,
+                                                 CronExpression cron) {
+            cron.delayUntilNext(Instant.now()).onSuccess(delay -> registerCronFire(ctx, key, task, cron, delay))
+                               .onFailure(cause -> log.warn("Failed to compute next cron fire for task {}: {}",
+                                                            key,
+                                                            cause.message()));
         }
 
-        private static void registerCronFire(Context ctx, ScheduledTaskKey key, ScheduledTask task, CronExpression cron, TimeSpan delay) {
+        private static void registerCronFire(Context ctx,
+                                             ScheduledTaskKey key,
+                                             ScheduledTask task,
+                                             CronExpression cron,
+                                             TimeSpan delay) {
             var future = SharedScheduler.schedule(() -> executeCronTask(ctx, key, task, cron), delay);
             replaceTimer(ctx, key, future);
             log.info("Scheduled cron task {} next fire in {}ms", key, delay.millis());
         }
 
-        private static void executeCronTask(Context ctx, ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
+        private static void executeCronTask(Context ctx,
+                                            ScheduledTaskKey key,
+                                            ScheduledTask task,
+                                            CronExpression cron) {
             executeTask(ctx, task);
-            if (ctx.activeTimers.containsKey(key)) {
-                scheduleNextCronFire(ctx, key, task, cron);
-            }
+            if (ctx.activeTimers.containsKey(key)) {scheduleNextCronFire(ctx, key, task, cron);}
         }
 
         private static void executeTask(Context ctx, ScheduledTask task) {
-            ctx.invoker.invoke(task.artifact(), task.methodName(), Unit.unit())
-                       .onSuccess(_ -> writeSuccessState(ctx, task))
-                       .onFailure(cause -> handleTaskFailure(ctx, task, cause.message()));
+            ctx.invoker.invoke(task.artifact(),
+                               task.methodName(),
+                               Unit.unit()).onSuccess(_ -> writeSuccessState(ctx, task))
+                              .onFailure(cause -> handleTaskFailure(ctx,
+                                                                    task,
+                                                                    cause.message()));
         }
 
         private static void handleTaskFailure(Context ctx, ScheduledTask task, String message) {
             log.warn("Scheduled task {}.{} failed: {}",
-                     task.configSection(), task.methodName().name(), message);
+                     task.configSection(),
+                     task.methodName().name(),
+                     message);
             writeFailureState(ctx, task, message);
         }
 
@@ -346,15 +338,12 @@ import org.slf4j.LoggerFactory;
 
         static void cancelTimer(Context ctx, ScheduledTaskKey key) {
             Option.option(ctx.activeTimers.remove(key))
-                  .onPresent(future -> {
-                      future.cancel(false);
-                      log.debug("Cancelled scheduled task timer: {}", key);
-                  });
+                         .onPresent(future -> {
+                                        future.cancel(false);
+                                        log.debug("Cancelled scheduled task timer: {}", key);
+                                    });
         }
 
-        /// Atomically install `future` for `key`, cancelling any prior `ScheduledFuture` that the
-        /// map already held — guards against orphan timers if `startTimer` is invoked twice for the
-        /// same key without an intervening [`#cancelTimer`].
         static void replaceTimer(Context ctx, ScheduledTaskKey key, ScheduledFuture<?> future) {
             var prior = ctx.activeTimers.put(key, future);
             if (prior != null) {
@@ -367,37 +356,25 @@ import org.slf4j.LoggerFactory;
             ctx.activeTimers.forEach((_, future) -> future.cancel(false));
             var count = ctx.activeTimers.size();
             ctx.activeTimers.clear();
-            if (count > 0) {
-                log.info("Cancelled {} scheduled task timers", count);
-            }
+            if (count > 0) {log.info("Cancelled {} scheduled task timers", count);}
         }
     }
 
     record ScheduledTaskManagerAdapter(Context ctx, Fsm<SchedulerState, ClusterFsmEvent> fsm) implements ScheduledTaskManager {
-        @Override
-        public void onLeaderChange(LeaderChange leaderChange) {
+        @Override public void onLeaderChange(LeaderChange leaderChange) {
             fsm.dispatch(new ClusterFsmEvent.LeaderChange(leaderChange.leaderId(), leaderChange.localNodeIsLeader()));
         }
 
-        @Override
-        public void onQuorumStateChange(QuorumStateNotification notification) {
-            if (!notification.advanceSequence(ctx.quorumSequence)) {
-                return;
-            }
-            if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
-                fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            } else {
-                fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
-            }
+        @Override public void onQuorumStateChange(QuorumStateNotification notification) {
+            if (!notification.advanceSequence(ctx.quorumSequence)) {return;}
+            if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());} else {fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());}
         }
 
-        @Override
-        public int activeTimerCount() {
+        @Override public int activeTimerCount() {
             return ctx.activeTimers.size();
         }
 
-        @Override
-        public void stop() {
+        @Override public void stop() {
             fsm.dispatch(new ClusterFsmEvent.Shutdown());
         }
     }
@@ -405,31 +382,26 @@ import org.slf4j.LoggerFactory;
     interface IntervalParser {
         Cause EMPTY_INTERVAL = () -> "Interval string is empty";
 
-        Functions.Fn1<Cause, String> INVALID_INTERVAL =
-            Causes.forOneValue("Invalid interval format: %s (expected e.g. '30s', '5m', '1h', '2d', '2w')");
+        Functions.Fn1<Cause, String> INVALID_INTERVAL = Causes.forOneValue("Invalid interval format: %s (expected e.g. '30s', '5m', '1h', '2d', '2w')");
 
         static Result<TimeSpan> parse(String interval) {
-            return Verify.ensure(interval, Verify.Is::present, EMPTY_INTERVAL)
-                         .flatMap(IntervalParser::parseInterval);
+            return Verify.ensure(interval, Verify.Is::present, EMPTY_INTERVAL).flatMap(IntervalParser::parseInterval);
         }
 
         private static Result<TimeSpan> parseInterval(String interval) {
             var trimmed = interval.trim();
-            if (trimmed.length() < 2) {
-                return INVALID_INTERVAL.apply(interval).result();
-            }
+            if (trimmed.length() <2) {return INVALID_INTERVAL.apply(interval).result();}
             var suffix = trimmed.charAt(trimmed.length() - 1);
             var numberPart = trimmed.substring(0, trimmed.length() - 1);
             return parseNumber(numberPart, interval).flatMap(value -> applyUnit(value, suffix, interval));
         }
 
         private static Result<Long> parseNumber(String numberPart, String original) {
-            return Result.lift(() -> Long.parseLong(numberPart))
-                         .mapError(_ -> INVALID_INTERVAL.apply(original));
+            return Result.lift(() -> Long.parseLong(numberPart)).mapError(_ -> INVALID_INTERVAL.apply(original));
         }
 
         private static Result<TimeSpan> applyUnit(long value, char suffix, String original) {
-            return switch (suffix) {
+            return switch (suffix){
                 case 's' -> Result.success(TimeSpan.timeSpan(value).seconds());
                 case 'm' -> Result.success(TimeSpan.timeSpan(value).minutes());
                 case 'h' -> Result.success(TimeSpan.timeSpan(value).hours());

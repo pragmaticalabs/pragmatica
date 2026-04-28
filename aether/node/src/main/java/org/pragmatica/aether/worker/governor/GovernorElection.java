@@ -12,11 +12,6 @@ import org.pragmatica.swim.SwimMember.MemberState;
 import java.util.List;
 
 
-/// Pure deterministic governor election: every worker evaluates the same function
-/// over the same SWIM membership list and arrives at the same result.
-///
-/// Election rule: lowest ALIVE NodeId wins, with sticky incumbent preference.
-/// If the current governor is still ALIVE, it remains governor regardless of ordering.
 public interface GovernorElection {
     static GovernorState evaluateElection(NodeId selfId, List<SwimMember> members, Option<NodeId> currentGovernor) {
         var incumbentAlive = currentGovernor.filter(gov -> isAlive(gov, members));

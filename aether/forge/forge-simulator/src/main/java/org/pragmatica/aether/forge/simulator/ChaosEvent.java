@@ -18,7 +18,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Chaos events that can be injected into the system for resilience testing.
 public sealed interface ChaosEvent {
     String type();
     String description();

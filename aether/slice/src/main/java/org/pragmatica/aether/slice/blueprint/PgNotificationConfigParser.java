@@ -16,18 +16,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Parses `[pg-notifications.xxx]` sections from TOML configuration into PgNotificationConfig instances.
-///
-/// Expected format:
-/// ```toml
-/// [pg-notifications.order-events]
-/// datasource = "database.primary"
-/// channels = ["orders_changed", "orders_deleted", "inventory_updated"]
-///
-/// [pg-notifications.user-events]
-/// datasource = "database.primary"
-/// channels = ["users_created", "users_updated"]
-/// ```
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-03"}) public interface PgNotificationConfigParser {
     String PREFIX = "pg-notifications.";
 

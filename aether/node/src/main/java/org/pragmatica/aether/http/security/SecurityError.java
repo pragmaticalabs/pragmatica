@@ -7,9 +7,6 @@ package org.pragmatica.aether.http.security;
 import org.pragmatica.lang.Cause;
 
 
-/// Security-related error types.
-///
-/// Sealed interface for authentication and authorization failures.
 public sealed interface SecurityError extends Cause {
     SecurityError MISSING_API_KEY = new MissingCredentials("X-API-Key header required");
 

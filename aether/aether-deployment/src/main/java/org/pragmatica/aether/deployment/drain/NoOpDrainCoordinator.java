@@ -15,26 +15,15 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
-/// rc1 stub implementation of [`DrainCoordinator`]. Every protocol method returns immediate
-/// success / no-op so the existing scale-down + termination flow proceeds without waiting for
-/// drain acknowledgements that rc2 will add.
-///
-/// Use as the default binding in production wiring until rc2 #189 lands.
+
 public record NoOpDrainCoordinator() implements DrainCoordinator {
-
-    @Override
-    public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
+    @Override public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
         return Promise.unitPromise();
     }
 
-    @Override
-    public Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout) {
+    @Override public Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout) {
         return Promise.unitPromise();
     }
 
-    @Override
-    @Contract
-    public void markDrainComplete(NodeId nodeId) {
-        // rc1: intentionally no-op. rc2-#189 records terminal state for observability.
-    }
+    @Override@Contract public void markDrainComplete(NodeId nodeId) {}
 }

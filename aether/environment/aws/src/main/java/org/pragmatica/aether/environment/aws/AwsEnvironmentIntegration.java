@@ -27,10 +27,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// AWS Cloud implementation of the EnvironmentIntegration SPI.
-/// Provides compute capabilities backed by the AWS EC2 API.
-/// Optionally provides ELBv2 load balancer management and tag-based discovery when configured.
-/// Always provides AWS Secrets Manager-based secrets resolution.
 public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
                                         Option<LoadBalancerProvider> loadBalancerProvider,
                                         Option<DiscoveryProvider> discoveryProvider,

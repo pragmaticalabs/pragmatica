@@ -15,7 +15,6 @@ import java.util.StringJoiner;
 import tools.jackson.databind.JsonNode;
 
 
-/// Formats CLI output in various formats (JSON, table, CSV, single value).
 public sealed interface OutputFormatter {
     JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 

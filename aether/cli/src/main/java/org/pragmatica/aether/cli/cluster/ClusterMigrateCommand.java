@@ -19,12 +19,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_MIG
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_MIGRATE_PLAN;
 
 
-/// Initiates a cross-environment cluster migration via the management API.
-///
-/// Flow:
-/// 1. Validates input parameters (target provider, zone, strategy)
-/// 2. Posts migration request to `POST /api/cluster/migrate`
-/// 3. Displays migration plan or initiation result
 @Command(name = "migrate", description = "Migrate cluster to a different cloud environment") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterMigrateCommand implements Callable<Integer> {
     @Option(names = "--target", required = true, description = "Target cloud provider (aws, gcp, azure, hetzner)") private String targetProvider;
 

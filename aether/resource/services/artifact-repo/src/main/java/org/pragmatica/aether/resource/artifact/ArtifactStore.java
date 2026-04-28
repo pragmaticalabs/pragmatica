@@ -35,17 +35,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Artifact storage backed by DHT for metadata and StorageInstance for chunk data.
-/// Stores artifacts in chunks for efficient distribution.
-///
-///
-/// Key format:
-///
-///   - Artifact metadata: `artifacts/{groupId}/{artifactId}/{version}/meta`
-///   - Version list: `artifacts/{groupId}/{artifactId}/versions`
-///
-/// Chunk content is stored in the StorageInstance and referenced by BlockId in metadata.
-///
 public interface ArtifactStore {
     Promise<DeployResult> deploy(Artifact artifact, byte[] content);
     Promise<byte[]> resolve(Artifact artifact);

@@ -22,18 +22,6 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 
 
-/// Verifies that the tracked jOOQ XML schema descriptor is up to date with current migrations.
-///
-/// Typical binding:
-/// ```xml
-/// <execution>
-///   <id>check-jooq-schema</id>
-///   <phase>verify</phase>
-///   <goals><goal>check-jooq-xml</goal></goals>
-/// </execution>
-/// ```
-///
-/// Fails the build if the tracked XML differs from what current migrations produce.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) @Contract@Mojo(name = "check-jooq-xml", threadSafe = true) public class CheckJooqXmlMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.basedir}/src/main/resources/schema", property = "pg.schemaDir") private File schemaDir;
 

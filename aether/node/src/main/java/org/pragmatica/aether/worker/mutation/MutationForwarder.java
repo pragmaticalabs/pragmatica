@@ -16,11 +16,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Forwards mutations from worker nodes to core cluster via the governor.
-///
-/// Path: Worker -> Governor -> Core (any node, since Rabia is leaderless).
-/// If the governor is FAULTY, falls back to sending directly to any core node
-/// via the PassiveNode's cluster network.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface MutationForwarder {
     Logger LOG = LoggerFactory.getLogger(MutationForwarder.class);
 

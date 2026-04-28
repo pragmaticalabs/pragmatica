@@ -9,16 +9,6 @@ import org.pragmatica.metrics.PromiseMetrics;
 import io.micrometer.core.instrument.Counter;
 
 
-/// Pre-configured metrics for Aether operations.
-///
-///
-/// Provides standardized metric names and tags for:
-///
-///   - Slice invocations (local and remote)
-///   - Consensus operations
-///   - Deployment lifecycle
-///   - HTTP routing
-///
 public interface AetherMetrics {
     PromiseMetrics sliceInvocation(String artifact, String method);
     PromiseMetrics localInvocation(String artifact, String method);

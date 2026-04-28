@@ -11,14 +11,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.List;
 
 
-/// Represents a single stage in a canary deployment progression.
-///
-/// Each stage defines a traffic percentage and observation period.
-/// Stages are evaluated in order -- the canary advances through stages
-/// automatically if health thresholds are met.
-///
-/// @param trafficPercent percentage of traffic to route to the canary version (1-100)
-/// @param observationMinutes how long to observe at this traffic level before advancing
 public record CanaryStage(int trafficPercent, int observationMinutes) {
     private static final Cause INVALID_TRAFFIC = Causes.cause("Traffic percent must be between 1 and 100");
 

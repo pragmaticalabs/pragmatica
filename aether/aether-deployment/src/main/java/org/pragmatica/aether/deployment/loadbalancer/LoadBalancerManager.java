@@ -45,11 +45,7 @@ import static org.pragmatica.aether.environment.LoadBalancerState.loadBalancerSt
 import static org.pragmatica.aether.environment.RouteChange.routeChange;
 
 
-/// Manages external load balancer configuration in response to cluster state changes.
-/// Only active on the leader node — follows the same Dormant/Active pattern as ClusterDeploymentManager.
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks — void required by messaging framework
-public interface LoadBalancerManager extends DelegatedComponent {
+@SuppressWarnings("JBCT-RET-01") public interface LoadBalancerManager extends DelegatedComponent {
     @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
     @MessageReceiver void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);

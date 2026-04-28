@@ -7,12 +7,6 @@ package org.pragmatica.aether.slice.delegation;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors raised by task-group assignment lookups.
-///
-/// Defined in `aether-slice` (rather than `aether-management-api`) because
-/// `aether-management-api` already depends on `aether-slice`. Placing the
-/// error here keeps the dependency arrow one-way and lets `ManagementRouteError`
-/// in the management-api module compose this error when forwarding fails.
 public sealed interface TaskAssignmentError extends Cause {
     static NotAssigned notAssigned(TaskGroup group) {
         return new NotAssigned(group);

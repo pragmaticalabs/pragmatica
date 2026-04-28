@@ -11,9 +11,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// SPI for provisioning and managing compute instances.
-/// Implementations handle the actual instance lifecycle (Forge local nodes, cloud VMs, etc.).
-/// CDM uses this interface to auto-heal when cluster size drops below target.
 public interface ComputeProvider {
     Promise<InstanceInfo> provision(InstanceType instanceType);
     Promise<Unit> terminate(InstanceId instanceId);

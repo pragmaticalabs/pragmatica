@@ -25,7 +25,6 @@ import static org.pragmatica.aether.deployment.schema.SchemaError.UndoNotAvailab
 import static org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.AppliedMigration.appliedMigration;
 
 
-/// Engine for executing schema migrations against a database.
 public interface AetherSchemaManager {
     Promise<SchemaResult> migrate(String datasource,
                                   List<MigrationEntry> scripts,
@@ -53,7 +52,6 @@ public interface AetherSchemaManager {
     }
 }
 
-/// Default implementation of AetherSchemaManager.
 final class DefaultAetherSchemaManager implements AetherSchemaManager {
     private final SchemaPolicy policy;
     private final SchemaHistoryRepository historyRepo;

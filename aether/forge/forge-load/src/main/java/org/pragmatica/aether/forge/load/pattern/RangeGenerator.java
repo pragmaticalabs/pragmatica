@@ -17,11 +17,6 @@ import static org.pragmatica.lang.Result.all;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Generates random integers within a specified range.
-///
-/// Pattern: `${range:MIN-MAX`} where MIN and MAX are integers.
-///
-/// Example: `${range:1-100`} generates a random number between 1 and 100 (inclusive)
 public record RangeGenerator(int min, int max) implements PatternGenerator {
     public static final String TYPE = "range";
 

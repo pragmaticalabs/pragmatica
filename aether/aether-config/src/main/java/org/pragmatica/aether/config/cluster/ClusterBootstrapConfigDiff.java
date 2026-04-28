@@ -15,7 +15,6 @@ import java.util.Objects;
 import static org.pragmatica.aether.config.cluster.DiffPlan.diffPlan;
 
 
-/// Computes diff between two [ClusterBootstrapConfig] instances. S9
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class ClusterBootstrapConfigDiff {
     private ClusterBootstrapConfigDiff() {}
 

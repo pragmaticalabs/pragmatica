@@ -10,8 +10,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
 
-/// Sealed hierarchy of node lifecycle actions that CDM and ControlLoop can issue.
-/// Executed by NodeLifecycleManager, which delegates to the appropriate ComputeProvider calls.
 public sealed interface NodeAction {
     record StartNode(ProvisionSpec spec) implements NodeAction{}
 

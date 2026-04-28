@@ -33,7 +33,6 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 
-/// Routes for hierarchical storage management: per-node instance status and cluster-wide aggregation.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) public final class StorageRoutes implements RouteSource {
     private static final Cause STORAGE_NOT_FOUND = Causes.cause("Storage instance not found");
 

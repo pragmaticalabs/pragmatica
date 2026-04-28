@@ -29,9 +29,6 @@ import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
 
-/// Registry of all node-level types for serialization.
-/// Collects generated codec registries from all modules and adds manual entries
-/// for types that can't use the annotation processor (e.g. shared-package conflicts).
 @CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class}) public sealed interface NodeCodecs {
     record unused() implements NodeCodecs{}
 

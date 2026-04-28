@@ -7,16 +7,6 @@ package org.pragmatica.aether.metrics.consensus;
 import org.pragmatica.lang.Option;
 
 
-/// Snapshot of Rabia consensus metrics for observability.
-///
-/// @param role              Current node role ("LEADER" or "FOLLOWER")
-/// @param leaderId          Current leader node ID
-/// @param pendingBatches    Number of batches awaiting consensus
-/// @param decisionsCount    Total decisions made since start
-/// @param proposalsCount    Total proposals received since start
-/// @param syncSuccessCount  Successful sync attempts
-/// @param syncFailureCount  Failed sync attempts
-/// @param totalDecisionLatencyNs Cumulative decision latency in nanoseconds
 public record RabiaMetrics(String role,
                            Option<String> leaderId,
                            int pendingBatches,

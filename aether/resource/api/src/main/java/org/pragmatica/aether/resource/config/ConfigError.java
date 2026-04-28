@@ -7,7 +7,6 @@ package org.pragmatica.aether.resource.config;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors for configuration operations.
 public sealed interface ConfigError extends Cause {
     record KeyNotFound(String key, ConfigScope scope) implements ConfigError {
         @Override public String message() {

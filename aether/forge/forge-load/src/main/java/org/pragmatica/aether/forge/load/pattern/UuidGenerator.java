@@ -11,9 +11,6 @@ import java.util.UUID;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Generates random UUIDs.
-///
-/// Pattern: `${uuid`}
 public record UuidGenerator() implements PatternGenerator {
     public static final String TYPE = "uuid";
 

@@ -14,15 +14,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Deployment environment with environment-specific defaults.
-///
-///
-/// Each environment has sensible defaults based on its typical use case:
-///
-///   - LOCAL - Single machine development (3 nodes, minimal resources)
-///   - DOCKER - Production-like Docker Compose (5 nodes, moderate resources)
-///   - KUBERNETES - Cloud-native deployment (5 nodes, TLS enabled)
-///
 public enum Environment {
     LOCAL("local", 3, "256m", false),
     DOCKER("docker", 5, "512m", true),

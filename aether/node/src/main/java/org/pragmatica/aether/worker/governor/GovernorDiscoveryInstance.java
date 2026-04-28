@@ -14,7 +14,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Default implementation of governor discovery registry.
 final class GovernorDiscoveryInstance implements GovernorDiscovery {
     private static final Logger LOG = LoggerFactory.getLogger(GovernorDiscoveryInstance.class);
 

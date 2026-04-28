@@ -27,7 +27,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
-import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -312,7 +311,6 @@ class ControlLoopFsmTest {
         @Override public void onClusterSyncPong(ClusterSyncPong pong) {}
         @Override public long observedRabiaTerm() { return 0L; }
         @Override public Epoch observedEpoch() { throw new UnsupportedOperationException("unused"); }
-        @Override public Option<SnapshotPayload> lastObservedSnapshot() { return Option.none(); }
         @Override public String currentLifecycleState() { return "test"; }
         @Override public List<CommunityReport> collectCommunityReports() { return List.of(); }
         @Override public void setLifecycleStateSupplier(Supplier<String> supplier) {}

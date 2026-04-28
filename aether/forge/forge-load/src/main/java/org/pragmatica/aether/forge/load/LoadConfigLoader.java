@@ -23,21 +23,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.parse.Number.parseLong;
 
 
-/// Loads load generation configuration from TOML files.
-///
-/// Example configuration:
-/// ```
-/// [[load]]
-/// target = "InventoryService.checkStock"
-/// rate = "100/s"
-/// duration = "5m"
-///
-/// [load.path]
-/// sku = "${random:SKU-#####}"
-///
-/// [load.body]
-/// quantity = "${range:1-100}"
-/// ```
 public sealed interface LoadConfigLoader {
     static Result<LoadConfig> load(Path path) {
         return TomlParser.parseFile(path).flatMap(LoadConfigLoader::fromDocument);

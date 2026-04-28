@@ -11,7 +11,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.Arrays;
 
 
-/// Cloud provider names. §5.1.3
 public enum CloudProviderName {
     HETZNER("hetzner"),
     AWS("aws"),

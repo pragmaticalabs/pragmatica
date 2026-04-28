@@ -14,8 +14,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for the Hetzner environment integration.
-/// Contains Hetzner API credentials and default server provisioning parameters.
 public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
                                        String serverType,
                                        String image,

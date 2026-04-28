@@ -9,17 +9,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Health thresholds for automatic rolling update progression.
-///
-/// An update can progress automatically if health criteria are met:
-///
-///   - Error rate below threshold
-///   - Latency below threshold
-///   - Or manual approval (bypasses automatic checks)
-///
-/// @param maxErrorRate maximum allowed error rate (0.0-1.0, default 0.01 = 1%)
-/// @param maxLatencyMs maximum allowed p99 latency in milliseconds (default 500ms)
-/// @param requireManualApproval if true, requires explicit approval regardless of metrics
 public record HealthThresholds(double maxErrorRate, long maxLatencyMs, boolean requireManualApproval) {
     private static final Cause INVALID_ERROR_RATE = Causes.cause("Error rate must be between 0.0 and 1.0");
 

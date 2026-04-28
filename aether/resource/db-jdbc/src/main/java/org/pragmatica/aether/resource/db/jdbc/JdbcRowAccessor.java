@@ -14,7 +14,6 @@ import java.sql.SQLException;
 import static org.pragmatica.lang.Option.option;
 
 
-/// JDBC ResultSet implementation of RowAccessor.
 final class JdbcRowAccessor implements RowAccessor {
     private final ResultSet rs;
 

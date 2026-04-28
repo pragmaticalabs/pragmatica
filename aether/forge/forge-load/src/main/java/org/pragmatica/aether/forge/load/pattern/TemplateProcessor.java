@@ -17,10 +17,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Processes templates containing pattern placeholders like `${type:args`}.
-///
-/// A template can contain multiple patterns intermixed with literal text.
-/// Example: `{"sku": "${random:SKU-#####`", "qty": ${range:1-10}}}
 public final class TemplateProcessor {
     private static final Pattern PATTERN_REGEX = Pattern.compile("(\\$\\{[a-z]+(?::[^}]*)?})");
 

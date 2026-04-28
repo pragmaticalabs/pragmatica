@@ -11,7 +11,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 
-/// Service interface for cluster state backup operations.
 public interface BackupService {
     Result<Unit> backupNow();
     Result<List<BackupInfo>> listBackups();

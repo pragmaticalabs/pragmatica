@@ -21,14 +21,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Handles initial KV state bootstrap for a newly joining worker.
-///
-/// Bootstrap steps:
-/// 1. Request a snapshot from the governor (or any core node)
-/// 2. Apply the snapshot to the local KVStore
-/// 3. Start the Decision stream from the snapshot's sequence number
-///
-/// The snapshot is requested via the cluster network (QuicClusterNetwork) connection.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface WorkerBootstrap {
     Logger LOG = LoggerFactory.getLogger(WorkerBootstrap.class);
 

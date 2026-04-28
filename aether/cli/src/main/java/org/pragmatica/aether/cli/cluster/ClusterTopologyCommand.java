@@ -19,7 +19,6 @@ import picocli.CommandLine.Command;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TOPOLOGY;
 
 
-/// Displays cluster topology with per-node details including role, health, hostname, and zone.
 @Command(name = "topology", description = "Show cluster topology with node details") @SuppressWarnings("JBCT-RET-01") class ClusterTopologyCommand implements Callable<Integer> {
     private static final TableSpec TOPOLOGY_TABLE = new TableSpec("Cluster Topology",
                                                                   List.of(new Column("NODE", "nodeId", 16),

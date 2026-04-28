@@ -11,7 +11,6 @@ import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
@@ -95,8 +94,6 @@ class ClusterSyncSchedulerBufferTest {
                                                          new NoopNetwork(),
                                                          new NoopClusterSyncCollector(),
                                                          TimeSpan.timeSpan(1).seconds(),
-                                                         () -> 7L,
-                                                         Option::none,
-                                                         _ -> new byte[0]);
+                                                         () -> 7L);
     }
 }

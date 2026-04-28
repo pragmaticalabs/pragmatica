@@ -25,17 +25,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Six-phase cluster bootstrap orchestrator. Section 8.
-///
-/// Phases:
-/// 1. Validate -- static config validation (already done before entry, re-confirmed here)
-/// 2. Provision -- create infrastructure per source type
-/// 3. Collect Addresses -- gather node addresses from all sources
-/// 4. Deploy Runtime -- install and start Aether on each node
-/// 5. Cluster Formation -- wait for quorum, generate API key, store config
-/// 6. Post-Bootstrap -- activate LBs, register locally, print info
-///
-/// State is persisted after each phase transition to support resume on failure.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrchestrator.unused {
     record unused() implements ClusterBootstrapOrchestrator{}
 

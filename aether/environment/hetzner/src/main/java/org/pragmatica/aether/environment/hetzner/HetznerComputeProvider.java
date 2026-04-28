@@ -35,9 +35,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Hetzner Cloud implementation of the ComputeProvider SPI.
-/// Delegates to HetznerClient for server lifecycle management and maps
-/// Hetzner server models to the environment integration domain types.
 public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentConfig config) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(HetznerComputeProvider.class);
 

@@ -29,34 +29,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Parser for blueprint DSL files using TOML format (RFC-0005).
-///
-///
-/// Blueprints define which slices to deploy and how many instances.
-/// Routes are self-registered by slices during activation via RouteRegistry.
-///
-///
-/// Example format:
-/// ```
-/// id = "org.example:commerce:1.0.0"
-///
-/// [[slices]]
-/// artifact = "org.example:user-service:1.0.0"
-/// instances = 2
-///
-/// [[slices]]
-/// artifact = "org.example:order-service:1.0.0"
-/// instances = 3
-///
-/// [deployment]
-/// strategy = "canary"
-/// max_error_rate = 0.02
-/// max_latency_ms = 300
-///
-/// [[deployment.canary.stages]]
-/// traffic_percent = 5
-/// observation_minutes = 5
-/// ```
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-LAM-03", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-03", "JBCT-RET-05"}) public interface BlueprintParser {
     Fn1<Cause, String> FILE_ERROR = Causes.forOneValue("Failed to read file: %s");
 

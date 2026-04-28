@@ -24,16 +24,6 @@ import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Central registry for observability metrics using Micrometer.
-///
-/// Provides:
-///
-///   - JVM metrics (memory, GC, threads, classloaders)
-///   - Process metrics (CPU)
-///   - Custom Aether metrics (slice invocations, consensus, deployments)
-///   - Prometheus scrape endpoint
-///
-/// Uses pragmatica-lite's PromiseMetrics for wrapping async operations.
 public interface ObservabilityRegistry {
     MeterRegistry registry();
     String scrape();

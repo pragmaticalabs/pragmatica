@@ -18,10 +18,6 @@ import org.pragmatica.serialization.Serializer;
 import java.util.function.Function;
 
 
-/// ResourceFactory SPI implementation for provisioning StreamAccess instances.
-///
-/// Discovered via ServiceLoader. Creates PartitionedStreamAccess instances using
-/// runtime extensions (StreamPartitionManager, Serializer, Deserializer) from the ProvisioningContext.
 public final class StreamAccessFactory implements ResourceFactory<StreamAccess, StreamConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("StreamAccess requires ProvisioningContext with runtime extensions");
 

@@ -18,7 +18,6 @@ import java.util.Set;
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
 
-/// Rules detecting problematic type choices.
 public final class TypeDesignRules {
     private TypeDesignRules() {}
 

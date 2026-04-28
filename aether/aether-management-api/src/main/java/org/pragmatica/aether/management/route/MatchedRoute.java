@@ -11,10 +11,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Result of matching an incoming HTTP request path against [ManagementRoute] templates.
-///
-/// @param route  the matched route enum value
-/// @param params ordered parameter name → value map (insertion order preserved)
 public record MatchedRoute(ManagementRoute route, Map<String, String> params) {
     public static MatchedRoute matchedRoute(ManagementRoute route, List<String> values) {
         var paramMap = new LinkedHashMap<String, String>();

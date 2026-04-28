@@ -7,11 +7,6 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.consensus.NodeId;
 
 
-/// Operator-initiated cluster reshape actions consumed by `HealthReconciler`.
-///
-/// Runtime-only value (no `@Codec`); reaches the reconciler via REST/CLI in-process.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §8.1 / §8.2.
 public sealed interface OperatorIntent {
     record RemoveMember(NodeId nodeId) implements OperatorIntent{}
 

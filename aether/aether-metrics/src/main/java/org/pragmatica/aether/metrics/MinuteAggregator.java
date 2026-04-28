@@ -15,15 +15,6 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Aggregates {@link ComprehensiveSnapshot} samples into minute-level summaries.
-///
-/// Features:
-///
-///   - Stores last 120 minutes (2-hour window)
-///   - Automatic minute boundary alignment
-///   - Percentile calculation from samples
-///   - TTM-ready float[][] output
-///
 public final class MinuteAggregator {
     private static final int DEFAULT_CAPACITY = 120;
 

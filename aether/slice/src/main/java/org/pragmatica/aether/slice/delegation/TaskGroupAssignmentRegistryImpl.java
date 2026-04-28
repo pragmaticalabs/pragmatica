@@ -23,18 +23,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Implementation of [TaskGroupAssignmentRegistry] backed by a concurrent map.
-///
-/// Theme F drain-and-subscribe race fix (let-s-plan-and-then-jolly-fox.md): the factory
-/// drains the KV-Store snapshot via `kvStore.forEach` and then returns; the messaging
-/// framework then wires the `@MessageReceiver` callbacks. Events fired in the window
-/// between forEach completion and receiver wiring would be lost; events fired during
-/// forEach itself could be applied twice (once via forEach observed value, once via the
-/// receiver). Solution: two-phase activation. Receivers are accepted from construction,
-/// but until `activate(...)` flips `activated=true` they are buffered in
-/// `pendingEvents` under `activationLock`. The factory invokes `activate(kvStore)` to
-/// hold the lock across forEach + buffer drain + flag flip — racefree across the
-/// snapshot-to-subscription boundary.
 @SuppressWarnings("JBCT-RET-01") final class TaskGroupAssignmentRegistryImpl implements TaskGroupAssignmentRegistry {
     private static final Logger log = LoggerFactory.getLogger(TaskGroupAssignmentRegistryImpl.class);
 

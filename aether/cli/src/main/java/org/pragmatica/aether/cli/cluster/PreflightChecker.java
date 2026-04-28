@@ -22,9 +22,6 @@ import java.util.stream.Collectors;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Runs network pre-flight checks against bootstrap sources.
-/// Default mode does lightweight credential pings for cloud sources.
-/// Full mode (--full-check) validates SSH reachability, Docker CLI, and floating IP ownership.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface PreflightChecker {
     record unused() implements PreflightChecker{}
 

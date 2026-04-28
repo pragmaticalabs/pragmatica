@@ -10,7 +10,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Error types for environment integration failures.
 public sealed interface EnvironmentError extends Cause {
     record ProvisionFailed(Throwable cause) implements EnvironmentError {
         public static Result<ProvisionFailed> provisionFailed(Throwable cause) {

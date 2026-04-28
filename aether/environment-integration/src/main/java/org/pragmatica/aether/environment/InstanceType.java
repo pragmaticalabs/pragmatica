@@ -9,7 +9,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Type of instance to provision. Supports on-demand and spot instance models.
 public sealed interface InstanceType {
     record OnDemand() implements InstanceType {
         public static Result<OnDemand> onDemand() {

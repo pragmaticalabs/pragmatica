@@ -16,9 +16,6 @@ import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactoryOptions;
 
 
-/// SPI factory for creating R2DBC JooqConnector instances.
-///
-/// Priority 10 -- preferred over JDBC when r2dbc_url is configured.
 public final class R2dbcJooqConnectorFactory implements ResourceFactory<JooqConnector, DatabaseConnectorConfig> {
     @Override public Class<JooqConnector> resourceType() {
         return JooqConnector.class;

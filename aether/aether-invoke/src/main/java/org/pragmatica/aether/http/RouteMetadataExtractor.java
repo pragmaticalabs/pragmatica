@@ -14,18 +14,6 @@ import java.util.List;
 import static org.pragmatica.aether.http.handler.HttpRouteDefinition.httpRouteDefinition;
 
 
-/// Extracts route metadata from {@link RouteSource} and converts to {@link HttpRouteDefinition} objects
-/// for KV-Store publication.
-///
-///
-/// Each route is converted with:
-///
-///   - httpMethod - from `route.method().name()`
-///   - pathPrefix - from `route.path()`
-///   - artifactCoord - passed as parameter
-///   - sliceMethod - derived from route path (used as method identifier)
-///   - security - from route's security policy or defaults to {@link SecurityPolicy#publicRoute()}
-///
 public interface RouteMetadataExtractor {
     List<HttpRouteDefinition> extract(RouteSource routes, String artifactCoord);
 

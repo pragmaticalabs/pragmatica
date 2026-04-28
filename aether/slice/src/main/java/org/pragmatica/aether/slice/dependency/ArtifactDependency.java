@@ -10,18 +10,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Represents a dependency on an artifact with version pattern.
-///
-/// Format: `groupId:artifactId:versionPattern`
-///
-/// Examples:
-/// - `org.pragmatica-lite:core:^0.8.0`
-/// - `org.example:order-domain:[1.0.0,2.0.0)`
-/// - `com.fasterxml.jackson.core:jackson-databind:>=2.15.0`
-///
-/// @param groupId        Maven group ID
-/// @param artifactId     Maven artifact ID
-/// @param versionPattern Version pattern for compatibility checking
 @SuppressWarnings("JBCT-UTIL-02") public record ArtifactDependency(String groupId,
                                                                    String artifactId,
                                                                    VersionPattern versionPattern) {

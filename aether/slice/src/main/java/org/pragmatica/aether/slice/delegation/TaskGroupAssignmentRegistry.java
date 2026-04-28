@@ -18,20 +18,7 @@ import org.pragmatica.messaging.MessageReceiver;
 import java.util.concurrent.ConcurrentHashMap;
 
 
-/// Read-side mirror of task-group → owner-node assignments held in the
-/// consensus KV-Store.
-///
-/// Used by both core nodes and the passive LB to resolve which node currently
-/// owns a given task group when forwarding management API requests. The
-/// registry seeds itself from the current KV-Store contents at construction
-/// time and stays in sync via KV notifications wired through `KVNotificationRouter`.
-///
-/// `ownerFor` fails fast (no waiting/blocking) with [TaskAssignmentError.NotAssigned]
-/// if the requested task group has no current assignment. Callers translate
-/// this into a forwarding-layer error as appropriate.
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks --- void required by messaging framework
-public sealed interface TaskGroupAssignmentRegistry permits TaskGroupAssignmentRegistryImpl {
+@SuppressWarnings("JBCT-RET-01") public sealed interface TaskGroupAssignmentRegistry permits TaskGroupAssignmentRegistryImpl {
     Result<NodeId> ownerFor(TaskGroup group);
     @MessageReceiver void onTaskAssignmentPut(ValuePut<TaskAssignmentKey, TaskAssignmentValue> put);
     @MessageReceiver void onTaskAssignmentRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> remove);

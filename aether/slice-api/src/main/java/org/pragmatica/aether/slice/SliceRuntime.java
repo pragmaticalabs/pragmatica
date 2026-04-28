@@ -13,31 +13,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Provides access to runtime services for slices.
-///
-/// This is a static holder for runtime services that slices may need.
-/// The runtime sets these services before activating slices.
-///
-/// Usage in slice:
-/// ```{@code
-/// // Create handle once (e.g., in factory or field initialization)
-/// var handle = SliceRuntime.getSliceInvoker()
-///     .flatMap(invoker -> invoker.methodHandle(
-///         "org.example:target-slice:1.0.0",
-///         "processRequest",
-///         TypeToken.of(Request.class),
-///         TypeToken.of(Response.class)))
-///     .unwrap();
-///
-/// // Use handle for invocations
-/// handle.invoke(request)
-///     .onSuccess(response -> ...)
-///     .onFailure(cause -> ...);
-/// }```
-///
-/// This approach allows slices to remain records (immutable) while still
-/// accessing runtime services. The trade-off is global state, but this is
-/// acceptable for ambient runtime services that are set once at startup.
 public sealed interface SliceRuntime {
     record unused() implements SliceRuntime {
         static Result<unused > unused() {
@@ -64,7 +39,6 @@ public sealed interface SliceRuntime {
     }
 }
 
-/// Internal mutable state holder for SliceRuntime.
 sealed interface SliceRuntimeHolder {
     record unused() implements SliceRuntimeHolder{}
 

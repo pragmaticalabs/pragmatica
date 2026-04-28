@@ -13,7 +13,6 @@ import static org.pragmatica.aether.environment.docker.DockerConfig.dockerConfig
 import static org.pragmatica.aether.environment.docker.DockerEnvironmentIntegration.dockerEnvironmentIntegration;
 
 
-/// ServiceLoader factory for creating DockerEnvironmentIntegration from generic CloudConfig.
 public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
     @Override public String providerName() {
         return "docker";

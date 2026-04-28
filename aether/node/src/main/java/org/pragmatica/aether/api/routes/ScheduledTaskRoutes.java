@@ -31,7 +31,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for scheduled task management: listing, pause/resume, and manual trigger.
 public final class ScheduledTaskRoutes implements RouteSource {
     private static final Cause TASK_NOT_FOUND = Causes.cause("Scheduled task not found");
 

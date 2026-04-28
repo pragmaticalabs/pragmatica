@@ -7,7 +7,6 @@ package org.pragmatica.aether.pg.codegen.jooq;
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for jOOQ XML export.
 public sealed interface JooqXmlExportError extends Cause {
     record MissingSchema(String schemaName) implements JooqXmlExportError {
         @Override public String message() {

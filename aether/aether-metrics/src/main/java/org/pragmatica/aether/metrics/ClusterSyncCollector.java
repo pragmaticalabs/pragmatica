@@ -10,17 +10,13 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
-import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
@@ -37,23 +33,10 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/// Tier 1 cluster-sync collector. Runs on every node.
-///
-/// Named "cluster-sync collector" because it sits on the receive-side of the
-/// Tier 1 ping/pong chain: it aggregates per-node metrics as one payload of
-/// the sync protocol, tracks epoch fencing, and caches the last-received
-/// snapshot payload.
-///
-/// Responsibilities:
-///   - Collect JVM metrics (CPU, heap usage)
-///   - Track per-method call stats (count, duration)
-///   - Store custom metrics from slices
-///   - Store received metrics from other nodes
-///   - Handle ClusterSyncPing/ClusterSyncPong messages (with epoch fencing — Commit 3)
-///   - Track locally observed `rabiaTerm` + `epoch` + the last-received snapshot payload
-///   - Provide a hook for aggregating `CommunityReport`s (used by `SpokesmanPingLoop`
-///     when this node owns Spokesman duty)
+
 public interface ClusterSyncCollector {
     String CPU_USAGE = "cpu.usage";
 
@@ -79,7 +62,6 @@ public interface ClusterSyncCollector {
     @MessageReceiver@Contract void onClusterSyncPong(ClusterSyncPong pong);
     long observedRabiaTerm();
     Epoch observedEpoch();
-    Option<SnapshotPayload> lastObservedSnapshot();
     String currentLifecycleState();
     List<CommunityReport> collectCommunityReports();
     @Contract void setLifecycleStateSupplier(Supplier<String> supplier);
@@ -100,7 +82,6 @@ public interface ClusterSyncCollector {
     }
 }
 
-/// Implementation of ClusterSyncCollector.
 class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private static final Logger log = LoggerFactory.getLogger(ClusterSyncCollectorImpl.class);
 
@@ -124,8 +105,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicLong observedRabiaTerm = new AtomicLong();
 
     private final AtomicReference<Epoch> observedEpoch = new AtomicReference<>(Epoch.ZERO);
-
-    private final AtomicReference<Option<SnapshotPayload>> lastObservedSnapshot = new AtomicReference<>(Option.none());
 
     private final AtomicReference<Supplier<String>> lifecycleStateSupplier = new AtomicReference<>(() -> "ON_DUTY");
 
@@ -203,22 +182,33 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override@Contract public void onClusterSyncPing(ClusterSyncPing ping) {
         log.debug("ClusterSync: received PING from {} (rabiaTerm={}, epoch={}:{})",
-                  ping.sender(), ping.rabiaTerm(), ping.epochTerm(), ping.epochCounter());
+                  ping.sender(),
+                  ping.rabiaTerm(),
+                  ping.epochTerm(),
+                  ping.epochCounter());
         if (!acceptPingFencing(ping)) {
             log.warn("ClusterSync: PING from {} rejected by fencing (rabiaTerm={} < observed={})",
-                     ping.sender(), ping.rabiaTerm(), observedRabiaTerm.get());
+                     ping.sender(),
+                     ping.rabiaTerm(),
+                     observedRabiaTerm.get());
             return;
         }
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
-        advanceEpochAndCacheSnapshot(incomingEpoch, ping.snapshot());
+        advanceObservedEpoch(incomingEpoch);
         var pong = buildPong();
-        log.debug("ClusterSync: sending PONG to {} (epoch={}:{})", ping.sender(), pong.observedEpochTerm(), pong.observedEpochCounter());
+        log.debug("ClusterSync: sending PONG to {} (epoch={}:{})",
+                  ping.sender(),
+                  pong.observedEpochTerm(),
+                  pong.observedEpochCounter());
         network.send(ping.sender(), pong);
     }
 
     @Override@Contract public void onClusterSyncPong(ClusterSyncPong pong) {
-        log.debug("ClusterSync: received PONG from {} (epoch={}:{})", pong.sender(), pong.observedEpochTerm(), pong.observedEpochCounter());
+        log.debug("ClusterSync: received PONG from {} (epoch={}:{})",
+                  pong.sender(),
+                  pong.observedEpochTerm(),
+                  pong.observedEpochCounter());
         if (!pong.sender().equals(self)) {
             remoteMetrics.put(pong.sender(), pong.metrics());
             addToHistory(pong.sender(), pong.metrics());
@@ -243,10 +233,6 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override public Epoch observedEpoch() {
         return observedEpoch.get();
-    }
-
-    @Override public Option<SnapshotPayload> lastObservedSnapshot() {
-        return lastObservedSnapshot.get();
     }
 
     @Override public String currentLifecycleState() {
@@ -276,11 +262,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         return true;
     }
 
-    private void advanceEpochAndCacheSnapshot(Epoch incomingEpoch, Option<SnapshotPayload> snapshot) {
+    private void advanceObservedEpoch(Epoch incomingEpoch) {
         observedEpoch.updateAndGet(prev -> incomingEpoch.isStrictlyAfter(prev)
                                           ? incomingEpoch
                                           : prev);
-        snapshot.onPresent(payload -> lastObservedSnapshot.set(Option.some(payload)));
     }
 
     private ClusterSyncPong buildPong() {

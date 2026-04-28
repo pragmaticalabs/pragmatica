@@ -14,8 +14,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.pragmatica.lang.Option.option;
 
 
-/// TTL-cached wrapper for any SecretsProvider.
-/// Caches resolved secrets in memory and evicts entries after the configured TTL expires.
 public record CachingSecretsProvider(SecretsProvider delegate,
                                      TimeSpan ttl,
                                      ConcurrentHashMap<String, CachedEntry> cache) implements SecretsProvider {

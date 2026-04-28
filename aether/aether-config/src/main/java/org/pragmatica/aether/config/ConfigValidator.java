@@ -18,17 +18,6 @@ import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Validates Aether configuration.
-///
-///
-/// Validation rules:
-///
-///   - Node count must be odd (3, 5, 7) for quorum
-///   - Node count must be at least 3
-///   - Heap format must be valid (e.g., 256m, 1g)
-///   - Ports must not conflict
-///   - TLS certificate paths must exist if provided
-///
 public final class ConfigValidator {
     private static final Set<Integer> VALID_NODE_COUNTS = Set.of(3, 5, 7);
 

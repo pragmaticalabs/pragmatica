@@ -12,23 +12,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Convention-based mapper between fully qualified class names and Maven artifact coordinates.
-///
-///
-/// Conventions:
-///
-///   - GroupId = package prefix (all but last segment)
-///   - ArtifactId = kebab-case of simple class name
-///   - ClassName = GroupId + "." + PascalCase of ArtifactId
-///
-///
-///
-/// Examples:
-///
-///   - `org.example.UserService` → `org.example:user-service:1.0.0`
-///   - `org.example:user-service:1.0.0` → `org.example.UserService`
-///   - `com.company.app.OrderProcessor` → `com.company.app:order-processor:1.0.0`
-///
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-PAT-01"}) public interface ArtifactMapper {
     static Result<Artifact> toArtifact(String className, String version) {
         var lastDot = className.lastIndexOf('.');

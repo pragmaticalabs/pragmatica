@@ -10,8 +10,6 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 
 
-/// SHA-256 key hashing utility for API key operations.
-/// Matches the hashing algorithm used by the node-side security validator.
 @SuppressWarnings("JBCT-UTIL-02") sealed interface KvStoreApiKeyHasher {
     record unused() implements KvStoreApiKeyHasher{}
 

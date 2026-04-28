@@ -8,7 +8,6 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors that can occur during A/B test deployment operations.
 public sealed interface AbTestDeploymentError extends Cause {
     record TestNotFound(String testId) implements AbTestDeploymentError {
         public static TestNotFound testNotFound(String testId) {

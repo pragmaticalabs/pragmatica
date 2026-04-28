@@ -10,20 +10,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
 
 
-/// Events emitted during slice deployment lifecycle for metrics collection.
-///
-///
-/// These events are dispatched locally via MessageRouter to track deployment progress.
-/// This is a sealed hierarchy validated at route-building time via SealedBuilder.
-///
-///
-/// Lifecycle flow:
-/// ```
-/// DeploymentStarted → StateTransition* → DeploymentCompleted
-///                                      → DeploymentFailed
-/// ```
-///
-/// @see org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder
 public sealed interface DeploymentEvent extends Message.Local {
     record unused() implements DeploymentEvent{}
 

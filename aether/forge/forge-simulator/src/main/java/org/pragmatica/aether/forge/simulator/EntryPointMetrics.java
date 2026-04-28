@@ -21,10 +21,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Collects per-entry-point metrics for the simulator.
-///
-/// Provides thread-safe metrics collection with histogram-based latency tracking.
-/// Designed for high-throughput concurrent access.
 public final class EntryPointMetrics {
     private static final long[] BUCKET_BOUNDARIES_MS = {1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000};
 

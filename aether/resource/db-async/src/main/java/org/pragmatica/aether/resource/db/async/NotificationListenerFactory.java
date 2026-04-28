@@ -23,13 +23,6 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 
-/// SPI factory for creating PostgreSQL LISTEN/NOTIFY subscription resources.
-///
-/// Creates a dedicated (non-pooled) connection for each notification config section,
-/// issues LISTEN for each configured channel, and delegates notifications to the slice method.
-///
-/// The resource type is the marker interface PgNotificationSubscriber; the provisioned
-/// object is a NotificationListenerHandle used internally for lifecycle management.
 public final class NotificationListenerFactory implements ResourceFactory<PgNotificationSubscriber, PgNotificationConfig> {
     private static final Cause CONFIG_SERVICE_MISSING = Causes.cause("ConfigService not available for datasource resolution");
 
@@ -83,8 +76,6 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
     }
 }
 
-/// Internal handle tracking the dedicated connection and its LISTEN subscriptions.
-/// Implements PgNotificationSubscriber as the provisioned resource instance.
 @SuppressWarnings("JBCT-RET-01") final class NotificationListenerHandle implements PgNotificationSubscriber {
     private final Connection connection;
 

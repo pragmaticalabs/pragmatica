@@ -15,7 +15,6 @@ import static org.pragmatica.lang.Promise.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Manages replication of stream events from governor to worker replicas.
 public interface ReplicationManager extends AutoCloseable {
     @Contract void replicateEvent(String streamName, int partition, long offset, byte[] payload, long timestamp);
     @Contract void handleAck(ReplicationMessage.ReplicateAck ack);

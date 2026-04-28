@@ -11,8 +11,6 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 import java.util.List;
 
 
-/// Events produced by analyzing DDL statements against the current schema.
-/// Each event represents a single schema mutation.
 public sealed interface SchemaEvent {
     SourceSpan span();
 

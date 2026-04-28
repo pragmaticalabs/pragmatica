@@ -19,13 +19,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 
-/// Event-driven slice-to-node index.
-/// Subscribes to KV store ValuePut/ValueRemove notifications and maintains
-/// a bidirectional index of slice deployments across nodes.
-///
-/// Thread safety: ConcurrentHashMap handles concurrent reads (HTTP dashboard)
-/// and writes (consensus thread). Weakly consistent iteration is acceptable
-/// for dashboard display.
 public sealed interface DeploymentMap {
     @SuppressWarnings("JBCT-RET-01") void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
     @SuppressWarnings("JBCT-RET-01") void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);

@@ -5,14 +5,12 @@
 package org.pragmatica.aether.metrics;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
@@ -39,8 +37,6 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
-                                                           () -> Option.some(ClusterGenerationSnapshot.empty(7L)),
-                                                           _ -> new byte[0],
                                                            sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
@@ -70,8 +66,6 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
-                                                           Option::none,
-                                                           _ -> new byte[0],
                                                            sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
@@ -93,8 +87,6 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
-                                                           Option::none,
-                                                           _ -> new byte[0],
                                                            sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
@@ -119,8 +111,6 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            new NoopClusterSyncCollector(),
                                                            TimeSpan.timeSpan(1).seconds(),
                                                            () -> 7L,
-                                                           Option::none,
-                                                           _ -> new byte[0],
                                                            sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));

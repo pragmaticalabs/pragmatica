@@ -8,7 +8,6 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.consensus.NodeId;
 
 
-/// Sealed hierarchy of outcomes from NodeLifecycleManager actions.
 public sealed interface ActionResult {
     record NodeStarted(InstanceInfo instance) implements ActionResult{}
 

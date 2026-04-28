@@ -12,8 +12,6 @@ import java.util.List;
 import static org.pragmatica.aether.environment.docker.DockerError.COMMAND_EXECUTION_FAILED;
 
 
-/// Docker command runner that delegates to the system process builder.
-/// Uses ProcessBuilder to invoke Docker CLI commands and captures stdout.
 @Contract public record ProcessCommandRunner() implements DockerCommandRunner {
     public static ProcessCommandRunner processCommandRunner() {
         return new ProcessCommandRunner();

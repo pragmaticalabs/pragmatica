@@ -22,10 +22,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Apply operation state for resume/rollback support.
-///
-/// Persisted as JSON to `~/.aether/clusters/<name>/apply-state.json` so that
-/// a failed apply can be resumed or rolled back.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public record ApplyState(String clusterName,
                                                                             String configHash,
                                                                             String startedAt,

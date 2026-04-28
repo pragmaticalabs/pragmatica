@@ -17,7 +17,6 @@ import java.util.List;
 import static org.pragmatica.lang.Result.all;
 
 
-/// Repository for the `aether_schema_history` table tracking applied migrations.
 public interface SchemaHistoryRepository {
     Promise<Unit> bootstrap(SqlConnector connector);
     Promise<List<AppliedMigration>> queryApplied(SqlConnector connector);
@@ -50,7 +49,6 @@ public interface SchemaHistoryRepository {
     }
 }
 
-/// Default implementation of SchemaHistoryRepository using SqlConnector.
 final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     private static final String BOOTSTRAP_SQL = """
         CREATE TABLE IF NOT EXISTS aether_schema_history (

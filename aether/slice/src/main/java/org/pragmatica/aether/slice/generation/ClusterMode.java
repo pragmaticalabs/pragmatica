@@ -7,12 +7,6 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-/// Derived shape of the cluster at a given epoch.
-///
-/// - `CORE_ONLY` when no non-"core" communities exist.
-/// - `HIERARCHICAL` when at least one worker community is present.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §6.
 @Codec public enum ClusterMode {
     CORE_ONLY,
     HIERARCHICAL

@@ -12,8 +12,6 @@ import java.util.Set;
 import static org.pragmatica.aether.environment.IpOwnership.ipOwnership;
 
 
-/// NOOP floating IP provider for local development. §11.1a
-/// Always succeeds, reports ownership as local, and returns a single "local" zone.
 public record NoopFloatingIpProvider() implements FloatingIpProvider {
     private static final IpOwnership LOCAL_OWNERSHIP = ipOwnership(true, "localhost");
 

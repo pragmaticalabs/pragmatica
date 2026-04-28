@@ -33,10 +33,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Configuration for the simulator.
-///
-/// Supports per-entry-point rate configuration and slice settings.
-/// Can be loaded from JSON file or constructed programmatically.
 public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                               Map<String, SliceConfig> slices,
                               boolean loadGeneratorEnabled,

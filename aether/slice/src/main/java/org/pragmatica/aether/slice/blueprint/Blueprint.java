@@ -17,12 +17,6 @@ import static org.pragmatica.lang.Verify.Is;
 import static org.pragmatica.lang.Verify.ensure;
 
 
-/// Parsed blueprint describing which slices to deploy and how.
-///
-/// @param id the blueprint identifier
-/// @param slices the list of slice specifications
-/// @param deploymentConfig optional deployment strategy configuration
-/// @param securityOverrides security overrides from [security.overrides] section
 @SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02", "JBCT-ZONE-02"}) public record Blueprint(BlueprintId id,
                                                                                            List<SliceSpec> slices,
                                                                                            Option<DeploymentConfig> deploymentConfig,

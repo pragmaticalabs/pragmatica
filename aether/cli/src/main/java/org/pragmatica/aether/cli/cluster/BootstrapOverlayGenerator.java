@@ -17,14 +17,6 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 
-/// Builds the Layer 4 (CLI bootstrap-time) overlay TOML document for a single node.
-///
-/// The overlay carries only fields the CLI knows deterministically from bootstrap context —
-/// cluster identity, the computed peer list, per-node id and role, and source-type-specific
-/// `[cloud.compute]` and `[database]` blocks. It MUST NOT include settings that are normally
-/// operator-tunable (timeouts, memory, logging) — those belong in Layer 3 overrides.
-///
-/// Spec: aether/docs/specs/node-config-composition-spec.md §6.
 public interface BootstrapOverlayGenerator {
     record Section(String name, Map<String, Object> values) {
         static Section section(String name, Map<String, Object> values) {

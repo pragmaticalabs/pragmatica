@@ -14,9 +14,6 @@ import org.pragmatica.lang.utils.RateLimiter.RateLimiterError;
 import java.util.function.Supplier;
 
 
-/// Local (per-node) RateGuard implementation backed by the core token bucket RateLimiter.
-///
-/// Enriches the core LimitExceeded error with HTTP-friendly metadata (limit, remaining, reset time).
 record DefaultRateGuard(RateLimiter limiter, int limit) implements RateGuard {
     private static final long DEFAULT_RETRY_AFTER_MS = 1000;
 

@@ -23,7 +23,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Default DependencyLoader implementation using Repository.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public interface RepositoryDependencyLoader {
     static DependencyLoader repositoryDependencyLoader(Repository repository) {
         return artifact -> repository.locate(artifact).flatMap(location -> loadDependenciesFromJar(artifact, location));

@@ -110,40 +110,16 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Sealed state hierarchy for the [`org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager`]
-/// FSM.
-///
-/// ```text
-/// Dormant
-///   ──Activate──► Active
-/// Active
-///   ──Deactivate──► Dormant
-/// Any ──Shutdown──► Stopped
-/// ```
-///
-/// - [`Dormant`] is a per-context singleton; ignores all domain events.
-/// - [`Active`] is a fresh record per activation cycle — it owns the per-cycle blueprint map,
-///   slice-state maps, retry counters, in-flight blueprints, reconcile timer, and allocation
-///   round-robin index.
-/// - [`Stopped`] is a per-context singleton — terminal; all events are ignored.
-// Cluster-wide orchestration discards Promise results by design — the pipelines own their own
-// completion/failure handlers via .onSuccess/.onFailure; the return value is not usable by callers.
-// Individual methods carry @Contract where that applies.
-public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymentState, ClusterFsmEvent>
-        permits ClusterDeploymentState.Dormant, ClusterDeploymentState.Active, ClusterDeploymentState.Stopped {
 
+public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymentState, ClusterFsmEvent> permits ClusterDeploymentState.Dormant, ClusterDeploymentState.Active, ClusterDeploymentState.Stopped {
     Logger LOG = LoggerFactory.getLogger(ClusterDeploymentState.class);
 
     ClusterDeploymentContext ctx();
 
-    /// Dormant: the node is not the cluster leader. All domain events ignored. Only `Activate` or
-    /// `Shutdown` drive a transition.
     record Dormant(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
-
-        @Contract
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            switch (event) {
+        @Contract@Override public void handle(ClusterFsmEvent event,
+                                              TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            switch (event){
                 case Activate _ -> tx.transitionTo(ctx.newActive());
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
@@ -151,43 +127,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
     }
 
-    /// Stopped: terminal. Reached by a `Shutdown` event from any non-terminal state.
     record Stopped(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
-
-        @Contract
-        @Override
-        public void onEntry() {
+        @Contract@Override public void onEntry() {
             LOG.debug("ClusterDeploymentManager stopped");
         }
 
-        @Contract
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+        @Contract@Override public void handle(ClusterFsmEvent event,
+                                              TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
             tx.ignore();
         }
     }
 
-    /// Active: the node is the cluster leader and is driving cluster-wide slice deployments.
-    ///
-    /// All per-activation mutable collections are created fresh on entry via
-    /// [`ClusterDeploymentContext#newActive`]. The reconcile timer is started in [`#onEntry`] and
-    /// cancelled in [`#onExit`].
-    /// Theme K #1: the original concern was that `restoringBlueprints`, `permanentlyFailed`,
-    /// and `transitionalStateTimestamps` are local in-memory state on the `Active` record and
-    /// would be lost on every leader handoff (the new leader's `Active` is created with empty
-    /// sets/maps).
-    ///
-    /// Status:
-    ///   - `transitionalStateTimestamps` → **fixed (rc1)**. `SliceNodeValue` and
-    ///     `NodeArtifactValue` carry a `transitionedAt: long` stamped at write time;
-    ///     `Active.onEntry → rebuildStateFromKVStore → restoreSliceStateFromNodeArtifact`
-    ///     re-derives the map from the persisted atoms. Atoms predating the schema bump
-    ///     (`transitionedAt == 0L`) fall back to `nowMs()` — equivalent to the legacy
-    ///     "fresh timer at handoff" behaviour for upgrade compatibility.
-    ///   - `restoringBlueprints` → still in-memory. Tracked under rc2 #189; impact bounded
-    ///     to one extra (idempotent) restore attempt across a handoff.
-    ///   - `permanentlyFailed` → still in-memory. Tracked under rc2 #189; impact bounded
-    ///     to one extra retry after handoff before `MAX_RETRIES` re-surfaces the failure.
     record Active(ClusterDeploymentContext ctx,
                   Map<Artifact, Blueprint> blueprints,
                   Map<SliceNodeKey, SliceState> sliceStates,
@@ -203,7 +153,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   AtomicInteger allocationIndex,
                   AtomicBoolean deactivated,
                   CancellableTask reconcileTimer) implements ClusterDeploymentState {
-
         private static final Logger log = LoggerFactory.getLogger(Active.class);
 
         private static final int MAX_RETRIES = 5;
@@ -212,74 +161,67 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private static final int STUCK_TIMEOUT_MULTIPLIER = 3;
 
-        @Contract
-        @Override
-        public void onEntry() {
+        @Contract@Override public void onEntry() {
             log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
                      ctx.self(),
                      activeNodes().size());
             rebuildStateFromKVStore();
             reconcile();
             startReconcileTimer();
-            // Deferred by 2s so that late-arriving KV-Store notifications that settle topology
-            // after leadership transfer are applied before we re-run cleanup + reconcile.
             SharedScheduler.schedule(this::deferredTopologyRecheck, timeSpan(2).seconds());
         }
 
-        @Contract
-        @Override
-        public void onExit() {
+        @Contract@Override public void onExit() {
             deactivated.set(true);
             cancelReconcileTimer();
             log.trace("Active state deactivated, stale callbacks will be suppressed");
         }
 
-        @Contract
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            switch (event) {
+        @Contract@Override public void handle(ClusterFsmEvent event,
+                                              TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            switch (event){
                 case Deactivate _ -> tx.transitionTo(ctx.dormant());
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case AppBlueprintPutReceived(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) ->
-                        handleAppBlueprintPut(valuePut, tx);
-                case SliceTargetPutReceived(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) ->
-                        handleSliceTargetPut(valuePut, tx);
-                case VersionRoutingPutReceived(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) ->
-                        handleVersionRoutingPut(valuePut, tx);
-                case AppBlueprintRemoveReceived(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) ->
-                        handleAppBlueprintRemove(valueRemove, tx);
-                case SliceTargetRemoveReceived(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) ->
-                        handleSliceTargetRemove(valueRemove, tx);
-                case VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) ->
-                        handleVersionRoutingRemove(valueRemove, tx);
-                case TopologyChangeReceived(TopologyChangeNotification topologyChange) ->
-                        handleTopologyChange(topologyChange, tx);
-                case NodeLifecyclePutReceived(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) ->
-                        handleNodeLifecyclePut(valuePut, tx);
-                case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) ->
-                        handleActivationDirectivePut(valuePut, tx);
-                case ActivationDirectiveRemoveReceived(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) ->
-                        handleActivationDirectiveRemove(valueRemove, tx);
-                case NodeArtifactPutReceived(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) ->
-                        handleNodeArtifactPut(valuePut, tx);
-                case NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) ->
-                        handleNodeArtifactRemove(valueRemove, tx);
-                case SchemaVersionPutReceived(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) ->
-                        handleSchemaVersionPut(valuePut, tx);
+                case AppBlueprintPutReceived(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) -> handleAppBlueprintPut(valuePut,
+                                                                                                                             tx);
+                case SliceTargetPutReceived(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) -> handleSliceTargetPut(valuePut,
+                                                                                                                         tx);
+                case VersionRoutingPutReceived(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) -> handleVersionRoutingPut(valuePut,
+                                                                                                                                     tx);
+                case AppBlueprintRemoveReceived(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) -> handleAppBlueprintRemove(valueRemove,
+                                                                                                                                         tx);
+                case SliceTargetRemoveReceived(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) -> handleSliceTargetRemove(valueRemove,
+                                                                                                                                     tx);
+                case VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) -> handleVersionRoutingRemove(valueRemove,
+                                                                                                                                                 tx);
+                case TopologyChangeReceived(TopologyChangeNotification topologyChange) -> handleTopologyChange(topologyChange,
+                                                                                                               tx);
+                case NodeLifecyclePutReceived(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) -> handleNodeLifecyclePut(valuePut,
+                                                                                                                                 tx);
+                case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
+                                                                                                                                                         tx);
+                case ActivationDirectiveRemoveReceived(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) -> handleActivationDirectiveRemove(valueRemove,
+                                                                                                                                                                     tx);
+                case NodeArtifactPutReceived(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) -> handleNodeArtifactPut(valuePut,
+                                                                                                                             tx);
+                case NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) -> handleNodeArtifactRemove(valueRemove,
+                                                                                                                                         tx);
+                case SchemaVersionPutReceived(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) -> handleSchemaVersionPut(valuePut,
+                                                                                                                                 tx);
                 default -> tx.ignore();
             }
         }
 
-        // --- Event handlers (dispatched from handle()) ---
-
         private void handleAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut,
                                            TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            tx.handle(() -> handleAppBlueprintChange(valuePut.cause().key(), valuePut.cause().value()));
+            tx.handle(() -> handleAppBlueprintChange(valuePut.cause().key(),
+                                                     valuePut.cause().value()));
         }
 
         private void handleSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut,
                                           TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            tx.handle(() -> handleSliceTargetChange(valuePut.cause().key(), valuePut.cause().value()));
+            tx.handle(() -> handleSliceTargetChange(valuePut.cause().key(),
+                                                    valuePut.cause().value()));
         }
 
         private void handleVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut,
@@ -307,9 +249,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var key = valueRemove.cause().key();
             var artifactBase = key.artifactBase();
             blueprints.keySet().stream()
-                      .filter(artifactBase::matches)
-                      .toList()
-                      .forEach(this::issueDeallocationCommands);
+                             .filter(artifactBase::matches)
+                             .toList()
+                             .forEach(this::issueDeallocationCommands);
         }
 
         private void handleVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove,
@@ -324,11 +266,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void processTopologyChange(TopologyChangeNotification topologyChange) {
             log.info("Received topology change: {}", topologyChange);
-            switch (topologyChange) {
-                case NodeAdded(NodeId addedNode, List<NodeId> _) -> handleNodeAdded(addedNode);
-                case NodeRemoved(NodeId removedNode, List<NodeId> _) ->
-                        handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
-                case NodeDown(NodeId downNode, List<NodeId> _) -> handleNodeDown(downNode);
+            switch (topologyChange){
+                case NodeAdded(NodeId addedNode, List<NodeId>_) -> handleNodeAdded(addedNode);
+                case NodeRemoved(NodeId removedNode, List<NodeId>_) -> handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
+                case NodeDown(NodeId downNode, List<NodeId>_) -> handleNodeDown(downNode);
                 default -> {}
             }
         }
@@ -349,8 +290,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void processNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
-            var nodeId = valuePut.cause().key().nodeId();
-            var state = valuePut.cause().value().state();
+            var nodeId = valuePut.cause().key()
+                                       .nodeId();
+            var state = valuePut.cause().value()
+                                      .state();
             handleNodeLifecycleChange(nodeId, state);
         }
 
@@ -360,8 +303,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void processActivationDirectivePutEvent(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
-            var nodeId = valuePut.cause().key().nodeId();
-            var role = valuePut.cause().value().role();
+            var nodeId = valuePut.cause().key()
+                                       .nodeId();
+            var role = valuePut.cause().value()
+                                     .role();
             processActivationDirectivePut(nodeId, role);
         }
 
@@ -371,7 +316,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void processActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
-            var nodeId = valueRemove.cause().key().nodeId();
+            var nodeId = valueRemove.cause().key()
+                                          .nodeId();
             if (workerNodes.remove(nodeId)) {
                 log.info("Worker node {} deregistered, total workers: {}", nodeId, workerNodes.size());
                 reconcile();
@@ -411,15 +357,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void processSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
             var value = valuePut.cause().value();
             var datasource = value.datasourceName();
-            switch (value.status()) {
+            switch (value.status()){
                 case PENDING -> handleSchemaPending(datasource);
                 case COMPLETED -> handleSchemaCompleted(datasource);
                 case FAILED -> log.warn("Schema migration failed for datasource: {}", datasource);
                 case MIGRATING -> log.debug("Schema migration in progress for datasource: {}", datasource);
             }
         }
-
-        // --- Entry bootstrap ---
 
         @Contract public void startReconcileTimer() {
             reconcileTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcileIfActive, ctx.reconcileInterval()));
@@ -436,9 +380,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         @Contract public void rebuildStateFromKVStore() {
             log.info("Rebuilding cluster deployment state from KVStore");
             ctx.kvStore().forEach(AetherKey.class, AetherValue.class, this::processKVEntry);
-            log.info("Restored {} blueprints and {} worker nodes from KVStore",
-                     blueprints.size(),
-                     workerNodes.size());
+            log.info("Restored {} blueprints and {} worker nodes from KVStore", blueprints.size(), workerNodes.size());
             rebuildSliceStateFromKVStoreEntries();
             triggerLoadedSliceActivation();
             cleanupStaleNodeRoutes();
@@ -466,9 +408,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void recoverStalledSchemaMigrations() {
             var stalledDatasources = new ArrayList<String>();
-            ctx.kvStore().forEach(SchemaVersionKey.class,
-                                  SchemaVersionValue.class,
-                                  (_, value) -> collectStalledMigration(value, stalledDatasources));
+            ctx.kvStore()
+                       .forEach(SchemaVersionKey.class,
+                                SchemaVersionValue.class,
+                                (_, value) -> collectStalledMigration(value, stalledDatasources));
             if (stalledDatasources.isEmpty()) {return;}
             log.info("Found {} stalled schema migrations, resetting to PENDING", stalledDatasources.size());
             stalledDatasources.forEach(this::resetStalledMigration);
@@ -477,61 +420,61 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void collectStalledMigration(SchemaVersionValue value, List<String> stalledDatasources) {
             if (value.status() != SchemaStatus.MIGRATING) {return;}
             var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(value.datasourceName());
-            var lockExpired = ctx.kvStore().get(lockKey).filter(SchemaMigrationLockValue.class::isInstance)
-                                 .map(SchemaMigrationLockValue.class::cast)
-                                 .map(SchemaMigrationLockValue::isExpired)
-                                 .or(true);
+            var lockExpired = ctx.kvStore().get(lockKey)
+                                         .filter(SchemaMigrationLockValue.class::isInstance)
+                                         .map(SchemaMigrationLockValue.class::cast)
+                                         .map(SchemaMigrationLockValue::isExpired)
+                                         .or(true);
             if (lockExpired) {stalledDatasources.add(value.datasourceName());}
         }
 
         private void resetStalledMigration(String datasourceName) {
             log.info("Resetting stalled schema migration for '{}' to PENDING", datasourceName);
             var versionKey = SchemaVersionKey.schemaVersionKey(datasourceName);
-            ctx.kvStore().get(versionKey).filter(SchemaVersionValue.class::isInstance)
-                         .map(SchemaVersionValue.class::cast)
-                         .onPresent(value -> submitStalledMigrationReset(datasourceName, versionKey, value));
+            ctx.kvStore().get(versionKey)
+                       .filter(SchemaVersionValue.class::isInstance)
+                       .map(SchemaVersionValue.class::cast)
+                       .onPresent(value -> submitStalledMigrationReset(datasourceName, versionKey, value));
         }
 
         private void submitStalledMigrationReset(String datasourceName,
                                                  SchemaVersionKey versionKey,
                                                  SchemaVersionValue value) {
             var updated = SchemaVersionValue.schemaVersionValue(datasourceName,
-                                                                 value.currentVersion(),
-                                                                 value.lastMigration(),
-                                                                 SchemaStatus.PENDING,
-                                                                 value.artifactCoords(),
-                                                                 value.attemptCount());
+                                                                value.currentVersion(),
+                                                                value.lastMigration(),
+                                                                SchemaStatus.PENDING,
+                                                                value.artifactCoords(),
+                                                                value.attemptCount());
             var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
             var commands = List.<KVCommand<AetherKey>>of(new KVCommand.Put<>(versionKey, updated),
-                                                          new KVCommand.Remove<>(lockKey));
+                                                         new KVCommand.Remove<>(lockKey));
             ctx.cluster().apply(commands)
-                         .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
-                                                        datasourceName,
-                                                        cause.message()));
+                       .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
+                                                     datasourceName,
+                                                     cause.message()));
         }
 
         private void triggerLoadedSliceActivation() {
             var loadedSlices = sliceStates.entrySet().stream()
-                                          .filter(e -> e.getValue() == SliceState.LOADED)
-                                          .map(Map.Entry::getKey)
-                                          .toList();
+                                                   .filter(e -> e.getValue() == SliceState.LOADED)
+                                                   .map(Map.Entry::getKey)
+                                                   .toList();
             if (!loadedSlices.isEmpty()) {
-                log.info("Found {} slices in LOADED state, checking dependencies for activation",
-                         loadedSlices.size());
+                log.info("Found {} slices in LOADED state, checking dependencies for activation", loadedSlices.size());
                 loadedSlices.forEach(this::tryActivateIfDependenciesReady);
             }
         }
 
         private void processKVEntry(AetherKey key, AetherValue value) {
-            switch (key) {
-                case AppBlueprintKey _ when value instanceof AppBlueprintValue appBlueprintValue ->
-                        restoreAppBlueprint(appBlueprintValue);
-                case SliceTargetKey sliceTargetKey when value instanceof SliceTargetValue sliceTargetValue ->
-                        restoreSliceTarget(sliceTargetKey, sliceTargetValue);
+            switch (key){
+                case AppBlueprintKey _ when value instanceof AppBlueprintValue appBlueprintValue -> restoreAppBlueprint(appBlueprintValue);
+                case SliceTargetKey sliceTargetKey when value instanceof SliceTargetValue sliceTargetValue -> restoreSliceTarget(sliceTargetKey,
+                                                                                                                                 sliceTargetValue);
                 case SliceNodeKey _ -> {}
                 case VersionRoutingKey routingKey -> activeRoutings.add(routingKey.artifactBase());
-                case ActivationDirectiveKey activationKey when value instanceof ActivationDirectiveValue activationValue ->
-                        restoreWorkerNode(activationKey, activationValue);
+                case ActivationDirectiveKey activationKey when value instanceof ActivationDirectiveValue activationValue -> restoreWorkerNode(activationKey,
+                                                                                                                                              activationValue);
                 default -> {}
             }
         }
@@ -553,9 +496,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 var artifact = slice.artifact();
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
-                                                    slice.instances(),
-                                                    slice.minAvailable(),
-                                                    Option.some(expanded.id())));
+                                                   slice.instances(),
+                                                   slice.minAvailable(),
+                                                   Option.some(expanded.id())));
             }
         }
 
@@ -569,40 +512,33 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void rebuildSliceStateFromKVStoreEntries() {
-            ctx.kvStore().forEach(NodeArtifactKey.class, NodeArtifactValue.class, this::restoreSliceStateFromNodeArtifact);
+            ctx.kvStore()
+                       .forEach(NodeArtifactKey.class, NodeArtifactValue.class, this::restoreSliceStateFromNodeArtifact);
             log.info("Restored {} slice states from KV-Store", sliceStates.size());
         }
 
         private void restoreSliceStateFromNodeArtifact(NodeArtifactKey key, NodeArtifactValue value) {
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
             sliceStates.put(sliceKey, value.state());
-            // Theme K #1: re-derive transitional timestamps from the persisted atom so a leader
-            // handoff does not reset the stuck-slice timer to 3x the configured timeout. Atoms
-            // predating the schema bump carry transitionedAt = 0L; treat as "unknown" and fall
-            // back to nowMs() — equivalent to the legacy behaviour for upgrade compatibility.
             updateTransitionalTimestamp(sliceKey, value.state(), value.transitionedAt());
         }
-
-        // --- Schema handlers ---
 
         private void handleSchemaPending(String datasource) {
             log.info("Schema migration pending for datasource: {}", datasource);
             ctx.schemaOrchestrator().migrateIfNeeded(datasource)
-                                     .onFailure(cause -> log.error("Schema migration failed for {}: {}",
-                                                                    datasource,
-                                                                    cause.message()));
+                                  .onFailure(cause -> log.error("Schema migration failed for {}: {}",
+                                                                datasource,
+                                                                cause.message()));
         }
 
         private void handleSchemaCompleted(String datasource) {
             log.info("Schema migration completed for datasource: {}", datasource);
             sliceStates.entrySet().stream()
-                       .filter(entry -> entry.getValue() == SliceState.LOADED)
-                       .map(Map.Entry::getKey)
-                       .toList()
-                       .forEach(this::tryActivateIfDependenciesReady);
+                                .filter(entry -> entry.getValue() == SliceState.LOADED)
+                                .map(Map.Entry::getKey)
+                                .toList()
+                                .forEach(this::tryActivateIfDependenciesReady);
         }
-
-        // --- Slice lifecycle handlers ---
 
         private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
             sliceStates.remove(sliceNodeKey);
@@ -614,21 +550,24 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void handleAppBlueprintRemoval(AppBlueprintKey key) {
             var removedBlueprintId = key.blueprintId();
             var rollingUpdateArtifacts = blueprints.entrySet().stream()
-                                                   .filter(e -> e.getValue().owner().equals(Option.some(removedBlueprintId)))
-                                                   .map(Map.Entry::getKey)
-                                                   .filter(a -> activeRoutings.contains(a.base()))
-                                                   .toList();
+                                                            .filter(e -> e.getValue().owner()
+                                                                                   .equals(Option.some(removedBlueprintId)))
+                                                            .map(Map.Entry::getKey)
+                                                            .filter(a -> activeRoutings.contains(a.base()))
+                                                            .toList();
             if (!rollingUpdateArtifacts.isEmpty()) {
                 log.warn("Cannot delete blueprint '{}' — artifacts {} have active rolling updates",
                          removedBlueprintId.artifact().asString(),
                          rollingUpdateArtifacts);
                 return;
             }
-            log.info("App blueprint '{}' removed", removedBlueprintId.artifact().asString());
+            log.info("App blueprint '{}' removed",
+                     removedBlueprintId.artifact().asString());
             var artifactsToRemove = blueprints.entrySet().stream()
-                                              .filter(e -> e.getValue().owner().equals(Option.some(removedBlueprintId)))
-                                              .map(Map.Entry::getKey)
-                                              .toList();
+                                                       .filter(e -> e.getValue().owner()
+                                                                              .equals(Option.some(removedBlueprintId)))
+                                                       .map(Map.Entry::getKey)
+                                                       .toList();
             var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
             for (var artifact : artifactsToRemove) {
                 blueprints.remove(artifact);
@@ -638,8 +577,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             submitBatch(consensusCommands);
             SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
         }
-
-        // --- Node role assignment ---
 
         private void assignNodeRole(NodeId addedNode) {
             var currentCoreCount = activeNodes().size();
@@ -659,63 +596,64 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void submitActivationDirective(NodeId targetNode, ActivationDirectiveValue directive) {
             var command = new KVCommand.Put<AetherKey, AetherValue>(ActivationDirectiveKey.activationDirectiveKey(targetNode),
-                                                                     directive);
+                                                                    directive);
             ctx.cluster().apply(List.of(command))
-                         .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
-                                                        targetNode,
-                                                        cause.message()));
+                       .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
+                                                     targetNode,
+                                                     cause.message()));
         }
 
         private boolean shouldPromoteToCore(int currentCoreCount) {
             var effectiveMax = effectiveCoreMax();
-            return effectiveMax == 0 || currentCoreCount < effectiveMax;
+            return effectiveMax == 0 || currentCoreCount <effectiveMax;
         }
 
         private int effectiveCoreMax() {
             return ctx.kvStore().get(ClusterConfigKey.CURRENT)
-                      .flatMap(v -> v instanceof ClusterConfigValue cfg
-                                    ? Option.some(cfg.coreCount())
-                                    : Option.<Integer>none())
-                      .or(ctx.coreMax());
+                              .flatMap(v -> v instanceof ClusterConfigValue cfg
+                                           ? Option.some(cfg.coreCount())
+                                           : Option.<Integer>none())
+                              .or(ctx.coreMax());
         }
-
-        // --- Topology views ---
 
         public List<NodeId> activeNodes() {
             return ctx.snapshotSupplier().get()
-                      .map(snapshot -> snapshot.coreMembers().values().stream()
-                                                .filter(m -> m.lifecycle() != NodeLifecycleState.DECOMMISSIONED)
-                                                .map(CoreMember::nodeId)
-                                                .filter(id -> !ctx.topologyManager().isPassive(id))
-                                                .toList())
-                      .or(List::of);
+                                       .map(snapshot -> snapshot.coreMembers().values()
+                                                                            .stream()
+                                                                            .filter(m -> m.lifecycle() != NodeLifecycleState.DECOMMISSIONED)
+                                                                            .map(CoreMember::nodeId)
+                                                                            .filter(id -> !ctx.topologyManager()
+                                                                                                              .isPassive(id))
+                                                                            .toList())
+                                       .or(List::of);
         }
 
         public Set<NodeId> drainingNodes() {
             return ctx.snapshotSupplier().get()
-                      .map(snapshot -> snapshot.coreMembers().values().stream()
-                                                .filter(m -> m.lifecycle() == NodeLifecycleState.DRAINING)
-                                                .map(CoreMember::nodeId)
-                                                .collect(Collectors.toUnmodifiableSet()))
-                      .or(Set::of);
+                                       .map(snapshot -> snapshot.coreMembers().values()
+                                                                            .stream()
+                                                                            .filter(m -> m.lifecycle() == NodeLifecycleState.DRAINING)
+                                                                            .map(CoreMember::nodeId)
+                                                                            .collect(Collectors.toUnmodifiableSet()))
+                                       .or(Set::of);
         }
 
         private Set<String> activeCommunityIds() {
             return ctx.snapshotSupplier().get()
-                      .map(snapshot -> Set.copyOf(snapshot.communities().keySet()))
-                      .or(Set::of);
+                                       .map(snapshot -> Set.copyOf(snapshot.communities().keySet()))
+                                       .or(Set::of);
         }
 
         private Option<GovernorAnnouncementValue> communityGovernor(String communityId) {
             return ctx.kvStore().get(GovernorAnnouncementKey.forCommunity(communityId))
-                                .filter(GovernorAnnouncementValue.class::isInstance)
-                                .map(GovernorAnnouncementValue.class::cast);
+                              .filter(GovernorAnnouncementValue.class::isInstance)
+                              .map(GovernorAnnouncementValue.class::cast);
         }
 
         private List<NodeId> allocatableNodes() {
             return activeNodes().stream()
-                                .filter(this::isNodeOnDuty)
-                                .toList();
+                              .filter(this::isNodeOnDuty)
+                              .toList();
         }
 
         AllocationPool buildAllocationPool() {
@@ -728,7 +666,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             if (communityIds.isEmpty()) {return Map.of();}
             var result = new HashMap<String, List<NodeId>>();
             communityIds.forEach(communityId -> communityGovernor(communityId).onPresent(announcement -> result.put(communityId,
-                                                                                                                    announcement.members().isEmpty()
+                                                                                                                    announcement.members()
+                                                                                                                                        .isEmpty()
                                                                                                                     ? List.of(announcement.governorId())
                                                                                                                     : announcement.members())));
             return Map.copyOf(result);
@@ -745,14 +684,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private boolean isNodeOnDuty(NodeId nodeId) {
             return ctx.kvStore().get(NodeLifecycleKey.nodeLifecycleKey(nodeId))
-                                .filter(v -> v instanceof NodeLifecycleValue)
-                                .map(v -> (NodeLifecycleValue) v)
-                                .filter(v -> v.state() == NodeLifecycleState.ON_DUTY)
-                                .isPresent();
+                              .filter(v -> v instanceof NodeLifecycleValue)
+                              .map(v -> (NodeLifecycleValue) v)
+                              .filter(v -> v.state() == NodeLifecycleState.ON_DUTY)
+                              .isPresent();
         }
 
         private void handleNodeLifecycleChange(NodeId nodeId, NodeLifecycleState state) {
-            switch (state) {
+            switch (state){
                 case DRAINING -> startDrainEviction(nodeId);
                 case ON_DUTY -> onDutyReturn(nodeId);
                 case DECOMMISSIONED -> cleanupAfterLifecycleDepartedAtomic(nodeId);
@@ -766,20 +705,19 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void cleanupAfterLifecycleDepartedAtomic(NodeId departedNode) {
-            log.info("Snapshot-delta cleanup triggered for departed node {} (lifecycle=DECOMMISSIONED)",
-                     departedNode);
+            log.info("Snapshot-delta cleanup triggered for departed node {} (lifecycle=DECOMMISSIONED)", departedNode);
             var sliceKeysToRemove = sliceStates.keySet().stream()
-                                               .filter(key -> key.nodeId().equals(departedNode))
-                                               .toList();
+                                                      .filter(key -> key.nodeId().equals(departedNode))
+                                                      .toList();
             sliceKeysToRemove.forEach(sliceStates::remove);
             sliceKeysToRemove.forEach(transitionalStateTimestamps::remove);
             var artifactKeysToRemove = findNodeArtifactKeysForNode(departedNode);
             var nodeRouteCommands = cleanupNodeRoutesForNode(departedNode);
             var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
             artifactKeysToRemove.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
-                                .forEach(consensusCommands::add);
+                                       .forEach(consensusCommands::add);
             sliceKeysToRemove.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
-                             .forEach(consensusCommands::add);
+                                    .forEach(consensusCommands::add);
             consensusCommands.addAll(nodeRouteCommands);
             workerNodes.remove(departedNode);
             if (consensusCommands.isEmpty()) {
@@ -792,17 +730,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      sliceKeysToRemove.size(),
                      nodeRouteCommands.size());
             ctx.cluster().apply(consensusCommands)
-                         .onFailure(cause -> log.error("Snapshot-delta cleanup for {} failed: {}",
-                                                        departedNode,
-                                                        cause.message()));
+                       .onFailure(cause -> log.error("Snapshot-delta cleanup for {} failed: {}",
+                                                     departedNode,
+                                                     cause.message()));
         }
 
         private void processActivationDirectivePut(NodeId nodeId, String role) {
-            if (ActivationDirectiveValue.WORKER.equals(role)) {
-                addWorkerNode(nodeId);
-            } else {
-                workerNodes.remove(nodeId);
-            }
+            if (ActivationDirectiveValue.WORKER.equals(role)) {addWorkerNode(nodeId);} else {workerNodes.remove(nodeId);}
         }
 
         private void addWorkerNode(NodeId nodeId) {
@@ -811,8 +745,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 reconcile();
             }
         }
-
-        // --- Drain eviction ---
 
         private void startDrainEviction(NodeId drainingNode) {
             log.info("Starting drain eviction for node {}", drainingNode);
@@ -826,9 +758,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void evictNextSliceFromNode(NodeId drainingNode) {
             if (deactivated.get() || !drainingNodes().contains(drainingNode)) {return;}
             var slicesOnNode = sliceStates.keySet().stream()
-                                          .filter(key -> key.nodeId().equals(drainingNode))
-                                          .filter(key -> isLiveState(sliceStates.getOrDefault(key, SliceState.FAILED)))
-                                          .toList();
+                                                 .filter(key -> key.nodeId().equals(drainingNode))
+                                                 .filter(key -> isLiveState(sliceStates.getOrDefault(key,
+                                                                                                     SliceState.FAILED)))
+                                                 .toList();
             if (slicesOnNode.isEmpty()) {
                 completeDrain(drainingNode);
                 return;
@@ -842,8 +775,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var artifact = originalKey.artifact();
             var drainingNode = originalKey.nodeId();
             var targetNodes = allocatableNodes().stream()
-                                                .filter(n -> !n.equals(drainingNode))
-                                                .collect(Collectors.toSet());
+                                              .filter(n -> !n.equals(drainingNode))
+                                              .collect(Collectors.toSet());
             var allocated = issueAllocationsForNodes(artifact, 1, targetNodes);
             if (allocated == 0) {
                 log.warn("Drain eviction: no allocatable node for replacement of {} (will retry)", artifact);
@@ -858,9 +791,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var artifact = originalKey.artifact();
             var drainingNode = originalKey.nodeId();
             var hasActiveReplacement = sliceStates.entrySet().stream()
-                                                  .filter(e -> e.getKey().artifact().equals(artifact))
-                                                  .filter(e -> !e.getKey().nodeId().equals(drainingNode))
-                                                  .anyMatch(e -> e.getValue() == SliceState.ACTIVE);
+                                                           .filter(e -> e.getKey().artifact()
+                                                                                .equals(artifact))
+                                                           .filter(e -> !e.getKey().nodeId()
+                                                                                 .equals(drainingNode))
+                                                           .anyMatch(e -> e.getValue() == SliceState.ACTIVE);
             if (hasActiveReplacement) {
                 log.info("Drain eviction: replacement ACTIVE for {}, unloading from {}", artifact, drainingNode);
                 issueUnloadCommand(originalKey);
@@ -876,8 +811,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             ctx.healthSignalSink().emit(new HealthSignal.DrainCompleted(drainingNode, Epoch.ZERO));
         }
 
-        // --- Slice target / app blueprint changes ---
-
         private void handleSliceTargetChange(SliceTargetKey key, SliceTargetValue value) {
             var artifactBase = key.artifactBase();
             var newVersion = value.currentVersion();
@@ -885,8 +818,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var desiredInstances = value.targetInstances();
             if (!activeRoutings.contains(artifactBase)) {
                 var oldVersions = blueprints.keySet().stream()
-                                            .filter(a -> artifactBase.matches(a) && !a.version().equals(newVersion))
-                                            .toList();
+                                                   .filter(a -> artifactBase.matches(a) && !a.version()
+                                                                                                     .equals(newVersion))
+                                                   .toList();
                 for (var oldArtifact : oldVersions) {
                     log.info("Removing old version {} (new version: {})", oldArtifact, newArtifact);
                     blueprints.remove(oldArtifact);
@@ -894,10 +828,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 }
             }
             var minInstances = value.effectiveMinInstances();
-            log.info("Slice target changed for {}: {} instances (min: {})",
-                     newArtifact,
-                     desiredInstances,
-                     minInstances);
+            log.info("Slice target changed for {}: {} instances (min: {})", newArtifact, desiredInstances, minInstances);
             blueprints.put(newArtifact,
                            Blueprint.blueprint(newArtifact, desiredInstances, minInstances, value.owningBlueprint()));
             issueAllocationCommandsWithPlacement(newArtifact, desiredInstances, value.effectivePlacement());
@@ -924,15 +855,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 permanentlyFailed.remove(artifact);
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
-                                                    slice.instances(),
-                                                    slice.minAvailable(),
-                                                    Option.some(expanded.id()),
-                                                    schemaRequired));
+                                                   slice.instances(),
+                                                   slice.minAvailable(),
+                                                   Option.some(expanded.id()),
+                                                   schemaRequired));
                 consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
-                                                           SliceTargetValue.sliceTargetValue(artifact.version(),
-                                                                                              slice.instances(),
-                                                                                              slice.minAvailable(),
-                                                                                              Option.some(expanded.id()))));
+                                                          SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                                                            slice.instances(),
+                                                                                            slice.minAvailable(),
+                                                                                            Option.some(expanded.id()))));
             }
             collectStreamMetadataCommands(expanded.id(), consensusCommands);
             submitBatch(consensusCommands);
@@ -955,8 +886,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private static void logConflict(ExpandedBlueprint expanded, Artifact artifact, Option<BlueprintId> conflict) {
-            log.error("Blueprint '{}' rejected — artifact {} already owned by blueprint '{}'. "
-                      + "Deploy shared services as independent blueprints.",
+            log.error("Blueprint '{}' rejected — artifact {} already owned by blueprint '{}'. " + "Deploy shared services as independent blueprints.",
                       expanded.id().asString(),
                       artifact,
                       conflict.map(BlueprintId::asString).or(""));
@@ -964,45 +894,44 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private boolean resolveSchemaRequired(BlueprintId blueprintId) {
             var resourcesKey = BlueprintResourcesKey.blueprintResourcesKey(blueprintId);
-            return ctx.kvStore().get(resourcesKey).filter(BlueprintResourcesValue.class::isInstance)
-                                .map(BlueprintResourcesValue.class::cast)
-                                .map(BlueprintResourcesValue::tomlContent)
-                                .flatMap(toml -> BlueprintParser.parse(toml).option())
-                                .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
-                                .map(DeploymentConfig::schemaRequired)
-                                .or(true);
+            return ctx.kvStore().get(resourcesKey)
+                              .filter(BlueprintResourcesValue.class::isInstance)
+                              .map(BlueprintResourcesValue.class::cast)
+                              .map(BlueprintResourcesValue::tomlContent)
+                              .flatMap(toml -> BlueprintParser.parse(toml).option())
+                              .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
+                              .map(DeploymentConfig::schemaRequired)
+                              .or(true);
         }
 
-        @Contract
-        private void collectStreamMetadataCommands(BlueprintId blueprintId, List<KVCommand<AetherKey>> commands) {
+        @Contract private void collectStreamMetadataCommands(BlueprintId blueprintId,
+                                                             List<KVCommand<AetherKey>> commands) {
             log.trace("Stream metadata collection hook for blueprint '{}'", blueprintId.asString());
         }
 
-        @SuppressWarnings("unused")
-        private KVCommand<AetherKey> buildStreamMetadataCommand(String streamName, BlueprintId blueprintId) {
+        @SuppressWarnings("unused") private KVCommand<AetherKey> buildStreamMetadataCommand(String streamName,
+                                                                                            BlueprintId blueprintId) {
             var key = StreamMetadataKey.streamMetadataKey(streamName);
             var value = StreamMetadataValue.streamMetadataValue(streamName,
-                                                                 4,
-                                                                 "count",
-                                                                 "100000",
-                                                                 "65536",
-                                                                 "block",
-                                                                 blueprintId.asString());
+                                                                4,
+                                                                "count",
+                                                                "100000",
+                                                                "65536",
+                                                                "block",
+                                                                blueprintId.asString());
             return new KVCommand.Put<>(key, value);
         }
 
         private Option<ExpandedBlueprint> capturePreviousBlueprint(ExpandedBlueprint expanded) {
-            if (ctx.atomicity() != DeploymentAtomicity.ALL_OR_NOTHING || restoringBlueprints.contains(expanded.id())) {
-                return Option.empty();
-            }
+            if (ctx.atomicity() != DeploymentAtomicity.ALL_OR_NOTHING || restoringBlueprints.contains(expanded.id())) {return Option.empty();}
             return Option.option(inFlightBlueprints.get(expanded.id())).map(InFlightBlueprint::expanded);
         }
 
         private void trackInFlightBlueprint(ExpandedBlueprint expanded, Option<ExpandedBlueprint> previousExpanded) {
-            if (ctx.atomicity() == DeploymentAtomicity.ALL_OR_NOTHING && !restoringBlueprints.contains(expanded.id())) {
-                inFlightBlueprints.put(expanded.id(),
-                                        InFlightBlueprint.inFlightBlueprint(expanded.id(), expanded, previousExpanded));
-            }
+            if (ctx.atomicity() == DeploymentAtomicity.ALL_OR_NOTHING && !restoringBlueprints.contains(expanded.id())) {inFlightBlueprints.put(expanded.id(),
+                                                                                                                                               InFlightBlueprint.inFlightBlueprint(expanded.id(),
+                                                                                                                                                                                   expanded,
+                                                                                                                                                                                   previousExpanded));}
         }
 
         private void buildDependencyMap(ExpandedBlueprint expanded) {
@@ -1022,15 +951,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             activeRoutings.remove(artifactBase);
             log.info("Rolling update completed for {}, cleaning up old versions", artifactBase);
             var targetKey = SliceTargetKey.sliceTargetKey(artifactBase);
-            ctx.kvStore().get(targetKey).filter(v -> v instanceof SliceTargetValue)
-                         .map(v -> (SliceTargetValue) v)
-                         .onPresent(targetValue -> removeNonTargetVersions(artifactBase, targetValue.currentVersion()));
+            ctx.kvStore().get(targetKey)
+                       .filter(v -> v instanceof SliceTargetValue)
+                       .map(v -> (SliceTargetValue) v)
+                       .onPresent(targetValue -> removeNonTargetVersions(artifactBase,
+                                                                         targetValue.currentVersion()));
         }
 
         private void removeNonTargetVersions(ArtifactBase artifactBase, Version currentVersion) {
             var oldVersions = blueprints.keySet().stream()
-                                        .filter(a -> artifactBase.matches(a) && !a.version().equals(currentVersion))
-                                        .toList();
+                                               .filter(a -> artifactBase.matches(a) && !a.version()
+                                                                                                 .equals(currentVersion))
+                                               .toList();
             for (var oldArtifact : oldVersions) {
                 log.info("Removing old version {} after rolling update completion", oldArtifact);
                 blueprints.remove(oldArtifact);
@@ -1063,11 +995,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             sliceStates.remove(sliceKey);
             transitionalStateTimestamps.remove(sliceKey);
             issueUnloadCommand(sliceKey);
-            if (sliceNodeValue.fatal()) {
-                handleDeterministicFailure(sliceKey, failureReason);
-            } else {
-                handleTransientFailure(sliceKey, failureReason);
-            }
+            if (sliceNodeValue.fatal()) {handleDeterministicFailure(sliceKey, failureReason);} else {handleTransientFailure(sliceKey,
+                                                                                                                            failureReason);}
         }
 
         private void handleDeterministicFailure(SliceNodeKey sliceKey, String failureReason) {
@@ -1078,11 +1007,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       artifact,
                       sliceKey.nodeId(),
                       failureReason);
-            ctx.router().route(DeploymentFailed.deploymentFailed(artifact,
-                                                                  sliceKey.nodeId(),
-                                                                  SliceState.FAILED,
-                                                                  failureReason,
-                                                                  ctx.nowMs()));
+            ctx.router()
+                      .route(DeploymentFailed.deploymentFailed(artifact,
+                                                               sliceKey.nodeId(),
+                                                               SliceState.FAILED,
+                                                               failureReason,
+                                                               ctx.nowMs()));
             if (ctx.atomicity() == DeploymentAtomicity.ALL_OR_NOTHING) {rollbackBlueprintForArtifact(artifact);}
         }
 
@@ -1092,7 +1022,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 logMaxRetriesExceeded(sliceKey, failureReason);
                 return;
             }
-            var delaySeconds = Math.min(1L << (retryCount - 1), MAX_RETRY_DELAY_SECONDS);
+            var delaySeconds = Math.min(1L<<(retryCount - 1), MAX_RETRY_DELAY_SECONDS);
             var jitteredMs = JitterUtil.applyJitter(delaySeconds * 1000L,
                                                     JitterUtil.MIN_FACTOR_DEFAULT,
                                                     JitterUtil.MAX_FACTOR_DEFAULT);
@@ -1114,27 +1044,27 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       sliceKey.nodeId(),
                       failureReason);
             retryCounters.remove(sliceKey.asString());
-            ctx.router().route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
-                                                                  sliceKey.nodeId(),
-                                                                  SliceState.FAILED,
-                                                                  failureReason,
-                                                                  ctx.nowMs()));
+            ctx.router()
+                      .route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
+                                                               sliceKey.nodeId(),
+                                                               SliceState.FAILED,
+                                                               failureReason,
+                                                               ctx.nowMs()));
         }
 
         private boolean areSchemasReady(SliceNodeKey sliceKey) {
             var blueprint = blueprints.get(sliceKey.artifact());
             if (blueprint != null && !blueprint.schemaRequired()) {return true;}
             var schemasReady = new AtomicBoolean(true);
-            ctx.kvStore().forEach(SchemaVersionKey.class,
-                                   SchemaVersionValue.class,
-                                   (_, value) -> checkSchemaBlocking(value, schemasReady));
+            ctx.kvStore()
+                       .forEach(SchemaVersionKey.class,
+                                SchemaVersionValue.class,
+                                (_, value) -> checkSchemaBlocking(value, schemasReady));
             return schemasReady.get();
         }
 
         private static void checkSchemaBlocking(SchemaVersionValue value, AtomicBoolean schemasReady) {
-            if (value.status() == SchemaStatus.PENDING || value.status() == SchemaStatus.MIGRATING) {
-                schemasReady.set(false);
-            }
+            if (value.status() == SchemaStatus.PENDING || value.status() == SchemaStatus.MIGRATING) {schemasReady.set(false);}
         }
 
         private void tryActivateIfDependenciesReady(SliceNodeKey sliceKey) {
@@ -1152,11 +1082,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             if (allDependenciesActive(dependencies)) {
                 log.debug("All {} dependencies of {} are ACTIVE, activating", dependencies.size(), artifact);
                 issueActivateCommand(sliceKey);
-            } else {
-                log.debug("Slice {} waiting for dependencies to become ACTIVE: {}",
-                          artifact,
-                          dependencies.stream().filter(dep -> !isDependencyActive(dep)).toList());
-            }
+            } else {log.debug("Slice {} waiting for dependencies to become ACTIVE: {}",
+                              artifact,
+                              dependencies.stream().filter(dep -> !isDependencyActive(dep))
+                                                 .toList());}
         }
 
         private boolean allDependenciesActive(Set<Artifact> dependencies) {
@@ -1165,16 +1094,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private boolean isDependencyActive(Artifact dependency) {
             return sliceStates.entrySet().stream()
-                              .anyMatch(entry -> entry.getKey().artifact().equals(dependency)
-                                                 && entry.getValue() == SliceState.ACTIVE);
+                                       .anyMatch(entry -> entry.getKey().artifact()
+                                                                      .equals(dependency) && entry.getValue() == SliceState.ACTIVE);
         }
 
         private void activateDependentSlices(Artifact activatedArtifact) {
             sliceStates.entrySet().stream()
-                       .filter(entry -> entry.getValue() == SliceState.LOADED)
-                       .map(Map.Entry::getKey)
-                       .filter(key -> dependsOn(key.artifact(), activatedArtifact))
-                       .forEach(this::tryActivateIfDependenciesReady);
+                                .filter(entry -> entry.getValue() == SliceState.LOADED)
+                                .map(Map.Entry::getKey)
+                                .filter(key -> dependsOn(key.artifact(),
+                                                         activatedArtifact))
+                                .forEach(this::tryActivateIfDependenciesReady);
         }
 
         private boolean dependsOn(Artifact dependent, Artifact dependency) {
@@ -1183,52 +1113,53 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void issueActivateCommand(SliceNodeKey sliceKey) {
             log.debug("Issuing ACTIVATE command for {}", sliceKey);
-            applyStateWrite(sliceKey, SliceState.ACTIVATE)
-                    .onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
-                                                   sliceKey,
-                                                   cause.message()));
+            applyStateWrite(sliceKey, SliceState.ACTIVATE).onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
+                                                                                        sliceKey,
+                                                                                        cause.message()));
         }
 
         private void issueLoadCommand(SliceNodeKey sliceKey) {
             log.debug("Issuing LOAD command for {}", sliceKey);
             var timestamp = ctx.nowMs();
-            applyStateWrite(sliceKey, SliceState.LOAD)
-                    .withSuccess(_ -> ctx.router().route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
-                                                                                              sliceKey.nodeId(),
-                                                                                              timestamp)))
-                    .onFailure(cause -> handleSliceNodeWriteFailure(sliceKey, cause));
+            applyStateWrite(sliceKey, SliceState.LOAD).withSuccess(_ -> ctx.router()
+                                                                                  .route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
+                                                                                                                             sliceKey.nodeId(),
+                                                                                                                             timestamp)))
+                           .onFailure(cause -> handleSliceNodeWriteFailure(sliceKey, cause));
         }
 
         private void issueUnloadCommand(SliceNodeKey sliceKey) {
             log.debug("Issuing UNLOAD command for {}", sliceKey);
-            applyStateWrite(sliceKey, SliceState.UNLOAD)
-                    .onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
-                                                   sliceKey,
-                                                   cause.message()));
+            applyStateWrite(sliceKey, SliceState.UNLOAD).onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
+                                                                                      sliceKey,
+                                                                                      cause.message()));
         }
 
         private Promise<Unit> applyStateWrite(SliceNodeKey sliceKey, SliceState state) {
-            // Stamp transitionedAt with the leader's nowMs() so a subsequent leader can re-derive
-            // the stuck-slice timer without resetting it (Theme K #1).
-            var transitionedAt = state.isTransitional() ? ctx.nowMs() : 0L;
+            var transitionedAt = state.isTransitional()
+                                ? ctx.nowMs()
+                                : 0L;
             KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
-                                                                                                    sliceKey.artifact()),
-                                                                    NodeArtifactValue.nodeArtifactValue(state, transitionedAt));
-            return ctx.cluster().apply(List.of(putArtifact)).mapToUnit();
+                                                                                                   sliceKey.artifact()),
+                                                                   NodeArtifactValue.nodeArtifactValue(state,
+                                                                                                       transitionedAt));
+            return ctx.cluster().apply(List.of(putArtifact))
+                              .mapToUnit();
         }
 
         private void removeNodeArtifactKey(SliceNodeKey sliceKey) {
             KVCommand<AetherKey> removeArtifact = new KVCommand.Remove<>(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
-                                                                                                          sliceKey.artifact()));
+                                                                                                         sliceKey.artifact()));
             ctx.cluster().apply(List.of(removeArtifact))
-                         .onFailure(cause -> log.error("Failed to remove node-artifact-key for {}: {}",
-                                                        sliceKey,
-                                                        cause.message()));
+                       .onFailure(cause -> log.error("Failed to remove node-artifact-key for {}: {}",
+                                                     sliceKey,
+                                                     cause.message()));
         }
 
         private void submitBatch(List<KVCommand<AetherKey>> commands) {
             if (commands.isEmpty()) {return;}
-            ctx.cluster().apply(commands).onFailure(cause -> handleBatchFailure(cause, commands));
+            ctx.cluster().apply(commands)
+                       .onFailure(cause -> handleBatchFailure(cause, commands));
         }
 
         private void handleBatchFailure(Cause cause, List<KVCommand<AetherKey>> commands) {
@@ -1249,8 +1180,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private Promise<Unit> handleNodeRemoval(NodeId removedNode) {
             rebuildSliceStateFromKVStoreEntries();
             var sliceKeysToRemove = sliceStates.keySet().stream()
-                                               .filter(key -> key.nodeId().equals(removedNode))
-                                               .toList();
+                                                      .filter(key -> key.nodeId().equals(removedNode))
+                                                      .toList();
             sliceKeysToRemove.forEach(sliceStates::remove);
             sliceKeysToRemove.forEach(transitionalStateTimestamps::remove);
             sliceKeysToRemove.forEach(this::removeNodeArtifactKey);
@@ -1258,7 +1189,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var nodeRouteCommands = cleanupNodeRoutesForNode(removedNode);
             List<KVCommand<AetherKey>> consensusCommands = new ArrayList<>();
             artifactKeysToRemove.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
-                                .forEach(consensusCommands::add);
+                                       .forEach(consensusCommands::add);
             consensusCommands.addAll(nodeRouteCommands);
             consensusCommands.add(new KVCommand.Remove<>(NodeLifecycleKey.nodeLifecycleKey(removedNode)));
             workerNodes.remove(removedNode);
@@ -1267,118 +1198,113 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      artifactKeysToRemove.size(),
                      nodeRouteCommands.size(),
                      removedNode);
-            if (!consensusCommands.isEmpty()) {
-                return ctx.cluster().apply(consensusCommands).mapToUnit()
-                          .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
-                                                         removedNode,
-                                                         cause.message()));
-            }
+            if (!consensusCommands.isEmpty()) {return ctx.cluster().apply(consensusCommands)
+                                                                 .mapToUnit()
+                                                                 .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
+                                                                                               removedNode,
+                                                                                               cause.message()));}
             return Promise.unitPromise();
         }
 
         private List<NodeArtifactKey> findNodeArtifactKeysForNode(NodeId nodeId) {
             var result = new ArrayList<NodeArtifactKey>();
-            ctx.kvStore().forEach(NodeArtifactKey.class,
-                                   NodeArtifactValue.class,
-                                   (key, _) -> collectNodeArtifactKeyForNode(result, key, nodeId));
+            ctx.kvStore()
+                       .forEach(NodeArtifactKey.class,
+                                NodeArtifactValue.class,
+                                (key, _) -> collectNodeArtifactKeyForNode(result, key, nodeId));
             return result;
         }
 
-        private void collectNodeArtifactKeyForNode(List<NodeArtifactKey> result,
-                                                    NodeArtifactKey key,
-                                                    NodeId nodeId) {
+        private void collectNodeArtifactKeyForNode(List<NodeArtifactKey> result, NodeArtifactKey key, NodeId nodeId) {
             if (key.nodeId().equals(nodeId)) {result.add(key);}
         }
 
         private List<KVCommand<AetherKey>> cleanupNodeRoutesForNode(NodeId removedNode) {
             var commands = new ArrayList<KVCommand<AetherKey>>();
-            ctx.kvStore().forEach(NodeRoutesKey.class,
-                                   AetherValue.NodeRoutesValue.class,
-                                   (key, _) -> collectNodeRoutesKeyForNode(commands, key, removedNode));
+            ctx.kvStore()
+                       .forEach(NodeRoutesKey.class,
+                                AetherValue.NodeRoutesValue.class,
+                                (key, _) -> collectNodeRoutesKeyForNode(commands, key, removedNode));
             return commands;
         }
 
         private void collectNodeRoutesKeyForNode(List<KVCommand<AetherKey>> commands,
-                                                  NodeRoutesKey key,
-                                                  NodeId removedNode) {
+                                                 NodeRoutesKey key,
+                                                 NodeId removedNode) {
             if (key.nodeId().equals(removedNode)) {commands.add(new KVCommand.Remove<>(key));}
         }
 
         @Contract public void cleanupStaleNodeRoutes() {
             var currentNodes = new HashSet<>(activeNodes());
             var commands = new ArrayList<KVCommand<AetherKey>>();
-            ctx.kvStore().forEach(NodeRoutesKey.class,
-                                   AetherValue.NodeRoutesValue.class,
-                                   (key, _) -> collectStaleNodeRoutesKey(commands, key, currentNodes));
+            ctx.kvStore()
+                       .forEach(NodeRoutesKey.class,
+                                AetherValue.NodeRoutesValue.class,
+                                (key, _) -> collectStaleNodeRoutesKey(commands, key, currentNodes));
             if (!commands.isEmpty()) {
                 log.debug("Cleaning up {} stale node-routes entries", commands.size());
                 ctx.cluster().apply(commands)
-                             .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
-                                                            cause.message()));
+                           .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
+                                                         cause.message()));
             }
         }
 
         private void collectStaleNodeRoutesKey(List<KVCommand<AetherKey>> commands,
-                                                NodeRoutesKey key,
-                                                Set<NodeId> currentNodes) {
+                                               NodeRoutesKey key,
+                                               Set<NodeId> currentNodes) {
             if (!currentNodes.contains(key.nodeId())) {commands.add(new KVCommand.Remove<>(key));}
         }
 
         @Contract public void cleanupStaleSliceEntries() {
             var currentNodes = new HashSet<>(activeNodes());
             var staleKeys = sliceStates.keySet().stream()
-                                       .filter(key -> !currentNodes.contains(key.nodeId()))
-                                       .toList();
+                                              .filter(key -> !currentNodes.contains(key.nodeId()))
+                                              .toList();
             if (staleKeys.isEmpty()) {return;}
             staleKeys.forEach(sliceStates::remove);
             List<KVCommand<AetherKey>> commands = staleKeys.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
-                                                            .toList();
+                                                                  .toList();
             log.info("Cleaning up {} stale slice entries", staleKeys.size());
             ctx.cluster().apply(commands)
-                         .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
-                                                        cause.message()));
+                       .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
+                                                     cause.message()));
         }
 
         @Contract public void cleanupStaleNodeArtifactEntries() {
             var currentNodes = new HashSet<>(activeNodes());
             var staleKeys = new ArrayList<NodeArtifactKey>();
-            ctx.kvStore().forEach(NodeArtifactKey.class,
-                                   NodeArtifactValue.class,
-                                   (key, _) -> collectStaleNodeArtifactKey(staleKeys, key, currentNodes));
+            ctx.kvStore()
+                       .forEach(NodeArtifactKey.class,
+                                NodeArtifactValue.class,
+                                (key, _) -> collectStaleNodeArtifactKey(staleKeys, key, currentNodes));
             if (staleKeys.isEmpty()) {return;}
             List<KVCommand<AetherKey>> commands = staleKeys.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
-                                                            .toList();
+                                                                  .toList();
             log.info("Cleaning up {} stale node-artifact entries", staleKeys.size());
             ctx.cluster().apply(commands)
-                         .onFailure(cause -> log.error("Failed to clean up stale node-artifact entries: {}",
-                                                        cause.message()));
+                       .onFailure(cause -> log.error("Failed to clean up stale node-artifact entries: {}",
+                                                     cause.message()));
         }
 
         private void collectStaleNodeArtifactKey(List<NodeArtifactKey> result,
-                                                  NodeArtifactKey key,
-                                                  Set<NodeId> currentNodes) {
+                                                 NodeArtifactKey key,
+                                                 Set<NodeId> currentNodes) {
             if (!currentNodes.contains(key.nodeId())) {result.add(key);}
         }
 
         private void cleanupOrphanedSliceEntries() {
             var orphanedEntries = sliceStates.entrySet().stream()
-                                             .filter(entry -> !blueprints.containsKey(entry.getKey().artifact()))
-                                             .toList();
+                                                      .filter(entry -> !blueprints.containsKey(entry.getKey().artifact()))
+                                                      .toList();
             if (orphanedEntries.isEmpty()) {return;}
             for (var entry : orphanedEntries) {
                 var key = entry.getKey();
                 var state = entry.getValue();
                 sliceStates.remove(key);
-                if (state == SliceState.UNLOAD || state == SliceState.UNLOADING) {
-                    removeNodeArtifactKey(key);
-                } else {
-                    issueUnloadCommand(key);
-                }
+                if (state == SliceState.UNLOAD || state == SliceState.UNLOADING) {removeNodeArtifactKey(key);} else {issueUnloadCommand(key);}
             }
             log.info("Cleaning up {} orphaned slice entries (no matching blueprint)", orphanedEntries.size());
         }
-
-        // --- Allocation ---
 
         private void issueAllocationCommands(Artifact artifact, int desiredInstances) {
             if (hasNoAllocatableNodes(artifact)) {return;}
@@ -1396,8 +1322,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void logAllocationAttempt(Artifact artifact,
-                                           int desiredInstances,
-                                           List<SliceNodeKey> currentInstances) {
+                                          int desiredInstances,
+                                          List<SliceNodeKey> currentInstances) {
             log.debug("Allocating {} instances of {} (current: {}) across {} allocatable nodes",
                       desiredInstances,
                       artifact,
@@ -1406,30 +1332,27 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void issueAdjustmentCommands(Artifact artifact,
-                                              int desiredInstances,
-                                              List<SliceNodeKey> currentInstances) {
+                                             int desiredInstances,
+                                             List<SliceNodeKey> currentInstances) {
             var currentCount = currentInstances.size();
-            if (desiredInstances > currentCount) {
-                issueScaleUpCommands(artifact, desiredInstances - currentCount, currentInstances);
-            } else if (desiredInstances < currentCount) {
-                issueScaleDownCommands(artifact, currentCount - desiredInstances, currentInstances);
-            }
+            if (desiredInstances > currentCount) {issueScaleUpCommands(artifact,
+                                                                       desiredInstances - currentCount,
+                                                                       currentInstances);} else if (desiredInstances <currentCount) {issueScaleDownCommands(artifact,
+                                                                                                                                                            currentCount - desiredInstances,
+                                                                                                                                                            currentInstances);}
         }
 
-        private void issueScaleUpCommands(Artifact artifact,
-                                           int toAdd,
-                                           List<SliceNodeKey> existingInstances) {
+        private void issueScaleUpCommands(Artifact artifact, int toAdd, List<SliceNodeKey> existingInstances) {
             var nodes = allocatableNodes();
             log.debug("issueScaleUpCommands: artifact={}, toAdd={}, allocatableNodes={}, nodeIds={}",
                       artifact,
                       toAdd,
                       nodes.size(),
                       nodes);
-            var nodesWithInstances = existingInstances.stream().map(SliceNodeKey::nodeId).collect(Collectors.toSet());
+            var nodesWithInstances = existingInstances.stream().map(SliceNodeKey::nodeId)
+                                                             .collect(Collectors.toSet());
             var trulyEmptyNodes = findTrulyEmptyNodes();
-            log.debug("issueScaleUpCommands: found {} truly empty nodes: {}",
-                      trulyEmptyNodes.size(),
-                      trulyEmptyNodes);
+            log.debug("issueScaleUpCommands: found {} truly empty nodes: {}", trulyEmptyNodes.size(), trulyEmptyNodes);
             var allocated = issueAllocationsForNodes(artifact, toAdd, trulyEmptyNodes);
             log.debug("issueScaleUpCommands: allocated {} instances to truly empty nodes", allocated);
             var remaining = toAdd - allocated;
@@ -1444,11 +1367,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private Set<NodeId> findTrulyEmptyNodes() {
             var nodesWithAnySlice = sliceStates.keySet().stream()
-                                                .map(SliceNodeKey::nodeId)
-                                                .collect(Collectors.toSet());
+                                                      .map(SliceNodeKey::nodeId)
+                                                      .collect(Collectors.toSet());
             return allocatableNodes().stream()
-                                     .filter(node -> !nodesWithAnySlice.contains(node))
-                                     .collect(Collectors.toSet());
+                                   .filter(node -> !nodesWithAnySlice.contains(node))
+                                   .collect(Collectors.toSet());
         }
 
         private int issueAllocationsForNodes(Artifact artifact, int toAdd, Set<NodeId> targetNodes) {
@@ -1465,7 +1388,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var nodeCount = nodes.size();
             if (nodeCount == 0) {return 0;}
             var allocated = 0;
-            for (var i = 0; i < nodeCount && allocated < toAdd; i++) {
+            for (var i = 0;i <nodeCount && allocated <toAdd;i++) {
                 var nodeIndex = Math.floorMod(allocationIndex.getAndIncrement(), nodeCount);
                 var node = nodes.get(nodeIndex);
                 if (!nodesWithInstances.contains(node) && tryAllocate(artifact, node)) {allocated++;}
@@ -1500,76 +1423,69 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var allocated = 0;
             var attempts = 0;
             var maxAttempts = nodeCount * 2;
-            while (allocated < remaining && attempts < maxAttempts) {
+            while (allocated <remaining && attempts <maxAttempts) {
                 var nodeIndex = Math.floorMod(allocationIndex.getAndIncrement(), nodeCount);
                 var node = nodes.get(nodeIndex);
                 if (tryAllocate(artifact, node)) {allocated++;}
                 attempts++;
             }
-            if (allocated < remaining) {
-                log.warn("Could only allocate {} of {} requested instances for {} (not enough nodes without instances)",
-                         allocated,
-                         remaining,
-                         artifact);
-            }
+            if (allocated <remaining) {log.warn("Could only allocate {} of {} requested instances for {} (not enough nodes without instances)",
+                                                allocated,
+                                                remaining,
+                                                artifact);}
         }
 
-        private void issueScaleDownCommands(Artifact artifact,
-                                             int toRemove,
-                                             List<SliceNodeKey> existingInstances) {
-            var minInstances = Option.option(blueprints.get(artifact)).map(Blueprint::minInstances).or(1);
+        private void issueScaleDownCommands(Artifact artifact, int toRemove, List<SliceNodeKey> existingInstances) {
+            var minInstances = Option.option(blueprints.get(artifact)).map(Blueprint::minInstances)
+                                            .or(1);
             var activeCount = existingInstances.size();
             var maxRemovable = Math.max(0, activeCount - minInstances);
             var actualRemove = Math.min(toRemove, maxRemovable);
-            if (actualRemove < toRemove) {
-                log.info("Budget enforcement: capping scale-down of {} from {} to {} (min: {}, active: {})",
-                         artifact,
-                         toRemove,
-                         actualRemove,
-                         minInstances,
-                         activeCount);
-            }
+            if (actualRemove <toRemove) {log.info("Budget enforcement: capping scale-down of {} from {} to {} (min: {}, active: {})",
+                                                  artifact,
+                                                  toRemove,
+                                                  actualRemove,
+                                                  minInstances,
+                                                  activeCount);}
             if (actualRemove == 0) {return;}
             existingInstances.stream().skip(Math.max(0, activeCount - actualRemove))
-                             .forEach(this::issueUnloadCommand);
+                                    .forEach(this::issueUnloadCommand);
         }
 
         private List<SliceNodeKey> getCurrentInstances(Artifact artifact) {
             var currentNodes = activeNodes();
             return sliceStates.entrySet().stream()
-                              .filter(entry -> entry.getKey().artifact().equals(artifact))
-                              .filter(entry -> currentNodes.contains(entry.getKey().nodeId()))
-                              .filter(entry -> isLiveState(entry.getValue()))
-                              .map(Map.Entry::getKey)
-                              .toList();
+                                       .filter(entry -> entry.getKey().artifact()
+                                                                    .equals(artifact))
+                                       .filter(entry -> currentNodes.contains(entry.getKey().nodeId()))
+                                       .filter(entry -> isLiveState(entry.getValue()))
+                                       .map(Map.Entry::getKey)
+                                       .toList();
         }
 
         private boolean isLiveState(SliceState state) {
             return state != SliceState.FAILED && state != SliceState.UNLOAD && state != SliceState.UNLOADING;
         }
 
-        private void updateTransitionalTimestamp(SliceNodeKey sliceKey, SliceState state, long persistedTransitionedAt) {
+        private void updateTransitionalTimestamp(SliceNodeKey sliceKey,
+                                                 SliceState state,
+                                                 long persistedTransitionedAt) {
             if (state.isTransitional()) {
-                // Use persisted timestamp when available so a leader-handoff preserves the
-                // stuck-detection clock; fall back to nowMs() for legacy atoms (transitionedAt=0L)
-                // — same conservative semantics as before the schema bump.
                 var effectiveTimestamp = persistedTransitionedAt > 0L
-                                         ? persistedTransitionedAt
-                                         : ctx.nowMs();
+                                        ? persistedTransitionedAt
+                                        : ctx.nowMs();
                 transitionalStateTimestamps.putIfAbsent(sliceKey, effectiveTimestamp);
-            } else {
-                transitionalStateTimestamps.remove(sliceKey);
-            }
+            } else {transitionalStateTimestamps.remove(sliceKey);}
         }
 
         private void detectStuckTransitionalStates() {
             var now = ctx.nowMs();
             var stuckEntries = transitionalStateTimestamps.entrySet().stream()
-                                                          .filter(entry -> isStuckTransitional(entry.getKey(),
-                                                                                                entry.getValue(),
-                                                                                                now))
-                                                          .map(Map.Entry::getKey)
-                                                          .toList();
+                                                                   .filter(entry -> isStuckTransitional(entry.getKey(),
+                                                                                                        entry.getValue(),
+                                                                                                        now))
+                                                                   .map(Map.Entry::getKey)
+                                                                   .toList();
             if (stuckEntries.isEmpty()) {return;}
             log.warn("Detected {} slices stuck in transitional states", stuckEntries.size());
             stuckEntries.forEach(this::issueStuckRemediationCommand);
@@ -1577,9 +1493,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private boolean isStuckTransitional(SliceNodeKey sliceKey, long enteredAt, long now) {
             return Option.option(sliceStates.get(sliceKey)).filter(SliceState::isTransitional)
-                         .flatMap(SliceState::timeout)
-                         .filter(timeout -> (now - enteredAt) > timeout.millis() * STUCK_TIMEOUT_MULTIPLIER)
-                         .isPresent();
+                                .flatMap(SliceState::timeout)
+                                .filter(timeout -> (now - enteredAt) > timeout.millis() * STUCK_TIMEOUT_MULTIPLIER)
+                                .isPresent();
         }
 
         private void issueStuckRemediationCommand(SliceNodeKey sliceKey) {
@@ -1588,7 +1504,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void executeStuckRemediation(SliceNodeKey sliceKey, SliceState state) {
             transitionalStateTimestamps.remove(sliceKey);
-            switch (state) {
+            switch (state){
                 case LOADING, ACTIVATING -> resetStuckLoadingSlice(sliceKey, state);
                 case DEACTIVATING, UNLOADING -> forceRemoveStuckSlice(sliceKey, state);
                 default -> {}
@@ -1605,10 +1521,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void forceRemoveStuckSlice(SliceNodeKey sliceKey, SliceState state) {
-            log.warn("Force-removing stuck {} slice {} on {} from DHT",
-                     state,
-                     sliceKey.artifact(),
-                     sliceKey.nodeId());
+            log.warn("Force-removing stuck {} slice {} on {} from DHT", state, sliceKey.artifact(), sliceKey.nodeId());
             sliceStates.remove(sliceKey);
             removeNodeArtifactKey(sliceKey);
         }
@@ -1618,9 +1531,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             removeWorkerDirective(artifact);
         }
 
-        private void issueAllocationCommandsWithPlacement(Artifact artifact,
-                                                           int desiredInstances,
-                                                           String placement) {
+        private void issueAllocationCommandsWithPlacement(Artifact artifact, int desiredInstances, String placement) {
             var policy = PlacementPolicy.valueOf(placement);
             var pool = buildAllocationPool();
             var targetNodes = pool.nodesForPolicy(policy);
@@ -1629,80 +1540,78 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 issueAllocationCommands(artifact, desiredInstances);
                 return;
             }
-            if (policy != PlacementPolicy.CORE_ONLY && pool.hasWorkers()) {
-                distributeWorkerOrCommunity(artifact, desiredInstances, placement, pool);
-            }
-            if (policy == PlacementPolicy.CORE_ONLY
-                || (policy == PlacementPolicy.WORKERS_PREFERRED && !pool.hasWorkers())
-                || policy == PlacementPolicy.ALL) {
-                issueAllocationCommands(artifact, desiredInstances);
-            }
+            if (policy != PlacementPolicy.CORE_ONLY && pool.hasWorkers()) {distributeWorkerOrCommunity(artifact,
+                                                                                                       desiredInstances,
+                                                                                                       placement,
+                                                                                                       pool);}
+            if (policy == PlacementPolicy.CORE_ONLY || (policy == PlacementPolicy.WORKERS_PREFERRED && !pool.hasWorkers()) || policy == PlacementPolicy.ALL) {issueAllocationCommands(artifact,
+                                                                                                                                                                                      desiredInstances);}
         }
 
         private void distributeWorkerOrCommunity(Artifact artifact,
-                                                  int desiredInstances,
-                                                  String placement,
-                                                  AllocationPool pool) {
-            if (pool.hasCommunities()) {
-                distributeToCommunities(artifact, desiredInstances, placement);
-            } else {
-                writeWorkerDirective(artifact, desiredInstances, placement);
-            }
+                                                 int desiredInstances,
+                                                 String placement,
+                                                 AllocationPool pool) {
+            if (pool.hasCommunities()) {distributeToCommunities(artifact, desiredInstances, placement);} else {writeWorkerDirective(artifact,
+                                                                                                                                    desiredInstances,
+                                                                                                                                    placement);}
         }
 
-        private void writeWorkerDirective(Artifact artifact,
-                                           int targetInstances,
-                                           String placement) {
+        private void writeWorkerDirective(Artifact artifact, int targetInstances, String placement) {
             var key = WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact);
             var value = WorkerSliceDirectiveValue.workerSliceDirectiveValue(artifact, targetInstances, placement);
             var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
             ctx.cluster().apply(List.of(command))
-                         .onSuccess(_ -> log.info("Written worker directive for {} with {} instances",
-                                                   artifact,
-                                                   targetInstances))
-                         .onFailure(cause -> log.error("Failed to write worker directive for {}: {}",
-                                                        artifact,
-                                                        cause.message()));
+                       .onSuccess(_ -> log.info("Written worker directive for {} with {} instances",
+                                                artifact,
+                                                targetInstances))
+                       .onFailure(cause -> log.error("Failed to write worker directive for {}: {}",
+                                                     artifact,
+                                                     cause.message()));
         }
 
         private void writeWorkerDirective(Artifact artifact,
-                                           int targetInstances,
-                                           String placement,
-                                           String communityId) {
+                                          int targetInstances,
+                                          String placement,
+                                          String communityId) {
             var key = WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact, communityId);
             var value = WorkerSliceDirectiveValue.workerSliceDirectiveValue(artifact,
-                                                                             targetInstances,
-                                                                             placement,
-                                                                             communityId);
+                                                                            targetInstances,
+                                                                            placement,
+                                                                            communityId);
             var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
             ctx.cluster().apply(List.of(command))
-                         .onSuccess(_ -> log.info("Written worker directive for {} community '{}' with {} instances",
-                                                   artifact,
-                                                   communityId,
-                                                   targetInstances))
-                         .onFailure(cause -> log.error("Failed to write worker directive for {} community '{}': {}",
-                                                        artifact,
-                                                        communityId,
-                                                        cause.message()));
+                       .onSuccess(_ -> log.info("Written worker directive for {} community '{}' with {} instances",
+                                                artifact,
+                                                communityId,
+                                                targetInstances))
+                       .onFailure(cause -> log.error("Failed to write worker directive for {} community '{}': {}",
+                                                     artifact,
+                                                     communityId,
+                                                     cause.message()));
         }
 
         private void distributeToCommunities(Artifact artifact, int desiredInstances, String placement) {
             var communities = activeCommunities();
             var totalMembers = communities.values().stream()
-                                          .mapToInt(GovernorAnnouncementValue::memberCount)
-                                          .sum();
+                                                 .mapToInt(GovernorAnnouncementValue::memberCount)
+                                                 .sum();
             if (totalMembers == 0) {
                 writeWorkerDirective(artifact, desiredInstances, placement);
                 return;
             }
             var sorted = new ArrayList<>(communities.entrySet());
-            sorted.sort(Comparator.<Map.Entry<String, GovernorAnnouncementValue>>comparingInt(e -> e.getValue().memberCount())
-                                   .reversed());
+            sorted.sort(Comparator.<Map.Entry<String, GovernorAnnouncementValue>>comparingInt(e -> e.getValue()
+                                                                                                             .memberCount())
+                                  .reversed());
             var remaining = desiredInstances;
-            for (var i = 0; i < sorted.size(); i++) {
+            for (var i = 0;i <sorted.size();i++) {
                 var share = computeCommunityShare(i, sorted, desiredInstances, totalMembers, remaining);
                 if (share > 0) {
-                    writeWorkerDirective(artifact, share, placement, sorted.get(i).getKey());
+                    writeWorkerDirective(artifact,
+                                         share,
+                                         placement,
+                                         sorted.get(i).getKey());
                     remaining -= share;
                 }
             }
@@ -1710,55 +1619,56 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private int computeCommunityShare(int index,
-                                           List<Map.Entry<String, GovernorAnnouncementValue>> sorted,
-                                           int desiredInstances,
-                                           int totalMembers,
-                                           int remaining) {
+                                          List<Map.Entry<String, GovernorAnnouncementValue>> sorted,
+                                          int desiredInstances,
+                                          int totalMembers,
+                                          int remaining) {
             if (index == 0) {return computeLargestCommunityShare(sorted, desiredInstances, totalMembers, remaining);}
-            var memberCount = sorted.get(index).getValue().memberCount();
+            var memberCount = sorted.get(index).getValue()
+                                        .memberCount();
             var proportional = Math.max(1, Math.round((float) desiredInstances * memberCount / totalMembers));
             return Math.min(proportional, remaining);
         }
 
         private int computeLargestCommunityShare(List<Map.Entry<String, GovernorAnnouncementValue>> sorted,
-                                                  int desiredInstances,
-                                                  int totalMembers,
-                                                  int remaining) {
+                                                 int desiredInstances,
+                                                 int totalMembers,
+                                                 int remaining) {
             var share = remaining;
-            for (var j = 1; j < sorted.size(); j++) {
-                var otherCount = sorted.get(j).getValue().memberCount();
+            for (var j = 1;j <sorted.size();j++) {
+                var otherCount = sorted.get(j).getValue()
+                                           .memberCount();
                 share -= Math.max(1, Math.round((float) desiredInstances * otherCount / totalMembers));
             }
             return Math.min(Math.max(1, share), remaining);
         }
 
         private void assignRemainder(Artifact artifact,
-                                      int remaining,
-                                      String placement,
-                                      List<Map.Entry<String, GovernorAnnouncementValue>> sorted) {
-            if (remaining > 0) {
-                writeWorkerDirective(artifact, remaining, placement, sorted.getFirst().getKey());
-            }
+                                     int remaining,
+                                     String placement,
+                                     List<Map.Entry<String, GovernorAnnouncementValue>> sorted) {
+            if (remaining > 0) {writeWorkerDirective(artifact,
+                                                     remaining,
+                                                     placement,
+                                                     sorted.getFirst().getKey());}
         }
 
         private void removeWorkerDirective(Artifact artifact) {
             var commands = new ArrayList<KVCommand<AetherKey>>();
             commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact)));
-            for (var communityId : activeCommunityIds()) {
-                commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact, communityId)));
-            }
+            for (var communityId : activeCommunityIds()) {commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact,
+                                                                                                                                              communityId)));}
             ctx.cluster().apply(commands)
-                         .onFailure(cause -> log.debug("No worker directive to remove for {}: {}",
-                                                        artifact,
-                                                        cause.message()));
+                       .onFailure(cause -> log.debug("No worker directive to remove for {}: {}",
+                                                     artifact,
+                                                     cause.message()));
         }
 
-        @SuppressWarnings("unused")
-        private String lookupPlacement(Artifact artifact) {
+        @SuppressWarnings("unused") private String lookupPlacement(Artifact artifact) {
             return ctx.kvStore().get(SliceTargetKey.sliceTargetKey(artifact.base()))
-                                 .filter(v -> v instanceof SliceTargetValue)
-                                 .map(v -> ((SliceTargetValue) v).effectivePlacement())
-                                 .or("CORE_ONLY");
+                              .filter(v -> v instanceof SliceTargetValue)
+                              .map(v -> ((SliceTargetValue) v).effectivePlacement())
+                              .or("CORE_ONLY");
         }
 
         @Contract public void reconcile() {
@@ -1772,12 +1682,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var reconciled = 0;
             var rebalanceBudget = new java.util.concurrent.atomic.AtomicInteger(1);
             var blueprintSnapshot = List.copyOf(blueprints.values());
-            for (var blueprint : blueprintSnapshot) {
-                if (reconcileBlueprint(blueprint, rebalanceBudget)) {reconciled++;}
-            }
-            log.debug("Reconciliation complete: {} of {} blueprints required adjustment",
-                      reconciled,
-                      blueprints.size());
+            for (var blueprint : blueprintSnapshot) {if (reconcileBlueprint(blueprint, rebalanceBudget)) {reconciled++;}}
+            log.debug("Reconciliation complete: {} of {} blueprints required adjustment", reconciled, blueprints.size());
             cleanupOrphanedSliceEntries();
             cleanupStaleNodeRoutes();
             cleanupStaleNodeArtifactEntries();
@@ -1786,15 +1692,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private boolean reconcileBlueprint(Blueprint blueprint,
-                                            java.util.concurrent.atomic.AtomicInteger rebalanceBudget) {
+                                           java.util.concurrent.atomic.AtomicInteger rebalanceBudget) {
             var artifact = blueprint.artifact();
             if (permanentlyFailed.contains(artifact)) {return false;}
             if (hasInstancesOnDrainingNodes(artifact)) {return false;}
             var desiredInstances = blueprint.instances();
             var currentInstances = getCurrentInstances(artifact);
-            if (currentInstances.size() == desiredInstances) {
-                return rebalanceIfNeeded(artifact, currentInstances, rebalanceBudget);
-            }
+            if (currentInstances.size() == desiredInstances) {return rebalanceIfNeeded(artifact,
+                                                                                       currentInstances,
+                                                                                       rebalanceBudget);}
             consecutiveImbalancedTicks.remove(artifact);
             log.info("Reconciliation: {} has {} instances, desired {} - adjusting",
                      artifact,
@@ -1805,63 +1711,43 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             return true;
         }
 
-        /// Theme D #2: when desired instance count is satisfied but the placement spread is
-        /// uneven across allocatable nodes (e.g. a freshly-joined ON_DUTY node sits idle while
-        /// older peers carry multiple instances), perform at most one instance move per tick
-        /// to rebalance.
-        ///
-        /// Hysteresis: the imbalance must persist for `REBALANCE_HYSTERESIS_TICKS` consecutive
-        /// reconcile ticks before we act — protects against transient skew during in-flight
-        /// joins. Single-move-per-tick limits prevent rebalance storms when many nodes join
-        /// simultaneously; the next tick observes the (now-smaller) imbalance and continues
-        /// or stops.
         private static final int REBALANCE_HYSTERESIS_TICKS = 2;
 
         private boolean rebalanceIfNeeded(Artifact artifact,
-                                           List<SliceNodeKey> currentInstances,
-                                           java.util.concurrent.atomic.AtomicInteger rebalanceBudget) {
+                                          List<SliceNodeKey> currentInstances,
+                                          java.util.concurrent.atomic.AtomicInteger rebalanceBudget) {
             if (currentInstances.isEmpty()) {
                 consecutiveImbalancedTicks.remove(artifact);
                 return false;
             }
             var allocatable = allocatableNodes();
-            if (allocatable.size() < 2) {
+            if (allocatable.size() <2) {
                 consecutiveImbalancedTicks.remove(artifact);
                 return false;
             }
-            var nodesHostingThisArtifact = currentInstances.stream()
-                                                                              .map(SliceNodeKey::nodeId)
-                                                                              .collect(Collectors.toUnmodifiableSet());
-            // Aggregate load: count of *all* live slice instances per allocatable node, across
-            // every blueprint. Rebalance fires when (a) at least one allocatable node has zero
-            // total load AND (b) the spread (max-min total load) exceeds 1. This catches the
-            // common scale-up case where a freshly-joined ON_DUTY node sits idle while older
-            // peers carry multiple slices each.
+            var nodesHostingThisArtifact = currentInstances.stream().map(SliceNodeKey::nodeId)
+                                                                  .collect(Collectors.toUnmodifiableSet());
             var totalLoadByNode = sliceStates.entrySet().stream()
-                                                                .filter(entry -> isLiveState(entry.getValue()))
-                                                                .map(Map.Entry::getKey)
-                                                                .collect(Collectors.groupingBy(SliceNodeKey::nodeId,
-                                                                                                Collectors.counting()));
-            var maxLoad = allocatable.stream()
-                                              .mapToLong(node -> totalLoadByNode.getOrDefault(node, 0L))
-                                              .max()
-                                              .orElse(0L);
-            var minLoad = allocatable.stream()
-                                              .mapToLong(node -> totalLoadByNode.getOrDefault(node, 0L))
-                                              .min()
-                                              .orElse(0L);
+                                                      .filter(entry -> isLiveState(entry.getValue()))
+                                                      .map(Map.Entry::getKey)
+                                                      .collect(Collectors.groupingBy(SliceNodeKey::nodeId,
+                                                                                     Collectors.counting()));
+            var maxLoad = allocatable.stream().mapToLong(node -> totalLoadByNode.getOrDefault(node, 0L))
+                                            .max()
+                                            .orElse(0L);
+            var minLoad = allocatable.stream().mapToLong(node -> totalLoadByNode.getOrDefault(node, 0L))
+                                            .min()
+                                            .orElse(0L);
             if (maxLoad - minLoad <= 1) {
                 consecutiveImbalancedTicks.remove(artifact);
                 return false;
             }
-            // The donor must currently host this artifact (so we can move *this* blueprint's
-            // instance) and be the most heavily-loaded such node. The target must be the
-            // least-loaded allocatable node that does NOT yet host this artifact.
             var donorOpt = nodesHostingThisArtifact.stream()
-                                                                     .max(Comparator.comparingLong(node -> totalLoadByNode.getOrDefault(node, 0L)));
-            var targetOpt = allocatable.stream()
-                                                  .filter(node -> !nodesHostingThisArtifact.contains(node))
-                                                  .min(Comparator.comparingLong(node -> totalLoadByNode.getOrDefault(node, 0L)));
+                                                          .max(Comparator.comparingLong(node -> totalLoadByNode.getOrDefault(node,
+                                                                                                                             0L)));
+            var targetOpt = allocatable.stream().filter(node -> !nodesHostingThisArtifact.contains(node))
+                                              .min(Comparator.comparingLong(node -> totalLoadByNode.getOrDefault(node,
+                                                                                                                 0L)));
             if (donorOpt.isEmpty() || targetOpt.isEmpty()) {
                 consecutiveImbalancedTicks.remove(artifact);
                 return false;
@@ -1873,18 +1759,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return false;
             }
             var ticks = consecutiveImbalancedTicks.merge(artifact, 1, Integer::sum);
-            if (ticks < REBALANCE_HYSTERESIS_TICKS) {
+            if (ticks <REBALANCE_HYSTERESIS_TICKS) {
                 log.debug("Rebalance hysteresis: {} imbalanced for {} tick(s) (need {})",
                           artifact,
                           ticks,
                           REBALANCE_HYSTERESIS_TICKS);
                 return false;
             }
-            // Single-move-per-tick budget enforced across all blueprints — the next reconcile
-            // tick observes the (now-smaller) imbalance for any remaining skewed blueprints.
             if (rebalanceBudget.getAndDecrement() <= 0) {
-                log.debug("Rebalance: {} eligible but per-tick budget exhausted; deferred to next tick",
-                          artifact);
+                log.debug("Rebalance: {} eligible but per-tick budget exhausted; deferred to next tick", artifact);
                 return false;
             }
             consecutiveImbalancedTicks.remove(artifact);
@@ -1892,10 +1775,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private boolean executeSingleRebalanceMove(Artifact artifact,
-                                                    NodeId donor,
-                                                    long donorLoad,
-                                                    NodeId target,
-                                                    long targetLoad) {
+                                                   NodeId donor,
+                                                   long donorLoad,
+                                                   NodeId target,
+                                                   long targetLoad) {
             var donorKey = SliceNodeKey.sliceNodeKey(artifact, donor);
             log.info("Rebalance: moving {} from {} (load={}) to {} (load={})",
                      artifact,
@@ -1911,15 +1794,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private boolean hasInstancesOnDrainingNodes(Artifact artifact) {
             var draining = drainingNodes();
             return sliceStates.keySet().stream()
-                              .anyMatch(key -> key.artifact().equals(artifact) && draining.contains(key.nodeId()));
+                                     .anyMatch(key -> key.artifact().equals(artifact) && draining.contains(key.nodeId()));
         }
 
         private void emitScalingEvent(Artifact artifact, int currentCount, int desiredCount) {
-            if (currentCount < desiredCount) {
-                AuditLog.reconciliationScaleUp(artifact.asString(), currentCount, desiredCount);
-            } else {
-                AuditLog.reconciliationScaleDown(artifact.asString(), currentCount, desiredCount);
-            }
+            if (currentCount <desiredCount) {AuditLog.reconciliationScaleUp(artifact.asString(),
+                                                                            currentCount,
+                                                                            desiredCount);} else {AuditLog.reconciliationScaleDown(artifact.asString(),
+                                                                                                                                   currentCount,
+                                                                                                                                   desiredCount);}
             ctx.router().route(ReconciliationAdjustment.reconciliationAdjustment(artifact, currentCount, desiredCount));
         }
 
@@ -1943,9 +1826,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             for (var entry : inFlightBlueprints.entrySet()) {
                 var blueprintId = entry.getKey();
                 var inflight = entry.getValue();
-                if (!inflight.pendingSlices().contains(failedArtifact) && !inflight.activeSlices().contains(failedArtifact)) {
-                    continue;
-                }
+                if (!inflight.pendingSlices().contains(failedArtifact) && !inflight.activeSlices()
+                                                                                                .contains(failedArtifact)) {continue;}
                 if (activeRoutings.contains(failedArtifact.base())) {
                     log.info("Skipping blueprint rollback for {} — artifact {} is in active rolling update",
                              blueprintId.asString(),
@@ -1957,8 +1839,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                          blueprintId.asString());
                 inFlightBlueprints.remove(blueprintId);
                 inflight.previousBlueprint()
-                        .apply(() -> unloadBlueprintSlices(inflight),
-                               previous -> restorePreviousBlueprint(blueprintId, previous));
+                                          .apply(() -> unloadBlueprintSlices(inflight),
+                                                 previous -> restorePreviousBlueprint(blueprintId, previous));
                 break;
             }
         }
@@ -1989,9 +1871,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var bpValue = AppBlueprintValue.appBlueprintValue(previous);
             var command = new KVCommand.Put<AetherKey, AetherValue>(bpKey, bpValue);
             ctx.cluster().apply(List.of(command))
-                         .onSuccess(_ -> SharedScheduler.schedule(() -> restoringBlueprints.remove(blueprintId),
-                                                                   timeSpan(5).seconds()))
-                         .onFailure(cause -> handleBlueprintRestoreFailure(blueprintId, cause));
+                       .onSuccess(_ -> SharedScheduler.schedule(() -> restoringBlueprints.remove(blueprintId),
+                                                                timeSpan(5).seconds()))
+                       .onFailure(cause -> handleBlueprintRestoreFailure(blueprintId, cause));
         }
 
         private void handleBlueprintRestoreFailure(BlueprintId blueprintId, Cause cause) {
@@ -2001,15 +1883,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             restoringBlueprints.remove(blueprintId);
         }
 
-        /// In-flight blueprint tracking: preserved from the legacy Active state.
         public record InFlightBlueprint(BlueprintId id,
-                                         ExpandedBlueprint expanded,
-                                         Set<Artifact> pendingSlices,
-                                         Set<Artifact> activeSlices,
-                                         Option<ExpandedBlueprint> previousBlueprint) {
+                                        ExpandedBlueprint expanded,
+                                        Set<Artifact> pendingSlices,
+                                        Set<Artifact> activeSlices,
+                                        Option<ExpandedBlueprint> previousBlueprint) {
             public static InFlightBlueprint inFlightBlueprint(BlueprintId id,
-                                                               ExpandedBlueprint expanded,
-                                                               Option<ExpandedBlueprint> previousBlueprint) {
+                                                              ExpandedBlueprint expanded,
+                                                              Option<ExpandedBlueprint> previousBlueprint) {
                 Set<Artifact> pending = ConcurrentHashMap.newKeySet();
                 expanded.loadOrder().forEach(slice -> pending.add(slice.artifact()));
                 return new InFlightBlueprint(id, expanded, pending, ConcurrentHashMap.newKeySet(), previousBlueprint);

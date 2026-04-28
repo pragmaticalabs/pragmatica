@@ -9,8 +9,6 @@ import org.pragmatica.lang.Result;
 import java.util.List;
 
 
-/// PostgreSQL SQL parser using the generated standalone PEG parser.
-/// Peglib is NOT a runtime dependency — only pragmatica-lite:core.
 public final class PostgresParser {
     public sealed interface CstNode permits CstNode.Terminal, CstNode.NonTerminal, CstNode.Token, CstNode.Error {
         SourceSpan span();

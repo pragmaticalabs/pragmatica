@@ -14,11 +14,6 @@ import org.pragmatica.lang.type.TypeToken;
 import java.util.ArrayList;
 
 
-/// Publisher implementation that routes messages to topic subscribers
-/// via SliceInvoker for reliable delivery.
-///
-/// Each subscriber is invoked using request-response (expectResponse=true)
-/// to ensure reliable delivery with retry/failover.
 public record TopicPublisher<T>(String topicName, TopicSubscriptionRegistry registry, SliceInvoker invoker) implements Publisher<T> {
     private static final TypeToken<Unit> UNIT_TYPE_TOKEN = new TypeToken<>() {};
 

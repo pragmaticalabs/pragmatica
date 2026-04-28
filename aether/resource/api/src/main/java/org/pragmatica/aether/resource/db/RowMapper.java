@@ -7,12 +7,6 @@ package org.pragmatica.aether.resource.db;
 import org.pragmatica.lang.Result;
 
 
-/// Maps a database row to a domain object.
-///
-/// Used by SqlConnector implementations to transform query results
-/// into domain types with proper error handling.
-///
-/// @param <T> Target domain type
 @FunctionalInterface public interface RowMapper<T> {
     Result<T> map(RowAccessor row);
 

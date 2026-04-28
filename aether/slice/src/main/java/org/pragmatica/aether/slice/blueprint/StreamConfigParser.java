@@ -26,24 +26,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Parses `[streams.xxx]` sections from TOML configuration into StreamConfig instances.
-///
-/// Expected format:
-/// ```toml
-/// [streams.order-events]
-/// partitions = 8
-/// retention = "time"
-/// retention-value = "24h"
-/// max-event-size = "1MB"
-/// backpressure = "drop-oldest"
-///
-/// [streams.order-events.consumers.analytics]
-/// auto-offset-reset = "earliest"
-/// checkpoint-interval = "5s"
-/// batch-size = 100
-/// processing = "parallel"
-/// on-failure = "skip"
-/// ```
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-03"}) public interface StreamConfigParser {
     String STREAMS_PREFIX = "streams.";
 

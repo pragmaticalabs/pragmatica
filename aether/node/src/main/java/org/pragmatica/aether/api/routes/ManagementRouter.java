@@ -34,16 +34,6 @@ import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
 import io.netty.handler.codec.http.HttpHeaders;
 
 
-/// Router that bridges http-server RequestContext/ResponseWriter with http-routing Route DSL.
-///
-/// Dispatches via the compile-time [ManagementRoute] registry: paths are matched by
-/// [ManagementRoute#match] (which understands path parameter positions and counts), then
-/// the corresponding [Route] handler is looked up by enum name in [#routesByName]. This
-/// avoids the limitations of the legacy [RequestRouter] tree-based dispatch when multiple
-/// routes share a base prefix but differ in arity.
-///
-/// Routes that don't have a [ManagementRoute] equivalent (e.g. dashboard static files
-/// registered via legacy [RouteSource]s) fall back to [RequestRouter#findRoute].
 public final class ManagementRouter {
     private static final Logger log = LoggerFactory.getLogger(ManagementRouter.class);
 

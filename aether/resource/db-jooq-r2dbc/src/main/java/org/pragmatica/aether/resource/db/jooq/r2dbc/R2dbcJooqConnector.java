@@ -28,10 +28,6 @@ import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 
 
-/// R2DBC implementation of JooqConnector for reactive type-safe SQL queries.
-///
-/// Combines jOOQ's type-safe query building with R2DBC's reactive execution.
-/// Uses JooqR2dbcOperations from integrations/db/jooq-r2dbc for Promise-based execution.
 public final class R2dbcJooqConnector implements JooqConnector {
     private final DatabaseConnectorConfig config;
     private final ConnectionFactory connectionFactory;

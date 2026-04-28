@@ -26,10 +26,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Passive KV-Store watcher maintaining a local cache of scheduled task registrations.
-///
-/// Tracks which slice methods are registered for periodic invocation. Used by
-/// ScheduledTaskManager to start/stop timers when tasks are added or removed.
 public interface ScheduledTaskRegistry {
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onScheduledTaskPut(ValuePut<ScheduledTaskKey, ScheduledTaskValue> valuePut);
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onScheduledTaskRemove(ValueRemove<ScheduledTaskKey, ScheduledTaskValue> valueRemove);

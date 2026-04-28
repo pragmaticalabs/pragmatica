@@ -29,10 +29,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// postgres-async implementation of SqlConnector for native async database access.
-///
-/// Uses the postgres-async Connectible directly for zero-overhead database operations.
-/// Converts `?` placeholders (SqlConnector convention) to `$1`, `$2`, etc. (PostgreSQL wire protocol).
 final class PgAsyncSqlConnector implements AsyncSqlConnector {
     private final DatabaseConnectorConfig config;
     private final Connectible connectible;

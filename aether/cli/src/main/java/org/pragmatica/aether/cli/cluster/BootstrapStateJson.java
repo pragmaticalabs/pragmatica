@@ -20,9 +20,6 @@ import tools.jackson.databind.JsonNode;
 import static org.pragmatica.lang.Result.success;
 
 
-/// JSON serialization and deserialization for BootstrapState.
-/// Uses Jackson via JsonMapper for reading, manual JSON for writing to avoid
-/// annotation complexity on sealed interfaces.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface BootstrapStateJson {
     record unused() implements BootstrapStateJson{}
 

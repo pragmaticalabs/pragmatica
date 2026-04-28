@@ -11,11 +11,6 @@ import org.pragmatica.lang.Option;
 import java.util.List;
 
 
-/// Maps pg-tools PgType to jOOQ XML column type fields.
-///
-/// Produces the exact strings that jOOQ XMLDatabase expects when configured
-/// with `dialect=POSTGRES` — matching what PostgreSQL's `information_schema.columns`
-/// would return for a live database.
 public final class JooqTypeMapper {
     private JooqTypeMapper() {}
 

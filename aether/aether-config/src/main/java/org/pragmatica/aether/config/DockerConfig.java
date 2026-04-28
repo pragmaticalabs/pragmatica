@@ -9,10 +9,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Docker-specific configuration.
-///
-/// @param network Docker network name
-/// @param image   Docker image to use for nodes
 public record DockerConfig(String network, String image) {
     public static final String DEFAULT_NETWORK = "aether-network";
 

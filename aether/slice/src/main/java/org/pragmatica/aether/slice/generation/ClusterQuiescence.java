@@ -7,10 +7,6 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-/// Cluster-wide quiescence state. Derived as worst-state-wins across community quiescences
-/// and core-member health.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §17 (item 12).
 @Codec public enum ClusterQuiescence {
     QUIESCED,
     CONVERGING,

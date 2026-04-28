@@ -12,8 +12,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for the GCP environment integration.
-/// Contains GCP API credentials and default instance provisioning parameters.
 public record GcpEnvironmentConfig(GcpConfig gcpConfig,
                                    String machineType,
                                    String sourceImage,

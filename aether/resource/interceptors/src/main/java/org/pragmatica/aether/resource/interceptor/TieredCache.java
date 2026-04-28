@@ -9,11 +9,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 
-/// Two-level cache combining a fast local L1 with a distributed L2 backend.
-///
-/// Read path: L1 hit returns immediately. L1 miss checks L2. L2 hit promotes to L1.
-/// Write path: writes to L1 then L2 sequentially.
-/// Remove path: removes from both L1 and L2.
 final class TieredCache implements CacheBackend {
     private final CacheBackend l1;
     private final CacheBackend l2;

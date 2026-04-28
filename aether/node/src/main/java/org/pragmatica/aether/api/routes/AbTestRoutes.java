@@ -33,7 +33,6 @@ import static org.pragmatica.aether.api.ManagementApiResponses.AbTestVariantMetr
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for A/B test management: create, conclude, metrics.
 public final class AbTestRoutes implements RouteSource {
     private static final Cause MISSING_ARTIFACT_BASE = Causes.cause("Missing artifactBase");
 

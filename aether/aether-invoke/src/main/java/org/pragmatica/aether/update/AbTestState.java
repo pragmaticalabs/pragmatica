@@ -7,16 +7,6 @@ package org.pragmatica.aether.update;
 import java.util.Set;
 
 
-/// State machine for A/B testing deployment lifecycle.
-///
-///
-/// Multi-variant deployment model with deterministic traffic routing:
-///
-///   - **Stage 1 (Deploy)**: PENDING -> DEPLOYING_VARIANTS -> ACTIVE
-///   - **Stage 2 (Test)**: ACTIVE -> CONCLUDING -> COMPLETED
-///   - **Rollback**: ACTIVE or DEPLOYING_VARIANTS -> ROLLING_BACK -> ROLLED_BACK
-///   - **Failure**: Any non-terminal state -> FAILED
-///
 public enum AbTestState {
     PENDING,
     DEPLOYING_VARIANTS,

@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Deep-merges two [TomlDocument] instances per section 4.1.4 semantics.
 @SuppressWarnings("JBCT-UTIL-02") public final class TomlDocumentMerger {
     private TomlDocumentMerger() {}
 

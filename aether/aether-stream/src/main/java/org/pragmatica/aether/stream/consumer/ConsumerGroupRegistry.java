@@ -21,12 +21,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Read-side mirror of consumer group partition assignments held in the
-/// consensus KV-Store. Stays in sync via KV notifications wired through
-/// `KVNotificationRouter`.
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks --- void required by messaging framework
-public sealed interface ConsumerGroupRegistry {
+@SuppressWarnings("JBCT-RET-01") public sealed interface ConsumerGroupRegistry {
     Map<Integer, ConsumerGroupValue> assignmentsFor(String groupId, String streamName);
     List<Integer> partitionsFor(String groupId, String streamName, NodeId nodeId);
     @MessageReceiver void onConsumerGroupPut(ValuePut<ConsumerGroupKey, ConsumerGroupValue> notification);

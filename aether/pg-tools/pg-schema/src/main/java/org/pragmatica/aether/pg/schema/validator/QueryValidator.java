@@ -22,8 +22,6 @@ import java.util.Map;
 import java.util.Set;
 
 
-/// Validates SQL queries against a known schema.
-/// Checks table existence, column references, and alias resolution.
 public final class QueryValidator {
     private static final PgType UNKNOWN_TYPE = new PgType.BuiltinType("unknown", PgType.TypeCategory.STRING);
 
@@ -63,9 +61,6 @@ public final class QueryValidator {
         return new ValidationResult(errors);
     }
 
-    /// Walks the CST to find every SelectStmt with a WithClause, builds a Scope with the CTE
-    /// definitions, and indexes it by the spans of the SelectCores owned by that SelectStmt
-    /// (direct SelectCore children plus SelectCores carried by its SetOp continuations).
     private Map<SourceSpan, Scope> buildCteScopeIndex(CstNavigator root) {
         var index = new HashMap<SourceSpan, Scope>();
         collectCteScopes(root, index);
@@ -81,29 +76,21 @@ public final class QueryValidator {
             var anyRecursive = withClauses.stream().anyMatch(w -> w.has("RecursiveKW"));
             if (anyRecursive) {for (var wc : withClauses) {indexRecursiveCteBodies(wc, cteScope, index);}}
         }
-        for (var child : nav.children()) {
-            if (child instanceof CstNode.NonTerminal nt) {collectCteScopes(new CstNavigator(nt), index);}
-        }
+        for (var child : nav.children()) {if (child instanceof CstNode.NonTerminal nt) {collectCteScopes(new CstNavigator(nt),
+                                                                                                         index);}}
     }
 
-    /// For WITH RECURSIVE, each CTE's inner query is allowed to reference the CTE's own name
-    /// (and siblings). Apply the shared CTE scope to the inner SelectCore of every CteDef body.
     private void indexRecursiveCteBodies(CstNavigator withClause, Scope cteScope, Map<SourceSpan, Scope> index) {
-        for (var cteDef : withClause.findAll("CteDef")) {
-            for (var innerStmt : cteDef.findAll("SelectStmt")) {
-                for (var core : ownedSelectCores(innerStmt)) {index.putIfAbsent(core.span(), cteScope);}
-            }
-        }
+        for (var cteDef : withClause.findAll("CteDef")) {for (var innerStmt : cteDef.findAll("SelectStmt")) {for (var core : ownedSelectCores(innerStmt)) {index.putIfAbsent(core.span(),
+                                                                                                                                                                             cteScope);}}}
     }
 
     private List<CstNavigator> ownedSelectCores(CstNavigator parent) {
         var cores = new ArrayList<CstNavigator>();
         for (var child : parent.children()) {
-            if (!(child instanceof CstNode.NonTerminal nt)) continue;
+            if (! (child instanceof CstNode.NonTerminal nt)) continue;
             var childNav = new CstNavigator(nt);
-            if ("SelectCore".equals(nt.ruleName())) {cores.add(childNav);}
-            else if ("SetOp".equals(nt.ruleName())) {for (var inner : childNav.allChildren("SelectCore")) {cores.add(inner);}}
-            else if ("SelectStmt".equals(nt.ruleName())) {cores.addAll(ownedSelectCores(childNav));}
+            if ("SelectCore".equals(nt.ruleName())) {cores.add(childNav);} else if ("SetOp".equals(nt.ruleName())) {for (var inner : childNav.allChildren("SelectCore")) {cores.add(inner);}} else if ("SelectStmt".equals(nt.ruleName())) {cores.addAll(ownedSelectCores(childNav));}
         }
         return cores;
     }
@@ -121,28 +108,21 @@ public final class QueryValidator {
             var names = CstExtractor.extractColumnList(explicitColumnList.unwrap());
             var cols = new ArrayList<Column>();
             for (var n : names) {cols.add(Column.column(n.normalized(), UNKNOWN_TYPE, true));}
-            scope.registerTable(cteName, Table.table(cteName, "", cols, List.of()));
+            scope.registerTable(cteName,
+                                Table.table(cteName, "", cols, List.of()));
             return;
         }
         var inferredCols = inferCteColumns(cteDef);
-        if (inferredCols.isPresent()) {
-            scope.registerTable(cteName, Table.table(cteName, "", inferredCols.unwrap(), List.of()));
-        } else {
-            scope.registerPermissive(cteName);
-        }
+        if (inferredCols.isPresent()) {scope.registerTable(cteName,
+                                                           Table.table(cteName, "", inferredCols.unwrap(), List.of()));} else {scope.registerPermissive(cteName);}
     }
 
-    /// Attempts to infer CTE columns from the inner SELECT's target list.
-    /// Returns empty when the inner query is complex (union, subquery-only, expressions without aliases),
-    /// which signals permissive mode for the CTE.
     private Option<List<Column>> inferCteColumns(CstNavigator cteDef) {
         var dmlStatements = cteDef.allChildren("DmlStatement");
         if (dmlStatements.isEmpty()) return Option.empty();
         var innerBody = dmlStatements.getFirst();
         var innerCores = ownedSelectCores(innerBody);
         if (innerCores.isEmpty()) return Option.empty();
-        // If the body is a UNION/INTERSECT/EXCEPT, ownedSelectCores would return multiple cores from SetOp.
-        // Detect that via SetOp presence anywhere in the body.
         if (!innerBody.findAll("SetOp").isEmpty()) return Option.empty();
         var selectCore = innerCores.getFirst();
         var targetListOpt = selectCore.child("TargetList");
@@ -162,11 +142,13 @@ public final class QueryValidator {
     private Option<String> inferTargetColumnName(CstNavigator target) {
         if (target.has("StarExpr")) return Option.empty();
         var colLabels = target.allChildren("ColLabel");
-        if (!colLabels.isEmpty()) {return Option.present(CstExtractor.extractIdentifier(colLabels.getLast()).normalized());}
+        if (!colLabels.isEmpty()) {return Option.present(CstExtractor.extractIdentifier(colLabels.getLast())
+                                                                                       .normalized());}
         var qnames = target.findAll("QualifiedName");
         if (qnames.size() == 1) {
             var qname = CstExtractor.extractQualifiedName(qnames.getFirst());
-            if (!qname.parts().isEmpty()) {return Option.present(qname.parts().getLast().normalized());}
+            if (!qname.parts().isEmpty()) {return Option.present(qname.parts().getLast()
+                                                                            .normalized());}
         }
         return Option.empty();
     }
@@ -315,7 +297,9 @@ public final class QueryValidator {
 
     static final class Scope {
         private final Map<String, Table> tables = new HashMap<>();
+
         private final Set<String> permissiveNames = new HashSet<>();
+
         private final Map<String, String> fromCteAliasToCteName = new HashMap<>();
 
         private final Option<Scope> parent;
@@ -332,33 +316,28 @@ public final class QueryValidator {
             tables.put(nameOrAlias, table);
         }
 
-        /// Register a CTE without known columns — any column reference against it is accepted.
         void registerPermissive(String cteName) {
             permissiveNames.add(cteName);
         }
 
-        /// When a FROM clause references a CTE by name (optionally aliased), record the alias so
-        /// permissive/known-column lookups also resolve through the alias.
         void registerFromCte(String aliasOrName, String cteName) {
             var resolved = lookupKnownCteTable(cteName);
             if (resolved.isPresent()) {tables.put(aliasOrName, resolved.unwrap());}
             if (isPermissiveCte(cteName)) {permissiveNames.add(aliasOrName);}
         }
 
-        /// True when the bare CTE name (not an alias) has been registered in this or an ancestor scope.
         boolean isKnownCte(String name) {
-            return tables.containsKey(name) || permissiveNames.contains(name)
-                   || parent.isPresent() && parent.unwrap().isKnownCte(name);
+            return tables.containsKey(name) || permissiveNames.contains(name) || parent.isPresent() && parent.unwrap()
+                                                                                                                    .isKnownCte(name);
         }
 
         boolean isPermissive(String nameOrAlias) {
-            return permissiveNames.contains(nameOrAlias)
-                   || parent.isPresent() && parent.unwrap().isPermissive(nameOrAlias);
+            return permissiveNames.contains(nameOrAlias) || parent.isPresent() && parent.unwrap()
+                                                                                               .isPermissive(nameOrAlias);
         }
 
         private boolean isPermissiveCte(String cteName) {
-            return permissiveNames.contains(cteName)
-                   || parent.isPresent() && parent.unwrap().isPermissiveCte(cteName);
+            return permissiveNames.contains(cteName) || parent.isPresent() && parent.unwrap().isPermissiveCte(cteName);
         }
 
         private Option<Table> lookupKnownCteTable(String cteName) {

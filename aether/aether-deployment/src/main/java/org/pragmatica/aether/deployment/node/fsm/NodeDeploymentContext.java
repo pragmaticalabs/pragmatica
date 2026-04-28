@@ -36,22 +36,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
-/// Shared context for the NodeDeploymentManager FSM. Holds:
-///
-/// - Configuration and collaborators that are long-lived across the Dormant ↔ Active cycle
-///   (`self`, `selfAddress`, `sliceStore`, `cluster`, `kvStore`, `invocationHandler`, `router`,
-///   `configuration`, `nodeCodec`, `httpRoutePublisher`, `sliceInvokerFacade`,
-///   `activationChainTimeout`, `transitionRetryDelay`).
-/// - The bound [`Fsm`] reference (injected via constructor-driven initial-state factory).
-/// - Per-FSM singletons for the data-free states (`dormant`, `stopped`).
-/// - `quorumSequence` — `AtomicLong` anchor used to dedup stale `QuorumStateNotification`s
-///   before translating them into [`ClusterFsmEvent`]s.
-/// - `shutdownCallback` — runnable invoked when the KV-Store transitions this node's lifecycle
-///   to `SHUTTING_DOWN`.
-///
-/// Per-activation mutable state (slice deployment map, routing-epoch ack tracker, config
-/// notification manager) lives on the [`NodeDeploymentState.Active`] record — it is created
-/// fresh on every Dormant → Active transition.
+
 public final class NodeDeploymentContext {
     private final Fsm<NodeDeploymentState, ClusterFsmEvent> fsm;
     private final NodeId self;
@@ -89,9 +74,21 @@ public final class NodeDeploymentContext {
                                  Option<SliceInvokerFacade> sliceInvokerFacade,
                                  TimeSpan activationChainTimeout,
                                  TimeSpan transitionRetryDelay) {
-        this(fsm, self, selfAddress, sliceStore, configuration, nodeCodec, cluster, kvStore,
-             invocationHandler, router, httpRoutePublisher, sliceInvokerFacade,
-             activationChainTimeout, transitionRetryDelay, System::currentTimeMillis,
+        this(fsm,
+             self,
+             selfAddress,
+             sliceStore,
+             configuration,
+             nodeCodec,
+             cluster,
+             kvStore,
+             invocationHandler,
+             router,
+             httpRoutePublisher,
+             sliceInvokerFacade,
+             activationChainTimeout,
+             transitionRetryDelay,
+             System::currentTimeMillis,
              Option::none);
     }
 
@@ -110,13 +107,24 @@ public final class NodeDeploymentContext {
                                  TimeSpan activationChainTimeout,
                                  TimeSpan transitionRetryDelay,
                                  Supplier<Option<Epoch>> currentEpochSupplier) {
-        this(fsm, self, selfAddress, sliceStore, configuration, nodeCodec, cluster, kvStore,
-             invocationHandler, router, httpRoutePublisher, sliceInvokerFacade,
-             activationChainTimeout, transitionRetryDelay, System::currentTimeMillis,
+        this(fsm,
+             self,
+             selfAddress,
+             sliceStore,
+             configuration,
+             nodeCodec,
+             cluster,
+             kvStore,
+             invocationHandler,
+             router,
+             httpRoutePublisher,
+             sliceInvokerFacade,
+             activationChainTimeout,
+             transitionRetryDelay,
+             System::currentTimeMillis,
              currentEpochSupplier);
     }
 
-    /// Full-arity constructor with injectable clock — for tests that need deterministic time.
     public NodeDeploymentContext(Fsm<NodeDeploymentState, ClusterFsmEvent> fsm,
                                  NodeId self,
                                  NodeAddress selfAddress,
@@ -132,16 +140,24 @@ public final class NodeDeploymentContext {
                                  TimeSpan activationChainTimeout,
                                  TimeSpan transitionRetryDelay,
                                  LongSupplier clock) {
-        this(fsm, self, selfAddress, sliceStore, configuration, nodeCodec, cluster, kvStore,
-             invocationHandler, router, httpRoutePublisher, sliceInvokerFacade,
-             activationChainTimeout, transitionRetryDelay, clock, Option::none);
+        this(fsm,
+             self,
+             selfAddress,
+             sliceStore,
+             configuration,
+             nodeCodec,
+             cluster,
+             kvStore,
+             invocationHandler,
+             router,
+             httpRoutePublisher,
+             sliceInvokerFacade,
+             activationChainTimeout,
+             transitionRetryDelay,
+             clock,
+             Option::none);
     }
 
-    /// Full-arity constructor with injectable clock and current-epoch supplier. The
-    /// `currentEpochSupplier` returns the current cluster generation epoch for seeding the
-    /// `observedCoreEpoch` field of the first ON_DUTY `NodeLifecycleValue` atom (Theme/Fix B —
-    /// SSOT topology). Returning [`Option#none`] yields the legacy [`Epoch#ZERO`] fallback,
-    /// preserving cold-boot behaviour during the pre-leader window.
     public NodeDeploymentContext(Fsm<NodeDeploymentState, ClusterFsmEvent> fsm,
                                  NodeId self,
                                  NodeAddress selfAddress,
@@ -181,13 +197,9 @@ public final class NodeDeploymentContext {
         this.stopped = new NodeDeploymentState.Stopped(this);
     }
 
-    /// Current time in milliseconds. Reads from the injected clock so tests can make FSM
-    /// transitions deterministic. Equivalent to `System.currentTimeMillis()` in production.
     public long nowMs() {
         return clock.getAsLong();
     }
-
-    // --- FSM access ---
 
     public Fsm<NodeDeploymentState, ClusterFsmEvent> fsm() {
         return fsm;
@@ -205,17 +217,11 @@ public final class NodeDeploymentContext {
         return stopped;
     }
 
-    /// Build a fresh [`NodeDeploymentState.Dormant`] carrying the given suspended slices. Used by
-    /// `Active → Dormant` on `QuorumDisappeared`: the suspended list is preserved so the next
-    /// `QuorumEstablished` transition can reactivate them on entry.
     public NodeDeploymentState newDormantWithSuspended(List<SuspendedSlice> suspended) {
         if (suspended.isEmpty()) {return dormant;}
         return new NodeDeploymentState.Dormant(this, suspended);
     }
 
-    /// Build a fresh [`NodeDeploymentState.Active`] with a new deployments map, config notification
-    /// manager, and routing-epoch ack tracker. `pendingReactivation` is the list of suspended
-    /// slices carried over from the previous `Dormant`; it is processed in `Active.onEntry`.
     public NodeDeploymentState.Active newActive(List<SuspendedSlice> pendingReactivation) {
         return new NodeDeploymentState.Active(this,
                                               new ConcurrentHashMap<>(),
@@ -224,14 +230,9 @@ public final class NodeDeploymentContext {
                                               pendingReactivation);
     }
 
-    /// Theme C / rc2-#189 hook — build a fresh [`NodeDeploymentState.Leaving`]. rc1 carries an
-    /// empty suspended-slices list (no real drain is performed). rc2 will populate the list
-    /// from the active deployments at transition time so the drain tracker can iterate.
     public NodeDeploymentState.Leaving newLeaving(DrainReason reason) {
         return new NodeDeploymentState.Leaving(this, reason, List.of());
     }
-
-    // --- Config accessors ---
 
     public NodeId self() {
         return self;
@@ -297,11 +298,6 @@ public final class NodeDeploymentContext {
         shutdownCallback.set(callback);
     }
 
-    /// Theme M / M1 — callback invoked deterministically from
-    /// [`NodeDeploymentState.Active#onEntry`]. Used by the [`NodeDeploymentManager`] adapter to
-    /// register the node's lifecycle ON_DUTY atom on every Active entry (first activation and
-    /// post-drain rejoin). Replacing the previous `dispatchQuorumEstablished` post-dispatch
-    /// heuristic that depended on FSM dispatch being synchronous.
     public Option<Runnable> activeOnEntryCallback() {
         return Option.option(activeOnEntryCallback.get());
     }
@@ -310,17 +306,10 @@ public final class NodeDeploymentContext {
         activeOnEntryCallback.set(callback);
     }
 
-    /// True iff the FSM's current state is [`NodeDeploymentState.Active`]. Exposed for the
-    /// `NodeDeploymentManager#isActive` adapter method and for lifecycle re-registration logic.
     public boolean isActive() {
         return fsm.current() instanceof NodeDeploymentState.Active;
     }
 
-    /// Returns the current cluster generation epoch when one is observable, otherwise
-    /// [`Option#none`]. Used by the lifecycle ON_DUTY writer (Theme/Fix B) to seed
-    /// `NodeLifecycleValue.observedCoreEpoch` with a non-zero value so
-    /// `ClusterTopologyManagerRecord#nodeJoinEpoch` returns a real epoch and the
-    /// "newest-first" surplus-termination tiebreak functions.
     public Supplier<Option<Epoch>> currentEpochSupplier() {
         return currentEpochSupplier;
     }

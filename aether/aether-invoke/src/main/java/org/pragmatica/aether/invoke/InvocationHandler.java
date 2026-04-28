@@ -30,12 +30,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Server-side component that handles incoming slice invocation requests.
-///
-///
-/// Receives InvokeRequest messages from remote SliceInvokers,
-/// finds the local slice, invokes the method, and optionally sends
-/// the response back.
 public interface InvocationHandler {
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onInvokeRequest(InvokeRequest request);
     @SuppressWarnings("JBCT-RET-01") void registerSlice(Artifact artifact, SliceBridge bridge);

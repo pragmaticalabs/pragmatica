@@ -15,10 +15,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 
-/// Rewrites SQL queries:
-/// - Named parameters `:paramName` to positional `$N`
-/// - Record expansion in `VALUES(:record)` and `SET :record`
-/// - Query narrowing: `SELECT *` to explicit column list when return type is a projection
 public final class QueryRewriter {
     private QueryRewriter() {}
 

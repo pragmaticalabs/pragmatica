@@ -14,10 +14,6 @@ import java.util.Map;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Bootstrap state for resume support. Section 13.1.
-///
-/// Persisted as JSON to `~/.aether/clusters/<name>/bootstrap-state.json` so that
-/// a failed bootstrap can be resumed from the last completed phase.
 @SuppressWarnings("JBCT-SEQ-01") public record BootstrapState(String clusterName,
                                                               String configHash,
                                                               String startedAt,

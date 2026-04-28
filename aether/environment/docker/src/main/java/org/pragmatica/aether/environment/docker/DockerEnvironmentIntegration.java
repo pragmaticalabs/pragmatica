@@ -19,9 +19,6 @@ import static org.pragmatica.lang.Option.empty;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Docker implementation of the EnvironmentIntegration SPI.
-/// Provides compute capabilities only, backed by Docker CLI.
-/// Secrets, load balancing, and discovery are not applicable in a local Docker environment.
 public record DockerEnvironmentIntegration(DockerComputeProvider computeProvider) implements EnvironmentIntegration {
     public static Result<DockerEnvironmentIntegration> dockerEnvironmentIntegration(DockerConfig config) {
         return dockerEnvironmentIntegration(ProcessCommandRunner.processCommandRunner(), config);

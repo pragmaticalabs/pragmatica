@@ -13,8 +13,6 @@ import java.util.List;
 import java.util.function.Function;
 
 
-/// Builds a Schema snapshot by folding a sequence of SchemaEvents.
-/// Pure function: no side effects, no mutation.
 public final class SchemaBuilder {
     private SchemaBuilder() {}
 

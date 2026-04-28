@@ -11,9 +11,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import java.util.Map;
 
 
-/// SPI for managing external load balancer configuration.
-/// Implementations synchronize route and target changes with a cloud load balancer
-/// (e.g., Hetzner LB, AWS ALB) so that external traffic reaches the correct nodes.
 public interface LoadBalancerProvider {
     Promise<Unit> onRouteChanged(RouteChange routeChange);
     Promise<Unit> onNodeRemoved(String nodeIp);

@@ -21,21 +21,6 @@ import static org.pragmatica.http.HttpMethod.POST;
 import static org.pragmatica.http.HttpMethod.PUT;
 
 
-/// Routes for Maven repository protocol: binary artifact GET/PUT/POST.
-///
-///
-/// These routes remain as {@link RouteHandler} because they require dynamic content types
-/// determined at runtime based on file extension. The Route API requires content types to be
-/// fixed at route definition time.
-///
-///
-/// URL patterns:
-///
-///   - `GET /repository/{groupPath`/{artifactId}/{version}/{file}}
-///   - `PUT /repository/{groupPath`/{artifactId}/{version}/{file}}
-///   - `POST /repository/{groupPath`/{artifactId}/{version}/{file}}
-///   - `GET /repository/{groupPath`/{artifactId}/maven-metadata.xml}
-///
 public final class MavenProtocolRoutes implements RouteHandler {
     private static final String REPOSITORY_PREFIX = ManagementRoute.ARTIFACT_GET.prefix() + "/";
 

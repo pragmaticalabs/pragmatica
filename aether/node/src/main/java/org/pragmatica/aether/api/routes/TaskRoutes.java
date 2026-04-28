@@ -27,7 +27,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for task group delegation observability: list assignments and force-reassign.
 public final class TaskRoutes implements RouteSource {
     private static final Cause UNKNOWN_TASK_GROUP = Causes.cause("Unknown task group");
 
@@ -78,14 +77,13 @@ public final class TaskRoutes implements RouteSource {
     }
 
     private Promise<ReassignResponse> reassignTask(String group, ReassignRequest request) {
-        return parseTaskGroup(group).async()
-                                    .flatMap(taskGroup -> reassignToNode(taskGroup, request.targetNode()));
+        return parseTaskGroup(group).async().flatMap(taskGroup -> reassignToNode(taskGroup, request.targetNode()));
     }
 
     private Promise<ReassignResponse> reassignToNode(TaskGroup taskGroup, String targetNodeId) {
         return NodeId.nodeId(targetNodeId).async()
-                     .flatMap(nodeId -> coordinator().reassign(taskGroup, nodeId))
-                     .map(_ -> new ReassignResponse("reassigned"));
+                            .flatMap(nodeId -> coordinator().reassign(taskGroup, nodeId))
+                            .map(_ -> new ReassignResponse("reassigned"));
     }
 
     private static Result<TaskGroup> parseTaskGroup(String group) {

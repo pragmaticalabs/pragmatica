@@ -27,8 +27,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.success;
 
 
-/// GCP Cloud NEG-based load balancer provider.
-/// Manages network endpoints on a pre-existing GCP Network Endpoint Group (NEG).
 public record GcpLoadBalancerProvider(GcpClient client, String negName, int destinationPort) implements LoadBalancerProvider {
     private static final Logger log = LoggerFactory.getLogger(GcpLoadBalancerProvider.class);
 

@@ -10,9 +10,6 @@ import org.pragmatica.lang.Result;
 import java.util.ServiceLoader;
 
 
-/// SPI for creating EnvironmentIntegration instances from generic CloudConfig.
-/// Each cloud provider module registers its factory via ServiceLoader.
-/// The node bootstrap uses the provider name to select the correct factory.
 public interface EnvironmentIntegrationFactory {
     String providerName();
     Result<EnvironmentIntegration> create(CloudConfig config);

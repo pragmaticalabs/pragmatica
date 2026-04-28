@@ -7,17 +7,6 @@ package org.pragmatica.aether.update;
 import org.pragmatica.aether.artifact.Version;
 
 
-/// Results of a canary health comparison between baseline and canary versions.
-///
-/// Used by the canary evaluation loop to decide whether to advance, hold, or rollback.
-///
-/// @param canaryId the canary deployment being evaluated
-/// @param baselineVersion the old (baseline) version
-/// @param canaryVersion the new (canary) version
-/// @param baselineMetrics metrics snapshot for baseline version
-/// @param canaryMetrics metrics snapshot for canary version
-/// @param verdict the health comparison verdict
-/// @param collectedAt timestamp when metrics were collected
 public record CanaryHealthComparison(String canaryId,
                                      Version baselineVersion,
                                      Version canaryVersion,

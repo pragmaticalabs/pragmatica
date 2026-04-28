@@ -18,10 +18,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STO
 import static org.pragmatica.aether.management.route.ManagementRoute.STORAGE_LIST;
 
 
-/// Lists storage instances, either cluster-wide or on a specific node.
-///
-/// Without `--node`, queries the cluster-wide aggregation endpoint.
-/// With `--node`, queries the per-node endpoint on the specified node.
 @Command(name = "list", description = "List storage instances") @SuppressWarnings("JBCT-RET-01") class StorageListCommand implements Callable<Integer> {
     @CommandLine.ParentCommand private StorageCommand parent;
 

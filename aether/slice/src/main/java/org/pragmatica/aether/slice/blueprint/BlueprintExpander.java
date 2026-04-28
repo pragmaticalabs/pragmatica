@@ -19,17 +19,6 @@ import java.util.stream.Collectors;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Expands a Blueprint by resolving all transitive dependencies.
-///
-/// Process:
-/// 1. Collect explicit slices from Blueprint
-/// 2. For each slice, resolve transitive dependencies
-/// 3. Build dependency graph and detect cycles
-/// 4. Topologically sort (dependencies before dependents)
-/// 5. Create ExpandedBlueprint with proper instance counts
-///
-/// Explicit slices keep their instance counts.
-/// Transitive dependencies get instances=1, isDependency=true.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02"}) public interface BlueprintExpander {
     static Promise<ExpandedBlueprint> expand(Blueprint blueprint, Repository repository) {
         return expand(blueprint, RepositoryDependencyLoader.repositoryDependencyLoader(repository));

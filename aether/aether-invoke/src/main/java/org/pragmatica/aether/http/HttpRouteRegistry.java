@@ -27,24 +27,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Passive KV-Store watcher that maintains a local cache of HTTP route definitions.
-///
-///
-/// The KV store holds flat per-node keys (`HttpNodeRouteKey(method, prefix, nodeId)`).
-/// This registry reconstructs `Map<(method+prefix), Set<NodeId>>` in memory from those flat keys.
-///
-///
-/// Key responsibilities:
-///
-///   - Watch HTTP node route key events (ValuePut/ValueRemove)
-///   - Maintain TreeMap per HTTP method for prefix-based route matching
-///   - Reconstruct node sets from flat per-node keys
-///   - Provide route discovery for incoming HTTP requests
-///
-///
-///
-/// Uses TreeMap with floor-entry lookup for efficient prefix matching.
-/// Same algorithm as RequestRouter in http-routing module.
 public interface HttpRouteRegistry {
     Option<RouteInfo> findRoute(String httpMethod, String path);
     List<RouteInfo> allRoutes();

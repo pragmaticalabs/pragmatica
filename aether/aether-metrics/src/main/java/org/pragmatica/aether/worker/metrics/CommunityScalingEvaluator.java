@@ -12,11 +12,6 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 
-/// Evaluates community metrics to detect scaling needs.
-/// Maintains a sliding window of aggregated metrics and checks thresholds.
-/// Only emits a CommunityScalingRequest when sustained threshold breaches are detected.
-///
-/// Lifecycle: created when node becomes governor, destroyed on demotion.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-ZONE-02"}) public sealed interface CommunityScalingEvaluator permits ActiveCommunityScalingEvaluator {
     double DEFAULT_SCALE_UP_CPU_THRESHOLD = 0.80;
 

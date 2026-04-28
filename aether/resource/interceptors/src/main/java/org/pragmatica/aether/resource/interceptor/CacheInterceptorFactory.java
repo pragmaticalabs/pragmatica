@@ -19,10 +19,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Factory that provisions {@link CacheMethodInterceptor} instances from configuration.
-///
-/// Shared cache instances: configurations with the same {@link CacheConfig#cacheName()}
-/// share a single {@link CacheBackend} via {@code computeIfAbsent}.
 public final class CacheInterceptorFactory implements ResourceFactory<CacheMethodInterceptor, CacheConfig> {
     private final Map<String, CacheBackend> cacheRegistry = new ConcurrentHashMap<>();
 

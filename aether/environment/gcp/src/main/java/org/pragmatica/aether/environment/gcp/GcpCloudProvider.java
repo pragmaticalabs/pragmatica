@@ -18,9 +18,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 
-/// GCP Cloud implementation of the CloudProvider SPI.
-/// Wraps the existing ComputeProvider to provide bootstrap/apply-level operations.
-/// GCP supports preemptible instances, but spot provisioning is deferred to v2.
 public record GcpCloudProvider(ComputeProvider computeProvider) implements CloudProvider {
     public static GcpCloudProvider gcpCloudProvider(ComputeProvider computeProvider) {
         return new GcpCloudProvider(computeProvider);

@@ -28,8 +28,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.success;
 
 
-/// AWS ELBv2 target-group-based load balancer provider.
-/// Manages instance-based targets on a pre-existing ALB/NLB target group.
 public record AwsLoadBalancerProvider(AwsClient client, String targetGroupArn) implements LoadBalancerProvider {
     private static final Logger log = LoggerFactory.getLogger(AwsLoadBalancerProvider.class);
 

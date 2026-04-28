@@ -9,7 +9,6 @@ import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamWriter;
 
 
-/// Delegating XMLStreamWriter that adds indentation for human-readable output.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) final class IndentingXmlStreamWriter implements XMLStreamWriter {
     private static final String INDENT = "  ";
 

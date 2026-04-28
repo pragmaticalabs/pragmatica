@@ -10,7 +10,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 
-/// Cloud provider SPI for cluster bootstrap and apply operations. Section 11.1
 public interface CloudProvider {
     Promise<QuotaStatus> checkQuota(NodeGroupConfig group);
     Promise<List<ProvisionedNode>> provision(NodeGroupConfig group);

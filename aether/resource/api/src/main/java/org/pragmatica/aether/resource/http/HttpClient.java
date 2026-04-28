@@ -17,8 +17,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.type.TypeToken.typeToken;
 
 
-/// HTTP client resource providing outbound HTTP operations.
-/// Wraps pragmatica-lite HttpOperations with resource lifecycle.
 public interface HttpClient {
     Promise<HttpResult<String>> get(String path);
     Promise<HttpResult<String>> get(String path, Map<String, String> headers);

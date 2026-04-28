@@ -9,7 +9,6 @@ import org.pragmatica.lang.Option;
 import java.util.List;
 
 
-/// Role sub-table within a source profile. S5.1.6 REQ-5.1.6.1
 public record RoleSubTable(NodeRole role,
                            Option<Integer> count,
                            Option<List<String>> hosts,

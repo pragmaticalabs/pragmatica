@@ -18,14 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// DecisionTreeController enhanced with TTM predictions.
-///
-/// Adjusts thresholds based on TTM forecasts for proactive scaling.
-/// This creates a two-tier control system:
-///
-///   - Tier 1: Decision tree (reactive, 1-second evaluations)
-///   - Tier 2: TTM predictions (proactive, 1-minute evaluations)
-///
 public interface AdaptiveDecisionTree extends ClusterController {
     ClusterController baseController();
     TTMManager ttmManager();

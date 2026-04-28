@@ -29,22 +29,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 
-/// Manages cluster node count by converging actual topology to desired configuration.
-/// Owns a TopologyObserver for tracking connections and health, and a NodeReconciler
-/// state machine for provisioning/draining nodes.
-///
-/// Single action path for ALL node count changes:
-/// - Auto-heal (node failure -> provision replacement)
-/// - Manual scale (CLI/API -> adjust desired count)
-/// - Control loop (future: auto-scale based on load)
-///
-/// Quorum safety: never scales below minimum quorum size (3 nodes).
-///
-/// All membership-size state is read from the snapshot via [GenerationSnapshotSource];
-/// `setDesiredSize` is a thin write-through to the `ClusterConfigValue` atom.
-@SuppressWarnings("JBCT-RET-01")
-// Callback methods used by message routing framework
-public interface ClusterTopologyManager extends TopologyManager {
+@SuppressWarnings("JBCT-RET-01") public interface ClusterTopologyManager extends TopologyManager {
     NodeReconcilerState reconcilerState();
     Result<Unit> setDesiredSize(int size);
     int desiredSize();
@@ -53,16 +38,9 @@ public interface ClusterTopologyManager extends TopologyManager {
     void onTopologyChange(TopologyChangeNotification topologyChange);
     void onClusterConfigChanged();
 
-    /// Hook for QUIC-level peer connectivity changes that do NOT flow through
-    /// `TopologyChangeNotification.NodeAdded`/`NodeRemoved` (e.g., transient eviction-driven
-    /// reconnects suppressed at `QuicClusterNetwork.processViewChange`). The two systems —
-    /// KV-derived membership events and QUIC peer-state — can disagree during reconnect
-    /// storms; bumping stability on QUIC peer-state changes ensures the CTM provisioning
-    /// gate observes the same churn as the topology layer. Default implementations are
-    /// no-ops so test fixtures and non-QUIC paths are unaffected.
     @org.pragmatica.lang.Contract default void onQuicPeerJoined(NodeId peerId) {}
-    @org.pragmatica.lang.Contract default void onQuicPeerLeft(NodeId peerId) {}
 
+    @org.pragmatica.lang.Contract default void onQuicPeerLeft(NodeId peerId) {}
 
     void activate();
     void deactivate();
@@ -106,10 +84,6 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          drainCoordinator);
     }
 
-    /// Fix D — production overload that injects the `ProvisioningSlotValue` reader. CTM mirrors
-    /// each in-flight provisioning slot to KV (via `commandApplier`) and re-derives the
-    /// in-memory `inFlightProvisions` view from these atoms on `activate()` so a new leader
-    /// taking over mid-wave does not double-dispatch.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,

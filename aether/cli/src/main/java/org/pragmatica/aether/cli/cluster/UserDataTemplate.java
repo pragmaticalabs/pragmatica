@@ -14,14 +14,6 @@ import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Option;
 
 
-/// Renders cloud-init user-data scripts for bootstrapping Aether nodes.
-///
-/// The template generates a bash script that:
-/// - Installs Docker if not present (container runtime)
-/// - Writes an Aether configuration file
-/// - Pulls and runs the Aether node container (or starts JVM)
-///
-/// Template variables are resolved from the cluster configuration and per-node parameters.
 sealed interface UserDataTemplate {
     record unused() implements UserDataTemplate{}
 

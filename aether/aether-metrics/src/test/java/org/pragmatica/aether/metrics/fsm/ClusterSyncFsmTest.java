@@ -15,7 +15,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
@@ -199,8 +198,6 @@ class ClusterSyncFsmTest {
                                                      new NoopClusterSyncCollector(),
                                                      TimeSpan.timeSpan(1).hours(),
                                                      () -> 7L,
-                                                     Option::none,
-                                                     _ -> new byte[0],
                                                      sink,
                                                      threshold,
                                                      () -> Epoch.epoch(7L, 0L),

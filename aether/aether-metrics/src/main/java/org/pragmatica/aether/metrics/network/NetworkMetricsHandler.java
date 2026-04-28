@@ -17,12 +17,6 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 
 
-/// Sharable Netty handler that tracks network I/O metrics.
-///
-/// Thread-safe: uses atomic operations for all counters.
-///
-/// Add to pipeline after codec handlers to track application-level messages,
-/// or before codec handlers to track raw bytes.
 @Sharable public final class NetworkMetricsHandler extends ChannelDuplexHandler {
     private final LongAdder bytesRead = new LongAdder();
 

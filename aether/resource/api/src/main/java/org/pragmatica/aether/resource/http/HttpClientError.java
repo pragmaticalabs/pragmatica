@@ -7,9 +7,6 @@ package org.pragmatica.aether.resource.http;
 import org.pragmatica.lang.Cause;
 
 
-/// Typed error causes for HTTP client JSON operations.
-/// Separate from HttpError (transport-level) and JsonError (Jackson-level).
-/// API module stays Jackson-free.
 public sealed interface HttpClientError extends Cause {
     record SerializationFailed(String message) implements HttpClientError{}
 

@@ -16,10 +16,6 @@ import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactoryOptions;
 
 
-/// SPI factory for creating R2DBC SqlConnector instances.
-///
-/// Creates R2dbcSqlConnector with R2DBC connection pooling.
-/// Priority 10 — preferred over JDBC when r2dbc_url is configured.
 public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnector, DatabaseConnectorConfig> {
     @Override public Class<SqlConnector> resourceType() {
         return SqlConnector.class;

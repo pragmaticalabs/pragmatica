@@ -19,9 +19,15 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.http.routing.Handler;
+import org.pragmatica.http.routing.HttpError;
+import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,8 +37,9 @@ import java.util.stream.Stream;
 import static org.pragmatica.aether.api.ManagementApiResponses.ClusterTopologyStatusResponse;
 
 
-/// Routes for cluster topology growth status: core count, limits, worker count.
 public final class ClusterTopologyRoutes implements RouteSource {
+    private static final Cause SNAPSHOT_NOT_PUBLISHED = Causes.cause("Cluster generation snapshot not yet published — leader is bootstrapping or no quorum");
+
     private final Supplier<ManageableNode> nodeSupplier;
 
     private ClusterTopologyRoutes(Supplier<ManageableNode> nodeSupplier) {
@@ -44,8 +51,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
+        Handler<ClusterTopologyStatusResponse> topologyHandler = _ -> buildTopologyStatus();
         return Stream.of(ManagementRoutes.<ClusterTopologyStatusResponse>route(ManagementRoute.CLUSTER_TOPOLOGY)
-                                         .toJson(this::buildTopologyStatus),
+                                         .toJson(topologyHandler),
                          ManagementRoutes.<GovernorsResponse>route(ManagementRoute.CLUSTER_GOVERNORS)
                                          .toJson(this::buildGovernorsResponse));
     }
@@ -70,8 +78,16 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                 memberIds);
     }
 
-    private ClusterTopologyStatusResponse buildTopologyStatus() {
+    private Promise<ClusterTopologyStatusResponse> buildTopologyStatus() {
         var node = nodeSupplier.get();
+        return node.currentGenerationSnapshot()
+                                             .fold(() -> Promise.<ClusterTopologyStatusResponse>failure(HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE,
+                                                                                                                            SNAPSHOT_NOT_PUBLISHED)),
+                                                   snapshot -> Promise.success(assembleTopologyStatus(node, snapshot)));
+    }
+
+    private static ClusterTopologyStatusResponse assembleTopologyStatus(ManageableNode node,
+                                                                        ClusterGenerationSnapshot snapshot) {
         var topologyConfig = node.topologyConfig();
         var topologyManager = node.topologyManager();
         var connectedPeers = node.connectedPeerIds();
@@ -80,10 +96,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                            .filter(id -> isHealthy(topologyManager, id))
                                            .map(NodeId::id)
                                            .toList();
-        var snapshot = node.currentGenerationSnapshot();
-        var coreCount = snapshot.map(ClusterTopologyRoutes::snapshotCoreCount)
-                                    .or(() -> topologyManager.healthyActiveNodeCount());
-        var epoch = snapshot.map(s -> s.epoch().toString());
+        var coreCount = snapshotCoreCount(snapshot);
+        var epoch = Option.some(snapshot.epoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
         var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
                                                                         id,

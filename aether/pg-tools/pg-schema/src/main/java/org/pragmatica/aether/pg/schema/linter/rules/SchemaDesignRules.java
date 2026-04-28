@@ -17,7 +17,6 @@ import java.util.List;
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
 
-/// Rules detecting schema design issues.
 public final class SchemaDesignRules {
     private SchemaDesignRules() {}
 

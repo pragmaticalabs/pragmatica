@@ -12,8 +12,6 @@ import java.util.Map;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Detailed provisioning specification for compute instances.
-/// Extends the basic InstanceType-based provisioning with pool, size, tags, and optional image/userData/placement.
 public record ProvisionSpec(InstanceType instanceType,
                             String instanceSize,
                             String pool,

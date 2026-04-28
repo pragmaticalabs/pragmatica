@@ -27,8 +27,6 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 
-/// Routes for exposing the leader-projected cluster generation snapshot via the
-/// management API. See `aether/docs/specs/cluster-generation-spec.md` §14.1.
 public final class ClusterGenerationRoutes implements RouteSource {
     private static final String MODE_UNKNOWN = "unknown";
 

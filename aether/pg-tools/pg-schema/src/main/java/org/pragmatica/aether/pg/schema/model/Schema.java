@@ -12,8 +12,6 @@ import java.util.Map;
 import java.util.Set;
 
 
-/// Top-level container for a PostgreSQL schema snapshot.
-/// Immutable — all mutation methods return new instances.
 public record Schema(Map<String, Table> tables,
                      Map<String, PgType.EnumType> enumTypes,
                      Map<String, PgType.CompositeType> compositeTypes,

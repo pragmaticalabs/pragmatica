@@ -24,8 +24,6 @@ import static org.pragmatica.aether.environment.IpOwnership.ipOwnership;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Hetzner Cloud floating IP provider. Manages floating IP attachment,
-/// ownership verification, and zone compatibility via the Hetzner Cloud API.
 public record HetznerFloatingIpProvider(HetznerClient client) implements FloatingIpProvider {
     private static final Logger log = LoggerFactory.getLogger(HetznerFloatingIpProvider.class);
 

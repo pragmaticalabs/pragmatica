@@ -20,17 +20,6 @@ import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Context for loading a slice that buffers method handles for eager materialization.
-///
-/// During slice loading, this context wraps the SliceCreationContext and buffers all
-/// MethodHandle instances created via {@link #invoker()}. When activation begins,
-/// {@link #materializeAll()} is called to verify all dependencies exist before
-/// the slice's start() method is called.
-///
-/// This implements Part 2 of the Slice Lifecycle design: Eager Dependency Validation.
-/// The goal is to ensure no technical failures occur after a slice reaches ACTIVE state.
-///
-/// Thread-safe: Uses CopyOnWriteArrayList for handle buffering and AtomicBoolean for state.
 public final class SliceLoadingContext implements SliceCreationContext {
     private final SliceCreationContext delegate;
     private final BufferingInvokerFacade bufferingInvoker;

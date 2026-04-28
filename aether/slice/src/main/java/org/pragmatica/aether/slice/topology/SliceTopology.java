@@ -7,9 +7,6 @@ package org.pragmatica.aether.slice.topology;
 import java.util.List;
 
 
-/// Per-slice topology extracted from compile-time manifest.
-///
-/// Contains the slice's routes, dependencies, resources, and pub/sub connections.
 public record SliceTopology(String sliceName,
                             String artifact,
                             List<Route> routes,

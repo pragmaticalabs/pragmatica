@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
@@ -27,14 +28,6 @@ import java.util.Set;
 import static org.pragmatica.lang.Option.none;
 
 
-/// Value type stored in the consensus KVStore.
-///
-/// TODO(JBCT-NAM-01 scope): this sealed interface hosts many inner records (SliceTargetValue,
-/// NodeLifecycleValue, etc.), each with a valid `typeName.typeName(...)` factory. The CST rule
-/// currently walks inner records using the outer type's name as the expected factory prefix,
-/// producing false positives. Suppression removed at rule level would require per-nested-record
-/// annotation on every inner record — tracked for a follow-up rule fix; until then the inner
-/// factories themselves document intent via their own names.
 @Codec@CodecFor(ExecutionMode.class) @SuppressWarnings("JBCT-NAM-01") public sealed interface AetherValue {
     record SliceTargetValue(Version currentVersion,
                             int targetInstances,
@@ -136,19 +129,7 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    /// Per-slice deployment state value used in cluster-side projections.
-    ///
-    /// `transitionedAt` is unix-epoch millis stamped at the moment the slice entered
-    /// `state`; for non-transitional states (e.g. ACTIVE, LOADED) it is 0L. Theme K #1
-    /// — re-derivation of `ClusterDeploymentState.Active.transitionalStateTimestamps`
-    /// from KV after a leader handoff. Atoms persisted before the schema bump carry
-    /// `transitionedAt = 0L` and are treated as "unknown" by the consumer (fallback to
-    /// `nowMs()` so the stuck-slice timer starts at handoff time, equivalent to the
-    /// legacy behaviour).
-    record SliceNodeValue(SliceState state,
-                          Option<String> failureReason,
-                          boolean fatal,
-                          long transitionedAt) implements AetherValue {
+    record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {
         public static SliceNodeValue sliceNodeValue(SliceState state) {
             return new SliceNodeValue(state, none(), false, defaultTransitionedAt(state));
         }
@@ -166,7 +147,9 @@ import static org.pragmatica.lang.Option.none;
         }
 
         private static long defaultTransitionedAt(SliceState state) {
-            return state.isTransitional() ? System.currentTimeMillis() : 0L;
+            return state.isTransitional()
+                  ? System.currentTimeMillis()
+                  : 0L;
         }
     }
 
@@ -632,17 +615,7 @@ import static org.pragmatica.lang.Option.none;
             if (provisioningSource == null) {provisioningSource = ProvisioningSource.UNKNOWN;}
         }
 
-        /// Metadata-erasing factory. Use ONLY at the very first lifecycle write for a node
-        /// when host/port/epoch/provisioning-source are genuinely unknown. Any subsequent
-        /// transition (DRAINING, DECOMMISSIONED, etc.) MUST carry forward the prior atom's
-        /// metadata to preserve the single-source-of-truth invariant — see Theme E (#189).
-        ///
-        /// Prefer the metadata-preserving overload
-        /// [`#nodeLifecycleValue(NodeLifecycleState, String, int, Epoch)`] which keeps host
-        /// and port populated for downstream consumers (CTM provisioning, health projection,
-        /// drain coordination).
-        @Deprecated(since = "rc1-wave3", forRemoval = false)
-        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
+        @Deprecated(since = "rc1-wave3", forRemoval = false) public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
             return new NodeLifecycleValue(state,
                                           System.currentTimeMillis(),
                                           "",
@@ -652,11 +625,6 @@ import static org.pragmatica.lang.Option.none;
                                           ProvisioningSource.UNKNOWN);
         }
 
-        /// Metadata-preserving factory (Theme C / rc2 #189 hook). Use this when transitioning
-        /// a node between lifecycle states (e.g. ON_DUTY → DRAINING → DECOMMISSIONED) so the
-        /// host, port and observed core epoch from the prior atom are not erased. Callers
-        /// should read the prior `NodeLifecycleValue` from the KV-Store and forward
-        /// `host`/`port`/`epoch` from there.
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
                                                             String host,
                                                             int port,
@@ -756,13 +724,6 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    /// Per-node, per-artifact deployment state — the authoritative KV-persisted
-    /// projection consumed by `ClusterDeploymentState` and `NodeDeploymentState`.
-    ///
-    /// `transitionedAt` is unix-epoch millis stamped when the slice entered `state`;
-    /// 0L for non-transitional states. Theme K #1 — enables the cluster leader to
-    /// re-derive `transitionalStateTimestamps` after handoff. Pre-schema-bump atoms
-    /// carry 0L and are treated as "unknown" (fallback to `nowMs()` on read).
     record NodeArtifactValue(SliceState state,
                              Option<String> failureReason,
                              boolean fatal,
@@ -803,12 +764,7 @@ import static org.pragmatica.lang.Option.none;
                                                                              instanceNumber,
                                                                              methods,
                                                                              0L);}
-            return new NodeArtifactValue(newState,
-                                         Option.none(),
-                                         false,
-                                         0,
-                                         List.of(),
-                                         defaultTransitionedAt(newState));
+            return new NodeArtifactValue(newState, Option.none(), false, 0, List.of(), defaultTransitionedAt(newState));
         }
 
         public boolean hasEndpoints() {
@@ -816,7 +772,9 @@ import static org.pragmatica.lang.Option.none;
         }
 
         private static long defaultTransitionedAt(SliceState state) {
-            return state.isTransitional() ? System.currentTimeMillis() : 0L;
+            return state.isTransitional()
+                  ? System.currentTimeMillis()
+                  : 0L;
         }
     }
 
@@ -1340,15 +1298,7 @@ import static org.pragmatica.lang.Option.none;
         FAILED
     }
 
-    /// KV-mirrored CTM in-flight provisioning slot — Fix D (synthesis-fixes-to-15.md).
-    /// Each `provisionNodes(N)` dispatch creates one of these atoms per slot so that on leader
-    /// handoff the new leader can re-derive its `inFlightProvisions` view from KV instead of
-    /// dispatching a duplicate wave. `assignedNodeId` is set by post-provision wiring once the
-    /// new container's NodeLifecycleValue arrives so the slot can be correlated to ON_DUTY and
-    /// cleaned up on completion.
-    record ProvisioningSlotValue(long spawnedAtMs,
-                                 long deadlineMs,
-                                 Option<NodeId> assignedNodeId) implements AetherValue {
+    record ProvisioningSlotValue(long spawnedAtMs, long deadlineMs, Option<NodeId> assignedNodeId) implements AetherValue {
         public ProvisioningSlotValue {
             if (assignedNodeId == null) {assignedNodeId = Option.none();}
         }
@@ -1365,6 +1315,12 @@ import static org.pragmatica.lang.Option.none;
 
         public ProvisioningSlotValue withAssignedNode(NodeId nodeId) {
             return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.option(nodeId));
+        }
+    }
+
+    record GenerationSnapshotValue(ClusterGenerationSnapshot snapshot) implements AetherValue {
+        public static GenerationSnapshotValue generationSnapshotValue(ClusterGenerationSnapshot snapshot) {
+            return new GenerationSnapshotValue(snapshot);
         }
     }
 

@@ -21,13 +21,6 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
 
-/// Repository implementation for Maven local repository (~/.m2/repository).
-///
-/// Resolves artifacts to their JAR locations following Maven conventions:
-/// ```
-/// {localRepo}/{groupId as path}/{artifactId}/{version}/{artifactId}-{version}.jar
-/// Example: ~/.m2/repository/org/example/my-slice/1.0.0/my-slice-1.0.0.jar
-/// ```
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-ZONE-02"}) public interface LocalRepository extends Repository {
     static LocalRepository localRepository() {
         return localRepository(Path.of(MavenLocalRepoLocator.findLocalRepository()));

@@ -31,12 +31,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Leader-side component that manages consumer group partition assignments.
-/// Only active on the leader node. Uses KV-Store via consensus to persist
-/// assignments, which are then mirrored by ConsumerGroupRegistry on all nodes.
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks --- void required by messaging framework
-public sealed interface ConsumerGroupCoordinator {
+@SuppressWarnings("JBCT-RET-01") public sealed interface ConsumerGroupCoordinator {
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
     Result<Unit> joinGroup(String groupId, String streamName, int partitionCount, String consumerId, NodeId nodeId);
     Result<Unit> leaveGroup(String groupId, String streamName, String consumerId);

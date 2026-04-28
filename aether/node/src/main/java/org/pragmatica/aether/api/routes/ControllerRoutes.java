@@ -26,7 +26,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Routes for controller management: config, status, TTM status.
 public final class ControllerRoutes implements RouteSource {
     private final Supplier<ManageableNode> nodeSupplier;
 

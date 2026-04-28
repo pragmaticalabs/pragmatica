@@ -7,7 +7,6 @@ package org.pragmatica.aether.pg.schema.model;
 import org.pragmatica.lang.Option;
 
 
-/// A sequence definition.
 public record Sequence(String name,
                        String schema,
                        Option<String> dataType,

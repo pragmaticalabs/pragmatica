@@ -47,9 +47,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Azure Cloud implementation of the ComputeProvider SPI.
-/// Delegates to AzureClient for VM lifecycle management and maps
-/// Azure VM models to the environment integration domain types.
 public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig config) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(AzureComputeProvider.class);
 

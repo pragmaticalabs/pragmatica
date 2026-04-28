@@ -22,8 +22,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Serves static files from classpath resources.
-/// Supports configurable classpath prefix for resource lookup.
 @SuppressWarnings("JBCT-RET-01") public final class StaticFileHandler {
     private static final Logger log = LoggerFactory.getLogger(StaticFileHandler.class);
 

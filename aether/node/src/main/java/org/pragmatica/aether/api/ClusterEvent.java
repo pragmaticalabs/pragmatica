@@ -8,16 +8,6 @@ import java.time.Instant;
 import java.util.Map;
 
 
-/// Structured cluster event for dashboard timeline and LLM consumption.
-///
-/// Events are created by ClusterEventAggregator from MessageRouter fan-out
-/// and stored in a bounded ring buffer.
-///
-/// @param timestamp when the event occurred
-/// @param type the category of event
-/// @param severity the severity level
-/// @param summary human-readable description
-/// @param details context-specific key-value pairs
 public record ClusterEvent(Instant timestamp,
                            EventType type,
                            Severity severity,

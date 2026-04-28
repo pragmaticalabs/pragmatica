@@ -12,10 +12,6 @@ import java.util.List;
 import java.util.Set;
 
 
-/// Compact per-community view distributed by governors to community workers via
-/// Tier 3 `WorkerMetricsPing` (see spec §7.4). Mirrors `ClusterGenerationSnapshot`
-/// at the community scope: governor identity, members, partitions held, and a
-/// back-reference to the last-observed core epoch for cross-tier fencing.
 @Codec public record CommunityGenerationSnapshot(String communityId,
                                                  long communityTerm,
                                                  Epoch communityEpoch,

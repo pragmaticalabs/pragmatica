@@ -7,10 +7,6 @@ package org.pragmatica.aether.stream.segment;
 import java.util.Arrays;
 
 
-/// Immutable segment of events sealed from the ring buffer for persistent storage.
-/// Contains a batch of serialized events with metadata for offset-based lookup.
-///
-/// Serialization format per event: [offset:8][timestamp:8][len:4][data:len]
 public record SealedSegment(String streamName,
                             int partition,
                             long startOffset,

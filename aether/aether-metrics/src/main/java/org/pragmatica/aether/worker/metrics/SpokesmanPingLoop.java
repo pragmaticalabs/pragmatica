@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
@@ -14,7 +13,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
-import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -42,23 +40,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Tier 2 sharded ping loop — runs on every core node that holds a Spokesman
-/// duty (`SpokesmanKey(self).status == ACTIVE`) and fans out the leader's
-/// relayed `ClusterGenerationSnapshot` to each assigned community's governor
-/// every 500ms (configurable).
-///
-/// Responses (Tier 2 `ClusterSyncPong` from governors) are aggregated into a
-/// `CommunityReport` per community. The resulting list is published via the
-/// `ClusterSyncCollector` `communityReportSupplier` so that the core node's own
-/// Tier 1 pong (leader-bound) can piggyback it.
-///
-/// Lifecycle:
-///   - Dormant by default (Spokesman never ACTIVE).
-///   - Activated on `ValuePut(SpokesmanKey(self), status=ACTIVE, communities≠[])`.
-///   - Deactivated on `ValueRemove(SpokesmanKey(self))`, empty `communities`,
-///     or status flip to `ASSIGNED | FAILED`.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §7.3.
 public interface SpokesmanPingLoop {
     @Contract void start();
     @Contract void stop();
@@ -72,18 +53,14 @@ public interface SpokesmanPingLoop {
                                                ClusterNetwork network,
                                                TimeSpan interval,
                                                Supplier<Long> rabiaTermSupplier,
-                                               Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
                                                Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
-                                               Function<String, Option<NodeId>> governorLookup,
-                                               Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder) {
+                                               Function<String, Option<NodeId>> governorLookup) {
         return spokesmanPingLoop(self,
                                  network,
                                  interval,
                                  rabiaTermSupplier,
-                                 snapshotSupplier,
                                  allMetricsSupplier,
                                  governorLookup,
-                                 snapshotEncoder,
                                  NoopSpokesmanStatusWriter.INSTANCE);
     }
 
@@ -91,19 +68,15 @@ public interface SpokesmanPingLoop {
                                                ClusterNetwork network,
                                                TimeSpan interval,
                                                Supplier<Long> rabiaTermSupplier,
-                                               Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
                                                Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
                                                Function<String, Option<NodeId>> governorLookup,
-                                               Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder,
                                                SpokesmanStatusWriter statusWriter) {
         return new SpokesmanPingLoopImpl(self,
                                          network,
                                          interval,
                                          rabiaTermSupplier,
-                                         snapshotSupplier,
                                          allMetricsSupplier,
                                          governorLookup,
-                                         snapshotEncoder,
                                          statusWriter);
     }
 
@@ -152,10 +125,8 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     private final ClusterNetwork network;
     private final TimeSpan interval;
     private final Supplier<Long> rabiaTermSupplier;
-    private final Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier;
     private final Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier;
     private final Function<String, Option<NodeId>> governorLookup;
-    private final Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder;
     private final SpokesmanStatusWriter statusWriter;
 
     private final AtomicBoolean started = new AtomicBoolean(false);
@@ -174,19 +145,15 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
                           ClusterNetwork network,
                           TimeSpan interval,
                           Supplier<Long> rabiaTermSupplier,
-                          Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
                           Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
                           Function<String, Option<NodeId>> governorLookup,
-                          Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder,
                           SpokesmanStatusWriter statusWriter) {
         this.self = self;
         this.network = network;
         this.interval = interval;
         this.rabiaTermSupplier = rabiaTermSupplier;
-        this.snapshotSupplier = snapshotSupplier;
         this.allMetricsSupplier = allMetricsSupplier;
         this.governorLookup = governorLookup;
-        this.snapshotEncoder = snapshotEncoder;
         this.statusWriter = statusWriter;
     }
 
@@ -287,33 +254,24 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         try {
             var communities = assignedCommunities.get();
             if (communities.isEmpty()) {return;}
-            var maybeSnapshot = snapshotSupplier.get();
             var rabiaTerm = rabiaTermSupplier.get();
-            var epoch = maybeSnapshot.map(ClusterGenerationSnapshot::epoch).or(Epoch.ZERO);
-            communities.forEach(communityId -> pingOneGovernor(communityId, rabiaTerm, epoch, maybeSnapshot));
+            communities.forEach(communityId -> pingOneGovernor(communityId, rabiaTerm));
         } catch (Exception e) {
             log.warn("SpokesmanPingLoop tick failed: {}", e.getMessage());
         }
     }
 
-    private void pingOneGovernor(String communityId,
-                                 long rabiaTerm,
-                                 Epoch epoch,
-                                 Option<ClusterGenerationSnapshot> maybeSnapshot) {
-        governorLookup.apply(communityId).onPresent(governor -> sendPing(governor, rabiaTerm, epoch, maybeSnapshot));
+    private void pingOneGovernor(String communityId, long rabiaTerm) {
+        governorLookup.apply(communityId).onPresent(governor -> sendPing(governor, rabiaTerm));
     }
 
-    private void sendPing(NodeId governor,
-                          long rabiaTerm,
-                          Epoch epoch,
-                          Option<ClusterGenerationSnapshot> maybeSnapshot) {
-        var payload = maybeSnapshot.map(snapshotEncoder::apply).map(SnapshotPayload::snapshotPayload);
+    private void sendPing(NodeId governor, long rabiaTerm) {
+        var epoch = Epoch.ZERO;
         var ping = new ClusterSyncPing(self,
                                        allMetricsSupplier.get(),
                                        rabiaTerm,
                                        epoch.rabiaTerm(),
-                                       epoch.localCounter(),
-                                       payload);
+                                       epoch.localCounter());
         network.send(governor, ping);
     }
 

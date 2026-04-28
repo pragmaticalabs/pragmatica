@@ -16,7 +16,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Persistence for bootstrap state files at `~/.aether/clusters/<name>/bootstrap-state.json`.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-EX-01"}) sealed interface BootstrapStatePersistence {
     record unused() implements BootstrapStatePersistence{}
 

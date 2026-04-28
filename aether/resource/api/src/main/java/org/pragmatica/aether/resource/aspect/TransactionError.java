@@ -13,7 +13,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Error types for transaction operations.
 public sealed interface TransactionError extends Cause {
     record NoActiveTransaction(String operation) implements TransactionError {
         public static Result<NoActiveTransaction> noActiveTransaction(String operation) {

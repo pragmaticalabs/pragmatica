@@ -21,17 +21,8 @@ public record AutoHealSpec(boolean enabled,
 
     public static final String DEFAULT_PROVISION_STABILITY_WINDOW = "30s";
 
-    /// Theme K #4: maximum age of `NodeLifecycleValue(state == DECOMMISSIONED)` atoms before
-    /// the leader-side periodic GC removes them. Default 24h aligns with operator audit
-    /// windows and keeps tombstones visible for at least one ops cycle while preventing
-    /// unbounded accumulation over the cluster's lifetime.
     public static final String DEFAULT_DECOMMISSIONED_RETENTION = "24h";
 
-    /// Per-entry TTL on the leader-projection `swimHints` map. After this elapses without
-    /// re-emission the entry is treated as absent (HEALTHY default). Closes the sticky
-    /// SUSPECTED window when transient SWIM probes during boot leave a peer marked but
-    /// SWIM never re-emits HEALTHY. Default 60s — long enough for any healthy retry to
-    /// refresh the entry, short enough that orphaned entries self-heal in the smoke window.
     public static final String DEFAULT_SWIM_HINTS_TTL = "60s";
 
     public static AutoHealSpec autoHealSpec(boolean enabled, String retryInterval, String startupCooldown) {
@@ -47,9 +38,9 @@ public record AutoHealSpec(boolean enabled,
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
-                                             String retryInterval,
-                                             String startupCooldown,
-                                             String staleObservationTtl) {
+                                            String retryInterval,
+                                            String startupCooldown,
+                                            String staleObservationTtl) {
         return new AutoHealSpec(enabled,
                                 retryInterval,
                                 startupCooldown,
@@ -62,10 +53,10 @@ public record AutoHealSpec(boolean enabled,
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
-                                             String retryInterval,
-                                             String startupCooldown,
-                                             String staleObservationTtl,
-                                             int quicMissPromotionThreshold) {
+                                            String retryInterval,
+                                            String startupCooldown,
+                                            String staleObservationTtl,
+                                            int quicMissPromotionThreshold) {
         return new AutoHealSpec(enabled,
                                 retryInterval,
                                 startupCooldown,
@@ -78,11 +69,11 @@ public record AutoHealSpec(boolean enabled,
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
-                                             String retryInterval,
-                                             String startupCooldown,
-                                             String staleObservationTtl,
-                                             int quicMissPromotionThreshold,
-                                             String provisioningTimeout) {
+                                            String retryInterval,
+                                            String startupCooldown,
+                                            String staleObservationTtl,
+                                            int quicMissPromotionThreshold,
+                                            String provisioningTimeout) {
         return new AutoHealSpec(enabled,
                                 retryInterval,
                                 startupCooldown,
@@ -95,12 +86,12 @@ public record AutoHealSpec(boolean enabled,
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
-                                             String retryInterval,
-                                             String startupCooldown,
-                                             String staleObservationTtl,
-                                             int quicMissPromotionThreshold,
-                                             String provisioningTimeout,
-                                             String provisionStabilityWindow) {
+                                            String retryInterval,
+                                            String startupCooldown,
+                                            String staleObservationTtl,
+                                            int quicMissPromotionThreshold,
+                                            String provisioningTimeout,
+                                            String provisionStabilityWindow) {
         return new AutoHealSpec(enabled,
                                 retryInterval,
                                 startupCooldown,
@@ -113,13 +104,13 @@ public record AutoHealSpec(boolean enabled,
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
-                                             String retryInterval,
-                                             String startupCooldown,
-                                             String staleObservationTtl,
-                                             int quicMissPromotionThreshold,
-                                             String provisioningTimeout,
-                                             String provisionStabilityWindow,
-                                             String decommissionedRetention) {
+                                            String retryInterval,
+                                            String startupCooldown,
+                                            String staleObservationTtl,
+                                            int quicMissPromotionThreshold,
+                                            String provisioningTimeout,
+                                            String provisionStabilityWindow,
+                                            String decommissionedRetention) {
         return new AutoHealSpec(enabled,
                                 retryInterval,
                                 startupCooldown,
@@ -132,14 +123,14 @@ public record AutoHealSpec(boolean enabled,
     }
 
     public static AutoHealSpec autoHealSpec(boolean enabled,
-                                             String retryInterval,
-                                             String startupCooldown,
-                                             String staleObservationTtl,
-                                             int quicMissPromotionThreshold,
-                                             String provisioningTimeout,
-                                             String provisionStabilityWindow,
-                                             String decommissionedRetention,
-                                             String swimHintsTtl) {
+                                            String retryInterval,
+                                            String startupCooldown,
+                                            String staleObservationTtl,
+                                            int quicMissPromotionThreshold,
+                                            String provisioningTimeout,
+                                            String provisionStabilityWindow,
+                                            String decommissionedRetention,
+                                            String swimHintsTtl) {
         return new AutoHealSpec(enabled,
                                 retryInterval,
                                 startupCooldown,

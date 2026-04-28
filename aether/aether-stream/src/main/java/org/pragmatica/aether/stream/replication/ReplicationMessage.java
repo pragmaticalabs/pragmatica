@@ -10,7 +10,6 @@ import java.util.Arrays;
 import java.util.List;
 
 
-/// Protocol messages for stream replication between governor and replicas.
 public sealed interface ReplicationMessage {
     record ReplicateEvents(NodeId governorId,
                            String streamName,

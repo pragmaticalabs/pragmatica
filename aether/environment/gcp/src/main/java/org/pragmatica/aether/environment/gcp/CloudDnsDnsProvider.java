@@ -20,8 +20,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// GCP Cloud DNS provider.
-/// Manages DNS records via the Cloud DNS API for cross-environment migration.
 public record CloudDnsDnsProvider(GcpClient client, String managedZone) implements DnsProvider {
     private static final Logger log = LoggerFactory.getLogger(CloudDnsDnsProvider.class);
 

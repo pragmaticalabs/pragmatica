@@ -12,10 +12,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Aggregates network metrics from multiple handlers.
-///
-/// Use when you have multiple Netty pipelines (e.g., management server + cluster network)
-/// and want unified metrics.
 public final class NetworkMetricsAggregator {
     private final CopyOnWriteArrayList<NetworkMetricsHandler> handlers = new CopyOnWriteArrayList<>();
 

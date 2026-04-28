@@ -7,7 +7,6 @@ package org.pragmatica.aether.stream;
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for stream ring buffer operations.
 public sealed interface StreamError extends Cause {
     enum General implements StreamError {
         BUFFER_CLOSED("Ring buffer is closed"),

@@ -44,23 +44,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 
-/// Main entry point for starting an Aether cluster node.
-///
-///
-/// Usage: java -jar aether-node.jar [options]
-///
-///
-/// Options:
-///
-///   - --config=&lt;path&gt;    Path to aether.toml config file
-///   - --node-id=&lt;id&gt;     Node identifier (default: from config or random)
-///   - --port=&lt;port&gt;      Cluster port (default: from config or 8090)
-///   - --peers=&lt;host:port,...&gt;  Comma-separated list of peer addresses
-///
-///
-///
-/// When --config is provided, values from the config file are used as defaults,
-/// but can be overridden by command-line arguments.
 @SuppressWarnings("JBCT-RET-01") public record Main(String[] args) {
     private static final Logger log = LoggerFactory.getLogger(Main.class);
 

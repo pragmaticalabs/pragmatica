@@ -18,16 +18,6 @@ import org.pragmatica.lang.Result;
 import java.util.List;
 
 
-/// Unified deployment manager that operates at blueprint level.
-///
-/// Replaces the per-strategy managers (RollingUpdateManager, CanaryDeploymentManager,
-/// BlueGreenDeploymentManager) and DeploymentStrategyCoordinator with a single interface.
-///
-/// All deployments operate on blueprints — when a blueprint is deployed with a new version,
-/// ALL slices in the blueprint transition atomically through the configured strategy.
-///
-/// State is persisted in KV-Store via DeploymentKey/DeploymentValue, VersionRoutingKey/Value,
-/// and SliceTargetKey/Value entries. All mutations go through consensus for cluster-wide consistency.
 public interface DeploymentManager extends DelegatedComponent {
     Result<Deployment> start(String blueprintId,
                              Version newVersion,

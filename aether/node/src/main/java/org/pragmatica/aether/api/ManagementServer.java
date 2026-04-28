@@ -104,21 +104,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// HTTP management API server for cluster administration.
-///
-///
-/// Exposes REST endpoints for:
-///
-///   - GET /api/status - Cluster status
-///   - GET /api/nodes - List active nodes
-///   - GET /api/slices - List deployed slices
-///   - GET /api/metrics - Cluster metrics
-///   - GET /api/artifact-metrics - Artifact storage and deployment metrics
-///   - GET /repository/info/{groupPath}/{artifactId}/{version} - Artifact metadata
-///
-///
-///
-/// Uses pragmatica-lite's HttpServer infrastructure.
 public interface ManagementServer {
     Promise<Unit> start();
     Promise<Unit> stop();
@@ -1019,10 +1004,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 }
 
-/// Response writer wrapper that captures the HTTP status code for metrics recording.
-@SuppressWarnings("JBCT-RET-01")
-// Implements ResponseWriter interface which uses void returns
-final class InstrumentedResponseWriter implements ResponseWriter {
+@SuppressWarnings("JBCT-RET-01") final class InstrumentedResponseWriter implements ResponseWriter {
     private final ResponseWriter delegate;
     private int statusCode;
 

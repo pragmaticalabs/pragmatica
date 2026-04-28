@@ -11,11 +11,6 @@ import org.pragmatica.serialization.Codec;
 import java.util.Arrays;
 
 
-/// Relay envelope for cross-community DHT messages routed through governors.
-/// When a worker needs to send a DHT message to a node in another community,
-/// it wraps the serialized payload in this envelope and sends it to the target
-/// community's governor. The governor then forwards the relay to the actual
-/// target node via cluster network.
 @Codec public record DHTRelayMessage(NodeId actualTarget, byte[] serializedPayload) implements Message.Wired {
     public DHTRelayMessage {
         serializedPayload = serializedPayload.clone();

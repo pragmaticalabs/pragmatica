@@ -9,11 +9,6 @@ import org.pragmatica.consensus.Command;
 import java.util.Arrays;
 
 
-/// Consensus command for strong-consistency stream publishing.
-/// Proposed through Rabia and applied on all nodes in the same total order.
-///
-/// The payload is defensively copied on construction to ensure immutability,
-/// as required by the Rabia consensus protocol.
 public record StreamConsensusCommand(String streamName, int partition, byte[] payload, long timestamp) implements Command {
     public StreamConsensusCommand {
         payload = payload.clone();

@@ -22,30 +22,6 @@ import java.util.stream.Collectors;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Default implementation of SliceBridge for Node-Slice communication.
-///
-/// This class bridges the Node (Application ClassLoader) and Slices (isolated ClassLoader)
-/// using byte arrays for serialized data. It wraps a Slice instance and handles all
-/// serialization/deserialization at the boundary.
-///
-/// This implementation uses byte[] at the boundary, avoiding Netty types in the API
-/// to maintain complete isolation from Netty at the API level.
-///
-/// **Invocation Flow:**
-/// <ol>
-///   - Receive method name + serialized input (byte[])
-///   - Look up method by name
-///   - Deserialize input to typed parameter
-///   - Invoke method on slice
-///   - Serialize response to byte[]
-///   - Return serialized response
-/// </ol>
-///
-/// Note: This implementation is in a separate module from SliceBridge (slice-api) due to
-/// classloader isolation requirements. The factory method follows JBCT naming convention.
-///
-/// @see SliceBridge
-/// @see Slice
 @SuppressWarnings("JBCT-NAM-01") public record DefaultSliceBridge(Artifact artifact,
                                                                   Slice slice,
                                                                   Map<String, InternalMethod> methodMap,

@@ -11,9 +11,6 @@ import java.util.Map;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Generic cloud provider configuration parsed from the [cloud] TOML section.
-/// Uses string maps so the config layer doesn't depend on provider-specific types.
-/// Each EnvironmentIntegrationFactory knows how to interpret these maps.
 public record CloudConfig(String provider,
                           Map<String, String> credentials,
                           Map<String, String> compute,

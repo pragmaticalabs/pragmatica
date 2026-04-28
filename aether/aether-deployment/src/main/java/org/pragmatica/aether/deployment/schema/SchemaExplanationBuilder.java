@@ -7,8 +7,6 @@ package org.pragmatica.aether.deployment.schema;
 import java.util.List;
 
 
-/// Builds natural language explanations for schema migration events.
-/// Explanations are suitable for both human operators and LLM agents.
 @SuppressWarnings("JBCT-UTIL-02") public interface SchemaExplanationBuilder {
     static String buildFailedExplanation(String datasource,
                                          String artifactCoords,

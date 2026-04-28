@@ -30,10 +30,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Hetzner Cloud implementation of the DiscoveryProvider SPI.
-/// Discovers peers by querying servers with a specific `aether-cluster` label.
-/// Watches for peer changes by polling at a configurable interval.
-/// NOTE: deregisterSelf clears ALL labels on the server, not just aether-* labels.
 public final class HetznerDiscoveryProvider implements DiscoveryProvider {
     private static final Logger log = LoggerFactory.getLogger(HetznerDiscoveryProvider.class);
 

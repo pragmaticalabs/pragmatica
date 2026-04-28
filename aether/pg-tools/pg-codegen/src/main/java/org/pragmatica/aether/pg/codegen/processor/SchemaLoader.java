@@ -19,11 +19,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Loads migration SQL files from the classpath and builds a Schema model.
-///
-/// Convention: `config = "database"` maps to `schema/`, `config = "database.analytics"` maps to `schema/analytics/`.
-/// Migration files are processed in Flyway order (`V001__`, `V002__`, etc.).
-/// Schemas are cached per config path within a compilation unit.
 public final class SchemaLoader {
     private final ProcessingEnvironment processingEnv;
 
@@ -66,8 +61,6 @@ public final class SchemaLoader {
         return cache.containsKey(configPath);
     }
 
-    /// Loads raw migration scripts for the given config path (no schema model building).
-    /// Returns an empty list if no migrations are discovered.
     public List<String> loadMigrations(String configPath) {
         var schemaPath = configToSchemaPath(configPath);
         return loadMigrationScripts(schemaPath);
@@ -86,7 +79,8 @@ public final class SchemaLoader {
 
     private List<String> discoverMigrationFiles(String schemaPath) {
         var manifest = readResource(schemaPath + "migrations.list");
-        if (manifest.isPresent()) {return new ArrayList<>(List.of(manifest.expect("checked with isPresent above").split("\n")));}
+        if (manifest.isPresent()) {return new ArrayList<>(List.of(manifest.expect("checked with isPresent above")
+                                                                                 .split("\n")));}
         var files = new ArrayList<String>();
         int consecutiveMisses = 0;
         for (int i = 1;i <= 100;i++) {

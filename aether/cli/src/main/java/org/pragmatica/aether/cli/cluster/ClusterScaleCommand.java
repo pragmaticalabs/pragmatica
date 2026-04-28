@@ -21,10 +21,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_SCALE;
 
 
-/// Scales the cluster node count via the management API.
-///
-/// Supports scaling by source and role. The `--core` flag is a backward-compatible
-/// shortcut equivalent to source="" role="core".
 @Command(name = "scale", description = "Scale cluster node count") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterScaleCommand implements Callable<Integer> {
     private static final int MINIMUM_CORE_COUNT = 3;
 

@@ -33,13 +33,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Manages TTM lifecycle, leader awareness, and periodic evaluation.
-///
-/// Only runs inference on the leader node. Followers receive state updates
-/// via Rabia replication (through the DecisionTreeController threshold adjustments).
-@SuppressWarnings("JBCT-RET-01")
-// Registration methods — void is intentional
-public interface TTMManager extends DelegatedComponent {
+@SuppressWarnings("JBCT-RET-01") public interface TTMManager extends DelegatedComponent {
     Option<TTMForecast> currentForecast();
     TTMState state();
     void onForecast(Consumer<TTMForecast> callback);

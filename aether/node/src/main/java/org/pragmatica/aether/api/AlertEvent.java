@@ -11,11 +11,6 @@ import org.pragmatica.consensus.NodeId;
 import java.util.List;
 
 
-/// Events for the internal alert stream.
-///
-///
-/// Components can subscribe to these events via MessageRouter
-/// for automated responses (e.g., rollback triggers).
 public sealed interface AlertEvent {
     enum Severity {
         INFO,

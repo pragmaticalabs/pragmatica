@@ -11,21 +11,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 
-/// Advanced stream access for manual cursor management, replay, and seek.
-///
-/// Provisioned via `@ResourceQualifier(type = StreamAccess.class, config = "streams.xxx")`
-/// on a slice factory method parameter.
-///
-/// For most use cases, prefer `StreamPublisher<T>` (produce) or `@StreamSubscription` (consume).
-///
-/// Example:
-/// ```{@code
-/// @ResourceQualifier(type = StreamAccess.class, config = "streams.order-events")
-/// @Retention(RUNTIME) @Target(PARAMETER)
-/// public @interface OrderStreamAccess {}
-///
-/// static AuditService auditService(@OrderStreamAccess StreamAccess<OrderEvent> stream) { ... }
-/// }```
 public interface StreamAccess<T> {
     Promise<Long> publish(T event);
     Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents);

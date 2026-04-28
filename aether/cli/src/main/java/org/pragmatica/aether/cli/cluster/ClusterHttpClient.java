@@ -21,7 +21,6 @@ import java.util.List;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Shared HTTP client for cluster CLI commands that call the management API.
 public sealed interface ClusterHttpClient {
     record unused() implements ClusterHttpClient{}
 

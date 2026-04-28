@@ -11,18 +11,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.aether.deployment.schema.SchemaError.InvalidMigrationFormat.invalidMigrationFormat;
 
 
-/// A migration entry enriched with metadata parsed from its filename.
-///
-/// Supported filename patterns:
-///   V001__description.sql — versioned migration
-///   R__description.sql    — repeatable migration
-///   U001__description.sql — undo migration
-///   B001__description.sql — baseline migration
-///
-/// @param entry       the original migration entry
-/// @param type        migration type derived from filename prefix
-/// @param version     version number (0 for repeatable migrations)
-/// @param description human-readable description extracted from filename
 public record ParsedMigration(MigrationEntry entry, MigrationType type, int version, String description) {
     public enum MigrationType {
         VERSIONED,

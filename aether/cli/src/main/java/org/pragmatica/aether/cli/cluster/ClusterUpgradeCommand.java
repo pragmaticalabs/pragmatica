@@ -22,13 +22,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_UPGRADE;
 
 
-/// Initiates a cluster upgrade to a target version via the management API.
-///
-/// Flow:
-/// 1. Reads current cluster config via `GET /api/cluster/config`
-/// 2. If version unchanged, reports "Already at version X.Y.Z"
-/// 3. Initiates upgrade via `POST /api/cluster/upgrade`
-/// 4. Displays upgrade initiation result
 @Command(name = "upgrade", description = "Upgrade cluster to a target version") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterUpgradeCommand implements Callable<Integer> {
     private static final Pattern VERSION_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
 

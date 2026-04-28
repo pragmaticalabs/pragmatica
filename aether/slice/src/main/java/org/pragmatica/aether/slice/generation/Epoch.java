@@ -7,12 +7,6 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-/// Cluster generation epoch: strictly monotonic logical clock combining the
-/// Rabia consensus term with a per-leader local mutation counter.
-///
-/// Ordering: `(t1,c1) < (t2,c2)` iff `t1<t2 || (t1==t2 && c1<c2)`.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §4.
 @Codec public record Epoch(long rabiaTerm, long localCounter) implements Comparable<Epoch> {
     public static final Epoch ZERO = new Epoch(0L, 0L);
 

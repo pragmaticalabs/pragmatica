@@ -20,8 +20,6 @@ import static org.pragmatica.http.routing.QueryParameter.aString;
 import static org.pragmatica.http.routing.Route.in;
 
 
-/// Proxy routes for metrics history endpoint.
-/// Forwards requests from the dashboard port to the leader's management port.
 public sealed interface MetricsProxyRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 

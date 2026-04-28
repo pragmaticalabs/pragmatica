@@ -35,13 +35,6 @@ import static org.pragmatica.lang.io.FileOps.writeBytes;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
 
-/// Repository implementation that downloads artifacts from remote Maven repositories.
-///
-/// Downloads JARs from remote HTTP(S) endpoints, verifies SHA-256 checksums (with SHA-1 fallback),
-/// and caches to the local Maven repository (~/.m2/repository).
-/// Subsequent resolves for the same artifact are instant (local cache hit).
-///
-/// Supports Basic authentication via ~/.m2/settings.xml server entries.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-ZONE-02", "JBCT-EX-01"}) public interface RemoteRepository extends Repository {
     Logger log = LoggerFactory.getLogger(RemoteRepository.class);
 

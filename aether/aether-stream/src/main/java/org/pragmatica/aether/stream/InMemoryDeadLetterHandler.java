@@ -14,7 +14,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.pragmatica.lang.Option.option;
 
 
-/// In-memory implementation of DeadLetterHandler backed by a ConcurrentHashMap.
 final class InMemoryDeadLetterHandler implements DeadLetterHandler {
     private final ConcurrentHashMap<String, CopyOnWriteArrayList<DeadLetterEntry>> entries = new ConcurrentHashMap<>();
 

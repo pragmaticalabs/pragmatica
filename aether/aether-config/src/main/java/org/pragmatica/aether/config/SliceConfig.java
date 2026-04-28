@@ -13,18 +13,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for slice loading and repository order.
-///
-///
-/// Example aether.toml:
-/// ```
-/// [slice]
-/// repositories = ["local"]           # dev/forge default
-/// # repositories = ["builtin"]       # prod
-/// # repositories = ["local", "builtin"]  # hybrid - try local first
-/// ```
-///
-/// @param repositories Ordered list of repository types to search for slices
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"}) public record SliceConfig(List<RepositoryType> repositories) {
     private static final SliceConfig DEFAULT = sliceConfig(List.of(new RepositoryType.Local())).unwrap();
 

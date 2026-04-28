@@ -10,9 +10,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
 
 
-/// One core member as observed by the leader at a specific generation epoch.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §6.
 @Codec public record CoreMember(NodeId nodeId,
                                 String host,
                                 int port,

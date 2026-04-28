@@ -19,7 +19,6 @@ import java.util.Set;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Resolves `include = [...]` directives in TOML config files. Section 4.1
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class IncludeResolver {
     private IncludeResolver() {}
 

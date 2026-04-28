@@ -21,20 +21,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Context for resource provisioning, carrying additional type and key information.
-///
-/// Used to pass extra metadata to {@link ResourceProviderFacade#provide} when
-/// the resource factory needs type tokens (e.g., for generic types) or
-/// key extractors (e.g., for sharded resources).
-///
-/// Example usage:
-/// ```{@code
-/// var context = ProvisioningContext.provisioningContext()
-///     .withTypeToken(new TypeToken<List<Order>>() {})
-///     .withKeyExtractor(Order::customerId);
-///
-/// ctx.resources().provide(EventStore.class, "events.orders", context);
-/// }```
 public record ProvisioningContext(List<TypeToken<?>> typeTokens,
                                   Option<Fn1<?, ?>> keyExtractor,
                                   Map<Class<?>, Object> extensions) {

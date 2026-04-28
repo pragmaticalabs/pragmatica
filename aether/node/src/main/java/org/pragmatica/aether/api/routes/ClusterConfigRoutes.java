@@ -53,8 +53,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Routes for declarative cluster configuration: read config, aggregated status,
-/// apply config changes, and scale operations.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) public final class ClusterConfigRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(ClusterConfigRoutes.class);
 

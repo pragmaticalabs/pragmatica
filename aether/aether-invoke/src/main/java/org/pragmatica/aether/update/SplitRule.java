@@ -9,12 +9,6 @@ import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
 
-/// Sealed interface for A/B test traffic routing rules.
-///
-///
-/// Each implementation defines a deterministic (or weighted-random) strategy
-/// for resolving which variant a request should be routed to, based on
-/// request headers, cookies, or configured percentage weights.
 public sealed interface SplitRule {
     String resolveVariant(Map<String, String> headers, Map<String, String> cookies);
 

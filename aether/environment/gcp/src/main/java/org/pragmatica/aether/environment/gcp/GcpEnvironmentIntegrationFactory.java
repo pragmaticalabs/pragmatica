@@ -17,7 +17,6 @@ import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.GcpNegC
 import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.gcpEnvironmentConfig;
 
 
-/// ServiceLoader factory for creating GcpEnvironmentIntegration from generic CloudConfig.
 public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
     @Override public String providerName() {
         return "gcp";

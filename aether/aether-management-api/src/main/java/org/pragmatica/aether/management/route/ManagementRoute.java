@@ -25,25 +25,6 @@ import static org.pragmatica.http.routing.HttpMethod.POST;
 import static org.pragmatica.http.routing.HttpMethod.PUT;
 
 
-/// Compile-time registry of all Aether management API routes.
-///
-/// Each enum value carries its HTTP method, static path prefix, parameter names (in order),
-/// and forwarding [RouteTarget]. This registry is the single source of truth for every
-/// consumer of the management API: the server-side route bindings, the load balancer's
-/// forwarder, the CLI, and tests.
-///
-/// ## Path layout invariant
-///
-/// Every route has the shape `<static prefix>/<param1>/<param2>/.../<paramN>` — no literal
-/// path segments interleave between or after parameters. This makes matching trivial
-/// (split by `/`, look up by `(method, prefix, paramCount)`) and assembly symmetric
-/// (append URL-encoded values to the prefix).
-///
-/// ## Ambiguity
-///
-/// No two enum values may share `(method, prefix, paramCount)`. Violation is detected at
-/// class-loading time via [RouteMatcher] static-init check, throwing
-/// [ExceptionInInitializerError].
 public enum ManagementRoute {
     HEALTH_LIVE(GET, "/health/live", List.of(), LOCAL),
     HEALTH_READY(GET, "/health/ready", List.of(), LOCAL),

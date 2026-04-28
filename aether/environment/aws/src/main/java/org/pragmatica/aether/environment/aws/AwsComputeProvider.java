@@ -35,9 +35,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// AWS Cloud implementation of the ComputeProvider SPI.
-/// Delegates to AwsClient for EC2 instance lifecycle management and maps
-/// EC2 instance models to the environment integration domain types.
 public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(AwsComputeProvider.class);
 

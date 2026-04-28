@@ -11,7 +11,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.Arrays;
 
 
-/// Node source types. §5.1.1
 public enum SourceType {
     CLOUD("cloud"),
     SSH("ssh"),

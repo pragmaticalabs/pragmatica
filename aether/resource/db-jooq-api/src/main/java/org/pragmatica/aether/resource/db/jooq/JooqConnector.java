@@ -19,23 +19,6 @@ import org.jooq.ResultQuery;
 import org.jooq.SQLDialect;
 
 
-/// Type-safe jOOQ connector for database operations.
-///
-/// Extends DatabaseConnector with jOOQ-specific operations for type-safe query building.
-/// Does NOT duplicate raw SQL methods — use {@code dsl().resultQuery(sql, params)} for
-/// occasional raw SQL within a jOOQ context.
-///
-/// Transport (JDBC or R2DBC) is selected at runtime based on configuration URL.
-///
-/// Example usage:
-/// ```{@code
-/// var query = connector.dsl()
-///     .select(USERS.NAME, USERS.EMAIL)
-///     .from(USERS)
-///     .where(USERS.ID.eq(userId));
-/// connector.fetchOne(query)
-///          .map(record -> new User(record.get(USERS.NAME), record.get(USERS.EMAIL)))
-/// }```
 public interface JooqConnector extends DatabaseConnector {
     DSLContext dsl();
     <R extends Record> Promise<R> fetchOne(ResultQuery<R> query);

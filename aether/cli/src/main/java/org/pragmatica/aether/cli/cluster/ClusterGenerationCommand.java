@@ -22,9 +22,6 @@ import tools.jackson.databind.JsonNode;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_GENERATION;
 
 
-/// Displays the current cluster generation snapshot as observed by the queried node.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §14.3.
 @Command(name = "generation", description = "Show current cluster generation snapshot") class ClusterGenerationCommand implements Callable<Integer> {
     private static final TableSpec MEMBERS_TABLE = new TableSpec("Core Members",
                                                                  List.of(new Column("NODE", "nodeId", 18),

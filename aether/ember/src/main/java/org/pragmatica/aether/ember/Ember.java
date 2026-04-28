@@ -8,18 +8,6 @@ import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.lang.Result;
 
 
-/// Fluent builder for creating embedded Aether clusters.
-///
-/// Example usage:
-/// ```java
-/// var instance = Ember.cluster(5)
-///                     .withH2()
-///                     .withManagementPort(5150)
-///                     .withLb(9090)
-///                     .start();
-/// // ... use the cluster ...
-/// instance.stop();
-/// ```
 public final class Ember {
     private int nodes;
 

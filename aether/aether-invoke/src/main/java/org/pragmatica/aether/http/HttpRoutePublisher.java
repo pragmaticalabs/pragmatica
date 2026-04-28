@@ -39,15 +39,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Publishes HTTP routes to KV-Store when slices become active.
-///
-///
-/// Discovers {@link HttpRequestHandlerFactory} implementations via ServiceLoader,
-/// creates handlers, and publishes their route definitions to the cluster.
-///
-///
-/// Each node writes flat per-node keys (HttpNodeRouteKey) containing (method, prefix, nodeId).
-/// No read-modify-write, no races. Consumers reconstruct node sets from flat keys in-memory.
 public interface HttpRoutePublisher {
     Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade);
     Promise<Unit> publishRoutes(Artifact artifact,

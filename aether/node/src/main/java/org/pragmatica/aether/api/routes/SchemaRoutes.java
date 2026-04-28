@@ -28,7 +28,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for datasource schema management: status, history, migrate, undo, baseline.
 public final class SchemaRoutes implements RouteSource {
     private static final Cause SCHEMA_NOT_FOUND = Causes.cause("Schema status not found for datasource");
 

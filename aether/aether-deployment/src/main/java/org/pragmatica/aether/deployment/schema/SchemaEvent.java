@@ -10,8 +10,6 @@ import org.pragmatica.messaging.Message;
 import java.util.List;
 
 
-/// Events emitted during schema migration lifecycle.
-/// The explanation field contains natural language description suitable for both human operators and LLM agents.
 public sealed interface SchemaEvent extends Message.Local {
     record MigrationStarted(String datasource, String artifactCoords, NodeId nodeId, long timestamp) implements SchemaEvent {
         public static MigrationStarted migrationStarted(String datasource, String artifactCoords, NodeId nodeId) {

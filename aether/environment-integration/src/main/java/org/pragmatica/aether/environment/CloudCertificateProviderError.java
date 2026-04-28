@@ -8,7 +8,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Error types for cloud-based certificate provider operations.
 public sealed interface CloudCertificateProviderError extends Cause {
     static CertificateFetchFailed certificateFetchFailed(String secretPath, Throwable cause) {
         return new CertificateFetchFailed(secretPath, cause);

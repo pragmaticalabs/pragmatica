@@ -42,10 +42,7 @@ public final class ProcessorError {
     }
 
     public static String unsupportedScalarReturn(String methodName, String typeName) {
-        return PREFIX + "Method '" + methodName + "' returns unsupported scalar type '" + typeName
-               + "'. Expected a record, Long, Boolean, String, Unit, or one of: BigDecimal, Instant, LocalDate, "
-               + "LocalDateTime, LocalTime, OffsetDateTime, OffsetTime, UUID, Duration, byte[], Short, Integer, "
-               + "Double, Float.";
+        return PREFIX + "Method '" + methodName + "' returns unsupported scalar type '" + typeName + "'. Expected a record, Long, Boolean, String, Unit, or one of: BigDecimal, Instant, LocalDate, " + "LocalDateTime, LocalTime, OffsetDateTime, OffsetTime, UUID, Duration, byte[], Short, Integer, " + "Double, Float.";
     }
 
     public static String cannotInferTable(String methodName) {

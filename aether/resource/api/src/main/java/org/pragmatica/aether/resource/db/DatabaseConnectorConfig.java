@@ -21,24 +21,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Configuration for database connectors.
-///
-/// When any URL is present (jdbcUrl, r2dbcUrl, or asyncUrl), the database type, host,
-/// and database name are inferred from the URL. When no URL is present, type, host,
-/// and database must be provided explicitly.
-///
-/// @param name           Connector name for identification and metrics (optional, derived from URL or defaults to "default")
-/// @param type           Database type (optional when URL is present)
-/// @param host           Database host (optional when URL is present)
-/// @param port           Database port (optional, defaults to database type default)
-/// @param database       Database name (optional when URL is present)
-/// @param username       Connection username (optional)
-/// @param password       Connection password (optional)
-/// @param poolConfig     Connection pool configuration
-/// @param properties     Additional driver-specific properties
-/// @param jdbcUrl        Override JDBC URL (optional, overrides host/port/database)
-/// @param r2dbcUrl       Override R2DBC URL (optional, overrides host/port/database)
-/// @param asyncUrl       Override async URL (optional, selects postgres-async transport)
 public record DatabaseConnectorConfig(Option<String> name,
                                       Option<DatabaseType> type,
                                       Option<String> host,

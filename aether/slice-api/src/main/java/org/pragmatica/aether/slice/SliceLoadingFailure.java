@@ -11,11 +11,6 @@ import org.pragmatica.lang.io.CoreError;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Sealed error hierarchy for slice loading failures.
-///
-/// Classification determines retry behavior:
-/// - Fatal: structural problems that will never succeed on retry
-/// - Intermittent: temporary conditions that may succeed on retry
 public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFailure.Fatal, SliceLoadingFailure.Intermittent {
     non-sealed interface Fatal extends SliceLoadingFailure {
         record FactoryMethodNotFound(String className, String methodName) implements Fatal {

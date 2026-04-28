@@ -46,26 +46,22 @@ class SpokesmanPingLoopTest {
 
     private RecordingNetwork network;
     private AtomicLong rabiaTerm;
-    private Option<ClusterGenerationSnapshot> snapshot;
     private SpokesmanPingLoop loop;
 
     @BeforeEach
     void setUp() {
         network = new RecordingNetwork();
         rabiaTerm = new AtomicLong(7L);
-        snapshot = Option.some(ClusterGenerationSnapshot.empty(7L));
         loop = SpokesmanPingLoop.spokesmanPingLoop(SELF,
                                                     network,
                                                     TimeSpan.timeSpan(1).seconds(),
                                                     rabiaTerm::get,
-                                                    () -> snapshot,
                                                     Map::of,
                                                     communityId -> switch (communityId){
                                                         case "pool-a" -> Option.some(GOV_A);
                                                         case "pool-b" -> Option.some(GOV_B);
                                                         default -> Option.none();
-                                                    },
-                                                    _ -> new byte[]{1, 2, 3});
+                                                    });
         loop.start();
     }
 

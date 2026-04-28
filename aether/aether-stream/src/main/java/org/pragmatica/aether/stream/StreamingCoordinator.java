@@ -27,15 +27,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Coordinates streaming components (GovernorFailoverHandler, RetentionEnforcer)
-/// as a single DelegatedComponent for the STREAMING task group.
-///
-/// RetentionEnforcer has a scheduled lifecycle (start/close).
-/// GovernorFailoverHandler is stateless and invoked on demand -- no lifecycle management needed,
-/// but it is held here for access by the streaming subsystem when active.
-///
-/// On activation, failover recovery runs for every locally-owned stream/partition,
-/// replaying events from AHSE segments that were missed during the leadership transition.
 public final class StreamingCoordinator implements DelegatedComponent {
     private static final Logger log = LoggerFactory.getLogger(StreamingCoordinator.class);
 

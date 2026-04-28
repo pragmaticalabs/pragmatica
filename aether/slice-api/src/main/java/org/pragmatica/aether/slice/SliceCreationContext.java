@@ -12,32 +12,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Unified context for slice factory methods during slice creation.
-///
-/// Provides access to all services needed when creating a slice:
-///
-///   - {@link #invoker()} - For cross-slice method invocation (slice dependencies)
-///   - {@link #resources()} - For infrastructure resource provisioning
-///
-///
-/// Example usage in generated factory:
-/// ```{@code
-/// public static Promise<OrderRepository> orderRepository(Aspect<OrderRepository> aspect,
-///                                                         SliceCreationContext ctx) {
-///     return Promise.all(
-///             ctx.resources().provide(SqlConnector.class, "database.primary"),
-///             ctx.invoker().methodHandle("inventory:artifact", "check", ...),
-///             ctx.invoker().methodHandle("inventory:artifact", "save", ...))
-///         .map((db, checkHandle, saveHandle) -> {
-///             var inventory = new inventoryService(checkHandle, saveHandle);
-///             return aspect.apply(OrderRepository.orderRepository(db, inventory));
-///         });
-/// }
-/// }```
-///
-/// This replaces the previous pattern where SliceInvokerFacade was passed directly.
-/// The unified context enables parallel resolution of resources and dependencies
-/// via Promise.all(), improving startup latency.
 public interface SliceCreationContext {
     SliceInvokerFacade invoker();
     ResourceProviderFacade resources();
@@ -83,7 +57,6 @@ public interface SliceCreationContext {
     }
 }
 
-/// Default implementation of SliceCreationContext.
 record DefaultSliceCreationContext(SliceInvokerFacade invoker,
                                    ResourceProviderFacade resources,
                                    Option<String> sliceId,

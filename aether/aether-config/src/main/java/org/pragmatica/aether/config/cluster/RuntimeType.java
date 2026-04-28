@@ -11,7 +11,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.Arrays;
 
 
-/// Supported runtime types for Aether node execution.
 public enum RuntimeType {
     CONTAINER("container"),
     JVM("jvm"),

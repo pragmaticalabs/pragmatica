@@ -32,8 +32,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for API key lifecycle management: create, list, revoke, and audit trail.
-/// Includes a periodic expiration sweep that marks expired keys.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) public final class ApiKeyRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(ApiKeyRoutes.class);
 

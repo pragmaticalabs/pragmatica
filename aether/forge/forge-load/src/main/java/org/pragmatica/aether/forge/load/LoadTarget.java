@@ -21,14 +21,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for a single load generation target.
-///
-/// @param name     Optional name for this target (auto-generated from target if not specified)
-/// @param target   Target specification: "SliceName.method" or "/api/path/{var}"
-/// @param rate     Requests per time unit (e.g., "100/s", "1000/m")
-/// @param duration How long to run (null or Duration.ZERO = continuous)
-/// @param pathVars Pattern templates for path variables
-/// @param body     Body template with pattern placeholders
 public record LoadTarget(Option<String> name,
                          String target,
                          Rate rate,

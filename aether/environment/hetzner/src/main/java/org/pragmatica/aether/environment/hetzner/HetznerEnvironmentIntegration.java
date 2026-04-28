@@ -25,10 +25,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Hetzner Cloud implementation of the EnvironmentIntegration SPI.
-/// Provides compute capabilities backed by the Hetzner Cloud API.
-/// Optionally provides load balancer management and label-based discovery when configured.
-/// Always provides environment-variable-based secrets resolution.
 public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvider,
                                             Option<LoadBalancerProvider> loadBalancerProvider,
                                             Option<DiscoveryProvider> discoveryProvider,

@@ -19,9 +19,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Scheduled publisher that broadcasts new cluster events via WebSocket.
-/// Only pushes events that occurred since the last broadcast (delta mode).
-/// Short-circuits when no clients are connected.
 @SuppressWarnings("JBCT-RET-01") public class EventWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
 

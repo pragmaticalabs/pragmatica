@@ -10,11 +10,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Enforces authorization by checking a principal's role against route permissions.
-///
-/// Pure logic component that sits between authentication (SecurityValidator)
-/// and route handling. Takes an authenticated SecurityContext and verifies
-/// the principal has sufficient authorization for the requested route.
 public sealed interface RoleEnforcer {
     sealed interface AuthorizationError extends Cause {
         record AccessDenied(String message) implements AuthorizationError{}

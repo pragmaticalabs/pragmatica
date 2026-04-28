@@ -15,10 +15,6 @@ import java.util.List;
 import static org.pragmatica.aether.slice.repository.maven.LocalRepository.localRepository;
 
 
-/// Factory for creating Repository instances from configuration.
-///
-/// Translates {@link RepositoryType} configuration values into actual
-/// {@link Repository} implementations.
 public interface RepositoryFactory {
     Repository create(RepositoryType type);
 

@@ -20,16 +20,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Azure Key Vault-backed certificate provider.
-///
-/// Fetches pre-provisioned CA certificate, CA private key, and gossip encryption key
-/// from Azure Key Vault. Node certificates are issued locally using the fetched CA material.
-///
-/// Secret prefix format: `{vaultName}/{secretPrefix}` where secrets are stored as:
-///   - `{secretPrefix}-ca-cert`       — PEM-encoded CA certificate
-///   - `{secretPrefix}-ca-key`        — PEM-encoded CA private key
-///   - `{secretPrefix}-gossip-key`    — Hex-encoded 32-byte gossip encryption key
-///   - `{secretPrefix}-gossip-key-id` — Integer key ID for gossip key rotation
 public final class AzureCertificateProvider implements CertificateProvider {
     private final byte[] caCertPem;
     private final byte[] caKeyPem;

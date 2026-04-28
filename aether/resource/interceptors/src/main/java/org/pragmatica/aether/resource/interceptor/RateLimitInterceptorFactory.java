@@ -9,10 +9,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.RateLimiter;
 
 
-/// Factory that provisions a {@link RateLimitMethodInterceptor} wrapping calls with rate limiting.
-///
-/// Delegates to the core {@link RateLimiter} (token bucket). When the rate limit is
-/// exhausted, calls fail immediately with a rate-limit-exceeded cause.
 public final class RateLimitInterceptorFactory implements ResourceFactory<RateLimitMethodInterceptor, RateLimitConfig> {
     @Override public Class<RateLimitMethodInterceptor> resourceType() {
         return RateLimitMethodInterceptor.class;

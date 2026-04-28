@@ -24,7 +24,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Package-private implementation of ReplicatedMap with namespace-prefixed keys.
 final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     private static final Logger log = LoggerFactory.getLogger(NamespacedReplicatedMap.class);
 

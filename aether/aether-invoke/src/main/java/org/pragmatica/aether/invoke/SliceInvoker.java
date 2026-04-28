@@ -45,18 +45,6 @@ import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Client-side component for invoking methods on remote slices.
-///
-///
-/// Supports two invocation patterns:
-///
-///   - Fire-and-forget: {@link #invoke(Artifact, MethodName, Object)}
-///   - Request-response: {@link #invoke(Artifact, MethodName, Object, TypeToken)}
-///
-///
-///
-/// Uses the EndpointRegistry to find the target node for a slice,
-/// and routes the invocation via the ClusterNetwork.
 public interface SliceInvoker extends SliceInvokerFacade {
     @Override default <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
                                                                      String methodName,

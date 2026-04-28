@@ -13,7 +13,6 @@ import java.util.Map;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Specification for creating a load balancer.
 public record LoadBalancerSpec(String name,
                                String algorithm,
                                List<ServicePort> servicePorts,

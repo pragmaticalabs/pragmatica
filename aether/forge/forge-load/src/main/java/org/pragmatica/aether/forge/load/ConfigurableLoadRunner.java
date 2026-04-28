@@ -49,16 +49,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Config-driven load runner that generates HTTP load based on TOML configuration.
-///
-/// Supports:
-///
-///   - Multiple concurrent targets with independent rates
-///   - Pattern-based data generation (uuid, random, range, choice, seq)
-///   - Optional duration limits per target
-///   - Pause/resume functionality
-///   - Per-target metrics collection
-///
 public final class ConfigurableLoadRunner {
     private static final Logger log = LoggerFactory.getLogger(ConfigurableLoadRunner.class);
 

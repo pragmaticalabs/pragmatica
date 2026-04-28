@@ -33,11 +33,6 @@ import java.util.stream.Collectors;
 import static org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot.clusterGenerationSnapshot;
 
 
-/// Stateless projector that builds a `ClusterGenerationSnapshot` from the currently-committed atoms.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §3 / §6 / §15.6.
-///
-/// Dormant in Commit 2 — constructed but not yet wired into cluster bootstrap.
 public interface ClusterGenerationProjector {
     ClusterGenerationSnapshot project(ProjectionInput input);
 
@@ -66,7 +61,9 @@ public interface ClusterGenerationProjector {
             nodesWithArtifacts = nodesWithArtifacts == null
                                 ? Set.of()
                                 : Set.copyOf(nodesWithArtifacts);
-            swimHints = swimHints == null ? Map.of() : Map.copyOf(swimHints);
+            swimHints = swimHints == null
+                       ? Map.of()
+                       : Map.copyOf(swimHints);
         }
 
         public static ProjectionInput projectionInput(long rabiaTerm,
@@ -161,7 +158,6 @@ public interface ClusterGenerationProjector {
     }
 }
 
-/// Pure projection implementation — no state, no side effects.
 record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector {
     static final ClusterGenerationProjectorRecord INSTANCE = new ClusterGenerationProjectorRecord();
 
@@ -195,17 +191,12 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
 
     private static Map<NodeId, CoreMember> projectCoreMembers(ProjectionInput input) {
         var result = new LinkedHashMap<NodeId, CoreMember>();
-        // Skip DECOMMISSIONED lifecycle entries entirely. DECOMMISSIONED is a
-        // tombstone — the node has left the cluster permanently. Including it
-        // in the projection emits HealthHint.FAULTY which propagates to
-        // ClusterResult.DEGRADED via deriveClusterQuiescence, preventing
-        // QUIESCED from ever being reached and stalling `await-quiesced` until
-        // DecommissionedAtomGc removes the atom (24h default). The node is no
-        // longer part of the cluster and must not influence quiescence.
-        input.lifecycles().forEach((nodeId, lifecycle) -> {
-            if (lifecycle.state() == NodeLifecycleState.DECOMMISSIONED) {return;}
-            result.put(nodeId, toCoreMember(nodeId, lifecycle, input));
-        });
+        input.lifecycles()
+                        .forEach((nodeId, lifecycle) -> {
+                                     if (lifecycle.state() == NodeLifecycleState.DECOMMISSIONED) {return;}
+                                     result.put(nodeId,
+                                                toCoreMember(nodeId, lifecycle, input));
+                                 });
         return Map.copyOf(result);
     }
 
@@ -222,18 +213,6 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                                      lifecycle.provisioningSource());
     }
 
-    /// Derive the health hint for a core member.
-    ///
-    /// Lifecycle determines the baseline:
-    ///   `DECOMMISSIONED` / `SHUTTING_DOWN` → `FAULTY`,
-    ///   `DRAINING` → `SUSPECTED`,
-    ///   `JOINING` / `ON_DUTY` → `HEALTHY`.
-    ///
-    /// The leader-side `swimHints` map (populated by the [`HealthReconciler`]'s SWIM and QUIC
-    /// signal handlers) overrides the baseline when its hint is **worse** (priority order:
-    /// `FAULTY` > `SUSPECTED` > `HEALTHY`). This lets `MembershipView.healthyOnDutyCount()`
-    /// reflect detected failures immediately, rather than waiting for the eviction path
-    /// (10+ misses, ~25 s) to flip lifecycle to `DECOMMISSIONED`.
     private static HealthHint deriveHealthHint(NodeId nodeId,
                                                NodeLifecycleValue lifecycle,
                                                Map<NodeId, HealthHint> swimHints) {
@@ -247,10 +226,10 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
         return worse(lifecycleHint, swimHint);
     }
 
-    /// Return the strictly worse of two [`HealthHint`] values per the priority
-    /// `FAULTY` > `SUSPECTED` > `HEALTHY`.
     private static HealthHint worse(HealthHint a, HealthHint b) {
-        return rank(a) >= rank(b) ? a : b;
+        return rank(a) >= rank(b)
+              ? a
+              : b;
     }
 
     private static int rank(HealthHint h) {

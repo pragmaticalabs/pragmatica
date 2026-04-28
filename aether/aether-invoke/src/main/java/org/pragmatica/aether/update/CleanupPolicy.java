@@ -9,11 +9,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Policy for cleaning up old version instances after update completion.
-///
-///
-/// Determines when and how old version instances are removed after
-/// a successful rolling update.
 public enum CleanupPolicy {
     IMMEDIATE(timeSpan(0).nanos()),
     GRACE_PERIOD(timeSpan(5).minutes()),

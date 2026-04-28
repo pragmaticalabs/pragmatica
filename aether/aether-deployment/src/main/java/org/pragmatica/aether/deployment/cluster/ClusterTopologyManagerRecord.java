@@ -71,44 +71,6 @@ import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Implementation of ClusterTopologyManager that delegates read-only operations to
-/// TopologyObserver and reads all membership-size state from
-/// [GenerationSnapshotSource.currentMembershipView()]. No local shadow caches of
-/// configured/desired sizes; see clustersync-refactor-spec §"Commit 3".
-///
-/// Scale operations propagate through exactly one path:
-/// `setDesiredSize` writes `ClusterConfigValue` atom → snapshot publishes the new
-/// `desiredCoreSize` → CTM reconcile reads from snapshot → takes action.
-///
-/// Snapshot-delta-driven: deficit detection is wired to `GenerationSnapshotSource` so a
-/// changed snapshot (term advance) triggers `reconcile()` directly. A single safety-net
-/// timer at `AutoHealConfig.retryInterval` polls for missed deltas; there is no per-deficit
-/// timer chain and no provisioning hysteresis — `handleDeficit` provisions immediately.
-/// The hysteresis previously used to absorb transient flaps is now provided by snapshot
-/// `healthHint` transitions on the leader (see cluster-generation-spec §15.3).
-///
-/// Provisioning stability gate: every dispatch path through `handleDeficit` is gated on
-/// `realActual` (the snapshot's healthy ON_DUTY count) being stable for at least
-/// `provisionStabilityWindow`. This prevents phantom provisioning during cluster boot
-/// when only N of M static nodes have joined: the count is still climbing, so a brief
-/// pause lets the remaining lifecycles converge before auto-heal fires. Slot-based
-/// timeout (per-attempt deadlines via `ProvisioningSlot`) recovers from stalled waves.
-///
-/// Theme H clock injection: `clock` is the canonical wall-clock supplier — all timestamping
-/// (stability anchor, slot deadlines, lifecycle atom transitionedAt, ClusterConfigValue.updatedAt)
-/// reads from this supplier. Tests pass a deterministic clock; production
-/// passes `System::currentTimeMillis`.
-///
-/// Theme K #3 KV-reconstructibility: surplus-termination ordering is no longer derived from
-/// the previously-held in-memory `nodeJoinTimes` map (which was reset on every leader handoff,
-/// violating the architectural invariant that local in-memory state must be reconstructible
-/// from the KV-Store). Instead the comparator's "newest-first" tiebreak now reads
-/// `NodeLifecycleValue.observedCoreEpoch` from the lifecycle atom via `lifecycleReader`. The
-/// `Epoch` value is monotonically advanced by the leader on every consensus term advance and
-/// per-leader local mutation, so it is a stable identity that survives leader transitions:
-/// a node provisioned at term T carries observedCoreEpoch (T,n) that no future leader rewrites.
-///
-/// @SuppressWarnings: void callbacks required by TopologyManager/ClusterTopologyManager interfaces
 @SuppressWarnings("JBCT-RET-01") record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig autoHealConfig,
@@ -133,15 +95,8 @@ import static org.pragmatica.lang.Unit.unit;
 
     private static final int MAX_WAVE_SIZE = 5;
 
-    private static final int UNINITIALIZED_REAL_ACTUAL = -1;
+    private static final int UNINITIALIZED_REAL_ACTUAL = - 1;
 
-    /// Bootstrap-grace window after CTM activation during which auto-heal cannot fire even if
-    /// transient SWIM hysteresis flips peers to UNHEALTHY. Without this, the leader's first
-    /// `MembershipView.healthyOnDutyCount()` snapshot can show a false deficit (e.g., 2/5 with
-    /// 3 ON_DUTY_UNHEALTHY) for the entire `provisionStabilityWindow` and trigger phantom
-    /// provisioning that the cluster never recovers from. Applied only when the cluster
-    /// activates already at target size (clean boot); legitimate post-bootstrap node loss
-    /// still works because `bumpRealActualStability` resets the anchor on real changes.
     private static final long BOOTSTRAP_GRACE_MS = 60_000L;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
@@ -154,22 +109,18 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      DrainCoordinator drainCoordinator) {
         return clusterTopologyManagerRecord(observer,
-                                             lifecycleManager,
-                                             config,
-                                             deploymentMap,
-                                             snapshotSource,
-                                             clusterConfigReader,
-                                             lifecycleReader,
-                                             Map::of,
-                                             commandApplier,
-                                             drainCoordinator,
-                                             System::currentTimeMillis);
+                                            lifecycleManager,
+                                            config,
+                                            deploymentMap,
+                                            snapshotSource,
+                                            clusterConfigReader,
+                                            lifecycleReader,
+                                            Map::of,
+                                            commandApplier,
+                                            drainCoordinator,
+                                            System::currentTimeMillis);
     }
 
-    /// Full-arity factory with injectable clock — for tests that need deterministic time.
-    /// `slotReader` returns the current set of `ProvisioningSlotValue` atoms in KV. Used on
-    /// `activate()` to re-derive the in-memory `inFlightProvisions` view after leader handoff
-    /// so a new leader does not double-dispatch a provisioning wave (Fix D).
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
@@ -201,9 +152,6 @@ import static org.pragmatica.lang.Unit.unit;
                                                 clock);
     }
 
-    /// Backward-compatible factory: constructs a CTM with the rc1 [`NoOpDrainCoordinator`].
-    /// Production wiring (`AetherNode`) and tests can pass a real coordinator via the
-    /// arity-9 overload above when rc2 #189 lands.
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
@@ -213,23 +161,20 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
         return clusterTopologyManagerRecord(observer,
-                                             lifecycleManager,
-                                             config,
-                                             deploymentMap,
-                                             snapshotSource,
-                                             clusterConfigReader,
-                                             lifecycleReader,
-                                             commandApplier,
-                                             new NoOpDrainCoordinator());
+                                            lifecycleManager,
+                                            config,
+                                            deploymentMap,
+                                            snapshotSource,
+                                            clusterConfigReader,
+                                            lifecycleReader,
+                                            commandApplier,
+                                            new NoOpDrainCoordinator());
     }
 
-    /// Current wall-clock millis from the injected supplier. Production: `System::currentTimeMillis`.
     private long nowMs() {
         return clock.getAsLong();
     }
 
-    /// Current Instant derived from the injected millis-supplier so all timestamps share one
-    /// canonical clock source.
     private Instant nowInstant() {
         return Instant.ofEpochMilli(nowMs());
     }
@@ -298,42 +243,29 @@ import static org.pragmatica.lang.Unit.unit;
         }
     }
 
-    /// Fix D — slot completion. When a node reaches ON_DUTY, delete any KV
-    /// `ProvisioningSlotValue` atoms that recorded `nodeId` as their assigned node so the slot
-    /// no longer counts toward the in-flight count. Also prunes any slot whose assigned node
-    /// is observed as ON_DUTY in the lifecycle KV (defense-in-depth: a slot might be assigned
-    /// to a node that joined slightly before this hook fired).
     private void deleteCompletedSlotAtomsForNode(NodeId nodeId) {
         if (!active.get()) {return;}
         var allSlots = slotReader.get();
         if (allSlots.isEmpty()) {return;}
         var deletes = allSlots.entrySet().stream()
-                                       .filter(e -> slotIsAssignedAndComplete(e.getValue())
-                                                        || e.getValue().assignedNodeId().map(nodeId::equals).or(false))
+                                       .filter(e -> slotIsAssignedAndComplete(e.getValue()) || e.getValue().assignedNodeId()
+                                                                                                         .map(nodeId::equals)
+                                                                                                         .or(false))
                                        .map(e -> deleteSlotCommand(e.getKey()))
                                        .toList();
         if (deletes.isEmpty()) {return;}
-        commandApplier.apply(deletes)
-                            .onFailure(cause -> log.warn("CTM: failed to delete {} completed slot atom(s) for {}: {}",
-                                                         deletes.size(),
-                                                         nodeId,
-                                                         cause.message()))
+        commandApplier.apply(deletes).onFailure(cause -> log.warn("CTM: failed to delete {} completed slot atom(s) for {}: {}",
+                                                                  deletes.size(),
+                                                                  nodeId,
+                                                                  cause.message()))
                             .onSuccess(_ -> log.debug("CTM: deleted {} completed slot atom(s) on ON_DUTY arrival of {}",
                                                       deletes.size(),
                                                       nodeId));
         slotKeyByNodeId.remove(nodeId);
     }
 
-    /// Hook invoked by the host node (`AetherNode`) when a `ValuePut` for
-    /// `ClusterConfigKey.CURRENT` lands in the local KV store. Triggers an immediate
-    /// reconcile so `setDesiredSize` is observed without waiting for the safety-net
-    /// poll (`AutoHealConfig.retryInterval`, default 10s). No-op when CTM is inactive.
-    @SuppressWarnings("JBCT-RET-01")
-    @Override public void onClusterConfigChanged() {
+    @SuppressWarnings("JBCT-RET-01") @Override public void onClusterConfigChanged() {
         if (!active.get()) {return;}
-        // Operator intent overrides the anti-flap stability gate (including bootstrap grace):
-        // explicit config changes are not transient hysteresis. Set the anchor far enough
-        // in the past that `stabilityElapsed` returns true on the next reconcile.
         var nowMs = nowMs();
         var windowMs = autoHealConfig.provisionStabilityWindow().millis();
         realActualStableSinceMs.set(nowMs - windowMs);
@@ -351,13 +283,6 @@ import static org.pragmatica.lang.Unit.unit;
         }
     }
 
-    /// QUIC peer-state hook — invoked on every `processViewChange` ADD/RECONNECT/REMOVE
-    /// emitted by `QuicClusterNetwork`. Bumps the stability anchor on every QUIC-level
-    /// peer-state change (not just KV-derived `NodeAdded`/`NodeRemoved`) so the
-    /// provisioning gate observes the same churn as the transport layer. Without this
-    /// hook, transient eviction-then-reconnect cycles (which suppress duplicate ADD
-    /// emissions per Issue 1) would leave the CTM stability anchor stale and could
-    /// allow phantom provisioning during a reconnect storm.
     @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerJoined(NodeId peerId) {
         if (!active.get()) {return;}
         bumpRealActualStability("quic-peer-joined " + peerId);
@@ -386,9 +311,6 @@ import static org.pragmatica.lang.Unit.unit;
         reconcile();
     }
 
-    /// Resets the stability window anchor — called on every event that might change `realActual`
-    /// (the snapshot's healthy ON_DUTY count). The next `handleDeficit` invocation will be deferred
-    /// until `provisionStabilityWindow` has elapsed since this reset.
     private void bumpRealActualStability(String reason) {
         var nowMs = nowMs();
         realActualStableSinceMs.set(nowMs);
@@ -403,12 +325,6 @@ import static org.pragmatica.lang.Unit.unit;
         scheduleSafetyNetPoll();
     }
 
-    /// Fix D — leader-handoff re-derivation. Reads all `ProvisioningSlotValue` atoms from KV
-    /// and reconstructs the in-memory `Reconciling` state so the new leader does not
-    /// double-dispatch a provisioning wave. Each non-expired slot is restored; slots whose
-    /// `assignedNodeId` has already reached `ACTIVE` (ON_DUTY equivalent) lifecycle state are
-    /// pruned from KV (the work is already complete). Slots whose deadline has lapsed are
-    /// also pruned. This is leader-only — only the active CTM writes to the slot family.
     private boolean rehydrateInFlightSlotsFromKV() {
         var nowMs = nowMs();
         var allSlots = slotReader.get();
@@ -416,19 +332,17 @@ import static org.pragmatica.lang.Unit.unit;
         var deletes = new ArrayList<KVCommand<AetherKey>>();
         var aliveSlots = new ArrayList<NodeReconcilerState.ProvisioningSlot>();
         allSlots.forEach((key, value) -> classifySlotForRehydration(key, value, nowMs, deletes, aliveSlots));
-        if (!deletes.isEmpty()) {
-            commandApplier.apply(deletes)
-                                .onFailure(cause -> log.warn("CTM: failed to clean up {} stale provisioning slot(s) on rehydrate: {}",
-                                                             deletes.size(),
-                                                             cause.message()))
-                                .onSuccess(_ -> log.info("CTM: cleaned up {} stale provisioning slot(s) on rehydrate", deletes.size()));
-        }
+        if (!deletes.isEmpty()) {commandApplier.apply(deletes).onFailure(cause -> log.warn("CTM: failed to clean up {} stale provisioning slot(s) on rehydrate: {}",
+                                                                                           deletes.size(),
+                                                                                           cause.message()))
+                                                     .onSuccess(_ -> log.info("CTM: cleaned up {} stale provisioning slot(s) on rehydrate",
+                                                                              deletes.size()));}
         if (aliveSlots.isEmpty()) {return false;}
         var configured = activationDesiredSize();
         var actual = snapshotHealthyOnDutyCount();
         var reconciling = new NodeReconcilerState.Reconciling(configured > 0
-                                                                  ? configured
-                                                                  : actual + aliveSlots.size(),
+                                                              ? configured
+                                                              : actual + aliveSlots.size(),
                                                               actual,
                                                               List.copyOf(aliveSlots),
                                                               List.of(),
@@ -447,7 +361,7 @@ import static org.pragmatica.lang.Unit.unit;
             deletes.add(deleteSlotCommand(key));
             return;
         }
-        if (value.deadlineMs() < nowMs) {
+        if (value.deadlineMs() <nowMs) {
             deletes.add(deleteSlotCommand(key));
             return;
         }
@@ -460,7 +374,8 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private boolean nodeReachedOnDuty(NodeId nodeId) {
-        return lifecycleReader.apply(nodeId).map(lv -> lv.state() == NodeLifecycleState.ON_DUTY).or(false);
+        return lifecycleReader.apply(nodeId).map(lv -> lv.state() == NodeLifecycleState.ON_DUTY)
+                                    .or(false);
     }
 
     @SuppressWarnings("unchecked") private static KVCommand<AetherKey> deleteSlotCommand(ProvisioningSlotKey key) {
@@ -468,7 +383,7 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     @SuppressWarnings("unchecked") private static KVCommand<AetherKey> putSlotCommand(ProvisioningSlotKey key,
-                                                                                       ProvisioningSlotValue value) {
+                                                                                      ProvisioningSlotValue value) {
         return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(key, value);
     }
 
@@ -487,15 +402,12 @@ import static org.pragmatica.lang.Unit.unit;
         if (effectiveActual >= desired) {
             transitionTo(new NodeReconcilerState.Converged());
             anchorBootstrapGrace();
-            log.info("CTM: Cluster at target size, skipping formation (bootstrap grace {}ms applied)", BOOTSTRAP_GRACE_MS);
+            log.info("CTM: Cluster at target size, skipping formation (bootstrap grace {}ms applied)",
+                     BOOTSTRAP_GRACE_MS);
         } else if (clusterWasFormed && effectiveActual >= desired - 1) {activateWithLeaderFailover(effectiveActual,
                                                                                                    desired);} else {activateWithFormation();}
     }
 
-    /// Sets `realActualStableSinceMs` such that `stabilityElapsed(now)` returns false until
-    /// `BOOTSTRAP_GRACE_MS` has elapsed since this call. The math: anchor = nowMs +
-    /// (bootstrapGrace - provisionStabilityWindow); stabilityElapsed(t) returns true when
-    /// (t - anchor) >= window, i.e. (t - nowMs) >= bootstrapGrace.
     private void anchorBootstrapGrace() {
         var nowMs = nowMs();
         var windowMs = autoHealConfig.provisionStabilityWindow().millis();
@@ -642,76 +554,57 @@ import static org.pragmatica.lang.Unit.unit;
             log.info("CTM: reconcile target changed during Reconciling ({} → {}), resetting to Converged for re-dispatch",
                      reconciling.targetSize(),
                      configured);
-            // If the new target is below current actual we are entering a surplus path —
-            // cancel any in-flight provisions so we don't terminate freshly-provisioned nodes.
-            if (configured < actual) {cancelInFlightProvisions("target shrank to " + configured + " during Reconciling");}
+            if (configured <actual) {cancelInFlightProvisions("target shrank to " + configured + " during Reconciling");}
             transitionTo(new NodeReconcilerState.Converged());
             effectiveState = stateRef.get();
         }
         if (actual == configured) {
-            if (effectiveState instanceof NodeReconcilerState.Converged) {
-                log.debug("CTM converged: actual={} matches desired={}", actual, configured);
-            } else {
+            if (effectiveState instanceof NodeReconcilerState.Converged) {log.debug("CTM converged: actual={} matches desired={}",
+                                                                                    actual,
+                                                                                    configured);} else {
                 log.info("CTM converged: actual={} matches desired={}, transitioning to Converged", actual, configured);
                 transitionTo(new NodeReconcilerState.Converged());
                 deleteAllSlotAtoms("converged");
             }
             return;
         }
-        if (effectiveState instanceof NodeReconcilerState.Converged) {
-            log.info("CTM deficit detected: actual={} desired={} deficit={} hints={}",
-                     actual,
-                     configured,
-                     deficit,
-                     summarizeHealthHints(view));
-        }
+        if (effectiveState instanceof NodeReconcilerState.Converged) {log.info("CTM deficit detected: actual={} desired={} deficit={} hints={}",
+                                                                               actual,
+                                                                               configured,
+                                                                               deficit,
+                                                                               summarizeHealthHints(view));}
         if (actual <configured) {handleDeficit(actual, configured);} else {handleSurplus(actual, configured);}
     }
 
-    /// Tracks observed `realActual` between reconcile ticks; whenever the snapshot reports a
-    /// different healthy ON_DUTY count than last observed, reset the stability anchor so the
-    /// gate re-arms. This catches snapshot-driven changes that don't flow through topology
-    /// events (e.g., remote nodes flipping HEALTHY/FAULTY in `swimHints`).
     private void observeRealActualForStability(int actual) {
         var previous = lastObservedRealActual.getAndSet(actual);
         if (previous == UNINITIALIZED_REAL_ACTUAL) {return;}
         if (previous != actual) {bumpRealActualStability("realActual " + previous + " -> " + actual);}
     }
 
-    /// Drops any `ProvisioningSlot` whose deadline has passed and CAS-installs a fresh
-    /// `Reconciling` state carrying only the surviving slots. Idempotent: if no slots have
-    /// expired, the original state is left untouched. Returns the slot list visible after
-    /// expiry so the caller can compute `inFlightCount` without re-reading the state.
     private List<NodeReconcilerState.ProvisioningSlot> expireSlots(NodeReconcilerState.Reconciling reconciling) {
         var nowMs = nowMs();
         var alive = reconciling.inFlight().stream()
-                                                  .filter(slot -> slot.deadlineMs() >= nowMs)
-                                                  .toList();
+                                        .filter(slot -> slot.deadlineMs() >= nowMs)
+                                        .toList();
         if (alive.size() == reconciling.inFlight().size()) {return reconciling.inFlight();}
         deleteExpiredSlotAtoms(nowMs);
         var expiredCount = reconciling.inFlight().size() - alive.size();
         var refreshed = new NodeReconcilerState.Reconciling(reconciling.targetSize(),
-                                                             reconciling.currentSize(),
-                                                             List.copyOf(alive),
-                                                             reconciling.terminating(),
-                                                             reconciling.startedAt());
+                                                            reconciling.currentSize(),
+                                                            List.copyOf(alive),
+                                                            reconciling.terminating(),
+                                                            reconciling.startedAt());
         if (!stateRef.compareAndSet(reconciling, refreshed)) {
             log.debug("CTM: slot expiry CAS lost — observed={}, expected=Reconciling, expired={}",
                       stateRef.get(),
                       expiredCount);
             return alive;
         }
-        log.info("CTM: expired {} stalled provisioning slot(s); {} slot(s) still in-flight",
-                 expiredCount,
-                 alive.size());
+        log.info("CTM: expired {} stalled provisioning slot(s); {} slot(s) still in-flight", expiredCount, alive.size());
         return alive;
     }
 
-    /// Summarizes per-node health buckets derived from the snapshot's `MembershipView`.
-    /// CTM has no direct accessor to the leader's `swimHints` map; the snapshot view is the
-    /// authoritative projection CTM uses for all reconcile decisions, so the same bucketing
-    /// is logged here for traceability. Counts (not the full id-set) are emitted to keep
-    /// cardinality bounded in noisy log streams.
     private static String summarizeHealthHints(MembershipView view) {
         var coreCount = view.coreMemberIds().size();
         var onDutyCount = view.onDutyMemberIds().size();
@@ -721,10 +614,6 @@ import static org.pragmatica.lang.Unit.unit;
         return "{HEALTHY=" + healthy + ", ON_DUTY_UNHEALTHY=" + onDutyUnhealthy + ", NOT_ON_DUTY=" + notOnDuty + "}";
     }
 
-    /// Universal stability gate: returns true if `provisionStabilityWindow` has elapsed since
-    /// the last observed `realActual` change. All five `handleDeficit` callsites
-    /// (handleFormationCooldownExpired, activateWithLeaderFailover, scheduled safety-net poll,
-    /// snapshot-delta reconcile, and topology-event reconcile) flow through here.
     private boolean stabilityElapsed(long nowMs) {
         var anchor = realActualStableSinceMs.get();
         var elapsed = nowMs - anchor;
@@ -733,14 +622,6 @@ import static org.pragmatica.lang.Unit.unit;
 
     private void handleDeficit(int actual, int desired) {
         var nowMs = nowMs();
-        // Defense-in-depth: cross-check `actual` (snapshot-derived) against the
-        // QUIC observer's live peer count. The two views can disagree because the
-        // snapshot pipeline (lifecycle atoms → projection → publish) lags behind
-        // QUIC's synchronous Hello-handshake topology. If QUIC already sees enough
-        // healthy peers to satisfy `desired`, no real deficit exists — provisioning
-        // here would create ghost peers that flap-loop in the topology and starve
-        // consensus backpressure. This guard collapses ghost-provisioning runaway
-        // observed when MembershipView is mid-reproject during deploys.
         var quicLive = observer.healthyActiveNodeCount();
         if (quicLive >= desired) {
             log.info("CTM: snapshot-derived deficit (actual={}, desired={}) but QUIC observer reports {} live peers — suppressing provisioning",
@@ -766,11 +647,6 @@ import static org.pragmatica.lang.Unit.unit;
         handleDeficitFromConverged(current, actual, desired);
     }
 
-    /// Top-up dispatch path. The cluster is already `Reconciling` from a previous wave;
-    /// expire any stalled slots, recompute deficit against `realActual + survivingSlots`,
-    /// and append fresh slots if a deficit remains. CAS-installs a Reconciling state with
-    /// the merged slot list. Self-correcting: a partial wave that loses one provision
-    /// times out its slot and the next tick fires a top-up.
     private void handleDeficitDuringReconciling(NodeReconcilerState.Reconciling reconciling, int actual, int desired) {
         var aliveSlots = expireSlots(reconciling);
         var inFlightCount = aliveSlots.size();
@@ -814,8 +690,6 @@ import static org.pragmatica.lang.Unit.unit;
         provisionNodes(batchSize);
     }
 
-    /// First-wave dispatch path. The cluster is `Converged` (or `Forming` cooldown completed);
-    /// build the initial slot list and CAS-install `Reconciling`.
     private void handleDeficitFromConverged(NodeReconcilerState current, int actual, int desired) {
         var deficit = desired - actual;
         if (!lifecycleManager.isCloudManaged()) {
@@ -880,30 +754,11 @@ import static org.pragmatica.lang.Unit.unit;
         terminateNodes(nodesToTerminate);
     }
 
-    /// Selects up to `count` nodes from the snapshot's ON_DUTY set as termination
-    /// candidates for an operator-driven scale-down. JOINING nodes (lifecycle ≠ ON_DUTY)
-    /// are excluded — they're still being onboarded and terminating them would mean
-    /// throwing away in-progress provisioning work.
-    ///
-    /// The comparator returned by `surplusNodeComparator` walks fields in this order:
-    /// non-CTM-owned first → spot before on-demand → highest co-located host count first
-    /// → empty (no slices) before populated → newest join epoch first. The newest-first
-    /// `Comparator.reverseOrder()` on `observedCoreEpoch` (read from the
-    /// `NodeLifecycleValue` atom via `lifecycleReader`) is intentional: when an operator
-    /// scales down, the safest nodes to drop are those most recently provisioned by the
-    /// CTM itself (they have done the least work and are unlikely to hold critical
-    /// state caches yet). Older peers — especially the originally-seeded core — are
-    /// preserved. Theme K #3: this used to read an in-memory `nodeJoinTimes` map populated
-    /// from `Instant.now()` at NodeAdded events. That map was lost on every leader handoff,
-    /// breaking the architectural invariant that local state must be reconstructible from
-    /// KV. The lifecycle atom's `observedCoreEpoch` is a stable monotonic identity
-    /// (term-counter pair set at provision time and never rewritten by future leaders),
-    /// so the surplus ordering survives leader transitions.
     private List<NodeId> selectNodesForTermination(int count) {
         var selfId = observer.self().id();
         var ctmOwned = ctmProvisionedNodeIds();
         var onDuty = snapshotSource.currentMembershipView().map(MembershipView::onDutyMemberIds)
-                                                            .or(Set.of());
+                                                         .or(Set.of());
         var activeNodes = observer.topology().stream()
                                            .filter(id -> !id.equals(selfId))
                                            .filter(ctmOwned::contains)
@@ -964,48 +819,36 @@ import static org.pragmatica.lang.Unit.unit;
                                         Comparator.reverseOrder());
     }
 
-    /// Reads the `observedCoreEpoch` from the node's `NodeLifecycleValue` atom. Returns
-    /// `Epoch.ZERO` when the atom is absent (treated as oldest in the reverse-time
-    /// comparator, so an unknown node is preserved over a known recently-provisioned one).
-    /// This replaces the previously in-memory `nodeJoinTimes` map (Theme K #3).
     private Epoch nodeJoinEpoch(NodeId nodeId) {
         return lifecycleReader.apply(nodeId).map(NodeLifecycleValue::observedCoreEpoch)
-                                            .or(Epoch.ZERO);
+                                    .or(Epoch.ZERO);
     }
 
     private void terminateNodes(List<NodeId> nodes) {
         for (var nodeId : nodes) {terminateSingleNode(nodeId);}
     }
 
-    /// 2-phase scale-down (rc1: NoOp drain coordinator → both phases resolve immediately).
-    /// Phase 1: write `NodeLifecycleValue(DRAINING, ...)` via consensus, preserving the
-    /// prior atom's host/port/epoch metadata (Theme C contract — see
-    /// [`NodeLifecycleValue#nodeLifecycleValue(NodeLifecycleState, String, int, Epoch)`]).
-    /// Phase 2: invoke `drainCoordinator.prepareDrain` then `awaitDrainAck` with a
-    /// fallback timeout reusing `provisioningTimeout` (default 60s).
-    /// Phase 3: `provider.terminate(instanceId)` after ack/timeout, then write the
-    /// DECOMMISSIONED atom via the existing `writeDecommissionedAtom` path.
-    /// rc2 #189 swaps the NoOp coordinator for a real one without touching this code.
     private void terminateSingleNode(NodeId nodeId) {
         writeDrainingAtom(nodeId);
         var timeout = autoHealConfig.provisioningTimeout();
-        drainCoordinator.prepareDrain(nodeId, DrainReason.SCALE_DOWN)
-                        .flatMap(_ -> drainCoordinator.awaitDrainAck(nodeId, timeout))
-                        .onResult(result -> handleDrainResult(nodeId, result));
+        drainCoordinator.prepareDrain(nodeId, DrainReason.SCALE_DOWN).flatMap(_ -> drainCoordinator.awaitDrainAck(nodeId,
+                                                                                                                  timeout))
+                                     .onResult(result -> handleDrainResult(nodeId, result));
     }
 
     private void handleDrainResult(NodeId nodeId, Result<Unit> result) {
         result.onFailure(cause -> log.warn("CTM: drain ack for {} failed/timed out ({}); proceeding to terminate",
-                                            nodeId,
-                                            cause.message()))
-              .onSuccess(_ -> log.debug("CTM: drain ack received for {}", nodeId));
+                                           nodeId,
+                                           cause.message()))
+        .onSuccess(_ -> log.debug("CTM: drain ack received for {}", nodeId));
         proceedToTerminate(nodeId);
     }
 
     private void proceedToTerminate(NodeId nodeId) {
-        lifecycleManager.terminateNode(nodeId)
-                              .onSuccess(_ -> handleTerminateSuccessWithDrainComplete(nodeId))
-                              .onFailure(cause -> log.warn("CTM: Node {} termination failed: {}", nodeId, cause.message()));
+        lifecycleManager.terminateNode(nodeId).onSuccess(_ -> handleTerminateSuccessWithDrainComplete(nodeId))
+                                      .onFailure(cause -> log.warn("CTM: Node {} termination failed: {}",
+                                                                   nodeId,
+                                                                   cause.message()));
     }
 
     private void handleTerminateSuccessWithDrainComplete(NodeId nodeId) {
@@ -1013,21 +856,14 @@ import static org.pragmatica.lang.Unit.unit;
         handleTerminationSuccess(nodeId);
     }
 
-    /// Phase 1 write: DRAINING atom carries forward `host`/`port`/`observedCoreEpoch`/
-    /// `provisioningSource` from the prior lifecycle atom in KV (Theme E single-writer
-    /// invariant — preserves metadata on every transition). Falls back to the topology
-    /// observer's `NodeInfo` for host/port if no prior atom is present (defensive path
-    /// — the lifecycle atom is normally seeded at provision time, so absence indicates
-    /// either a fresh test harness or a corrupted KV state).
     private void writeDrainingAtom(NodeId nodeId) {
         var prior = lifecycleReader.apply(nodeId);
         var value = buildDrainingAtom(nodeId, prior);
         @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
                                                                                                                                     value);
-        commandApplier.apply(List.of(command))
-                            .onFailure(cause -> log.warn("CTM: failed to write DRAINING atom for {}: {}",
-                                                         nodeId,
-                                                         cause.message()))
+        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("CTM: failed to write DRAINING atom for {}: {}",
+                                                                           nodeId,
+                                                                           cause.message()))
                             .onSuccess(_ -> log.info("CTM: wrote DRAINING atom for {} ({}:{}, epoch={}, source={})",
                                                      nodeId,
                                                      value.host(),
@@ -1061,22 +897,14 @@ import static org.pragmatica.lang.Unit.unit;
         reconcile();
     }
 
-    /// DECOMMISSIONED atom write — Theme E single-writer SSOT invariant. Reads the prior
-    /// `NodeLifecycleValue` from KV via `lifecycleReader` and forwards the metadata
-    /// fields (host, port, observedCoreEpoch, provisioningSource) so downstream
-    /// consumers and any subsequent lifecycle audit can still resolve the node's
-    /// addressing and provisioning provenance after termination. Falls back to the
-    /// previous metadata-erasing shape only when no prior atom exists (defensive
-    /// branch — logs a warning).
     private void writeDecommissionedAtom(NodeId nodeId) {
         var prior = lifecycleReader.apply(nodeId);
         var value = buildDecommissionedAtom(nodeId, prior);
         @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
                                                                                                                                     value);
-        commandApplier.apply(List.of(command))
-                            .onFailure(cause -> log.warn("CTM: failed to write DECOMMISSIONED atom for {}: {}",
-                                                         nodeId,
-                                                         cause.message()))
+        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("CTM: failed to write DECOMMISSIONED atom for {}: {}",
+                                                                           nodeId,
+                                                                           cause.message()))
                             .onSuccess(_ -> log.info("CTM: wrote DECOMMISSIONED atom for {} ({}:{}, epoch={}, source={})",
                                                      nodeId,
                                                      value.host(),
@@ -1090,9 +918,9 @@ import static org.pragmatica.lang.Unit.unit;
             log.warn("CTM: no prior NodeLifecycleValue for {} when writing DECOMMISSIONED — writing default empty metadata (defensive fallback)",
                      nodeId);
             return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
-                                                          "",
-                                                          0,
-                                                          ProvisioningSource.CTM);
+                                                         "",
+                                                         0,
+                                                         ProvisioningSource.CTM);
         }
         var p = prior.unwrap();
         return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
@@ -1118,77 +946,62 @@ import static org.pragmatica.lang.Unit.unit;
         var localTag = NodeId.nodeId("ctm-inflight-" + System.nanoTime() + "-" + Math.abs(spec.hashCode())).unwrap();
         var slotKvKey = ProvisioningSlotKey.provisioningSlotKey(java.util.UUID.randomUUID().toString());
         writeProvisioningSlotAtom(slotKvKey);
-        var promise = lifecycleManager.provisionNode(spec)
-                                            .onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
-                                            .onFailure(cause -> log.warn("CTM: Node provisioning failed: {}",
-                                                                         cause.message()));
+        var promise = lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
+                                                    .onFailure(cause -> log.warn("CTM: Node provisioning failed: {}",
+                                                                                 cause.message()));
         inFlightProvisions.put(localTag, promise);
         promise.onResult(_ -> inFlightProvisions.remove(localTag));
     }
 
-    /// Fix D — leader-side single-writer KV mirror of an in-flight provisioning slot. Only the
-    /// active CTM (leader) reaches this code via `provisionSingleNode`, so the single-writer
-    /// rule is preserved by the activation guard (`active.get()` in all reconcile paths).
     private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey) {
         var nowMs = nowMs();
         var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
         var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs);
-        commandApplier.apply(List.of(putSlotCommand(slotKvKey, value)))
-                            .onFailure(cause -> log.warn("CTM: failed to mirror provisioning slot {} to KV: {}",
-                                                         slotKvKey.slotId(),
-                                                         cause.message()))
+        commandApplier.apply(List.of(putSlotCommand(slotKvKey, value))).onFailure(cause -> log.warn("CTM: failed to mirror provisioning slot {} to KV: {}",
+                                                                                                    slotKvKey.slotId(),
+                                                                                                    cause.message()))
                             .onSuccess(_ -> log.debug("CTM: mirrored provisioning slot {} to KV (deadlineMs={})",
                                                       slotKvKey.slotId(),
                                                       deadlineMs));
     }
 
-    /// Fix D — deletes all KV `ProvisioningSlotValue` atoms whose deadline has lapsed. Called
-    /// from `expireSlots` so that timed-out slots are dropped from BOTH in-memory state and KV.
     private void deleteExpiredSlotAtoms(long nowMs) {
         var snapshotSlots = slotReader.get();
         if (snapshotSlots.isEmpty()) {return;}
         var deletes = snapshotSlots.entrySet().stream()
-                                            .filter(e -> e.getValue().deadlineMs() < nowMs)
+                                            .filter(e -> e.getValue().deadlineMs() <nowMs)
                                             .map(e -> deleteSlotCommand(e.getKey()))
                                             .toList();
         if (deletes.isEmpty()) {return;}
-        commandApplier.apply(deletes)
-                            .onFailure(cause -> log.warn("CTM: failed to delete {} expired slot atom(s) from KV: {}",
-                                                         deletes.size(),
-                                                         cause.message()))
-                            .onSuccess(_ -> log.debug("CTM: deleted {} expired slot atom(s) from KV", deletes.size()));
+        commandApplier.apply(deletes).onFailure(cause -> log.warn("CTM: failed to delete {} expired slot atom(s) from KV: {}",
+                                                                  deletes.size(),
+                                                                  cause.message()))
+                            .onSuccess(_ -> log.debug("CTM: deleted {} expired slot atom(s) from KV",
+                                                      deletes.size()));
     }
 
-    /// Cancels all in-flight `provisionNode` Promises captured during the current Reconciling
-    /// wave. Called when reconcileActive observes the desired count has shrunk below the
-    /// real-actual count so that provisions in progress are not wasted on nodes the operator
-    /// no longer wants. Cancellation is best-effort — the underlying ComputeProvider may
-    /// have already produced an instance, in which case the next reconcile tick observes the
-    /// surplus and terminates via the standard 2-phase drain path.
     private void cancelInFlightProvisions(String reason) {
         if (inFlightProvisions.isEmpty()) {return;}
         var size = inFlightProvisions.size();
         log.info("CTM: cancelling {} in-flight provision(s) ({})", size, reason);
-        inFlightProvisions.values()
-                                  .forEach(Promise::cancel);
+        inFlightProvisions.values().forEach(Promise::cancel);
         inFlightProvisions.clear();
         deleteAllSlotAtoms("cancel: " + reason);
     }
 
-    /// Fix D — wipes every KV `ProvisioningSlotValue` atom (used when the CTM cancels
-    /// in-flight provisions because the operator shrank the target below `realActual`).
     private void deleteAllSlotAtoms(String reason) {
         var allSlots = slotReader.get();
         if (allSlots.isEmpty()) {return;}
         var deletes = allSlots.keySet().stream()
                                      .map(ClusterTopologyManagerRecord::deleteSlotCommand)
                                      .toList();
-        commandApplier.apply(deletes)
-                            .onFailure(cause -> log.warn("CTM: failed to wipe {} slot atom(s) ({}): {}",
-                                                         deletes.size(),
-                                                         reason,
-                                                         cause.message()))
-                            .onSuccess(_ -> log.info("CTM: wiped {} slot atom(s) ({})", deletes.size(), reason));
+        commandApplier.apply(deletes).onFailure(cause -> log.warn("CTM: failed to wipe {} slot atom(s) ({}): {}",
+                                                                  deletes.size(),
+                                                                  reason,
+                                                                  cause.message()))
+                            .onSuccess(_ -> log.info("CTM: wiped {} slot atom(s) ({})",
+                                                     deletes.size(),
+                                                     reason));
         slotKeyByNodeId.clear();
     }
 
@@ -1269,11 +1082,8 @@ import static org.pragmatica.lang.Unit.unit;
         return List.copyOf(list);
     }
 
-    /// Append `count` fresh slots to an existing in-flight list and return an immutable copy.
-    /// Used by the top-up dispatch path so the new wave's deadlines are independent of the
-    /// original wave's deadlines (each slot times out on its own clock).
     private List<NodeReconcilerState.ProvisioningSlot> mergeSlots(List<NodeReconcilerState.ProvisioningSlot> existing,
-                                                                   int count) {
+                                                                  int count) {
         var nowMs = nowMs();
         var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
         var merged = new ArrayList<NodeReconcilerState.ProvisioningSlot>(existing.size() + count);

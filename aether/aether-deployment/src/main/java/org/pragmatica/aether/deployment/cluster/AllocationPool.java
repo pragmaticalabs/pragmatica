@@ -13,12 +13,6 @@ import java.util.Map;
 import java.util.Set;
 
 
-/// Pool of allocatable nodes for slice placement.
-/// Combines core consensus nodes with worker pool nodes.
-///
-/// @param coreNodes consensus participants with ON_DUTY lifecycle
-/// @param mainWorkers always-on worker pool members
-/// @param workersByCommunity community-specific worker groups for multi-group topology
 public record AllocationPool(List<NodeId> coreNodes,
                              List<NodeId> mainWorkers,
                              Map<String, List<NodeId>> workersByCommunity) {

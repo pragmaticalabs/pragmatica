@@ -16,9 +16,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 
-/// Configuration service providing hierarchical configuration management.
-/// Supports GLOBAL, NODE, and SLICE scopes with override semantics.
-/// More specific scopes override less specific ones.
 public interface ConfigService extends Slice {
     Promise<Option<String>> getString(String section, String key);
     Promise<Option<String>> getString(ConfigScope scope, String section, String key);

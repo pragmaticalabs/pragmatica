@@ -8,7 +8,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Error hierarchy for worker node failures.
 public sealed interface WorkerError extends Cause {
     enum General implements WorkerError {
         NO_CORE_NODES("No core nodes configured"),

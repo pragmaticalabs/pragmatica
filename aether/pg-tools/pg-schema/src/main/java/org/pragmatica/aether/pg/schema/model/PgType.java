@@ -10,7 +10,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-/// PostgreSQL type system representation.
 public sealed interface PgType {
     String name();
 

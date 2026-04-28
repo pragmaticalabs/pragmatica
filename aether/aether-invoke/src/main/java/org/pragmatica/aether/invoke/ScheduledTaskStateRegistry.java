@@ -18,14 +18,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Passive KV-Store watcher maintaining a local cache of scheduled task execution state.
-///
-/// Tracks execution metrics (last run time, next fire time, failure counts) for
-/// scheduled tasks. Read-only from registry perspective; ScheduledTaskManager
-/// writes state via consensus.
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks — void required by messaging framework
-public interface ScheduledTaskStateRegistry {
+@SuppressWarnings("JBCT-RET-01") public interface ScheduledTaskStateRegistry {
     @MessageReceiver void onStatePut(ValuePut<ScheduledTaskStateKey, ScheduledTaskStateValue> valuePut);
     @MessageReceiver void onStateRemove(ValueRemove<ScheduledTaskStateKey, ScheduledTaskStateValue> valueRemove);
     Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key);

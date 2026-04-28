@@ -10,12 +10,6 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.serialization.Codec;
 
 
-/// Principal identity - who is making the request.
-///
-/// Value object with parse-don't-validate pattern.
-/// Represents the authenticated entity making a request.
-///
-/// @param value the principal identifier
 @Codec public record Principal(String value) {
     public sealed interface PrincipalError extends Cause {
         enum General implements PrincipalError {

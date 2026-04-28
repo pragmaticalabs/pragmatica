@@ -32,11 +32,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// API key validator that combines config-based keys with KV-Store-based keys.
-///
-/// On each request, hashes the presented key and checks:
-/// 1. Config-based keys (static, from startup)
-/// 2. KV-Store keys with ACTIVE status or REVOKED within grace period
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) class KvStoreApiKeyValidator implements SecurityValidator {
     private static final Logger log = LoggerFactory.getLogger(KvStoreApiKeyValidator.class);
 

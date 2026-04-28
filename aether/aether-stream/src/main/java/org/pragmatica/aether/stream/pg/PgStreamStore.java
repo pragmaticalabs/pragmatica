@@ -16,15 +16,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// PostgreSQL-backed storage for stream segments and transactional consumer cursors.
-///
-/// Provides durable cold-tier storage for sealed segments and exactly-once cursor
-/// semantics via PostgreSQL transactions. Designed to integrate with the tiered
-/// storage hierarchy as the coldest tier.
-///
-/// Tables:
-///   - `aether_stream_segments`: stores sealed segment byte payloads keyed by stream/partition/offset
-///   - `aether_stream_cursors`: stores consumer group cursor positions with UPSERT semantics
 public interface PgStreamStore {
     Promise<Unit> storeSegment(String streamName, int partition, long startOffset, long endOffset, byte[] data);
     Promise<Option<byte[]>> readSegment(String streamName, int partition, long startOffset);

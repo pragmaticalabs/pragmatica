@@ -21,7 +21,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Parses cluster bootstrap TOML config into [ClusterBootstrapConfig]. Section 3, Section 4, Section 5
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class ClusterBootstrapConfigParser {
     private ClusterBootstrapConfigParser() {}
 
@@ -357,17 +356,17 @@ import static org.pragmatica.lang.Result.success;
         var retryInterval = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "retry_interval").or("60s");
         var startupCooldown = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "startup_cooldown").or("15s");
         var staleObservationTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "stale_observation_ttl")
-                                          .or(AutoHealSpec.DEFAULT_STALE_OBSERVATION_TTL);
+                                               .or(AutoHealSpec.DEFAULT_STALE_OBSERVATION_TTL);
         var quicMissPromotionThreshold = doc.getInt(OPERATIONS_AUTO_HEAL_SECTION, "quic_miss_promotion_threshold")
-                                                .or(AutoHealSpec.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
+                                                   .or(AutoHealSpec.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
         var provisioningTimeout = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provisioning_timeout")
-                                          .or(AutoHealSpec.DEFAULT_PROVISIONING_TIMEOUT);
+                                               .or(AutoHealSpec.DEFAULT_PROVISIONING_TIMEOUT);
         var provisionStabilityWindow = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provision_stability_window")
-                                                .or(AutoHealSpec.DEFAULT_PROVISION_STABILITY_WINDOW);
+                                                    .or(AutoHealSpec.DEFAULT_PROVISION_STABILITY_WINDOW);
         var decommissionedRetention = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "decommissioned_retention")
-                                                .or(AutoHealSpec.DEFAULT_DECOMMISSIONED_RETENTION);
+                                                   .or(AutoHealSpec.DEFAULT_DECOMMISSIONED_RETENTION);
         var swimHintsTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "swim_hints_ttl")
-                                  .or(AutoHealSpec.DEFAULT_SWIM_HINTS_TTL);
+                                        .or(AutoHealSpec.DEFAULT_SWIM_HINTS_TTL);
         return AutoHealSpec.autoHealSpec(enabled,
                                          retryInterval,
                                          startupCooldown,

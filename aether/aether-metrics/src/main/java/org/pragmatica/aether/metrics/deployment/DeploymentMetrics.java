@@ -14,8 +14,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 
-/// Deployment timing metrics for a single slice deployment.
-/// Tracks timestamps for each state transition to calculate latencies.
 public record DeploymentMetrics(Artifact artifact,
                                 NodeId nodeId,
                                 long startTime,

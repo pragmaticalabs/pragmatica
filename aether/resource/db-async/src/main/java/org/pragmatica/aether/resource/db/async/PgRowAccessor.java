@@ -12,7 +12,6 @@ import org.pragmatica.postgres.PgRow;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Adapts postgres-async PgRow to the RowMapper.RowAccessor interface.
 final class PgRowAccessor implements RowAccessor {
     private final PgRow row;
 

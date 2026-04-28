@@ -19,12 +19,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.none;
 
 
-/// Cross-tier read optimization for streaming segments.
-///
-/// Wraps the segment read path with:
-/// 1. Segment index lookup for offset-to-segment resolution
-/// 2. Reads via StorageInstance (which does tier-waterfall internally)
-/// 3. Async prefetch of the next segment when reading near the end of a segment
 public sealed interface TieredStreamReader {
     Promise<List<RawEvent>> read(String streamName, int partition, long fromOffset, int maxEvents);
     Promise<Unit> prefetch(String streamName, int partition, long fromOffset);

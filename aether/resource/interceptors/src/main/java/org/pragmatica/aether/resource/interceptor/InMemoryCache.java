@@ -11,10 +11,6 @@ import org.pragmatica.lang.Unit;
 import java.util.concurrent.ConcurrentHashMap;
 
 
-/// Simple in-memory cache with TTL-based expiry.
-///
-/// Thread-safe via {@link ConcurrentHashMap} operations. No background eviction —
-/// expired entries are lazily removed on access.
 final class InMemoryCache implements CacheBackend {
     private final ConcurrentHashMap<Object, CacheEntry> storage = new ConcurrentHashMap<>();
 

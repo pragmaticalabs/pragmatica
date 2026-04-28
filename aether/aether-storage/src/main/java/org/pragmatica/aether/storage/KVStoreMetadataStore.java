@@ -37,9 +37,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-/// KV-Store backed implementation of MetadataStore.
-/// Uses consensus KV-Store for cluster-wide block lifecycle and reference metadata.
-/// Local ConcurrentHashMap provides atomic claim semantics for write deduplication.
 final class KVStoreMetadataStore implements MetadataStore {
     private final String instanceName;
     private final KVStore<AetherKey, AetherValue> kvStore;

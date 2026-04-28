@@ -44,14 +44,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Unified deployment manager implementation that operates at blueprint level.
-///
-/// All deployment operations are synchronous (return Result) because they
-/// execute consensus commands and wait for them to be applied. State is
-/// maintained in an in-memory cache and reconstructed from KV-Store when the
-/// STRATEGIES task group is assigned to this node.
-///
-/// Factory method: [DeploymentManager#deploymentManager]
 final class DeploymentManagerImpl implements DeploymentManager {
     private static final Logger log = LoggerFactory.getLogger(DeploymentManager.class);
 

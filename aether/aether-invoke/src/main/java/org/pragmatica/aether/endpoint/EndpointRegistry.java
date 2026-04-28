@@ -30,20 +30,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Passive KV-Store watcher that maintains a local cache of all cluster endpoints.
-///
-///
-/// Key responsibilities:
-///
-///   - Watch endpoint key events (ValuePut/ValueRemove)
-///   - Maintain local cache of endpoints grouped by artifact and method
-///   - Provide endpoint discovery for remote slice calls
-///   - Support round-robin load balancing for endpoint selection
-///
-///
-///
-/// This is a pure event-driven component - no active synchronization needed.
-/// Slices automatically publish/unpublish endpoints via consensus.
 public interface EndpointRegistry {
     @SuppressWarnings("JBCT-RET-01") void registerEndpoint(EndpointKey key, EndpointValue value);
     @SuppressWarnings("JBCT-RET-01") void unregisterEndpoint(EndpointKey key);

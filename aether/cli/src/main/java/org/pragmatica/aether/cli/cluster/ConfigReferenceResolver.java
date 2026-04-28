@@ -19,20 +19,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Resolves ${env:xxx} and ${secrets:xxx} references in raw TOML configuration strings.
-///
-/// Resolution happens at the string level BEFORE TOML parsing, so any value
-/// in the config can use references -- no per-field special cases.
-///
-/// Supported formats:
-/// - ${env:VARIABLE_NAME} -> direct environment variable lookup
-/// - ${secrets:secret-name} -> AETHER_SECRET_NAME env var (uppercased, hyphens to underscores)
-///
-/// Security:
-/// - Only resolves known patterns (${env:} and ${secrets:})
-/// - Unknown patterns are left as-is (not an error)
-/// - Missing env vars produce clear error with the reference name
-/// - Resolved values are never logged
 sealed interface ConfigReferenceResolver {
     record unused() implements ConfigReferenceResolver{}
 

@@ -18,8 +18,6 @@ import org.pragmatica.lang.Option;
 import java.nio.charset.StandardCharsets;
 
 
-/// Factory for Aether-specific ReplicatedMap instances.
-/// Creates 3 named maps backed by a shared DHT: endpoints, slice-nodes, http-routes.
 public interface AetherMaps {
     ReplicatedMap<EndpointKey, EndpointValue> endpoints();
     ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodes();
@@ -120,7 +118,6 @@ public interface AetherMaps {
                     ? Option.some(parts[1])
                     : Option.<String>none();
         var fatal = parts.length > 2 && Boolean.parseBoolean(parts[2]);
-        // Legacy (3-field) atoms predate the schema bump and carry no transitionedAt: read as 0L.
         var transitionedAt = parts.length > 3 && !parts[3].isEmpty()
                             ? Long.parseLong(parts[3])
                             : 0L;

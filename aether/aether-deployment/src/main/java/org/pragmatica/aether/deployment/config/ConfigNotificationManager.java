@@ -22,15 +22,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Manages runtime config change notifications to slices.
-///
-/// Each registered slice has a config update handler discovered via reflection
-/// on the generated factory class. When a config section changes in the KV-Store,
-/// the manager re-parses the config, compares with the cached value, and calls
-/// the update method only when the parsed result differs.
-///
-/// All notifications are dispatched on a single-threaded executor to ensure
-/// ordered, non-concurrent delivery to each slice.
 @SuppressWarnings({"JBCT-UTIL-02", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-SEQ-01"}) public sealed interface ConfigNotificationManager {
     Result<Unit> register(Artifact artifact,
                           Object sliceInstance,

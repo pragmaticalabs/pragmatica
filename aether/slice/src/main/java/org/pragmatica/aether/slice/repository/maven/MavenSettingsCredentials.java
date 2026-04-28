@@ -18,10 +18,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Reads Maven server credentials from ~/.m2/settings.xml.
-///
-/// Matches `<server>` entries by ID for repository authentication.
-/// Supports username/password pairs for Basic authentication.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public sealed interface MavenSettingsCredentials {
     Logger log = LoggerFactory.getLogger(MavenSettingsCredentials.class);
 

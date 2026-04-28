@@ -21,8 +21,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-// Note: Enum timeouts are default values. SliceActionConfig is the single source of truth
-// for actual timeout configuration and can override these defaults.
 @Codec@SuppressWarnings("JBCT-SEQ-01") public enum SliceState {
     LOAD,
     LOADING(timeSpan(2).minutes()),

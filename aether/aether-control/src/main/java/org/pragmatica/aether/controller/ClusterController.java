@@ -13,11 +13,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Interface for cluster control decision-making.
-///
-///
-/// Controllers analyze metrics and current state to produce scaling decisions.
-/// Implementations can range from simple decision trees to AI-powered systems.
 public interface ClusterController {
     Promise<ControlDecisions> evaluate(ControlContext context);
 

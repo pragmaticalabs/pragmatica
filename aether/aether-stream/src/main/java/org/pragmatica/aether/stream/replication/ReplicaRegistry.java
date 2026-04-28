@@ -17,9 +17,6 @@ import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey
 import static org.pragmatica.aether.stream.replication.ReplicaDescriptor.replicaDescriptor;
 
 
-/// Registry of stream partition replicas.
-/// Thread-safe for concurrent registration and lookup.
-/// Assignment and watermark changes are persisted via the configured stores.
 public final class ReplicaRegistry {
     private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, ReplicaDescriptor>> replicas = new ConcurrentHashMap<>();
 

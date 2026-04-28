@@ -43,34 +43,6 @@ import java.util.Map;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for an Aether cluster node.
-///
-/// @param topology            Cluster topology configuration
-/// @param protocol            Consensus protocol configuration
-/// @param sliceAction         Slice lifecycle configuration
-/// @param sliceConfig         Slice repository configuration (types to create at runtime)
-/// @param managementPort      Port for HTTP management API (0 to disable)
-/// @param artifactRepo        DHT configuration for artifact repository (replication factor, 0 = full)
-/// @param cache               DHT configuration for ephemeral cache (single replica by default)
-/// @param tls                 TLS configuration for QUIC cluster transport and HTTP (empty for auto-generated self-signed)
-/// @param ttm                 TTM (Tiny Time Mixers) predictive scaling configuration
-/// @param rollback            Automatic rollback configuration
-/// @param appHttp             Application HTTP server configuration for slice routes
-/// @param controllerConfig    Controller configuration for scaling thresholds and behavior
-/// @param configProvider      Configuration provider for resource provisioning (empty to disable)
-/// @param environment         Environment integration for compute/secrets (empty to disable)
-/// @param autoHeal            Auto-heal retry configuration
-/// @param observability       Observability configuration (depth threshold, sampling target)
-/// @param atomicity           Blueprint deployment atomicity mode (BEST_EFFORT or ALL_OR_NOTHING)
-/// @param activationGated     If true, node waits for CDM activation instead of auto-activating
-/// @param timeouts            Centralized timeout configuration for all subsystems
-/// @param certificateProvider Certificate provider for mTLS and gossip encryption (empty to disable)
-/// @param workerConfig              Worker configuration for worker-role nodes (empty for core-only nodes)
-/// @param deploymentDefaults        Node-level deployment defaults (canary evaluation interval, default stages)
-/// @param managementHttpProtocol    HTTP protocol for management server (H1, H3, BOTH) — default H1
-/// @param storageConfig            Named hierarchical storage instance configurations (empty map for defaults)
-/// @param backupConfig             Consensus state backup configuration (empty for in-memory only)
-/// @param clusterFormation         Cluster formation timings (stabilization, post-establish grace, quorum-loss hysteresis)
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
                                SliceActionConfig sliceAction,

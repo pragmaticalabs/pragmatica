@@ -31,9 +31,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Docker implementation of the ComputeProvider SPI.
-/// Creates and manages aether-node containers on a Docker network using the Docker CLI.
-/// Designed for integration testing and local development environments.
 @Contract public record DockerComputeProvider(DockerCommandRunner runner,
                                               DockerConfig config,
                                               AtomicInteger nodeCounter) implements ComputeProvider {

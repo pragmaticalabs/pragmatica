@@ -7,11 +7,6 @@ package org.pragmatica.aether.config;
 import org.pragmatica.lang.io.TimeSpan;
 
 
-/// Configuration for DHT replication behavior.
-///
-/// @param cooldownDelay  Delay after node startup before upgrading to target RF
-/// @param cooldownRate   Max entries/sec during replication warmup
-/// @param targetRf       Target replication factor (0 = full replication)
 public record DhtReplicationConfig(TimeSpan cooldownDelay, int cooldownRate, int targetRf) {
     public static final TimeSpan DEFAULT_COOLDOWN_DELAY = TimeSpan.timeSpan(10).seconds();
 

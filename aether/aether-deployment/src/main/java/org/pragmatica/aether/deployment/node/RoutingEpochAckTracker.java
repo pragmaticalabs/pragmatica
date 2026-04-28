@@ -16,23 +16,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 
-/// Tracks cross-node `NodeRoutesKey` acknowledgements per slice for the
-/// ROUTING → ACTIVE epoch-fast-path described in
-/// `aether/docs/specs/cluster-generation-spec.md` §12.
-///
-/// When NDM publishes routes for a slice at epoch `E` to target nodes
-/// `[n1..nN]`, [#registerExpectation] records the expectation. As `NodeRoutesKey`
-/// PUTs arrive carrying `observedCoreEpoch >= E` for the same slice, the tracker
-/// records the ack and reports when the threshold is met via [#observeAck].
-///
-/// Threading: every method is safe to call from any thread. Internal state uses
-/// concurrent collections; the per-key transition record is immutable, so there
-/// is no compound-update race within a single key.
-///
-/// Lifecycle: the first thread to receive a "threshold reached" signal is the
-/// only one that wins (the expectation is removed atomically via
-/// [#consumeIfReady]) — subsequent acks are no-ops, preserving idempotence
-/// against the local-publish path's own ACTIVE transition.
 public interface RoutingEpochAckTracker {
     @Contract void registerExpectation(SliceNodeKey sliceKey, Epoch epoch, Set<NodeId> targetNodes);
     @Contract void clear(SliceNodeKey sliceKey);

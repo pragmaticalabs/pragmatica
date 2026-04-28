@@ -9,8 +9,6 @@ import org.pragmatica.lang.Option;
 import java.time.Instant;
 
 
-/// Single trace node representing one invocation in the call tree.
-/// Captures timing, topology, and outcome for distributed tracing.
 public record InvocationNode(String requestId,
                              int depth,
                              Instant timestamp,

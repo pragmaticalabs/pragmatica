@@ -10,21 +10,6 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.serialization.Codec;
 
 
-/// Response from follower to governor with local metrics.
-/// ~100 bytes per pong. Contains scaling-relevant metrics only.
-///
-/// Extended in Commit 3 with `observedCommunityEpoch` — the sender's last-
-/// accepted community epoch. Governor aggregates to derive community
-/// quiescence (`min(observedCommunityEpoch) ≥ target`).
-///
-/// @param sender                 follower node ID
-/// @param cpuUsage               CPU usage ratio (0.0-1.0)
-/// @param heapUsage              heap usage ratio (0.0-1.0)
-/// @param activeInvocations      number of in-flight slice invocations
-/// @param p95LatencyMs           estimated P95 latency in milliseconds
-/// @param errorRate              error rate ratio (0.0-1.0)
-/// @param timestampMs            when the pong was created
-/// @param observedCommunityEpoch sender's last-accepted community epoch
 @Codec public record WorkerMetricsPong(NodeId sender,
                                        double cpuUsage,
                                        double heapUsage,

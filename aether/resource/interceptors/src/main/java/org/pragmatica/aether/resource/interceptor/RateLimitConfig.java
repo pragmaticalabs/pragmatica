@@ -13,11 +13,6 @@ import static org.pragmatica.lang.Verify.ensure;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for rate limit interceptor.
-///
-/// @param maxRequests Maximum requests allowed in the window
-/// @param window      Time window for rate limiting
-/// @param burst       Additional burst capacity above the base rate
 public record RateLimitConfig(int maxRequests, TimeSpan window, int burst) {
     public static Result<RateLimitConfig> rateLimitConfig(int maxRequests, TimeSpan window) {
         var validRequests = ensure(maxRequests, Verify.Is::positive);

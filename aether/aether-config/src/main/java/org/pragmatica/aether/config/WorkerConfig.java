@@ -15,17 +15,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for a worker node.
-/// Worker nodes are passive compute nodes that run slices without
-/// participating in Rabia consensus.
-///
-/// @param coreNodes                     Core cluster addresses to connect to (host:port)
-/// @param clusterPort                   Port for cluster TCP communication
-/// @param swimPort                      Port for SWIM UDP failure detection
-/// @param swimSettings                  SWIM protocol tuning
-/// @param sliceConfig                   Slice repository configuration
-/// @param advertiseAddress              Address to advertise for cross-host communication (empty = auto-detect)
-/// @param metricsAggregation            Metrics aggregation interval
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"}) public record WorkerConfig(List<String> coreNodes,
                                                                                int clusterPort,
                                                                                int swimPort,

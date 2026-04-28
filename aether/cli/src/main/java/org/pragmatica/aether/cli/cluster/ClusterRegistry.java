@@ -23,11 +23,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Manages the cluster registry at `~/.aether/clusters.toml`.
-///
-/// Stores registered cluster endpoints and tracks the active context.
-/// The registry file uses TOML format with `[current]` section for active context
-/// and `[clusters.<name>]` sections for each registered cluster.
 public record ClusterRegistry(Path registryPath, Option<String> currentContext, List<ClusterEntry> entries) {
     private static final String CLUSTERS_PREFIX = "clusters.";
 

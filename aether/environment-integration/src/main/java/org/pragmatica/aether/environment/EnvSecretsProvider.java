@@ -8,8 +8,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 
-/// SecretsProvider that reads secrets from environment variables.
-/// Path conversion: `database/password` becomes env var `AETHER_SECRET_DATABASE_PASSWORD`.
 public record EnvSecretsProvider() implements SecretsProvider {
     private static final String PREFIX = "AETHER_SECRET_";
 

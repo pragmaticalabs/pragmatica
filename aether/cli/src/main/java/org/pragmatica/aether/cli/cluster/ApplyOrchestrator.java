@@ -22,7 +22,6 @@ import static org.pragmatica.aether.cli.cluster.ApplyResult.applyResult;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Desired-state reconciliation orchestrator. S9
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-EX-01"}) public final class ApplyOrchestrator {
     private ApplyOrchestrator() {}
 

@@ -18,8 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Embedded H2 database server for Ember.
-/// Provides an in-memory or persistent H2 database that slices can connect to.
 @SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01"}) public final class EmberH2Server {
     private static final Logger log = LoggerFactory.getLogger(EmberH2Server.class);
 

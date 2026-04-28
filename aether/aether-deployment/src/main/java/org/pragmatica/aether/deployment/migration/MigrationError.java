@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.migration;
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for migration operations.
 public sealed interface MigrationError extends Cause {
     static StepFailed stepFailed(String stepDescription, Cause cause) {
         return new StepFailed(stepDescription, cause);

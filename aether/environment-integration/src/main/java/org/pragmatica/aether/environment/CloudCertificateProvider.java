@@ -19,16 +19,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Cloud-backed certificate provider that fetches pre-provisioned certificate material
-/// from a cloud secrets backend (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault).
-///
-/// Expected secret layout:
-///   - `{prefix}/ca-cert`       — PEM-encoded CA certificate
-///   - `{prefix}/ca-key`        — PEM-encoded CA private key (for node cert issuance)
-///   - `{prefix}/gossip-key`    — Base64 or hex-encoded 32-byte gossip encryption key
-///   - `{prefix}/gossip-key-id` — Integer key ID for gossip key rotation
-///
-/// Node certificates are issued locally using the fetched CA material and BouncyCastle.
 public final class CloudCertificateProvider implements CertificateProvider {
     private final byte[] caCertPem;
     private final byte[] caKeyPem;

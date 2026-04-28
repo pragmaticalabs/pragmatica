@@ -16,7 +16,6 @@ import java.util.Set;
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
 
-/// Rules detecting DDL operations that acquire dangerous locks.
 public final class LockHazardRules {
     private LockHazardRules() {}
 

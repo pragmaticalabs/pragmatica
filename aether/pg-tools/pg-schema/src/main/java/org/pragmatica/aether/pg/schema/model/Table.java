@@ -10,7 +10,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-/// A table definition with columns, constraints, and metadata.
 public record Table(String name,
                     String schema,
                     List<Column> columns,

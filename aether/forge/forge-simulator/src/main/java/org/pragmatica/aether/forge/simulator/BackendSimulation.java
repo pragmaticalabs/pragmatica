@@ -24,8 +24,6 @@ import static org.pragmatica.lang.Result.unitResult;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Framework for simulating realistic backend behavior including latency and failures.
-/// Used to test system resilience and behavior under various conditions.
 public sealed interface BackendSimulation {
     AtomicInteger THREAD_COUNTER = new AtomicInteger(0);
 

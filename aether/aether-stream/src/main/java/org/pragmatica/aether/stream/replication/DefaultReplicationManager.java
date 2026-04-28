@@ -27,11 +27,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Default implementation of governor-push replication.
-/// Sends events to all registered replicas after each successful publish.
-/// Optionally batches events to amortize per-message QUIC overhead.
-/// Supports synchronous replication via [#awaitReplication] which registers
-/// a pending ack entry and resolves when enough replicas acknowledge.
 final class DefaultReplicationManager implements ReplicationManager {
     private static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
 

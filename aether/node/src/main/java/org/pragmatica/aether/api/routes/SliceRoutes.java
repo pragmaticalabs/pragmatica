@@ -47,7 +47,6 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
 
-/// Routes for slice management: scale, blueprint, status.
 public final class SliceRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(SliceRoutes.class);
 

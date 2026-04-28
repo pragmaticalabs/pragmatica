@@ -11,7 +11,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.Arrays;
 
 
-/// Node roles within a cluster. §5.1.6
 public enum NodeRole {
     CORE("core"),
     WORKER("worker"),

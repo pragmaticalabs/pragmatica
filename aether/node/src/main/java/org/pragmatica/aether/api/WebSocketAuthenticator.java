@@ -20,13 +20,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Shared WebSocket authentication logic.
-///
-/// When security is enabled, clients must send an auth message as their first message:
-/// `{"type":"AUTH","apiKey":"..."}`
-///
-/// Until authenticated, all other messages are rejected.
-/// Sessions that don't authenticate within 5 seconds are closed.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) public final class WebSocketAuthenticator {
     private static final Logger log = LoggerFactory.getLogger(WebSocketAuthenticator.class);
 

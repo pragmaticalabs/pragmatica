@@ -9,7 +9,6 @@ import org.pragmatica.lang.Option;
 import java.util.List;
 
 
-/// Table constraint types.
 public sealed interface Constraint {
     Option<String> name();
 

@@ -18,11 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// LRU cache with TTL wrapping a ReplicatedMap for point lookups.
-/// Cache invalidation via MapSubscription events ensures consistency.
-///
-/// @param <K> key type
-/// @param <V> value type
 public final class CachedReplicatedMap<K, V> implements MapSubscription<K, V> {
     private static final Logger log = LoggerFactory.getLogger(CachedReplicatedMap.class);
 

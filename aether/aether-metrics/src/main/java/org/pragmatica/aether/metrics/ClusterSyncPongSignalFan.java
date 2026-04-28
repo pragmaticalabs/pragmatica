@@ -18,17 +18,6 @@ import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.lang.Contract;
 
 
-/// Leader-side fan-out of peer observations carried on `ClusterSyncPong`s.
-///
-/// Followers piggyback SWIM-health and QUIC-connectivity observations on their
-/// pongs (commit 2). This fan unpacks those observations on receipt and emits
-/// one `HealthSignal.RemoteSwimHint` / `HealthSignal.RemoteConnectivity` per
-/// observation into the leader's health-signal sink.
-///
-/// On followers (`leaderManager.isLeader() == false`) the fan is a no-op —
-/// only the Rabia leader feeds its `HealthReconciler` with decisions.
-///
-/// See `aether/docs/specs/clustersync-refactor-spec.md` commit 1.
 @Contract public interface ClusterSyncPongSignalFan {
     void fan(ClusterSyncPong pong);
 
@@ -38,12 +27,6 @@ import org.pragmatica.lang.Contract;
 
     private static void fanIfLeader(ClusterSyncPong pong, HealthSignalSink sink, LeaderManager leaderManager) {
         if (!leaderManager.isLeader()) {return;}
-        // Self-evident liveness: the pong itself proves the sender is alive on the wire.
-        // Emit `SwimHint(HEALTHY)` for the sender so the leader's HealthReconciler clears
-        // any sticky SUSPECTED state for that peer (from transient SWIM-probe-too-early during
-        // boot). Without this, peers transiently SWIM-suspected before they were ready stay
-        // SUSPECTED forever — followers don't push HEALTHY to the observation buffer (only
-        // SUSPECT/FAULTY), so the piggybacked observations alone never lift SUSPECTED.
         sink.emit(new HealthSignal.SwimHint(pong.sender(),
                                             HealthHint.HEALTHY,
                                             Epoch.epoch(pong.observedEpochTerm(), pong.observedEpochCounter())));

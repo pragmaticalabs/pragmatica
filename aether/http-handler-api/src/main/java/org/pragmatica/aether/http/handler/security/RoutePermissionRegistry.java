@@ -11,15 +11,6 @@ import static org.pragmatica.aether.http.handler.security.RoutePermission.ALL_AU
 import static org.pragmatica.aether.http.handler.security.RoutePermission.OPERATOR_AND_ABOVE;
 
 
-/// Registry that resolves route permissions based on HTTP method and path.
-///
-/// Pure logic component: maps management API endpoints to their minimum
-/// required authorization role. Used by the security pipeline to enforce
-/// role-based access control after authentication succeeds.
-///
-/// Default policy:
-///   - GET requests → ALL_AUTHENTICATED (any authenticated role)
-///   - POST/PUT/DELETE requests → ADMIN_ONLY (unless explicitly overridden)
 public sealed interface RoutePermissionRegistry {
     static RoutePermission resolve(String method, String path) {
         return isReadMethod(method)

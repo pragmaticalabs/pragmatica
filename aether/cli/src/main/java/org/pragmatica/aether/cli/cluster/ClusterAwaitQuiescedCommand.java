@@ -18,10 +18,6 @@ import picocli.CommandLine.Option;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_AWAIT_QUIESCED;
 
 
-/// Blocks until the queried node has `observedEpoch >= requested` AND the snapshot
-/// reports cluster-wide quiescence at that epoch.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §14.1, §14.3.
 @Command(name = "await-quiesced", description = "Wait until cluster reaches the given epoch and quiesces") @SuppressWarnings("JBCT-RET-01") class ClusterAwaitQuiescedCommand implements Callable<Integer> {
     @CommandLine.ParentCommand private ClusterCommand parent;
 

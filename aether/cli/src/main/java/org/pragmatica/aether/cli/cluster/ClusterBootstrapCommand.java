@@ -28,19 +28,7 @@ import picocli.CommandLine.Parameters;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEALTH;
 
 
-/// Bootstraps a new Aether cluster from a configuration file.
-///
-/// Reads `aether-cluster.toml`, validates the configuration, provisions cloud instances,
-/// waits for health and quorum, stores the cluster config and API key, and registers
-/// the cluster in the local registry.
-@Command(name = "bootstrap",
-         description = {
-             "Bootstrap a new cluster from config file.",
-             "",
-             "Required when the cluster has no static seed members (cluster.static=0) and the cloud",
-             "minimum is at least the quorum size (cloud.min >= quorum): with no static seeds the",
-             "nodes cannot self-form a quorum, so an explicit operator-driven bootstrap is required."
-         }) @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterBootstrapCommand implements Callable<Integer> {
+@Command(name = "bootstrap", description = {"Bootstrap a new cluster from config file.", "", "Required when the cluster has no static seed members (cluster.static=0) and the cloud", "minimum is at least the quorum size (cloud.min >= quorum): with no static seeds the", "nodes cannot self-form a quorum, so an explicit operator-driven bootstrap is required."}) @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterBootstrapCommand implements Callable<Integer> {
     private static final int POLL_INTERVAL_MS = 2000;
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();

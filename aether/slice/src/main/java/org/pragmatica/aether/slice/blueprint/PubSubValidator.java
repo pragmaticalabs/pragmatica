@@ -14,10 +14,6 @@ import java.util.stream.Collectors;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Validates that all publisher topics in a blueprint have at least one subscriber.
-///
-/// This is a deploy-time validation: if any publisher config section has no matching
-/// subscriber config section across the entire blueprint, deployment is rejected.
 @SuppressWarnings("JBCT-UTIL-02") public sealed interface PubSubValidator {
     static Result<List<SliceTopology>> validate(List<SliceTopology> topologies) {
         var orphans = findOrphanPublishers(topologies);

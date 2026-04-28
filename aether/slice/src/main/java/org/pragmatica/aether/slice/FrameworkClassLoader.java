@@ -24,44 +24,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// ClassLoader for framework classes shared by all slices.
-///
-/// This classloader sits between the Platform ClassLoader and SharedLibraryClassLoader,
-/// providing isolation between the Node's framework copy and the Slice's framework copy.
-///
-/// **ClassLoader Hierarchy:**
-/// ```
-/// Bootstrap (JDK)
-///     ↑
-/// Platform (JDK modules)
-///     ↑
-/// FrameworkClassLoader (pragmatica-lite, slice-api, serialization) ← THIS
-///     ↑
-/// SharedLibraryClassLoader ([shared] deps)
-///     ↑
-/// SliceClassLoader (slice JAR)
-/// ```
-///
-/// By using Platform ClassLoader (not Application ClassLoader) as parent,
-/// slices are completely isolated from the Node's classes. This prevents:
-///
-///   - Class version conflicts between Node and Slice
-///   - Accidental leakage of Node internals to Slices
-///   - Framework serialization issues (class identity across classloaders)
-///
-///
-/// The framework JARs are loaded from a dedicated directory (e.g., lib/framework/).
-///
-/// **Required JARs:**
-///
-///   - pragmatica-lite:core - Result, Promise, Option, etc.
-///   - aether:slice-api - Slice, SliceBridge, SliceMethod, etc.
-///   - serialization-api - Serialization library
-///   - slf4j-api - Logging facade
-///
-///
-/// @see SharedLibraryClassLoader
-/// @see SliceClassLoader
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public class FrameworkClassLoader extends URLClassLoader {
     private static final Logger log = LoggerFactory.getLogger(FrameworkClassLoader.class);
 

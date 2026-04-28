@@ -37,23 +37,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Manages automatic rollback on persistent slice failures.
-///
-///
-/// Key responsibilities:
-///
-///   - Listen for AllInstancesFailed events
-///   - Track previous versions when blueprints change
-///   - Initiate rollback by updating blueprint to previous version
-///   - Enforce cooldown period to prevent rollback loops
-///   - Track rollback count per artifact
-///
-///
-///
-/// Only the leader node performs rollbacks to avoid conflicts.
-@SuppressWarnings("JBCT-RET-01")
-// MessageReceiver callbacks — void required by messaging framework
-public interface RollbackManager extends DelegatedComponent {
+@SuppressWarnings("JBCT-RET-01") public interface RollbackManager extends DelegatedComponent {
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut);
     @MessageReceiver void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event);

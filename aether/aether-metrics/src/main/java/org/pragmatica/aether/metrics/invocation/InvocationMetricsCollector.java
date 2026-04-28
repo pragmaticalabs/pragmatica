@@ -21,26 +21,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Collects per-method invocation metrics with threshold-based slow call capture.
-///
-/// This collector implements the dual-track metrics approach:
-///
-///   - Tier 1: Aggregated metrics (count, sum, histogram) for all invocations
-///   - Tier 2: Detailed capture of slow invocations in a ring buffer
-///
-///
-/// Thread-safe and designed for high-throughput concurrent access.
-///
-/// <h3>Usage:</h3>
-/// ```{@code
-/// var collector = InvocationMetricsCollector.invocationMetricsCollector(ThresholdStrategy.adaptive(10, 1000));
-///
-/// // Record invocation
-/// collector.record(artifact, method, durationNs, success, requestBytes, responseBytes, errorType);
-///
-/// // Get snapshot
-/// var snapshots = collector.snapshotAndReset();
-/// }```
 public final class InvocationMetricsCollector {
     public static final int MAX_SLOW_INVOCATIONS_PER_METHOD = 10;
 

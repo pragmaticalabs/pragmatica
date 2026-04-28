@@ -9,11 +9,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 
-/// PostgreSQL-backed cursor store for exactly-once consumer offset tracking.
-///
-/// Delegates to PgStreamStore for transactional UPSERT-based cursor persistence.
-/// Provides the same commit/fetch contract as the AHSE-based CursorStore but with
-/// PostgreSQL transaction guarantees for exactly-once semantics.
 public final class PgCursorStore {
     private final PgStreamStore store;
 

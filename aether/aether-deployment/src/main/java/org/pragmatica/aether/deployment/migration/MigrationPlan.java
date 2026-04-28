@@ -11,10 +11,6 @@ import java.util.List;
 import static org.pragmatica.lang.Result.success;
 
 
-/// A computed migration plan with ordered execution steps and rollback steps.
-///
-/// Created by analyzing current topology and target state. Steps are executed
-/// sequentially; rollback steps reverse the migration if a step fails.
 public record MigrationPlan(MigrationRequest request,
                             List<MigrationStep> steps,
                             List<MigrationStep> rollbackSteps,

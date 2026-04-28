@@ -10,7 +10,6 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 import java.util.List;
 
 
-/// A parsed PostgreSQL data type reference.
 public record DataTypeName(SourceSpan span,
                            String baseName,
                            List<Integer> modifiers,

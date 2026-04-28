@@ -32,11 +32,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Manages alert thresholds and tracks active alerts.
-///
-///
-/// Thresholds are persisted to consensus KV-Store for cluster-wide consistency
-/// and survival across node restarts.
 @SuppressWarnings("JBCT-RET-01") public class AlertManager {
     private static final Logger log = LoggerFactory.getLogger(AlertManager.class);
 

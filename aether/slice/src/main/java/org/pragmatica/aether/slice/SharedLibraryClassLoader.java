@@ -24,23 +24,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 
 
-/// ClassLoader for shared dependencies across all slices.
-///
-/// This classloader sits between the Node ClassLoader and individual Slice ClassLoaders,
-/// providing a layer for libraries that are shared across multiple slices.
-///
-/// Key behaviors:
-///
-///   - Uses parent-first delegation (standard behavior)
-///   - Tracks loaded artifacts with their versions for conflict detection
-///   - First slice to load a dependency sets the canonical version
-///   - Subsequent slices check compatibility against loaded version
-///
-///
-/// Thread-safe: Uses ConcurrentHashMap for artifact tracking and synchronized URL addition.
-///
-/// @see SliceClassLoader
-/// @see CompatibilityResult
 @SuppressWarnings("JBCT-SEQ-01") public class SharedLibraryClassLoader extends URLClassLoader {
     private static final Logger log = LoggerFactory.getLogger(SharedLibraryClassLoader.class);
 

@@ -25,11 +25,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.none;
 
 
-/// Reads events from sealed segments stored in AHSE.
-/// Used as fallback when the ring buffer no longer holds the requested offset.
-/// Handles decryption and decompression transparently using segment metadata.
-///
-/// Deserialization format per event: [offset:8][timestamp:8][len:4][data:len]
 public final class SegmentReader {
     private static final Logger log = LoggerFactory.getLogger(SegmentReader.class);
 

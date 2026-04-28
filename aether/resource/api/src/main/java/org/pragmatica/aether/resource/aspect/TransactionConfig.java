@@ -13,13 +13,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for transaction behavior.
-///
-/// @param propagation   Transaction propagation behavior
-/// @param isolation     Transaction isolation level
-/// @param timeout       Transaction timeout (optional)
-/// @param readOnly      Whether the transaction is read-only
-/// @param rollbackFor   Exception classes that should trigger rollback (empty = rollback on all)
 public record TransactionConfig(TransactionPropagation propagation,
                                 IsolationLevel isolation,
                                 Option<TimeSpan> timeout,

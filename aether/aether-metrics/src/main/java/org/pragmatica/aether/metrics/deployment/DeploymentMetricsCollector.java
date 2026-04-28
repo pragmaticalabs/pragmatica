@@ -27,18 +27,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Collects and manages deployment timing metrics for slice deployments.
-///
-///
-/// Responsibilities:
-///
-///   - Track in-progress deployments with timestamps
-///   - Store completed deployment metrics (last N per artifact)
-///   - Handle DeploymentMetricsPing/Pong for cluster-wide visibility
-///
-///
-///
-/// Metrics are stored in-memory. Completed deployments retain last N entries per artifact.
 public interface DeploymentMetricsCollector {
     int DEFAULT_RETENTION_COUNT = 10;
 

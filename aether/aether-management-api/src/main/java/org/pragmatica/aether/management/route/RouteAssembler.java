@@ -11,10 +11,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 
-/// Reverse path construction: given a [ManagementRoute] enum value and parameter values,
-/// produce the concrete path string with URL-encoded segments.
-///
-/// Layout enforced by [ManagementRoute]: `prefix + "/" + value1 + "/" + value2 + ...`.
 public final class RouteAssembler {
     private RouteAssembler() {}
 

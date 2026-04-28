@@ -39,13 +39,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.allOf;
 
 
-/// StreamAccess implementation backed by StreamPartitionManager.
-///
-/// Provides full publish/fetch/commit/metadata operations on a stream.
-/// When [ReadPreference] is ANY_REPLICA/NEAREST, reads are routed to a
-/// caught-up remote replica via [StreamForwardClient] (SPEC: §6).
-///
-/// @param <T> Event type
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01"}) public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     @FunctionalInterface public interface CursorCheckpointWriter {
         Promise<Unit> checkpoint(String streamName, String consumerGroup, int partition, long offset);

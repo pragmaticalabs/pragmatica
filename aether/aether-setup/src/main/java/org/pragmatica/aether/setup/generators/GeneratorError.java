@@ -7,7 +7,6 @@ package org.pragmatica.aether.setup.generators;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors that can occur during artifact generation.
 public sealed interface GeneratorError extends Cause {
     record IoError(String details) implements GeneratorError {
         @Override public String message() {

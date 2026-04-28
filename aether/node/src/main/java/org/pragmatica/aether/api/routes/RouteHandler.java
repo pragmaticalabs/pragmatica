@@ -9,7 +9,6 @@ import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 
 
-/// Route handler interface for management API endpoints.
 public interface RouteHandler {
     boolean handle(RequestContext ctx, ResponseWriter response);
 

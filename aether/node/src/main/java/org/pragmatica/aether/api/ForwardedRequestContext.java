@@ -11,8 +11,6 @@ import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.server.RequestContext;
 
 
-/// Adapts an HttpRequestContext (from forwarded binary protocol) to the
-/// http-server RequestContext interface used by ManagementRouter.
 record ForwardedRequestContext(HttpRequestContext source,
                                HttpMethod httpMethod,
                                Headers headers,

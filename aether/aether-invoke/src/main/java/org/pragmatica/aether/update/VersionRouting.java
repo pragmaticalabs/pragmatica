@@ -11,25 +11,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Traffic routing ratio between old and new versions.
-///
-///
-/// Uses ratio-based routing (not percentages). For example:
-///
-///   - `(1, 3)` = 1 new : 3 old (25% to new)
-///   - `(1, 1)` = 1 new : 1 old (50% to new)
-///   - `(3, 1)` = 3 new : 1 old (75% to new)
-///   - `(1, 0)` = 100% to new
-///   - `(0, 1)` = 100% to old (initial state)
-///
-///
-///
-/// Ratios are scaled to actual instance counts. If ratio cannot be satisfied
-/// with available instances (e.g., 1:3 with only 2 old instances), the operation
-/// should be rejected.
-///
-/// @param newWeight weight for new version traffic
-/// @param oldWeight weight for old version traffic
 public record VersionRouting(int newWeight, int oldWeight) {
     private static final Cause NEGATIVE_WEIGHTS = Causes.cause("Weights must be non-negative");
 

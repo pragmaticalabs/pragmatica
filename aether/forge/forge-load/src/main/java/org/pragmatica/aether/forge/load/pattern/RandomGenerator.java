@@ -15,17 +15,6 @@ import java.util.stream.IntStream;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Generates random strings based on a pattern.
-///
-/// Pattern: `${random:TEMPLATE`} where TEMPLATE contains:
-///
-///   - `#` - Random digit (0-9)
-///   - `?` - Random lowercase letter (a-z)
-///   - `*` - Random alphanumeric (a-z, 0-9)
-///   - Any other character - Literal
-///
-///
-/// Example: `${random:SKU-#####`} generates "SKU-48291"
 public record RandomGenerator(String template) implements PatternGenerator {
     public static final String TYPE = "random";
 

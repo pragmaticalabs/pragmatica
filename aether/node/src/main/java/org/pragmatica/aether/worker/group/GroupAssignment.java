@@ -16,11 +16,7 @@ import java.util.stream.Collectors;
 import static org.pragmatica.aether.worker.group.WorkerGroupId.workerGroupId;
 
 
-/// Deterministic group computation: partitions a set of nodes into zone-aware worker groups.
-/// Same inputs always produce the same outputs. The caller handles hysteresis for merge decisions.
-@SuppressWarnings("JBCT-UTIL-02")
-// Utility interface -- static methods only
-public sealed interface GroupAssignment {
+@SuppressWarnings("JBCT-UTIL-02") public sealed interface GroupAssignment {
     record unused() implements GroupAssignment{}
 
     static Map<WorkerGroupId, List<NodeId>> computeGroups(List<NodeId> allMembers, String groupName, int maxGroupSize) {

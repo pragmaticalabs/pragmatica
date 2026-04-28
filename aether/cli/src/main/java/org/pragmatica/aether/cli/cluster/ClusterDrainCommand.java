@@ -21,10 +21,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_DRAIN;
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_GET;
 
 
-/// Drains a node by transitioning it from ON_DUTY to DRAINING state.
-///
-/// Delegates to `POST /api/node/drain/{nodeId}`. Optionally waits for
-/// the node to reach DECOMMISSIONED state before returning.
 @Command(name = "drain", description = "Drain a node (evacuate slices)") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"}) class ClusterDrainCommand implements Callable<Integer> {
     private static final int POLL_INTERVAL_MS = 2000;
 

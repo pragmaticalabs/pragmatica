@@ -25,11 +25,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_STAR
 import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_STATUS;
 
 
-/// Unified deployment management command.
-///
-/// Supports immediate, canary, blue-green, and rolling deployment strategies
-/// through a single entry point, plus lifecycle subcommands for managing
-/// active deployments.
 @Command(name = "deploy", description = "Deploy and manage deployments", subcommands = {DeployCommand.ListCommand.class, DeployCommand.StatusCommand.class, DeployCommand.PromoteCommand.class, DeployCommand.RollbackCommand.class, DeployCommand.CompleteCommand.class}) @Contract public class DeployCommand implements Callable<Integer> {
     @CommandLine.ParentCommand private AetherCli parent;
 

@@ -9,19 +9,6 @@ import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.lang.Cause;
 
 
-/// Maps application errors to HTTP errors.
-///
-/// Allows slices to customize how their domain errors are converted to HTTP status codes.
-///
-/// Usage:
-/// ```{@code
-/// ErrorMapper mapper = cause -> switch (cause) {
-///     case UserNotFound _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);
-///     case InvalidInput _ -> HttpError.httpError(HttpStatus.BAD_REQUEST, cause);
-///     case HttpError he -> he;  // Pass through existing HTTP errors
-///     default -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
-/// };
-/// }```
 @FunctionalInterface public interface ErrorMapper {
     HttpError map(Cause cause);
 

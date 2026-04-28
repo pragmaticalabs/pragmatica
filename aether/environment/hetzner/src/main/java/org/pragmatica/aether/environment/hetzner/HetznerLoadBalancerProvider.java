@@ -28,8 +28,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Hetzner Cloud L4 load balancer provider.
-/// Manages IP-based targets on a pre-existing Hetzner load balancer.
 public record HetznerLoadBalancerProvider(HetznerClient client, long loadBalancerId, int destinationPort) implements LoadBalancerProvider {
     private static final Logger log = LoggerFactory.getLogger(HetznerLoadBalancerProvider.class);
 

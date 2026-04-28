@@ -11,7 +11,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Health check configuration for load balancer targets.
 public record HealthCheckConfig(String protocol,
                                 int port,
                                 String path,

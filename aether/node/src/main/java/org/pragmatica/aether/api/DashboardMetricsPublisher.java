@@ -35,10 +35,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Publishes dashboard metrics via WebSocket at regular intervals.
-///
-///
-/// Aggregates metrics from various collectors and broadcasts to all connected clients.
 @SuppressWarnings("JBCT-RET-01") public class DashboardMetricsPublisher {
     private static final Logger log = LoggerFactory.getLogger(DashboardMetricsPublisher.class);
 

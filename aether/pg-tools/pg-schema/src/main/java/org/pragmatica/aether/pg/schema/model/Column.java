@@ -7,7 +7,6 @@ package org.pragmatica.aether.pg.schema.model;
 import org.pragmatica.lang.Option;
 
 
-/// A table column definition.
 public record Column(String name,
                      PgType type,
                      boolean nullable,

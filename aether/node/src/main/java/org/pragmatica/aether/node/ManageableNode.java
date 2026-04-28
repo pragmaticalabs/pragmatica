@@ -19,7 +19,6 @@ import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.node.generation.NodeSnapshotCache;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
@@ -50,10 +49,6 @@ import java.util.Map;
 import java.util.Set;
 
 
-/// Surface consumed by management API route sources, dashboard publishers, and
-/// the ManagementServer itself. Extracted from AetherNode so that passive nodes
-/// (load balancers, observers) can serve the management API without implementing
-/// the full active-node contract.
 public interface ManageableNode {
     NodeId self();
     KVStore<AetherKey, AetherValue> kvStore();
@@ -85,7 +80,6 @@ public interface ManageableNode {
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<ClusterTopologyManager> clusterTopologyManager();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
-    NodeSnapshotCache nodeSnapshotCache();
     Option<ClusterGenerationSnapshot> currentGenerationSnapshot();
     int connectedNodeCount();
     Map<String, Number> transportMetrics();

@@ -15,7 +15,6 @@ import java.util.stream.IntStream;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Shared utilities for CloudProvider implementations. Section 11.1
 @SuppressWarnings("JBCT-UTIL-02") public final class CloudProviderSupport {
     private CloudProviderSupport() {}
 

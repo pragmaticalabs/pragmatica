@@ -7,7 +7,6 @@ package org.pragmatica.aether.stream.replication;
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for failover recovery operations.
 public sealed interface FailoverRecoveryError extends Cause {
     enum General implements FailoverRecoveryError {
         NO_REPLICAS_AVAILABLE("No replicas available for catch-up");

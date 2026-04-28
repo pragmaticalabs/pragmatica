@@ -21,14 +21,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Governor/replica-side handler for stream forwarding.
-///
-/// Publish (existing): receives [PublishForward], calls [StreamPartitionManager#publishLocal],
-/// responds with [PublishForwardResponse].
-///
-/// Read (SPEC: §5): receives [ReadForward], calls [StreamPartitionManager#readLocal],
-/// converts events to [RawEventDto], applies defensive size cap (SPEC: §10.5),
-/// responds with [ReadForwardResponse] possibly marked truncated.
 public interface StreamForwardHandler {
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onPublishForward(PublishForward request);
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onReadForward(ReadForward request);

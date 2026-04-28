@@ -9,10 +9,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Retry;
 
 
-/// Factory that provisions a {@link RetryMethodInterceptor} wrapping calls with retry logic.
-///
-/// Delegates to the core {@link Retry} utility. Each intercepted method invocation
-/// is retried according to the configured backoff strategy and max attempts.
 public final class RetryInterceptorFactory implements ResourceFactory<RetryMethodInterceptor, RetryConfig> {
     @Override public Class<RetryMethodInterceptor> resourceType() {
         return RetryMethodInterceptor.class;

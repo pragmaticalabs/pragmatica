@@ -16,15 +16,6 @@ import static org.pragmatica.aether.http.handler.security.Principal.PrincipalTyp
 import static org.pragmatica.lang.Result.success;
 
 
-/// Security context carrying authentication and authorization information.
-///
-/// Created during security validation and passed to slice handlers
-/// for access control decisions.
-///
-/// @param principal         the authenticated identity
-/// @param roles             assigned roles/permissions
-/// @param claims            additional metadata (e.g., JWT claims)
-/// @param authorizationRole hierarchical role for management API access control
 @Codec public record SecurityContext(Principal principal,
                                      Set<Role> roles,
                                      Map<String, String> claims,

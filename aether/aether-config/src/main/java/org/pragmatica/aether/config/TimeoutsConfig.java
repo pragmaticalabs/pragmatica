@@ -9,8 +9,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Centralized timeout configuration for all Aether subsystems.
-/// All duration fields use TimeSpan; TOML values use human-readable strings ("5s", "500ms").
 public record TimeoutsConfig(InvocationTimeouts invocation,
                              ForwardingTimeouts forwarding,
                              DeploymentTimeouts deployment,
@@ -42,15 +40,6 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                   ScalingTimeouts.scalingTimeouts());
     }
 
-    /// User-visible RPC timeout layer.
-    ///
-    /// Theme M / M4 — layered-timeout invariant: `InvocationTimeouts.timeout` (default 15 s) is the
-    /// **inner**, user-visible deadline for an in-flight invocation. It is intentionally shorter
-    /// than the consensus-level retention window in [`ConsensusTimeouts`] (e.g. `cleanupInterval`
-    /// 60 s) — by design, an invocation may fail at 15 s with a timeout error while the underlying
-    /// consensus operation is still negotiating in the background. This trade-off favors fast user
-    /// feedback over waiting for an answer that may eventually arrive but no longer has anyone to
-    /// receive it. Increase this value only if your callers can tolerate matching latency budgets.
     public record InvocationTimeouts(TimeSpan timeout,
                                      TimeSpan invokerTimeout,
                                      TimeSpan retryBaseDelay,
@@ -113,16 +102,6 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
-    /// Consensus-level (Rabia) retention and retry windows.
-    ///
-    /// Theme M / M4 — layered-timeout invariant: this is the **outer** layer wrapping
-    /// [`InvocationTimeouts`]. `cleanupInterval` (default 60 s) governs how long consensus retains
-    /// state for an in-flight proposal, well past the user-visible `InvocationTimeouts.timeout`
-    /// (default 15 s). The intent is for the user-facing call to fail fast at 15 s with a clear
-    /// timeout error, while consensus continues negotiating in the background — eventually
-    /// committing or being garbage-collected at the 60 s mark. This is BY DESIGN: surfacing fast
-    /// feedback to the caller takes precedence over waiting indefinitely for a slow quorum. Tune
-    /// these values together if you change either.
     public record ConsensusTimeouts(TimeSpan syncRetryInterval,
                                     TimeSpan cleanupInterval,
                                     TimeSpan proposalTimeout,

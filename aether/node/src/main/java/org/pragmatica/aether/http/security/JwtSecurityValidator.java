@@ -24,10 +24,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Validates JWT Bearer tokens against a JWKS endpoint.
-///
-/// Implements the full JWT validation pipeline:
-/// extract token -> decode header/payload -> fetch JWKS -> verify signature -> validate claims -> build SecurityContext
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) class JwtSecurityValidator implements SecurityValidator {
     private static final Logger log = LoggerFactory.getLogger(JwtSecurityValidator.class);
 

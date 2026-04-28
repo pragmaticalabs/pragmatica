@@ -7,7 +7,6 @@ package org.pragmatica.aether.slice;
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for rate guard violations.
 public sealed interface RateGuardError extends Cause {
     record LimitExceeded(long retryAfterMs, long limit, long remaining, long resetAtEpochMs) implements RateGuardError {
         public static LimitExceeded limitExceeded(long retryAfterMs, long limit, long remaining, long resetAtEpochMs) {

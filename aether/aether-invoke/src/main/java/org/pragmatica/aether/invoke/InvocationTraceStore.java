@@ -10,8 +10,6 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 
 
-/// Fixed-capacity thread-safe trace store backed by a ring buffer.
-/// Stores recent [InvocationNode] records for distributed tracing queries.
 public final class InvocationTraceStore {
     private static final int DEFAULT_CAPACITY = 50_000;
 

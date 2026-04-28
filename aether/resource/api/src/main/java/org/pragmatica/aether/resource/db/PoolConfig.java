@@ -13,16 +13,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Connection pool configuration for database connectors.
-///
-/// @param minConnections       Minimum number of connections to maintain
-/// @param maxConnections       Maximum number of connections allowed
-/// @param connectionTimeout    Maximum time to wait for a connection
-/// @param idleTimeout          Maximum time a connection can be idle before being closed
-/// @param maxLifetime          Maximum lifetime of a connection
-/// @param validationQuery      SQL query to validate connections (optional)
-/// @param leakDetectionTimeout Time after which connection leak warnings are logged
-/// @param ioThreads            Number of Netty IO threads for async transport (0 = auto)
 public record PoolConfig(int minConnections,
                          int maxConnections,
                          TimeSpan connectionTimeout,

@@ -19,9 +19,6 @@ import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
 
 
-/// Batches replication events to amortize per-message QUIC overhead.
-/// Flushes when batch reaches maxEvents OR after maxDelay, whichever comes first.
-/// Each partition has its own independent accumulator to preserve ordering guarantees.
 public final class ReplicationBatcher implements AutoCloseable {
     static final int DEFAULT_MAX_EVENTS = 100;
 

@@ -17,12 +17,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Persists consumer group cursor offsets in AHSE using named references.
-///
-/// Key format: `cursors/{consumerGroup}/{streamName}/{partition}`
-/// Value: 8-byte big-endian long offset stored as a data block, referenced by name.
-///
-/// On commit, the previous ref (if any) is replaced with the new block.
 public final class CursorStore {
     private static final Logger log = LoggerFactory.getLogger(CursorStore.class);
 

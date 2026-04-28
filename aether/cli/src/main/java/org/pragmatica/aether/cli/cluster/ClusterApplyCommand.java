@@ -26,10 +26,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
 
 
-/// Applies a cluster configuration file to the active cluster.
-///
-/// Parses the config, computes a diff against the stored config, and either
-/// prints planned changes (dry-run) or executes them.
 @Command(name = "apply", description = "Apply cluster configuration changes") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterApplyCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 

@@ -24,19 +24,6 @@ import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Generates Kubernetes manifests for Aether cluster deployment.
-///
-///
-/// Generates:
-///
-///   - namespace.yaml - Namespace definition
-///   - configmap.yaml - Cluster configuration
-///   - statefulset.yaml - StatefulSet for ordered node deployment
-///   - service.yaml - LoadBalancer/ClusterIP service
-///   - service-headless.yaml - Headless service for pod discovery
-///   - pdb.yaml - PodDisruptionBudget for availability
-///   - apply.sh - Script to apply all manifests
-///
 public final class KubernetesGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(KubernetesGenerator.class);
 

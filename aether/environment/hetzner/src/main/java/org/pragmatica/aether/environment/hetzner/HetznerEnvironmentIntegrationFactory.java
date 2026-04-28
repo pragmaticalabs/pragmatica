@@ -19,7 +19,6 @@ import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig
 import static org.pragmatica.aether.environment.hetzner.HetznerEnvironmentConfig.hetznerEnvironmentConfig;
 
 
-/// ServiceLoader factory for creating HetznerEnvironmentIntegration from generic CloudConfig.
 public record HetznerEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
     @Override public String providerName() {
         return "hetzner";

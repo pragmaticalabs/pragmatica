@@ -13,8 +13,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Azure Key Vault implementation of the SecretsProvider SPI.
-/// Resolves secrets from Azure Key Vault using path format: `{vaultName}/{secretName}`.
 public record AzureSecretsProvider(AzureClient client) implements SecretsProvider {
     public static Result<AzureSecretsProvider> azureSecretsProvider(AzureClient client) {
         return success(new AzureSecretsProvider(client));

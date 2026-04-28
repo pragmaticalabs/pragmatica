@@ -8,7 +8,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 
 
-/// Error types for schema operations.
 public sealed interface SchemaErrors extends Cause {
     record TableNotFound(String tableName, SourceSpan span) implements SchemaErrors {
         @Override public String message() {

@@ -9,7 +9,6 @@ import org.pragmatica.lang.io.StreamOps;
 import java.util.Properties;
 
 
-/// Build metadata loaded from Maven-filtered properties file at startup.
 public record BuildInfo(String buildTimestamp, String buildVersion) {
     private static final BuildInfo INSTANCE = loadBuildInfo();
 

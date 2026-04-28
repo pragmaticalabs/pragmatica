@@ -33,12 +33,6 @@ import java.util.stream.Collectors;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Serializes and deserializes KV-Store snapshots to/from TOML text format.
-///
-/// Format: pipe-delimited values grouped by key-type sections.
-/// Ephemeral control plane keys (node artifacts, routes, lifecycle, endpoints,
-/// activation directives, governor announcements) are excluded from both
-/// serialization and deserialization. See {@link EphemeralKeys}.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class KVStoreSerializer {
     private KVStoreSerializer() {}
 
@@ -168,6 +162,7 @@ import static org.pragmatica.lang.Result.success;
             case DhtPartitionOwnershipKey _ -> "dht-partition-ownership";
             case SpokesmanKey _ -> "spokesman";
             case ProvisioningSlotKey _ -> "provisioning-slot";
+            case GenerationSnapshotKey _ -> "generation-snapshot";
         };
     }
 
@@ -233,11 +228,13 @@ import static org.pragmatica.lang.Result.success;
             case DhtPartitionOwnershipValue v -> serializeDhtPartitionOwnership(v);
             case SpokesmanValue v -> serializeSpokesman(v);
             case ProvisioningSlotValue v -> serializeProvisioningSlot(v);
+            case GenerationSnapshotValue _ -> "";
         };
     }
 
     private static String serializeProvisioningSlot(ProvisioningSlotValue v) {
-        return v.spawnedAtMs() + PIPE + v.deadlineMs() + PIPE + v.assignedNodeId().map(NodeId::id).or("");
+        return v.spawnedAtMs() + PIPE + v.deadlineMs() + PIPE + v.assignedNodeId().map(NodeId::id)
+                                                                                .or("");
     }
 
     private static String serializeDhtPartitionOwnership(DhtPartitionOwnershipValue v) {
@@ -454,7 +451,6 @@ import static org.pragmatica.lang.Result.success;
         var reason = parts[1].isEmpty()
                     ? Option.<String>none()
                     : Option.some(parts[1]);
-        // Legacy (3-field) atoms predate the schema bump and carry no transitionedAt: read as 0L.
         var transitionedAt = parts.length >= 4 && !parts[3].isEmpty()
                             ? Long.parseLong(parts[3])
                             : 0L;
@@ -705,7 +701,6 @@ import static org.pragmatica.lang.Result.success;
         var methods = parts[4].isEmpty()
                      ? List.<String>of()
                      : Arrays.asList(parts[4].split(","));
-        // Legacy (5-field) atoms predate the schema bump and carry no transitionedAt: read as 0L.
         var transitionedAt = parts.length >= 6 && !parts[5].isEmpty()
                             ? Long.parseLong(parts[5])
                             : 0L;

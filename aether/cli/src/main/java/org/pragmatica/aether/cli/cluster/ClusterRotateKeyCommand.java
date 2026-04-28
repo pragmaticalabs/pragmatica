@@ -26,8 +26,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEYS_REVOKE;
 
 
-/// Rotates the cluster API key: generates a new key, stores it via the management API,
-/// revokes the old key with a configurable grace period, and updates the local key file.
 @Command(name = "rotate-key", description = "Rotate the cluster API key") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterRotateKeyCommand implements Callable<Integer> {
     private static final int KEY_BYTES = 32;
 

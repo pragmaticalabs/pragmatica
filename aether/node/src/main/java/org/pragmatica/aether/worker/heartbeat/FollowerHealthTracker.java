@@ -12,8 +12,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 
-/// Tracks follower health on the governor side.
-/// Updated on each FollowerHeartbeat, queried to find unresponsive followers.
 @SuppressWarnings({"JBCT-UTIL-02", "JBCT-STY-04", "JBCT-RET-01"}) public sealed interface FollowerHealthTracker permits ActiveFollowerHealthTracker {
     record FollowerHealth(long lastHeartbeatMs, long lastDecisionSequence){}
 

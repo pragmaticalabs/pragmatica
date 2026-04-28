@@ -7,12 +7,6 @@ package org.pragmatica.aether.config;
 import org.pragmatica.lang.Option;
 
 
-/// Security mode for app HTTP endpoints.
-///
-/// Controls how incoming requests are authenticated:
-/// - NONE: no authentication (default, backward compatible)
-/// - API_KEY: reuse management API key authentication via X-API-Key header
-/// - JWT: reserved for future token-based authentication (Layer 4)
 public enum SecurityMode {
     NONE,
     API_KEY,

@@ -23,18 +23,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Simple rule-based controller for MVP.
-///
-///
-/// Rules (evaluated in order):
-/// <ol>
-///   - IF avg(cpu) > 0.8 → scale up by 1
-///   - IF avg(cpu) < 0.2 AND instances > 1 → scale down by 1
-///   - IF method call rate > threshold → scale up
-/// </ol>
-///
-///
-/// Future versions will support configurable rules via YAML.
 public interface DecisionTreeController extends ClusterController {
     static DecisionTreeController decisionTreeController() {
         return decisionTreeController(ControllerConfig.DEFAULT);

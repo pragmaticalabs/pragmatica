@@ -26,15 +26,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Creates slice instances via reflection using static factory methods.
-///
-/// RFC-0001 Factory method convention:
-/// - Static method
-/// - Name: lowercase-first version of class name (e.g., UserService.userService(...))
-/// - Returns: Promise<SliceType>
-/// - First parameter: Aspect<SliceType>
-/// - Second parameter: SliceCreationContext
-/// - Remaining parameters: resolved dependency slices in declaration order
 @SuppressWarnings({"JBCT-LAM-01", "JBCT-LAM-02", "JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public interface SliceFactory {
     Logger log = LoggerFactory.getLogger(SliceFactory.class);
 

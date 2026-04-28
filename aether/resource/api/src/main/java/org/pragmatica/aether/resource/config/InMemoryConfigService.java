@@ -23,7 +23,6 @@ import static org.pragmatica.lang.Result.unitResult;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// In-memory implementation of ConfigService for testing and single-node scenarios.
 final class InMemoryConfigService implements ConfigService {
     private final Map<ConfigScope, TomlDocument> documents = new ConcurrentHashMap<>();
 

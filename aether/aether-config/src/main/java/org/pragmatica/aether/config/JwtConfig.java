@@ -11,14 +11,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// JWT authentication configuration for app HTTP endpoints.
-///
-/// @param jwksUrl   JWKS endpoint URL for public key fetching
-/// @param issuer    expected issuer claim (empty = skip validation)
-/// @param audience  expected audience claim (empty = skip validation)
-/// @param roleClaim JWT claim name for role extraction (default: "role")
-/// @param cacheTtlSeconds JWKS cache TTL in seconds (default: 3600 = 1 hour)
-/// @param clockSkewSeconds clock skew tolerance in seconds for token expiration (default: 30)
 public record JwtConfig(String jwksUrl,
                         Option<String> issuer,
                         Option<String> audience,

@@ -7,7 +7,6 @@ package org.pragmatica.aether.environment;
 import java.util.Map;
 
 
-/// Configuration for provisioning a group of nodes. Section 11.1
 public record NodeGroupConfig(String sourceName,
                               String role,
                               int count,

@@ -19,8 +19,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Manages replication warmup after node startup.
-/// Starts with RF=1 for fast boot, then signals readiness to upgrade to RF=3.
 public interface ReplicationCooldown {
     long DEFAULT_COOLDOWN_DELAY_MS = 10_000L;
 
@@ -39,7 +37,6 @@ public interface ReplicationCooldown {
     }
 }
 
-/// Package-private implementation of ReplicationCooldown.
 final class DefaultReplicationCooldown implements ReplicationCooldown {
     private static final Logger log = LoggerFactory.getLogger(ReplicationCooldown.class);
 

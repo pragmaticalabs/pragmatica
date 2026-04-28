@@ -15,7 +15,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-/// End-to-end pipeline: SQL migrations → parse → schema → Java source files.
 public final class CodegenPipeline {
     private final CodegenConfig config;
 

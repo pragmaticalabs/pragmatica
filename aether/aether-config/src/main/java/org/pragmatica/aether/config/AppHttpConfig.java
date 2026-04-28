@@ -14,15 +14,6 @@ import java.util.Set;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for application HTTP server.
-///
-/// @param enabled            whether the app HTTP server is enabled
-/// @param port               base port for app HTTP server (nodes use port, port+1, etc.)
-/// @param apiKeys            API key map: raw key string to entry metadata (empty map disables security)
-/// @param maxRequestSize     maximum request body size in bytes
-/// @param securityMode       authentication mode for app HTTP endpoints (NONE, API_KEY, JWT)
-/// @param jwtConfig          JWT configuration (present only when securityMode is JWT)
-/// @param httpProtocol       HTTP protocol mode (H1, H3, BOTH) — default H1
 public record AppHttpConfig(boolean enabled,
                             int port,
                             Map<String, ApiKeyEntry> apiKeys,

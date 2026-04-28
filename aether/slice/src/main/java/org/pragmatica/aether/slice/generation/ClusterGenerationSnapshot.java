@@ -12,11 +12,6 @@ import java.util.Map;
 import java.util.Set;
 
 
-/// Ephemeral, leader-projected view of the cluster at a specific generation epoch.
-///
-/// Not persisted. Distributed via pings. Consumed by all nodes as a single coherent view.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §6.
 @Codec public record ClusterGenerationSnapshot(Epoch epoch,
                                                HlcTimestamp committedAt,
                                                GenerationReason reason,

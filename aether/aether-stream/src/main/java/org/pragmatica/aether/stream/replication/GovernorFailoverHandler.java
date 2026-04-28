@@ -18,13 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Handles governor failover by catching up from AHSE segments and replica watermarks.
-/// Recovery sequence:
-/// 1. Query watermarks from surviving replicas (via ReplicaRegistry)
-/// 2. Find the highest watermark (most up-to-date replica)
-/// 3. Read AHSE segments from that watermark to the end of sealed segments
-/// 4. Replay events into the new governor's ring buffer (via StreamPartitionRecovery)
-/// 5. Resume accepting new writes
 public sealed interface GovernorFailoverHandler {
     Promise<Unit> handleFailover(String streamName,
                                  int partition,

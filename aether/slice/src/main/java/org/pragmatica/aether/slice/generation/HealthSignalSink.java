@@ -7,14 +7,6 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.lang.Contract;
 
 
-/// Thin sink abstraction for emitters of `HealthSignal`s.
-///
-/// Emitters such as `CoreSwimHealthDetector` and `QuicClusterNetwork` publish
-/// membership-relevant events through this sink. The leader-only
-/// `HealthReconciler` consumes them via its activator. Non-leader nodes (or
-/// unit tests) receive `noop()` so emissions become free calls.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §8.1.
 @Contract public interface HealthSignalSink {
     void emit(HealthSignal signal);
 

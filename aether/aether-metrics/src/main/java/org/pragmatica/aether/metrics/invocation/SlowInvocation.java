@@ -10,19 +10,6 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Captured details of a slow invocation for debugging.
-///
-/// Slow invocations are captured when their duration exceeds the configured threshold.
-/// This provides detailed information for troubleshooting without the overhead of
-/// capturing every invocation.
-///
-/// @param methodName    The method that was invoked
-/// @param timestampNs   System.nanoTime() when the invocation started
-/// @param durationNs    Total duration in nanoseconds
-/// @param requestBytes  Size of the serialized request
-/// @param responseBytes Size of the serialized response (0 if fire-and-forget)
-/// @param success       Whether the invocation succeeded
-/// @param errorType     Error type if failed (class name of the Cause)
 public record SlowInvocation(MethodName methodName,
                              long timestampNs,
                              long durationNs,

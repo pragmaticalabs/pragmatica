@@ -21,19 +21,6 @@ import java.util.jar.Manifest;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Reads slice artifact metadata from JAR manifest.
-///
-///
-/// Expected manifest attributes:
-/// ```
-/// Manifest-Version: 1.0
-/// Slice-Artifact: org.example:my-slice:1.0.0
-/// Slice-Class: org.example.MySlice
-/// ```
-///
-///
-/// A valid slice JAR MUST contain these manifest attributes.
-/// Loading will fail if manifest is missing or invalid.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-03"}) public interface SliceManifest {
     String SLICE_ARTIFACT_ATTR = "Slice-Artifact";
 

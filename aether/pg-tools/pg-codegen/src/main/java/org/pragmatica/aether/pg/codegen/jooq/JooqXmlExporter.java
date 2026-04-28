@@ -25,10 +25,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Exports a pg-tools Schema to jOOQ XMLDatabase-compatible XML.
-///
-/// The output matches jOOQ's `information_schema`-shaped XSD, suitable for
-/// offline code generation via `org.jooq.meta.xml.XMLDatabase` with `dialect=POSTGRES`.
 @SuppressWarnings("JBCT-EX-01") public final class JooqXmlExporter {
     private static final String NS = "http://www.jooq.org/xsd/jooq-meta-3.21.0.xsd";
 

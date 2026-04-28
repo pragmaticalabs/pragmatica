@@ -9,8 +9,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for Docker-based compute provisioning.
-/// Controls image name, network, port allocation, and Docker socket path.
 public record DockerConfig(String imageName,
                            String networkName,
                            int managementPortBase,

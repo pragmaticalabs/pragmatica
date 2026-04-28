@@ -20,8 +20,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// AWS Route53 DNS provider.
-/// Manages DNS records via the Route53 API for cross-environment migration.
 public record Route53DnsProvider(AwsClient client, String hostedZoneId) implements DnsProvider {
     private static final Logger log = LoggerFactory.getLogger(Route53DnsProvider.class);
 

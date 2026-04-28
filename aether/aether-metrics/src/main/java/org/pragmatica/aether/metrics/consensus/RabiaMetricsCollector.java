@@ -21,9 +21,6 @@ import java.util.concurrent.atomic.LongAdder;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Implementation of ConsensusMetrics that collects Rabia consensus statistics.
-///
-/// Thread-safe: uses atomic operations for all counters.
 public final class RabiaMetricsCollector implements ConsensusMetrics {
     private final AtomicLong decisionsCount = new AtomicLong();
 

@@ -30,7 +30,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Executes diff plan waves sequentially: additions, modifications, removals. S9.3
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-PAT-01"}) public final class WaveExecutor {
     private WaveExecutor() {}
 

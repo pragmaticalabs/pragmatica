@@ -7,9 +7,6 @@ package org.pragmatica.aether.slice.generation;
 import org.pragmatica.serialization.Codec;
 
 
-/// Advisory health hint for a core member, as observed by the leader via pings + SWIM.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §6 / §8.
 @Codec public enum HealthHint {
     HEALTHY,
     SUSPECTED,

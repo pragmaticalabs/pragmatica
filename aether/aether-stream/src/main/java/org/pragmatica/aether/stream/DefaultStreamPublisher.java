@@ -22,18 +22,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 
-/// StreamPublisher implementation backed by StreamPartitionManager.
-///
-/// Routes events to partitions using either a @PartitionKey extractor
-/// (deterministic hash-based routing) or round-robin assignment.
-///
-/// For EVENTUAL consistency, events are written directly to the local ring buffer.
-/// For STRONG consistency, events are proposed through Rabia consensus before local append.
-///
-/// When a partition is not locally owned, the publish is forwarded to the
-/// governor node that owns the STREAMING task group via StreamForwardClient.
-///
-/// @param <T> Event type
 public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     private final StreamPartitionManager partitionManager;
     private final Serializer serializer;

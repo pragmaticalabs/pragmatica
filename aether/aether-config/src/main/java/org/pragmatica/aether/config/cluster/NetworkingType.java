@@ -11,7 +11,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.Arrays;
 
 
-/// Networking configuration types. §6.1
 public enum NetworkingType {
     MANUAL("manual");
     private static final Cause INVALID_TYPE = Causes.cause("Invalid networking type: must be 'manual'");

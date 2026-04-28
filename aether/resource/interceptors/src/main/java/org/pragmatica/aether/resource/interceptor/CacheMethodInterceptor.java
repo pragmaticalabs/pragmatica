@@ -9,10 +9,6 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 
 
-/// Method interceptor that applies caching to method invocations.
-///
-/// Supports five standard strategies: cache-aside, read-through, write-through,
-/// write-back, and write-around. Errors are never cached.
 @SuppressWarnings("unchecked") public record CacheMethodInterceptor(CacheBackend cache,
                                                                     CacheStrategy strategy,
                                                                     Fn1<Object, ?> keyExtractor) implements MethodInterceptor {

@@ -13,19 +13,6 @@ import org.pragmatica.lang.Result;
 import java.nio.file.Path;
 
 
-/// Ember cluster configuration loaded from TOML file.
-///
-/// Example configuration:
-/// ```
-/// [cluster]
-/// nodes = 5
-/// management_port = 5150
-/// dashboard_port = 8888
-///
-/// [lb]
-/// enabled = true
-/// port = 8080
-/// ```
 public record EmberConfig(int nodes,
                           int managementPort,
                           int dashboardPort,

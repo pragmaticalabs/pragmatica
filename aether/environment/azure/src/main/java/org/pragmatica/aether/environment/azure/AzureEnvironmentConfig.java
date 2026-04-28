@@ -12,8 +12,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Configuration for the Azure environment integration.
-/// Contains Azure API credentials and default VM provisioning parameters.
 public record AzureEnvironmentConfig(AzureConfig azureConfig,
                                      String vmSize,
                                      String image,

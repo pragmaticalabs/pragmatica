@@ -22,27 +22,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Aether cluster setup tool.
-///
-///
-/// Usage:
-/// ```
-/// aether-up [OPTIONS]
-///
-/// Configuration:
-///   -c, --config FILE     Config file (default: ./aether.toml)
-///   -e, --env ENV         Environment: local, docker, kubernetes
-///
-/// Overrides:
-///   --nodes N             Override node count
-///   --heap SIZE           Override heap size
-///   --tls                 Enable TLS
-///   --no-tls              Disable TLS
-///
-/// Output:
-///   -o, --output DIR      Output directory (default: ./aether-cluster)
-///   --dry-run             Show what would be generated
-/// ```
 public final class AetherUp {
     private static final String VERSION = "0.20.0";
 

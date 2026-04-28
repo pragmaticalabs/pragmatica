@@ -7,7 +7,6 @@ package org.pragmatica.aether.pg.codegen.jooq;
 import java.util.Set;
 
 
-/// Configuration for jOOQ XML schema export.
 public record JooqXmlConfig(String catalogName,
                             String defaultSchemaName,
                             Set<String> includedSchemas,

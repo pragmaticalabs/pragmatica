@@ -8,10 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Audit logger for deployment-level events (schema migrations, scaling decisions).
-///
-/// Uses the same logger name (org.pragmatica.aether.audit) as the node-level AuditLog
-/// so all audit events are routed to a single sink via logback configuration.
 @SuppressWarnings("JBCT-RET-01") public final class AuditLog {
     private static final Logger AUDIT = LoggerFactory.getLogger("org.pragmatica.aether.audit");
 

@@ -47,10 +47,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Reusable HTTP request forwarder for cluster-internal request forwarding.
-///
-/// Used by both active nodes (AppHttpServer) and passive nodes (Passive LB)
-/// to forward HTTP requests to the correct node via the cluster network.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) public interface HttpForwarder {
     Promise<HttpResponseData> forward(HttpRequestContext requestContext,
                                       String httpMethod,

@@ -16,10 +16,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Executes a list of [DiffAction] actions to converge the cluster to desired state.
-///
-/// Phase 1 implements: ScaleUp, ScaleDown.
-/// Deferred actions (RuntimeChange, SourceFieldChange) log warnings for now.
 public sealed interface ClusterConfigApplier {
     Logger log = LoggerFactory.getLogger(ClusterConfigApplier.class);
 
@@ -36,8 +32,6 @@ public sealed interface ClusterConfigApplier {
     }
 }
 
-/// Applies diff actions via CTM for scale operations.
-/// Deferred operations (runtime change, source field change) log warnings.
 @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"}) record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implements ClusterConfigApplier {
     @Override public Promise<Unit> apply(List<DiffAction> actions) {
         var promise = Promise.unitPromise();

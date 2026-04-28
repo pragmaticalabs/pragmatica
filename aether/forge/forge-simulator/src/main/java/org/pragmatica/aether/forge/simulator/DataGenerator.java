@@ -21,8 +21,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Framework for generating test data for load testing.
-/// Each generator produces data appropriate for a specific entry point type.
 public sealed interface DataGenerator {
     Object generate(Random random);
 

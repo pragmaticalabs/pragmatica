@@ -29,10 +29,6 @@ import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 
 
-/// postgres-async R2DBC adapter implementation of JooqConnector.
-///
-/// Combines jOOQ's type-safe query building with postgres-async's native transport
-/// through the R2DBC SPI adapter layer.
 final class AsyncJooqConnector implements JooqConnector {
     private final DatabaseConnectorConfig config;
     private final ConnectionFactory connectionFactory;

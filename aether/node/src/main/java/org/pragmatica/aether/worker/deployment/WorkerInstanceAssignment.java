@@ -11,11 +11,7 @@ import java.util.Comparator;
 import java.util.List;
 
 
-/// Deterministic instance assignment via consistent hashing.
-/// All workers evaluate the same function and arrive at the same result.
-@SuppressWarnings("JBCT-UTIL-02")
-// Utility interface -- static methods only
-public sealed interface WorkerInstanceAssignment {
+@SuppressWarnings("JBCT-UTIL-02") public sealed interface WorkerInstanceAssignment {
     record unused() implements WorkerInstanceAssignment{}
 
     static int assignedInstances(Artifact artifact, int targetInstances, List<NodeId> aliveMembers, NodeId self) {

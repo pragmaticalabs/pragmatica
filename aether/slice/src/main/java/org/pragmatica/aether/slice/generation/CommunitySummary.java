@@ -11,10 +11,6 @@ import org.pragmatica.serialization.Codec;
 import java.util.Set;
 
 
-/// Leader-side summary of one community: governor, health histogram, owned partitions,
-/// and the core node currently assigned as the community's spokesman.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §6.
 @Codec public record CommunitySummary(String communityId,
                                       NodeId governorNodeId,
                                       long communityTerm,

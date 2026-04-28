@@ -18,8 +18,6 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Index of sealed segments for read-back. Lookup by stream/partition/offset.
-/// Thread-safe for concurrent reads and updates.
 public final class SegmentIndex {
     private final ConcurrentHashMap<PartitionKey, ConcurrentSkipListMap<Long, SegmentRef>> partitions = new ConcurrentHashMap<>();
 

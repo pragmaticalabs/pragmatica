@@ -15,7 +15,6 @@ import static org.pragmatica.aether.resource.notification.NotificationResult.not
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// NotificationSender backed by async SMTP.
 final class SmtpNotificationSender implements NotificationSender {
     private final SmtpClient client;
     private final RetryConfig retryConfig;

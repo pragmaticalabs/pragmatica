@@ -13,10 +13,6 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 
-/// Tracks SWIM membership and computes zone-aware groups using [GroupAssignment].
-///
-/// Thread-safe: membership is stored in a [CopyOnWriteArrayList] and computed groups
-/// are published via volatile fields.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-STY-05"}) public final class GroupMembershipTracker {
     private final NodeId self;
     private final String groupName;

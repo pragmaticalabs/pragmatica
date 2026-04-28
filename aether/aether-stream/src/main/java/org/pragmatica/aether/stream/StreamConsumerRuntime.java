@@ -18,14 +18,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Manages push-based delivery of stream events to subscriber callbacks.
-///
-/// For each consumer group + partition pair, the runtime:
-/// 1. Tracks cursor position (last delivered offset)
-/// 2. Polls the ring buffer periodically
-/// 3. Delivers events to the subscriber callback
-/// 4. Handles errors based on ErrorStrategy (RETRY, SKIP, STALL)
-/// 5. Records failed events to a dead-letter handler
 public interface StreamConsumerRuntime extends AutoCloseable {
     Result<Unit> subscribe(String streamName, int partition, ConsumerConfig config, ConsumerCallback callback);
     Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup);

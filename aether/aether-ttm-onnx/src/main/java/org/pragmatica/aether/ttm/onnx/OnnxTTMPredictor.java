@@ -30,7 +30,6 @@ import static org.pragmatica.lang.io.FileOps.exists;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// ONNX Runtime implementation of {@link TTMPredictor}.
 @SuppressWarnings("JBCT-EX-01") record OnnxTTMPredictor(OrtEnvironment env,
                                                         OrtSession session,
                                                         TtmConfig config,

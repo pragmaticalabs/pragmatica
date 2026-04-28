@@ -23,36 +23,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Parsed dependency file with shared, infra, and slice sections.
-///
-/// File format:
-/// ```
-/// # Comment line
-///
-/// [shared]
-/// # Libraries shared across all slices
-/// org.pragmatica-lite:core:^0.8.0
-/// org.example:order-domain:^1.0.0
-///
-/// [infra]
-/// # Infrastructure services
-/// org.pragmatica-lite.aether:infra-db-connector:^0.7.0
-/// org.pragmatica-lite.aether:infra-database:^0.7.0
-///
-/// [slices]
-/// # Other slices this slice depends on
-/// org.example:inventory-service:^1.0.0
-/// org.example:pricing-service:^1.0.0
-/// ```
-///
-/// The [infra] section is for infrastructure service dependencies. JARs are loaded
-/// into SharedLibraryClassLoader like [shared].
-///
-/// For backward compatibility, lines without any section header are treated as slice dependencies.
-///
-/// @param shared List of shared library dependencies
-/// @param infra  List of infrastructure service dependencies
-/// @param slices List of slice dependencies
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-UTIL-02", "JBCT-PAT-01", "JBCT-RET-05", "JBCT-NAM-01"}) public record DependencyFile(List<ArtifactDependency> shared,
                                                                                                                                                            List<ArtifactDependency> infra,
                                                                                                                                                            List<ArtifactDependency> slices) {

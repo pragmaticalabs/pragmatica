@@ -22,9 +22,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// DHT network adapter for workers.
-/// Phase 2b.5a: routes DHT messages directly via cluster network (intra-community).
-/// Phase 2b.5b: adds cross-community routing through governor mesh relay.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public final class WorkerDHTNetwork implements DHTNetwork {
     private static final Logger LOG = LoggerFactory.getLogger(WorkerDHTNetwork.class);
 

@@ -16,19 +16,6 @@ import java.util.stream.IntStream;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Aggregated metrics for a single slice method.
-///
-/// This class is thread-safe and designed for high-frequency updates.
-/// All counters use atomic operations for lock-free concurrent access.
-///
-/// Histogram buckets provide latency distribution:
-///
-///   - Bucket 0: < 1ms
-///   - Bucket 1: 1ms - 10ms
-///   - Bucket 2: 10ms - 100ms
-///   - Bucket 3: 100ms - 1s
-///   - Bucket 4: >= 1s
-///
 public final class MethodMetrics {
     private static final long BUCKET_1MS = 1_000_000L;
 

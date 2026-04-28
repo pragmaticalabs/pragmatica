@@ -18,7 +18,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Parses pattern specifications like `${type:args`} into PatternGenerator instances.
 public sealed interface PatternParser {
     Pattern PATTERN_REGEX = Pattern.compile("\\$\\{([a-z]+)(?::(.*))?}");
 

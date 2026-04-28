@@ -10,7 +10,6 @@ import org.pragmatica.aether.pg.schema.model.Schema;
 import java.util.List;
 
 
-/// A single lint rule that checks schema events for anti-patterns.
 public interface LintRule {
     String id();
     String description();

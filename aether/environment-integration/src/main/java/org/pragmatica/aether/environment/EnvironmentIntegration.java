@@ -15,13 +15,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Faceted SPI entry point for all deployment environment interactions.
-///
-/// Each facet is `Option<T>` — implementations return only the facets they support.
-/// Local/Forge supports compute only. Cloud providers may support all facets.
-///
-/// Discovered via ServiceLoader. Use `EnvironmentIntegration.SPI` for the
-/// ServiceLoader-discovered instance, or factory methods for programmatic construction.
 public interface EnvironmentIntegration {
     Option<EnvironmentIntegration> SPI = Option.from(ServiceLoader.load(EnvironmentIntegration.class).findFirst());
 

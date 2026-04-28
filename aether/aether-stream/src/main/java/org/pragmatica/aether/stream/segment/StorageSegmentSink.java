@@ -18,9 +18,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.none;
 
 
-/// SegmentSink that stores sealed segments in a StorageInstance.
-/// Applies compression and encryption before storage.
-/// Creates a named reference per segment: streams/{streamName}/{partition}/{startOffset}-{endOffset}
 public final class StorageSegmentSink implements SegmentSink {
     private static final Logger log = LoggerFactory.getLogger(StorageSegmentSink.class);
 

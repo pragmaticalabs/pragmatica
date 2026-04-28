@@ -39,9 +39,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// GCP Cloud implementation of the ComputeProvider SPI.
-/// Delegates to GcpClient for instance lifecycle management and maps
-/// GCP instance models to the environment integration domain types.
 public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(GcpComputeProvider.class);
 

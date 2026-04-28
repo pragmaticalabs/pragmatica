@@ -15,7 +15,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-/// Extracts typed AST nodes from CST nodes.
 public final class CstExtractor {
     private CstExtractor() {}
 

@@ -33,7 +33,6 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Routes for unified deployment management: start, status, promote, rollback, complete.
 public final class DeployRoutes implements RouteSource {
     private static final Cause NOT_FOUND = Causes.cause("Deployment not found");
 

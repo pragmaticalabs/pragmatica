@@ -16,8 +16,6 @@ import static org.pragmatica.lang.io.FileOps.isReadable;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Startup configuration merged from CLI arguments and environment variables.
-/// Priority: environment variables > CLI arguments > defaults.
 public record StartupConfig(Option<Path> forgeConfig,
                             Option<String> blueprint,
                             Option<Path> loadConfig,

@@ -29,18 +29,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Writes `GovernorAnnouncementKey` atoms for the community this worker belongs to.
-///
-/// Responsibilities (spec §5 / §6):
-///   - Call `GovernorElection.evaluateElection` on every SWIM membership change.
-///   - If self transitions from Follower → Governor: write `GovernorAnnouncementKey`
-///     stamped with `withGovernorChange(...)` and bumped `communityTerm`.
-///   - While self is Governor: re-announce every 30s with refreshed `announcedAt`
-///     and current `observedCoreEpoch`.
-///   - If self is Governor and the community membership drops to zero (last worker
-///     leaves): write a dissolved announcement.
-///
-/// Dormant until `start()` is called (typically on worker activation).
 public interface GovernorAnnouncer {
     TimeSpan DEFAULT_REANNOUNCE_INTERVAL = TimeSpan.timeSpan(30).seconds();
 

@@ -7,15 +7,6 @@ package org.pragmatica.aether.update;
 import java.util.Set;
 
 
-/// Unified state machine for all deployment strategy lifecycles.
-///
-/// Covers the full lifecycle from initial request through completion or failure:
-///
-///   - **Deploy phase**: PENDING -> DEPLOYING -> DEPLOYED
-///   - **Route phase**: DEPLOYED -> ROUTING -> PROMOTING -> DRAINING -> COMPLETED
-///   - **Rollback**: Any non-terminal -> ROLLING_BACK -> ROLLED_BACK
-///   - **Failure**: Any non-terminal -> FAILED
-///
 public enum DeploymentState {
     PENDING,
     DEPLOYING,

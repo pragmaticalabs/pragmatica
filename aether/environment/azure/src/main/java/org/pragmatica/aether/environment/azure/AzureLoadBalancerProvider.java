@@ -33,8 +33,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Azure Cloud load balancer provider.
-/// Manages backend address pool entries on a pre-existing Azure Load Balancer.
 public record AzureLoadBalancerProvider(AzureClient client,
                                         String loadBalancerName,
                                         String backendPoolName,

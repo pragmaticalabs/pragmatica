@@ -7,17 +7,6 @@ package org.pragmatica.aether.ember;
 import org.pragmatica.lang.Option;
 
 
-/// Configuration for embedded H2 database server in Ember.
-///
-/// Example TOML configuration:
-/// ```
-/// [database]
-/// enabled = true
-/// port = 9092
-/// name = "forge"
-/// persistent = false
-/// init_script = "init.sql"
-/// ```
 public record EmberH2Config(boolean enabled, int port, String name, boolean persistent, Option<String> initScript) {
     public static final int DEFAULT_PORT = 9092;
 

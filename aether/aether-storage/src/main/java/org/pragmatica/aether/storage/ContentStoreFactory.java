@@ -15,13 +15,6 @@ import org.pragmatica.storage.ContentStoreConfig;
 import org.pragmatica.storage.StorageInstance;
 
 
-/// ResourceFactory SPI implementation for provisioning ContentStore instances.
-///
-/// Discovered via ServiceLoader. Creates ContentStore instances using a StorageInstance
-/// from the ProvisioningContext extensions and ContentStoreConfig from TOML configuration.
-///
-/// The StorageInstance must be registered as a runtime extension by the node infrastructure
-/// before slice provisioning occurs.
 public final class ContentStoreFactory implements ResourceFactory<ContentStore, ContentStoreConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("ContentStore requires ProvisioningContext with StorageInstance extension");
 

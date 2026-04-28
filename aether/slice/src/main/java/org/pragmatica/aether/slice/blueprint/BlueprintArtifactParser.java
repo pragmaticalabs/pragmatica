@@ -22,8 +22,6 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 
-/// Parser for blueprint artifact JARs.
-/// Extracts blueprint.toml, resources.toml, and schema/*.sql from JAR bytes.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-EX-01"}) public interface BlueprintArtifactParser {
     Cause MISSING_BLUEPRINT_TOML = Causes.cause("Blueprint artifact missing META-INF/blueprint.toml");
 

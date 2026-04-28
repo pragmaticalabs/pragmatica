@@ -27,27 +27,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Request router that processes HTTP requests using http-routing routes.
-///
-/// Bridges http-handler-api types (HttpRequestContext, HttpResponseData) with
-/// http-routing DSL (Route, Handler, RequestContext).
-///
-/// Usage:
-/// ```{@code
-/// var router = SliceRouter.sliceRouter(
-///     Route.in("/api").serve(
-///         Route.get("/users/{id}")
-///              .withPath(STRING)
-///              .toJson(id -> userService.findById(id))
-///     ),
-///     ErrorMapper.defaultMapper(),
-///     JsonMapper.defaultJsonMapper()
-/// );
-///
-/// router.handle(httpRequestContext)
-///       .onSuccess(response -> sendResponse(response))
-///       .onFailure(cause -> log.error("Failed", cause));
-/// }```
 public interface SliceRouter {
     Logger log = LoggerFactory.getLogger(SliceRouter.class);
 

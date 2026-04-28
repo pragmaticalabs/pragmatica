@@ -20,7 +20,6 @@ import static org.pragmatica.aether.environment.aws.AwsEnvironmentConfig.awsEnvi
 import static org.pragmatica.lang.Option.option;
 
 
-/// ServiceLoader factory for creating AwsEnvironmentIntegration from generic CloudConfig.
 public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrationFactory {
     @Override public String providerName() {
         return "aws";

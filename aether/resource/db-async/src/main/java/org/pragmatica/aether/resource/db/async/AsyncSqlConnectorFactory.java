@@ -12,9 +12,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 
 
-/// SPI factory for creating postgres-async SqlConnector instances.
-///
-/// Priority 20 -- preferred over both JDBC and R2DBC when asyncUrl is configured.
 public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnector, DatabaseConnectorConfig> {
     @Override public Class<SqlConnector> resourceType() {
         return SqlConnector.class;

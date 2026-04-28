@@ -19,7 +19,6 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 
-/// Routes for cluster backup management: trigger, list, restore.
 public final class BackupRoutes implements RouteSource {
     private final Supplier<BackupService> backupServiceSupplier;
     private final Supplier<ManageableNode> nodeSupplier;

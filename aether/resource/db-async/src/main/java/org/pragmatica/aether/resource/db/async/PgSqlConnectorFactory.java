@@ -17,10 +17,6 @@ import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 import java.util.List;
 
 
-/// SPI factory for creating PgSqlConnector instances.
-///
-/// Priority 0 (default) -- sole factory for PgSqlConnector.
-/// Only supports configs where asyncUrl is present.
 public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnector, DatabaseConnectorConfig> {
     @Override public Class<PgSqlConnector> resourceType() {
         return PgSqlConnector.class;

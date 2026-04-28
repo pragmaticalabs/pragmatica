@@ -17,14 +17,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Context representing an active transaction.
-/// Thread-safe and immutable.
-///
-/// @param id            Unique transaction identifier
-/// @param config        Transaction configuration
-/// @param status        Current transaction status
-/// @param startTime     When the transaction started
-/// @param parentContext Parent transaction context (for nested transactions)
 public record TransactionContext(String id,
                                  TransactionConfig config,
                                  TransactionStatus status,

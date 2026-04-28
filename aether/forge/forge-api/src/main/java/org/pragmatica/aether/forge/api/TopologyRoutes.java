@@ -17,10 +17,6 @@ import java.util.HashSet;
 import java.util.stream.Stream;
 
 
-/// Topology routes for the Forge dashboard.
-///
-/// Aggregates slice topology data across all cluster nodes and exposes
-/// it as a REST endpoint compatible with the dashboard's topology graph.
 public final class TopologyRoutes implements RouteSource {
     private final EmberCluster cluster;
 

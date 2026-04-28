@@ -15,16 +15,6 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
 
-/// Lists all registered clusters with a current-context marker.
-///
-/// Output format:
-/// ```
-///   NAME          ENDPOINT                         API KEY ENV
-/// * production    https://203.0.113.10:5150        AETHER_PRODUCTION_API_KEY
-///   staging       https://198.51.100.20:5150       AETHER_STAGING_API_KEY
-///
-/// * = active context
-/// ```
 @Command(name = "list", description = "List all registered clusters") @SuppressWarnings("JBCT-RET-01") class ClusterListCommand implements Callable<Integer> {
     private static final OutputFormatter.TableSpec TABLE_SPEC = new OutputFormatter.TableSpec("Clusters",
                                                                                               List.of(new OutputFormatter.Column("",

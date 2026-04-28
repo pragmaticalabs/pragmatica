@@ -16,8 +16,6 @@ import picocli.CommandLine.Command;
 import static org.pragmatica.aether.management.route.ManagementRoute.STORAGE_SNAPSHOT;
 
 
-/// Forces a metadata snapshot on the specified storage instance.
-/// Triggers the snapshot on the connected node.
 @Command(name = "snapshot", description = "Force a metadata snapshot") @SuppressWarnings("JBCT-RET-01") class StorageSnapshotCommand implements Callable<Integer> {
     @CommandLine.ParentCommand private StorageCommand parent;
 

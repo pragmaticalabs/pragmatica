@@ -9,7 +9,6 @@ import org.pragmatica.lang.Option;
 import java.util.List;
 
 
-/// An index definition.
 public record Index(String name,
                     String table,
                     List<IndexElement> elements,

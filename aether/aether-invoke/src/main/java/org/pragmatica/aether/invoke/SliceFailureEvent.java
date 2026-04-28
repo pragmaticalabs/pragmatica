@@ -14,17 +14,6 @@ import org.pragmatica.messaging.Message;
 import java.util.List;
 
 
-/// Events related to slice invocation failures.
-///
-///
-/// Used to notify the controller and alerting system about
-/// critical failure conditions requiring action.
-///
-///
-/// This is a sealed hierarchy validated at route-building time via SealedBuilder.
-/// These events are dispatched locally via MessageRouter.
-///
-/// @see org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder
 public sealed interface SliceFailureEvent extends Message.Local {
     record AllInstancesFailed(String requestId,
                               Artifact artifact,

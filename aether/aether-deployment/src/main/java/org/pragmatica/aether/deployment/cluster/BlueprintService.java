@@ -49,17 +49,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Service for managing application blueprints in the cluster.
-///
-/// Blueprints define the desired cluster topology (which slices to deploy with how many instances).
-/// BlueprintService handles CRUD operations for blueprints, storing them in the consensus KV-Store.
-///
-/// Operations:
-/// - publish: Parse DSL, expand dependencies, store in KV-Store
-/// - publishFromArtifact: Resolve artifact, parse blueprint JAR, expand and store
-/// - get: Retrieve ExpandedBlueprint by BlueprintId
-/// - list: List all deployed blueprints
-/// - delete: Remove blueprint from KV-Store
 public interface BlueprintService {
     Promise<ExpandedBlueprint> publish(String dsl);
     Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords);

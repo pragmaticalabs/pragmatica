@@ -19,18 +19,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Tracks artifact deployment status across the cluster by watching KV-Store events.
-///
-///
-/// Responsibilities:
-///
-///   - Watch ValuePut/ValueRemove events for slice-node keys
-///   - Maintain set of deployed artifacts across the cluster
-///   - Provide deployment status queries
-///
-///
-///
-/// Key format watched: `slices/{nodeId`/{artifact}}
 public interface ArtifactDeploymentTracker {
     @Contract void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
     @Contract void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);

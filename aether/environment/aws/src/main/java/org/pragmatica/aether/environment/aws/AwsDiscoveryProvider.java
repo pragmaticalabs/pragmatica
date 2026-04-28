@@ -30,9 +30,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// AWS Cloud implementation of the DiscoveryProvider SPI.
-/// Discovers peers by querying EC2 instances with a specific `aether-cluster` tag.
-/// Watches for peer changes by polling at a configurable interval.
 public final class AwsDiscoveryProvider implements DiscoveryProvider {
     private static final Logger log = LoggerFactory.getLogger(AwsDiscoveryProvider.class);
 

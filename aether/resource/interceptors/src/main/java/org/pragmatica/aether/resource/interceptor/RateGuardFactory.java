@@ -9,12 +9,6 @@ import org.pragmatica.aether.slice.RateGuard;
 import org.pragmatica.lang.Promise;
 
 
-/// Factory that provisions a {@link RateGuard} from configuration.
-///
-/// Currently supports `type = "local"` (per-node token bucket).
-/// Distributed rate limiting (`type = "distributed"` via DHT) is planned for rc2 (#144).
-///
-/// Registered via META-INF/services/org.pragmatica.aether.resource.ResourceFactory
 public final class RateGuardFactory implements ResourceFactory<RateGuard, RateGuardConfig> {
     @Override public Class<RateGuard> resourceType() {
         return RateGuard.class;

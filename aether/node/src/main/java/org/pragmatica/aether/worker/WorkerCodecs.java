@@ -31,11 +31,7 @@ import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
 
-/// Registry of all worker-level types for serialization.
-/// Collects generated codec registries from dependencies and worker-specific types.
-@CodecFor(InetSocketAddress.class) @SuppressWarnings("JBCT-STY-03")
-// KvstoreCodecs exists in two packages — FQCN unavoidable
-public sealed interface WorkerCodecs {
+@CodecFor(InetSocketAddress.class) @SuppressWarnings("JBCT-STY-03") public sealed interface WorkerCodecs {
     record unused() implements WorkerCodecs{}
 
     static SliceCodec workerCodecs(SliceCodec parent) {

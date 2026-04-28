@@ -9,10 +9,6 @@ import org.pragmatica.http.routing.security.RequestSecurityContext;
 import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 
 
-/// Aether-specific security policies implementing RouteSecurityPolicy.
-///
-/// Sealed interface defining authentication requirements per route.
-/// Designed for extensibility - add new variants for JWT, mTLS, etc.
 @SuppressWarnings("JBCT-NAM-01") public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     System.Logger log = System.getLogger(SecurityPolicy.class.getName());
 

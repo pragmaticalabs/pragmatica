@@ -23,31 +23,6 @@ import java.util.function.LongConsumer;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Off-heap ring buffer for a single stream partition.
-///
-/// Memory layout:
-/// ```
-/// [Header: 64 bytes] [Index: 24 bytes * capacity] [Data: variable]
-/// ```
-///
-/// Header (64 bytes, cache-line aligned):
-///   offset 0:  headOffset    (long) -- next logical offset (monotonic, -1 = empty)
-///   offset 8:  tailOffset    (long) -- oldest readable logical offset
-///   offset 16: eventCount    (long) -- current number of events in buffer
-///   offset 24: dataWritePos  (long) -- cumulative write position in data region
-///   offset 32: dataSize      (long) -- total data region size in bytes
-///   offset 40: capacity      (long) -- max number of events (index slot count)
-///   offset 48: reserved      (long)
-///   offset 56: reserved      (long)
-///
-/// Index (24 bytes per slot):
-///   offset 0:  dataOffset    (long) -- position in data region (mod dataSize)
-///   offset 8:  dataLength    (int)  -- serialized event size
-///   offset 12: reserved      (int)  -- padding
-///   offset 16: timestamp     (long) -- event timestamp
-///
-/// Data (circular region):
-///   Raw serialized event bytes, appended sequentially with wrap-around.
 public final class OffHeapRingBuffer implements AutoCloseable {
     private static final long HEADER_HEAD_OFFSET = 0;
 

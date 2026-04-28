@@ -12,7 +12,6 @@ import java.util.Map;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Information about a compute instance.
 public record InstanceInfo(InstanceId id,
                            InstanceStatus status,
                            List<String> addresses,

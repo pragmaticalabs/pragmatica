@@ -26,16 +26,6 @@ import static org.pragmatica.http.routing.Route.post;
 import static org.pragmatica.http.routing.Route.put;
 
 
-/// REST API routes for deployment-related operations.
-/// These endpoints proxy requests to the cluster leader's ManagementServer.
-///
-/// Provides endpoints for:
-///
-///   - Blueprint application (POST /api/blueprint)
-///   - Slice status (GET /api/slices/status)
-///   - Cluster metrics (GET /api/cluster/metrics)
-///   - Artifact repository (PUT /api/repository)
-///
 public sealed interface DeploymentRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(30);
 

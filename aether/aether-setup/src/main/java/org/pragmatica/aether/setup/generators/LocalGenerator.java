@@ -22,16 +22,6 @@ import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Generates shell scripts for local (single-machine) Aether cluster.
-///
-///
-/// Generates:
-///
-///   - start.sh - Starts all nodes as background processes
-///   - stop.sh - Stops all running nodes
-///   - status.sh - Shows status of all nodes
-///   - logs/ - Directory for node logs
-///
 public final class LocalGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(LocalGenerator.class);
 

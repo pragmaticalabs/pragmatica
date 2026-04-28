@@ -7,11 +7,6 @@ package org.pragmatica.aether.config.cluster;
 import org.pragmatica.lang.Option;
 
 
-/// TLS configuration for cluster deployment.
-///
-/// @param autoGenerate whether to auto-generate TLS certificates
-/// @param clusterSecret secret reference for CA generation
-/// @param certTtl certificate time-to-live duration string
 public record TlsDeploymentConfig(boolean autoGenerate, Option<String> clusterSecret, String certTtl) {
     public static TlsDeploymentConfig tlsDeploymentConfig(boolean autoGenerate,
                                                           Option<String> clusterSecret,

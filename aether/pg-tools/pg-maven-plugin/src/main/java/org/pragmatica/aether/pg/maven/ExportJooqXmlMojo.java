@@ -22,11 +22,6 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 
 
-/// Exports a jOOQ XMLDatabase-compatible schema descriptor from PostgreSQL migration files.
-///
-/// Usage: `mvn pg:export-jooq-xml`
-///
-/// The output XML can be fed to jOOQ's `org.jooq.meta.xml.XMLDatabase` for offline code generation.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) @Contract@Mojo(name = "export-jooq-xml", threadSafe = true) public class ExportJooqXmlMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.basedir}/src/main/resources/schema", property = "pg.schemaDir") private File schemaDir;
 

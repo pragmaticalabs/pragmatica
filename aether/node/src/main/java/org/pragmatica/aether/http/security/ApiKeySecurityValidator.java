@@ -27,10 +27,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Validates API key authentication.
-///
-/// Checks X-API-Key header against configured valid keys.
-/// Stores SHA-256 hashes of keys — raw key values are never held in memory.
 class ApiKeySecurityValidator implements SecurityValidator {
     private static final Logger log = LoggerFactory.getLogger(ApiKeySecurityValidator.class);
 

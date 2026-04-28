@@ -37,7 +37,6 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 
-/// Routes for stream management: list streams, stream info, partition details, publish, read events.
 public final class StreamRoutes implements RouteSource {
     private static final Cause STREAM_NOT_FOUND = Causes.cause("Stream not found");
 

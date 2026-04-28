@@ -15,8 +15,6 @@ import static org.pragmatica.aether.stream.replication.FailoverRecovery.Recovery
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
 
 
-/// Default implementation of governor failover recovery.
-/// Iterates partitions sequentially, requesting catch-up from the most advanced replica.
 final class DefaultFailoverRecovery implements FailoverRecovery {
     private final ReplicaRegistry registry;
     private final StreamPartitionRecovery partitionRecovery;

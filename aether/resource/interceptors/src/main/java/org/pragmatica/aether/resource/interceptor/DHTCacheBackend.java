@@ -15,11 +15,6 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// DHT-backed distributed cache backend.
-///
-/// Stores cache entries in the cluster's distributed hash table.
-/// Keys are namespaced to avoid collisions between different cache instances.
-/// Values are serialized to bytes for network transport.
 final class DHTCacheBackend implements CacheBackend {
     private final DHTClient dhtClient;
     private final Serializer serializer;

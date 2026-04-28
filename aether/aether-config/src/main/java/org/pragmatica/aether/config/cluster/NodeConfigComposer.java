@@ -12,19 +12,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Pure four-layer deep-merge for node TOML configurations.
-///
-/// Precedence (highest wins): CLI overlay > operator override > source-type default > global default.
-///
-/// Merge rules (matching template-inheritance semantics):
-///
-///   - Tables (TOML sections) merge recursively, key-by-key.
-///   - Leaf scalar values are replaced.
-///   - Arrays are replaced entirely (no append) — operators get clean override semantics.
-///   - Inline tables (Map values) are replaced entirely; their interior is opaque.
-///
-/// Higher layers may be [Option#empty] in which case the previous result is carried forward
-/// unchanged. This keeps the call site simple even when not all layers are present.
 public interface NodeConfigComposer {
     static TomlDocument compose(TomlDocument globalDefault,
                                 TomlDocument sourceTypeDefault,

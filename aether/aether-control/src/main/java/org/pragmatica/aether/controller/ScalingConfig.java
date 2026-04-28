@@ -12,26 +12,6 @@ import java.util.EnumMap;
 import java.util.Map;
 
 
-/// Configuration for the Lizard Brain relative change scaling algorithm.
-///
-/// This replaces absolute metric thresholds with relative change detection
-/// using sliding windows.
-///
-/// **Note on evaluationIntervalMs:** Both {@link ControllerConfig} and ScalingConfig have
-/// an evaluationIntervalMs field. They serve different purposes:
-///
-///   - `ControllerConfig.evaluationIntervalMs` - Controls the scheduler interval for the control loop
-///       (how often the controller runs its evaluation cycle)
-///   - `ScalingConfig.evaluationIntervalMs` - Used for window timing semantics in the Lizard Brain
-///       algorithm (determines how long until the sliding window is considered "full" for scaling decisions)
-///
-/// @param windowSize              Number of samples in each metric's sliding window (default: 10)
-/// @param evaluationIntervalMs    Interval for window timing semantics in milliseconds (default: 5000).
-///                                This determines window fill time: windowSize * evaluationIntervalMs.
-/// @param scaleUpThreshold        Relative change above which to scale up (default: 1.5 = 50% above average)
-/// @param scaleDownThreshold      Relative change below which to scale down (default: 0.5 = 50% below average)
-/// @param weights                 Per-metric weights for composite load factor calculation
-/// @param errorRateBlockThreshold Error rate threshold above which scale-up is blocked (default: 0.1)
 public record ScalingConfig(int windowSize,
                             long evaluationIntervalMs,
                             double scaleUpThreshold,

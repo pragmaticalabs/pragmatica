@@ -30,11 +30,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Scheduler for deployment metrics broadcast that runs on the leader node.
-///
-///
-/// When this node is the leader, periodically sends DeploymentMetricsPing to all nodes.
-/// Each node responds with DeploymentMetricsPong containing their deployment metrics.
 public interface DeploymentMetricsScheduler extends DelegatedComponent {
     TimeSpan DEFAULT_INTERVAL = TimeSpan.timeSpan(5).seconds();
 

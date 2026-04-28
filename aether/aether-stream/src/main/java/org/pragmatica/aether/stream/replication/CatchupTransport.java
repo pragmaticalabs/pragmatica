@@ -13,8 +13,6 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse.catchupResponse;
 
 
-/// Request-response transport for catch-up during failover recovery.
-/// Unlike fire-and-forget ReplicationTransport, this returns the response asynchronously.
 @FunctionalInterface public interface CatchupTransport {
     Promise<CatchupResponse> requestCatchup(NodeId target, ReplicationMessage.CatchupRequest request);
 

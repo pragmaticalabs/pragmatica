@@ -26,10 +26,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// GCP Cloud implementation of the EnvironmentIntegration SPI.
-/// Provides compute capabilities backed by the GCP Compute Engine API.
-/// Optionally provides NEG-based load balancing and label-based discovery when configured.
-/// Always provides GCP Secret Manager-based secrets resolution.
 public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
                                         Option<LoadBalancerProvider> loadBalancerProvider,
                                         Option<DiscoveryProvider> discoveryProvider,

@@ -32,8 +32,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Manages slice deployment lifecycle on worker nodes.
-/// Watches WorkerSliceDirective entries and self-assigns instances via consistent hashing.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05"}) public interface WorkerDeploymentManager {
     Logger log = LoggerFactory.getLogger(WorkerDeploymentManager.class);
 

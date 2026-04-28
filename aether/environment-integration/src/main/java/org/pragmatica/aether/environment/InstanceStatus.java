@@ -9,7 +9,6 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Lifecycle status of a compute instance.
 public sealed interface InstanceStatus {
     record Provisioning() implements InstanceStatus {
         public static Result<Provisioning> provisioning() {

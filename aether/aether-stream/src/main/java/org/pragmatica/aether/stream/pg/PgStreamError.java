@@ -7,7 +7,6 @@ package org.pragmatica.aether.stream.pg;
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for PostgreSQL stream storage operations.
 public sealed interface PgStreamError extends Cause {
     static DatabaseFailure databaseFailure(Throwable cause) {
         return new DatabaseFailure(cause);

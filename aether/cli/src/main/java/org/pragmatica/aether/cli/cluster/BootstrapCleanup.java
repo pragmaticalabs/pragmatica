@@ -15,7 +15,6 @@ import java.util.Collections;
 import java.util.List;
 
 
-/// Cleans up tracked resources from a failed bootstrap in reverse creation order (LIFO).
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface BootstrapCleanup {
     record unused() implements BootstrapCleanup{}
 

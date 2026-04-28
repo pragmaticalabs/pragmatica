@@ -13,10 +13,6 @@ import org.pragmatica.postgres.r2dbc.PgAsyncConnectionFactory;
 import org.pragmatica.lang.Promise;
 
 
-/// SPI factory for creating postgres-async JooqConnector instances via R2DBC adapter.
-///
-/// Priority 20 — preferred over both JDBC and R2DBC when asyncUrl is configured.
-/// Uses postgres-async through the R2DBC SPI adapter for full jOOQ compatibility.
 public final class AsyncJooqConnectorFactory implements ResourceFactory<JooqConnector, DatabaseConnectorConfig> {
     @Override public Class<JooqConnector> resourceType() {
         return JooqConnector.class;

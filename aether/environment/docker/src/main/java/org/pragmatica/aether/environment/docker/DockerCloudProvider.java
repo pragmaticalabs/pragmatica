@@ -18,9 +18,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 
-/// Docker implementation of the CloudProvider SPI.
-/// Wraps the existing DockerComputeProvider for local development and integration testing.
-/// Docker does not support preemptible instances, quota checks, or ingress management.
 public record DockerCloudProvider(ComputeProvider computeProvider) implements CloudProvider {
     public static DockerCloudProvider dockerCloudProvider(ComputeProvider computeProvider) {
         return new DockerCloudProvider(computeProvider);

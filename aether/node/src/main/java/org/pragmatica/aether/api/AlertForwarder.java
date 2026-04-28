@@ -25,18 +25,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Forwards alerts to external webhook endpoints.
-///
-///
-/// Supports:
-///
-///   - Multiple webhook URLs
-///   - Configurable retries
-///   - Configurable timeout
-///
 @SuppressWarnings("JBCT-RET-01") public class AlertForwarder {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
+
     private static final long RETRY_BASE_MS = 200L;
+
     private static final long RETRY_CAP_MS = 30_000L;
 
     private final WebhookConfig config;
@@ -126,10 +119,8 @@ import org.slf4j.LoggerFactory;
         return AlertForwarderError.WebhookError.webhookError(url, error).promise();
     }
 
-    /// Compute jittered exponential backoff delay (base*2^attempt, capped, ±50% jitter).
-    /// Package-private for testing.
     static long jitteredBackoff(int attempt) {
-        var base = Math.min(RETRY_BASE_MS * (1L << attempt), RETRY_CAP_MS);
+        var base = Math.min(RETRY_BASE_MS * (1L<<attempt), RETRY_CAP_MS);
         return JitterUtil.applyJitter(base, JitterUtil.MIN_FACTOR_DEFAULT, JitterUtil.MAX_FACTOR_DEFAULT);
     }
 

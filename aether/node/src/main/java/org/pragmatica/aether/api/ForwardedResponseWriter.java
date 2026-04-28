@@ -14,11 +14,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 
-/// Captures HTTP response data from ManagementRouter dispatch
-/// for serialization back through the binary forward protocol.
-///
-/// Since route handlers write responses asynchronously via Promise callbacks,
-/// this writer exposes a Promise that resolves when the response is actually written.
 final class ForwardedResponseWriter implements ResponseWriter {
     private final Map<String, String> responseHeaders = new ConcurrentHashMap<>();
 

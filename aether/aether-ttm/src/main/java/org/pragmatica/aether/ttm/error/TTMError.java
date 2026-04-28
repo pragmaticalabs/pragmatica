@@ -7,7 +7,6 @@ package org.pragmatica.aether.ttm.error;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors that can occur during TTM operations.
 public sealed interface TTMError extends Cause {
     record ModelLoadFailed(String path, String reason) implements TTMError {
         @Override public String message() {

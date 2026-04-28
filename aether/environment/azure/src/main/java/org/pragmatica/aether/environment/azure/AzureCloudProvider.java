@@ -18,9 +18,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 
-/// Azure Cloud implementation of the CloudProvider SPI.
-/// Wraps the existing ComputeProvider to provide bootstrap/apply-level operations.
-/// Azure supports preemptible (spot) VMs, but spot provisioning is deferred to v2.
 public record AzureCloudProvider(ComputeProvider computeProvider) implements CloudProvider {
     public static AzureCloudProvider azureCloudProvider(ComputeProvider computeProvider) {
         return new AzureCloudProvider(computeProvider);

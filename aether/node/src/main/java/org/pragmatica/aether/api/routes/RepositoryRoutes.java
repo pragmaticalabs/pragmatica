@@ -23,11 +23,6 @@ import static org.pragmatica.aether.api.ManagementApiResponses.ArtifactInfoRespo
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for artifact repository: artifact info endpoint.
-///
-///
-/// Maven protocol routes (GET/PUT/POST for binary artifacts) remain in
-/// {@link MavenProtocolRoutes} as they require dynamic content types.
 public final class RepositoryRoutes implements RouteSource {
     private final Supplier<ManageableNode> nodeSupplier;
 

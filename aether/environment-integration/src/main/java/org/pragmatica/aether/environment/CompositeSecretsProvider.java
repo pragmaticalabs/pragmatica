@@ -10,8 +10,6 @@ import org.pragmatica.lang.Result;
 import java.util.List;
 
 
-/// SecretsProvider that chains multiple providers, returning the first successful resolution.
-/// If all providers fail, the last failure is returned.
 public record CompositeSecretsProvider(List<SecretsProvider> providers) implements SecretsProvider {
     public static CompositeSecretsProvider compositeSecretsProvider(SecretsProvider... providers) {
         return new CompositeSecretsProvider(List.of(providers));

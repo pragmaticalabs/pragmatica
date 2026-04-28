@@ -14,10 +14,6 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
 
-/// SPI factory for creating JDBC SqlConnector instances.
-///
-/// Creates JdbcSqlConnector with HikariCP connection pooling.
-/// Register via META-INF/services/org.pragmatica.aether.resource.ResourceFactory
 public final class JdbcSqlConnectorFactory implements ResourceFactory<SqlConnector, DatabaseConnectorConfig> {
     @Override public Class<SqlConnector> resourceType() {
         return SqlConnector.class;

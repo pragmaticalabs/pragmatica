@@ -11,7 +11,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.Arrays;
 
 
-/// Load balancer modes. §6.3
 public enum LoadBalancerMode {
     NONE("none"),
     EXTERNAL("external"),

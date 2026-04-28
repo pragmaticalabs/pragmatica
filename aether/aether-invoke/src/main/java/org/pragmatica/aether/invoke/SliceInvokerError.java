@@ -9,7 +9,6 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors that can occur during slice invocation.
 public sealed interface SliceInvokerError extends Cause {
     record AllInstancesFailedError(Artifact artifact, MethodName method, String details) implements SliceInvokerError {
         public static AllInstancesFailedError allInstancesFailedError(Artifact artifact,

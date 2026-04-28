@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Source profile definition. S5.1
 public record SourceProfile(String name,
                             SourceType type,
                             Option<CloudProviderName> provider,

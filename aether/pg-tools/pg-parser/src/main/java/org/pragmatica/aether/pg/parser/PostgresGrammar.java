@@ -11,7 +11,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 
-/// Loads the PostgreSQL PEG grammar from the resource file.
 public final class PostgresGrammar {
     private PostgresGrammar() {}
 

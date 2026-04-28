@@ -24,18 +24,6 @@ import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Generates Docker Compose deployment for Aether cluster.
-///
-///
-/// Generates:
-///
-///   - docker-compose.yml - Service definitions for all nodes
-///   - .env - Environment variables
-///   - aether.toml - Resolved configuration for reference
-///   - start.sh - Cluster start script
-///   - stop.sh - Cluster stop script
-///   - status.sh - Cluster status script
-///
 public final class DockerGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(DockerGenerator.class);
 

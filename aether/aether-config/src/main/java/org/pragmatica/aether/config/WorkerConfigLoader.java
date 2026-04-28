@@ -17,28 +17,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Loads worker node configuration from TOML files.
-///
-/// Expected TOML format:
-/// ```toml
-/// [worker]
-/// core_nodes = ["node1:7100", "node2:7100", "node3:7100"]
-/// cluster_port = 7100
-/// swim_port = 7200
-/// group_name = "default"
-/// zone = "local"
-/// max_group_size = 100
-///
-/// [worker.swim]
-/// period = "1s"
-/// probe_timeout = "500ms"
-/// indirect_probes = 3
-/// suspect_timeout = "5s"
-/// max_piggyback = 8
-///
-/// [slice]
-/// repositories = ["local"]
-/// ```
 public final class WorkerConfigLoader {
     private WorkerConfigLoader() {}
 

@@ -20,10 +20,6 @@ import org.pragmatica.serialization.Serializer;
 import java.util.function.Function;
 
 
-/// ResourceFactory SPI implementation for provisioning StreamPublisher instances.
-///
-/// Discovered via ServiceLoader. Creates DefaultStreamPublisher instances using
-/// runtime extensions (StreamPartitionManager, Serializer) from the ProvisioningContext.
 public final class StreamPublisherFactory implements ResourceFactory<StreamPublisher, StreamConfig> {
     private static final Cause REQUIRES_CONTEXT = Causes.cause("StreamPublisher requires ProvisioningContext with runtime extensions");
 

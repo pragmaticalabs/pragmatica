@@ -13,10 +13,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// SegmentSink that stores sealed segments in PostgreSQL via PgStreamStore.
-///
-/// Used as the cold-tier destination: the RetentionEnforcer can demote segments
-/// to PostgreSQL instead of deleting them, enabling long-term durable retention.
 public final class PgSegmentSink implements SegmentSink {
     private static final Logger log = LoggerFactory.getLogger(PgSegmentSink.class);
 

@@ -40,8 +40,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Handles REST API requests for the Forge dashboard.
-/// Uses RequestRouter for endpoint routing and delegates to domain-specific route handlers.
 @SuppressWarnings("JBCT-RET-01") public final class ForgeApiHandler {
     private static final Logger log = LoggerFactory.getLogger(ForgeApiHandler.class);
 

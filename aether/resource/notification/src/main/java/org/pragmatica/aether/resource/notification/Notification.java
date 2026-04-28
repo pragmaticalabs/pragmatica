@@ -12,7 +12,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Notification message to send. Sealed hierarchy — Phase 1 supports only email.
 public sealed interface Notification {
     record Email(String from,
                  List<String> to,

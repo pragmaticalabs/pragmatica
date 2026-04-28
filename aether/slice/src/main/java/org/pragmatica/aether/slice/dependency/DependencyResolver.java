@@ -41,20 +41,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// Orchestrates dependency resolution for slices.
-///
-/// Resolution process:
-/// 1. Check registry for already-loaded slice
-/// 2. Locate JAR via repository
-/// 3. Read manifest to get slice class name and verify artifact
-/// 4. Create ClassLoader with JAR URL
-/// 5. Load dependencies from META-INF/dependencies/ file
-/// 6. Build dependency graph and check for cycles
-/// 7. Recursively resolve dependencies (depth-first)
-/// 8. Instantiate slice via factory method
-/// 9. Register in registry
-///
-/// Thread-safe: Uses SliceRegistry for synchronization.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"}) public interface DependencyResolver {
     Logger log = LoggerFactory.getLogger(DependencyResolver.class);
 

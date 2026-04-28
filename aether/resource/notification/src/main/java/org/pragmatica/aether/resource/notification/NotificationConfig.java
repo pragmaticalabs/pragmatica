@@ -12,12 +12,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Configuration for the notification resource.
-///
-/// @param backend Backend type: "smtp" or "http"
-/// @param smtpConfig SMTP configuration (required when backend is "smtp")
-/// @param httpConfig HTTP vendor configuration (required when backend is "http")
-/// @param retryConfig Optional retry configuration (defaults to 3 attempts with exponential backoff)
 public record NotificationConfig(String backend,
                                  Option<SmtpConfig> smtpConfig,
                                  Option<HttpEmailConfig> httpConfig,

@@ -23,10 +23,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECY
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDOWN;
 
 
-/// Destroys the active cluster: drains all nodes, shuts them down, and removes the registry entry.
-///
-/// Requires interactive confirmation unless `--yes` is provided. Each node is drained sequentially,
-/// then shut down. The local registry entry is removed on completion.
 @Command(name = "destroy", description = "Destroy the active cluster (drain + shutdown all nodes)") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterDestroyCommand implements Callable<Integer> {
     private static final int DRAIN_POLL_INTERVAL_MS = 2000;
 

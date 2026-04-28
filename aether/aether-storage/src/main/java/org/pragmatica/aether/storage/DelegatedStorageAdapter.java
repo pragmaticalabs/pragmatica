@@ -20,12 +20,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Adapter wrapping storage components (DemotionManager, StorageGarbageCollector)
-/// as a single DelegatedComponent for the STORAGE task group.
-///
-/// Both wrapped components follow the dormant/active lifecycle pattern:
-/// activate() enables processing, deactivate() disables it.
-/// This adapter coordinates their lifecycle as a single unit.
 public final class DelegatedStorageAdapter implements DelegatedComponent {
     private static final Logger log = LoggerFactory.getLogger(DelegatedStorageAdapter.class);
 

@@ -10,7 +10,6 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
-import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -37,7 +36,6 @@ public class NoopClusterSyncCollector implements ClusterSyncCollector {
     @Override public void onClusterSyncPong(ClusterSyncPong pong) {}
     @Override public long observedRabiaTerm() {return 0L;}
     @Override public Epoch observedEpoch() {return Epoch.ZERO;}
-    @Override public Option<SnapshotPayload> lastObservedSnapshot() {return Option.none();}
     @Override public String currentLifecycleState() {return "ON_DUTY";}
     @Override public List<CommunityReport> collectCommunityReports() {return List.of();}
     @Override public void setLifecycleStateSupplier(Supplier<String> supplier) {}

@@ -11,11 +11,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// PostgreSQL-backed transactional cursor commit.
-///
-/// Wraps cursor UPSERT and business logic in a single PostgreSQL transaction via
-/// SqlConnector.transactional(). Both the cursor advance and the business writes
-/// either commit or rollback atomically, enabling exactly-once semantics.
 public final class PgTransactionalCursorCommit implements TransactionalCursorCommit {
     private static final Logger log = LoggerFactory.getLogger(PgTransactionalCursorCommit.class);
 

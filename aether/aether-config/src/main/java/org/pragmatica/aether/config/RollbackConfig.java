@@ -11,22 +11,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for automatic rollback on persistent slice failures.
-///
-///
-/// Example aether.toml:
-/// ```
-/// [controller.rollback]
-/// enabled = true
-/// trigger_on_all_instances_failed = true
-/// cooldown = "5m"
-/// max_rollbacks = 2
-/// ```
-///
-/// @param enabled Whether automatic rollback is enabled
-/// @param triggerOnAllInstancesFailed Whether to trigger rollback when all instances fail
-/// @param cooldown Minimum time between rollbacks for the same artifact
-/// @param maxRollbacks Maximum consecutive rollbacks before requiring human intervention
 public record RollbackConfig(boolean enabled,
                              boolean triggerOnAllInstancesFailed,
                              TimeSpan cooldown,

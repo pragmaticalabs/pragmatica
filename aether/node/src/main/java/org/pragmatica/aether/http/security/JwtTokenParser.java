@@ -16,10 +16,6 @@ import java.util.Map;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Parses JWT tokens into header, payload, and signature components.
-///
-/// Uses JDK Base64url decoder and Jackson for JSON parsing.
-/// No external JWT library dependencies.
 @SuppressWarnings("JBCT-RET-03") final class JwtTokenParser {
     private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();
 

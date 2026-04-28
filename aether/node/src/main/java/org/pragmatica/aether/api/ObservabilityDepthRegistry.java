@@ -26,11 +26,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Registry for per-method observability depth threshold configuration.
-///
-/// <p>Depth thresholds are persisted to consensus KV-Store for cluster-wide consistency
-/// and survival across node restarts. The local registry provides fast lock-free
-/// lookups on the hot path.
 @SuppressWarnings("JBCT-RET-01") public class ObservabilityDepthRegistry {
     private static final Logger log = LoggerFactory.getLogger(ObservabilityDepthRegistry.class);
 

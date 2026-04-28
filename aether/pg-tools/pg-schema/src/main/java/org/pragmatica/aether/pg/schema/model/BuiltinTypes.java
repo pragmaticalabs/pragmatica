@@ -12,7 +12,6 @@ import java.util.Map;
 import static org.pragmatica.aether.pg.schema.model.PgType.TypeCategory.*;
 
 
-/// Registry of built-in PostgreSQL types and their aliases.
 public final class BuiltinTypes {
     private BuiltinTypes() {}
 

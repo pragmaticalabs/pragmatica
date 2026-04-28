@@ -16,14 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Removes entries for departed nodes from DHT maps.
-/// Called by the governor when SWIM detects a DEAD node.
-///
-/// Accepts pre-extracted endpoint keys to avoid circular dependency
-/// with aether-invoke (which depends on aether-dht).
-@SuppressWarnings("JBCT-UTIL-02")
-// Utility interface — static methods only
-public sealed interface DhtNodeCleanup {
+@SuppressWarnings("JBCT-UTIL-02") public sealed interface DhtNodeCleanup {
     Logger log = LoggerFactory.getLogger(DhtNodeCleanup.class);
 
     static Promise<Unit> cleanupDeadNodeEndpoints(NodeId deadNode,

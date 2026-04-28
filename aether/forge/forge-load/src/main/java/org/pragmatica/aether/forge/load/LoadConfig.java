@@ -13,9 +13,6 @@ import java.util.List;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Root configuration for load generation, containing multiple targets.
-///
-/// @param targets List of load generation targets to run in parallel
 public record LoadConfig(List<LoadTarget> targets) {
     private static final Cause EMPTY_CONFIG = Causes.cause("Load config must have at least one target");
 

@@ -9,24 +9,6 @@ import java.net.URL;
 import java.net.URLClassLoader;
 
 
-/// ClassLoader for individual slice isolation.
-///
-/// Uses child-first delegation strategy for slice code and conflict overrides,
-/// delegating to parent (SharedLibraryClassLoader) for shared dependencies.
-///
-/// Delegation strategy:
-///
-///   - **Parent-first** for JDK classes (java.*, javax.*, jdk.*, sun.*) - mandatory
-///   - **Child-first** for everything else - enables slice isolation
-///
-///
-/// The URLs provided should include:
-///
-///   - The slice JAR itself
-///   - Any conflicting dependency JARs that shadow shared versions
-///
-///
-/// @see SharedLibraryClassLoader
 @SuppressWarnings("JBCT-UTIL-02") public class SliceClassLoader extends URLClassLoader {
     private static final String JAVA_PREFIX = "java.";
 

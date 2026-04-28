@@ -7,9 +7,6 @@ package org.pragmatica.aether.stream.forward;
 import org.pragmatica.lang.Cause;
 
 
-/// Error types for stream publish and read forwarding.
-///
-/// SPEC: §4 READ_FORWARD_TIMEOUT, READ_FORWARD_FAILED, READ_RESPONSE_OVERSIZED, STREAM_FORWARD_UNAVAILABLE.
 public sealed interface StreamForwardError extends Cause {
     enum General implements StreamForwardError {
         FORWARD_TIMEOUT("Stream publish forward timed out"),

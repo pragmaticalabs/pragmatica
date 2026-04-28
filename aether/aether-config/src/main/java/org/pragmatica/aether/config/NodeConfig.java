@@ -14,13 +14,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Per-node configuration.
-///
-/// @param heap              JVM heap size (e.g., "256m", "1g")
-/// @param gc                Garbage collector (zgc, g1)
-/// @param metricsInterval   Metrics collection interval
-/// @param reconciliation    Cluster reconciliation interval
-/// @param resources         Kubernetes resource limits (optional)
 public record NodeConfig(String heap,
                          String gc,
                          TimeSpan metricsInterval,

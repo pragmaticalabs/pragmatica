@@ -12,35 +12,6 @@ import java.util.function.Supplier;
 import org.slf4j.MDC;
 
 
-/// ScopedValue-based context for propagating request ID through invocation chains.
-///
-///
-/// When a request enters the system (via HTTP or inter-slice call),
-/// the request ID is set in this context using scoped execution. When slices invoke other slices,
-/// the request ID is automatically propagated within the scope.
-///
-///
-/// Usage:
-/// ```{@code
-/// // At entry point (InvocationHandler, HTTP router):
-/// InvocationContext.runWithRequestId(requestId, () -> {
-///     // process request - requestId available via currentRequestId()
-/// });
-///
-/// // When making outbound calls (SliceInvoker):
-/// var requestId = InvocationContext.currentRequestId()
-///                                  .or(InvocationContext::generateRequestId);
-/// }```
-///
-///
-/// For async context propagation across thread boundaries:
-/// ```{@code
-/// var snapshot = InvocationContext.captureContext();
-/// // In another thread:
-/// snapshot.runWithCaptured(() -> {
-///     // requestId restored
-/// });
-/// }```
 public final class InvocationContext {
     private static final ScopedValue<String> REQUEST_ID = ScopedValue.newInstance();
 

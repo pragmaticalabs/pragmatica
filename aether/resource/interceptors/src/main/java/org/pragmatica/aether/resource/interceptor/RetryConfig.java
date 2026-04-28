@@ -14,10 +14,6 @@ import static org.pragmatica.lang.Verify.ensure;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for retry interceptor.
-///
-/// @param maxAttempts     Maximum number of retry attempts
-/// @param backoffStrategy Strategy for calculating delays between retries
 public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
     public static Result<RetryConfig> retryConfig(int maxAttempts) {
         return ensure(maxAttempts, Verify.Is::positive).map(RetryConfig::withExponentialBackoff);

@@ -15,12 +15,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Matches incoming `(method, path)` tuples against [ManagementRoute] templates.
-///
-/// The matcher relies on the invariant enforced by [ManagementRoute]: every template has the shape
-/// `<static prefix>/<param1>/.../<paramN>` — all path parameters follow a fixed static prefix.
-/// This allows `O(1)` lookup by `(method, prefix, paramCount)` after splitting the incoming path
-/// into segments and iterating longest-prefix-first.
 public final class RouteMatcher {
     private static final RouteMatcher SHARED = buildOrFail(ManagementRoute.values());
 

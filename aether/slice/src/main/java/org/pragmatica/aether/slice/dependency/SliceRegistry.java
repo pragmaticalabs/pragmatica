@@ -22,13 +22,6 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Thread-safe registry for tracking loaded slice instances.
-///
-/// Maps artifacts to their loaded slice instances. Supports:
-/// - Registration of loaded slices
-/// - Lookup by exact artifact
-/// - Lookup by class name with version pattern matching
-/// - Thread-safe concurrent access
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-ZONE-03"}) public interface SliceRegistry {
     static SliceRegistry sliceRegistry() {
         return new SliceRegistryImpl(new ConcurrentHashMap<>());

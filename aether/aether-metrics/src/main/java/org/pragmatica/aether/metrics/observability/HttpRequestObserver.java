@@ -10,15 +10,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Timer;
 
 
-/// Records per-route HTTP request metrics using Micrometer.
-///
-/// Tracks:
-///   - `aether_http_requests_total` counter with method, path, status tags
-///   - `aether_http_request_duration_seconds` timer with method, path tags
-///   - `aether_security_denials_total` counter with type, method, path tags
-@SuppressWarnings("JBCT-RET-01")
-// Fire-and-forget metric recording — no result needed
-public final class HttpRequestObserver {
+@SuppressWarnings("JBCT-RET-01") public final class HttpRequestObserver {
     private final ObservabilityRegistry registry;
 
     private HttpRequestObserver(ObservabilityRegistry registry) {

@@ -15,11 +15,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// WebSocket handler for dashboard real-time updates.
-///
-///
-/// Manages connected dashboard clients and broadcasts metrics updates.
-/// Uses pragmatica-lite's WebSocket API.
 @SuppressWarnings("JBCT-RET-01") public class DashboardWebSocketHandler implements WebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(DashboardWebSocketHandler.class);
 

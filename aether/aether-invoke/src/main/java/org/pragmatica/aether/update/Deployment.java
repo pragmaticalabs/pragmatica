@@ -14,28 +14,6 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.List;
 
 
-/// Unified deployment record for blueprint-level version transitions.
-///
-/// Replaces the per-strategy deployment records (CanaryDeployment, BlueGreenDeployment,
-/// RollingUpdate) with a single unified model. Strategy-specific behavior is captured
-/// in the StrategyConfig sealed interface.
-///
-/// Immutable record - state changes create new instances via transition methods.
-///
-/// @param deploymentId unique identifier for this deployment
-/// @param blueprintId blueprint identifier (e.g., "org.example:my-app:1.0")
-/// @param oldVersion version being replaced
-/// @param newVersion version being deployed
-/// @param state current lifecycle state
-/// @param strategy which deployment strategy to use
-/// @param strategyConfig strategy-specific configuration
-/// @param routing current traffic routing between old and new versions
-/// @param thresholds health thresholds for auto-progression
-/// @param cleanupPolicy how to handle old version cleanup
-/// @param artifacts all slices in the blueprint
-/// @param newInstances target number of new version instances
-/// @param createdAt timestamp when deployment was created
-/// @param updatedAt timestamp of last state change
 public record Deployment(String deploymentId,
                          String blueprintId,
                          Version oldVersion,

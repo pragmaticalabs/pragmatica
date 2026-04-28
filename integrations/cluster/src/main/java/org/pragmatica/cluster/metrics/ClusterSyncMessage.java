@@ -6,48 +6,25 @@ package org.pragmatica.cluster.metrics;
 
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
 import java.util.List;
 import java.util.Map;
 
-/// Tier 1 cluster-sync wire protocol — the ping/pong chain carrying snapshot,
-/// lifecycle, metrics, and (post refactor) peer observations between the
-/// Rabia leader and core members.
+/// Tier 1 cluster-sync wire protocol — the ping/pong chain carrying lifecycle,
+/// metrics, and peer observations between the Rabia leader and core members.
 ///
-/// Uses a Ping-Pong pattern: the leader pings every core member with the
-/// current cluster-generation snapshot and aggregated metrics; each node
-/// responds with a pong containing its own metrics, lifecycle state, and
-/// observed epoch.
+/// Uses a Ping-Pong pattern: the leader pings every core member with aggregated
+/// metrics; each node responds with a pong containing its own metrics, lifecycle
+/// state, and observed epoch.
 ///
-/// Extended in Commit 3 of the ClusterGeneration rollout to carry ephemeral
-/// generation snapshots, Rabia-term / epoch fencing, observed lifecycle state,
-/// and per-community `CommunityReport` piggybacks.
-///
-/// `ClusterGenerationSnapshot` lives in `aether/slice` which this module does
-/// not depend on. The snapshot is therefore encoded here as an opaque
-/// `byte[]` payload — producers serialize via Fory at the boundary, and
-/// consumers deserialize on the receiving side. The wire shape is carried as
-/// `Option<SnapshotPayload>` so the ping can omit the payload entirely during
-/// steady-state heartbeats (§7.5).
+/// Carries Rabia-term / epoch fencing, observed lifecycle state, and per-community
+/// `CommunityReport` piggybacks. Cluster-generation snapshots are delivered via the
+/// KV-Store (`GenerationSnapshotKey`); the metrics ping channel is metrics-only.
 ///
 /// See `aether/docs/specs/cluster-generation-spec.md` §7.
 @Codec
 public sealed interface ClusterSyncMessage extends ProtocolMessage {
-    /// Opaque, self-describing snapshot payload. Contents are a serialized
-    /// `ClusterGenerationSnapshot` (core-only knowledge); consumers decode
-    /// against their locally-imported `aether/slice` types.
-    @Codec record SnapshotPayload(byte[] bytes) {
-        public SnapshotPayload {
-            if (bytes == null) {bytes = new byte[0];}
-        }
-
-        public static SnapshotPayload snapshotPayload(byte[] bytes) {
-            return new SnapshotPayload(bytes);
-        }
-    }
-
     /// Cluster-sync ping sent by the Rabia leader to core members (Tier 1) or
     /// by a Spokesman core node to its assigned community governors (Tier 2).
     ///
@@ -56,22 +33,16 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     /// @param rabiaTerm       current Rabia consensus term — receivers reject stale
     /// @param epochTerm       epoch's `rabiaTerm` part (duplicated for fencing)
     /// @param epochCounter    epoch's `localCounter` part
-    /// @param snapshot        `Some(payload)` on epoch change; `None` on heartbeat
     record ClusterSyncPing(NodeId sender,
                            Map<NodeId, Map<String, Double>> allMetrics,
                            long rabiaTerm,
                            long epochTerm,
-                           long epochCounter,
-                           Option<SnapshotPayload> snapshot) implements ClusterSyncMessage {
-        public ClusterSyncPing {
-            if (snapshot == null) {snapshot = Option.none();}
-        }
+                           long epochCounter) implements ClusterSyncMessage {
 
         /// Backward-compatible factory for legacy call sites that have no epoch info.
-        /// Produces a term/epoch of zero and no snapshot — receivers treat it as a
-        /// pre-migration heartbeat.
+        /// Produces a term/epoch of zero — receivers treat it as a pre-migration heartbeat.
         public static ClusterSyncPing clusterSyncPing(NodeId sender, Map<NodeId, Map<String, Double>> allMetrics) {
-            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Option.none());
+            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L);
         }
     }
 

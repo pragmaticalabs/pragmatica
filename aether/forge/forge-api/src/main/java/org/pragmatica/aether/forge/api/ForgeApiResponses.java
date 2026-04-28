@@ -10,8 +10,6 @@ import java.time.Duration;
 import java.util.List;
 
 
-/// API response records for Forge endpoints.
-/// Organized by domain for clarity and discoverability.
 public final class ForgeApiResponses {
     private ForgeApiResponses() {}
 

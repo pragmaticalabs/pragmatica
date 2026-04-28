@@ -21,17 +21,6 @@ import static org.pragmatica.aether.invoke.InvocationNode.Outcome.SUCCESS;
 import static org.pragmatica.aether.invoke.InvocationNode.invocationNode;
 
 
-/// Intercepts slice method invocations to provide unified observability:
-/// adaptive sampling, depth-based logging, and trace recording.
-///
-/// <p>Provides comprehensive observability:
-/// <ul>
-///   <li>Always counts invocations for throughput tracking (cheap)</li>
-///   <li>Honors propagated sampling decisions from upstream callers</li>
-///   <li>At entry points (depth 0), uses adaptive sampling to decide tracing</li>
-///   <li>Sampled invocations get full trace recording and depth-mapped logging</li>
-///   <li>Failed invocations are always recorded regardless of sampling</li>
-/// </ul>
 public interface ObservabilityInterceptor {
     <R> Promise<R> intercept(Artifact slice,
                              MethodName method,

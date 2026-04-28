@@ -18,16 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Relays committed Decisions within the worker group.
-///
-/// When this node IS the governor:
-/// - Receives Decisions from core via PassiveNode
-/// - Fans them out to all group followers via cluster network
-///
-/// When this node IS a follower:
-/// - Receives relayed Decisions from the governor via cluster network
-///
-/// Maintains a bounded buffer for gap recovery (configurable size).
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface DecisionRelay {
     Logger LOG = LoggerFactory.getLogger(DecisionRelay.class);
 

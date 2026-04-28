@@ -13,14 +13,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for TTM (Tiny Time Mixers) predictive scaling.
-///
-/// @param modelPath            Path to ONNX model file
-/// @param inputWindowMinutes   Number of minutes of historical data for prediction (default: 60)
-/// @param predictionHorizon    Minutes ahead to predict (default: 1)
-/// @param evaluationInterval   Interval between TTM evaluations (default: 60s)
-/// @param confidenceThreshold  Minimum confidence for applying predictions (0.0-1.0, default: 0.7)
-/// @param enabled              Whether TTM is enabled (default: false)
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-SEQ-01"}) public record TtmConfig(String modelPath,
                                                                            int inputWindowMinutes,
                                                                            int predictionHorizon,

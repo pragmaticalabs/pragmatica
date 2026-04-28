@@ -28,12 +28,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Collects event loop metrics by injecting probe tasks.
-///
-/// Measures event loop lag by scheduling a task and measuring the time
-/// from scheduling to execution. This captures how backlogged the event loop is.
-///
-/// Thread-safe: uses atomic operations for all metrics.
 public final class EventLoopMetricsCollector {
     private static final Logger log = LoggerFactory.getLogger(EventLoopMetricsCollector.class);
 

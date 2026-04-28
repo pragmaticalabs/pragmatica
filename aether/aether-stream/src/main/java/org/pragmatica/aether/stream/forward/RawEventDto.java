@@ -10,10 +10,6 @@ import org.pragmatica.serialization.Codec;
 import java.util.Arrays;
 
 
-/// Wire-format DTO for a raw stream event used in read forwarding.
-///
-/// SPEC: §3 Wire protocol — RawEventDto decoupled from buffer-owned [OffHeapRingBuffer.RawEvent].
-/// SPEC: §3.1 One-way conversion helper: RawEvent → RawEventDto.
 @Codec public record RawEventDto(long offset, long timestamp, byte[] data) {
     public RawEventDto {
         data = data.clone();

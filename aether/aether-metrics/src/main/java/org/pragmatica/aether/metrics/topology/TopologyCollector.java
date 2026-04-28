@@ -30,14 +30,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Collects cluster topology information from various sources.
-///
-/// Aggregates data from:
-///
-///   - TopologyManager for node state
-///   - LeaderManager for leader info
-///   - KVStore for slice distribution
-///
 public final class TopologyCollector {
     private static final Logger log = LoggerFactory.getLogger(TopologyCollector.class);
 

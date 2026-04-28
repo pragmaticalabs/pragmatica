@@ -26,9 +26,6 @@ import io.r2dbc.spi.RowMetadata;
 import io.r2dbc.spi.Statement;
 
 
-/// R2DBC implementation of SqlConnector for reactive database access.
-///
-/// Uses R2dbcOperations from integrations/db/r2dbc for Promise-based reactive execution.
 public final class R2dbcSqlConnector implements SqlConnector {
     private final DatabaseConnectorConfig config;
     private final ConnectionFactory connectionFactory;

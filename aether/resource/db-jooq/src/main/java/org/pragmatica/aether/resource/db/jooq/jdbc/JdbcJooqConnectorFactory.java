@@ -14,10 +14,6 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
 
-/// SPI factory for creating JDBC JooqConnector instances.
-///
-/// Creates JdbcJooqConnector with HikariCP connection pooling.
-/// Priority 0 -- fallback when no r2dbc_url is configured.
 public final class JdbcJooqConnectorFactory implements ResourceFactory<JooqConnector, DatabaseConnectorConfig> {
     @Override public Class<JooqConnector> resourceType() {
         return JooqConnector.class;

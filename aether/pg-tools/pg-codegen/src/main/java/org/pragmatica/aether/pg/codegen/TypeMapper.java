@@ -13,7 +13,6 @@ import java.util.Map;
 import java.util.Set;
 
 
-/// Maps PostgreSQL types to Java types.
 public final class TypeMapper {
     private TypeMapper() {}
 

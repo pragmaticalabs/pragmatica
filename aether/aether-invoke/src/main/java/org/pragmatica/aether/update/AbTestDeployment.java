@@ -16,25 +16,6 @@ import java.util.List;
 import java.util.Map;
 
 
-/// Represents an A/B testing deployment operation.
-///
-/// An A/B test deploys multiple variant versions alongside a baseline and routes
-/// traffic deterministically using a configurable split rule. Unlike canary deployments,
-/// A/B tests run until manually concluded with a declared winning variant.
-///
-/// Immutable record - state changes create new instances.
-///
-/// @param testId unique identifier for this A/B test
-/// @param artifactBase the artifact being tested (version-agnostic)
-/// @param baselineVersion current baseline version
-/// @param variantVersions mapping of variant names to their versions
-/// @param state current state of the A/B test
-/// @param splitRule traffic routing rule for variant selection
-/// @param routing current traffic routing configuration
-/// @param blueprintId optional blueprint identifier for deployment context
-/// @param artifacts list of artifacts involved in this deployment
-/// @param createdAt timestamp when deployment was created
-/// @param updatedAt timestamp of last state change
 public record AbTestDeployment(String testId,
                                ArtifactBase artifactBase,
                                Version baselineVersion,

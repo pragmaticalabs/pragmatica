@@ -26,19 +26,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Collects GC metrics using JMX notifications.
-///
-/// Thread-safe: uses atomic operations for all counters.
-///
-/// Usage:
-/// ```{@code
-/// var collector = GCMetricsCollector.gcMetricsCollector();
-/// collector.start();
-/// // ... later ...
-/// var metrics = collector.snapshot();
-/// // ... on shutdown ...
-/// collector.stop();
-/// }```
 public final class GCMetricsCollector {
     private static final Logger log = LoggerFactory.getLogger(GCMetricsCollector.class);
 

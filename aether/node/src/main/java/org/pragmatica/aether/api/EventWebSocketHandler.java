@@ -14,8 +14,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Reusable WebSocket handler for broadcasting cluster events.
-/// Instance-based (not static) to support independent session pools.
 @SuppressWarnings("JBCT-RET-01") public class EventWebSocketHandler implements WebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketHandler.class);
 

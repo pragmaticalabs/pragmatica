@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.stream.Stream;
 
 
-/// Diff plan with actions ordered into waves. S9.3
 public record DiffPlan(List<DiffAction> additions,
                        List<DiffAction> modifications,
                        List<DiffAction> removals,

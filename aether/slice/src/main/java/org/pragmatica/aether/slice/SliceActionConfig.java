@@ -21,18 +21,6 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Configuration for slice loading and lifecycle management.
-///
-/// @param loadingTimeout      Timeout for slice loading
-/// @param activatingTimeout   Timeout for slice activation
-/// @param deactivatingTimeout Timeout for slice deactivation
-/// @param unloadingTimeout    Timeout for slice unloading
-/// @param startStopTimeout    Timeout for start/stop operations
-/// @param repositories        List of repositories to search for slices
-/// @param frameworkJarsPath   Optional path to framework JARs for classloader isolation.
-///                            If provided, creates a FrameworkClassLoader with isolated
-///                            pragmatica-lite, slice-api, and serialization classes.
-///                            If empty, uses Application ClassLoader (no isolation).
 @SuppressWarnings("JBCT-SEQ-01") public record SliceActionConfig(TimeSpan loadingTimeout,
                                                                  TimeSpan activatingTimeout,
                                                                  TimeSpan deactivatingTimeout,

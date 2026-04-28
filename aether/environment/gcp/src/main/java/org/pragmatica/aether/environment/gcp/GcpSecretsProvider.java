@@ -10,8 +10,6 @@ import org.pragmatica.cloud.gcp.GcpClient;
 import org.pragmatica.lang.Promise;
 
 
-/// GCP Secret Manager implementation of the SecretsProvider SPI.
-/// Resolves secrets by calling the GCP Secret Manager API via the GcpClient.
 public record GcpSecretsProvider(GcpClient client) implements SecretsProvider {
     public static GcpSecretsProvider gcpSecretsProvider(GcpClient client) {
         return new GcpSecretsProvider(client);

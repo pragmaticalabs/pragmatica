@@ -9,7 +9,6 @@ import org.pragmatica.aether.pg.schema.model.PgType;
 import java.util.Set;
 
 
-/// Encodes knowledge about which ALTER COLUMN TYPE operations are safe (no table rewrite).
 public final class SafeTypeChanges {
     private SafeTypeChanges() {}
 

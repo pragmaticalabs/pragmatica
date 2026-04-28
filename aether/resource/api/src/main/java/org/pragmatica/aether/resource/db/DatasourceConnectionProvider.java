@@ -27,11 +27,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// Provides SqlConnector instances for named datasources independently of slice lifecycle.
-/// Used by schema migration orchestrator and potentially other infrastructure components.
-///
-/// Connections are lazily created on first request, cached by datasource name,
-/// and released on demand or during shutdown.
 public interface DatasourceConnectionProvider {
     Promise<SqlConnector> connector(String datasourceName);
     Promise<Unit> release(String datasourceName);

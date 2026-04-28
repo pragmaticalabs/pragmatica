@@ -18,9 +18,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 
-/// AWS Cloud implementation of the CloudProvider SPI.
-/// Wraps the existing ComputeProvider to provide bootstrap/apply-level operations.
-/// AWS supports preemptible (spot) instances, but spot provisioning is deferred to v2.
 public record AwsCloudProvider(ComputeProvider computeProvider) implements CloudProvider {
     public static AwsCloudProvider awsCloudProvider(ComputeProvider computeProvider) {
         return new AwsCloudProvider(computeProvider);

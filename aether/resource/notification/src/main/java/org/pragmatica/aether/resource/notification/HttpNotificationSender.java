@@ -16,7 +16,6 @@ import static org.pragmatica.aether.resource.notification.NotificationResult.not
 import static org.pragmatica.lang.Unit.unit;
 
 
-/// NotificationSender backed by HTTP vendor API.
 final class HttpNotificationSender implements NotificationSender {
     private final HttpEmailSender sender;
     private final RetryConfig retryConfig;

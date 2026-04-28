@@ -15,9 +15,6 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-/// Calculates derived metrics from raw comprehensive snapshots.
-///
-/// Uses a sliding window of recent samples to compute rates, percentiles, and trends.
 public final class DerivedMetricsCalculator {
     private static final int DEFAULT_WINDOW_SIZE = 60;
 

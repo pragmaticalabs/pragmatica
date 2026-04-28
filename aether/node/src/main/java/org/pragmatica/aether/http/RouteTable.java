@@ -9,10 +9,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import java.util.List;
 import java.util.Set;
 
-/// Immutable snapshot of all locally-published and remotely-discovered HTTP routes, carried on
-/// the [`org.pragmatica.aether.http.fsm.AppHttpState.RouteReady`] / [`org.pragmatica.aether.http.fsm.AppHttpState.CertRotating`]
-/// records so the request handler reads routes from state identity rather than an external
-/// atomic reference.
+
 public record RouteTable(Set<HttpNodeRouteKey> localRoutes, List<HttpRouteRegistry.RouteInfo> remoteRoutes) {
     private static final RouteTable EMPTY = new RouteTable(Set.of(), List.of());
 

@@ -20,16 +20,6 @@ import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
 
-/// Reusable helper for routing reads according to a [ReadPreference].
-///
-/// Used by the management REST layer ([StreamRoutes]) to honor `ReadPreference`
-/// on raw-bytes reads. [PartitionedStreamAccess] embeds equivalent logic for the
-/// slice-level StreamAccess consumer path (SPEC: §6.2).
-///
-/// This helper implements the same retry policy as [PartitionedStreamAccess]
-/// (SPEC: §6.2.d) so both paths behave consistently. Unlike PartitionedStreamAccess
-/// it returns `List<OffHeapRingBuffer.RawEvent>` for the REST layer that works with
-/// raw bytes rather than typed payloads.
 public final class StreamReadRouter {
     private final StreamPartitionManager partitionManager;
     private final Option<ReplicaRegistry> replicaRegistry;

@@ -13,18 +13,6 @@ import org.pragmatica.lang.utils.Causes;
 import static org.pragmatica.lang.Option.option;
 
 
-/// Dependency descriptor parsed from META-INF/dependencies/ file format.
-///
-/// Format: `<fully.qualified.class>:<version-pattern>[:<optional-param-name>]`
-///
-/// Examples:
-/// - `com.example.UserService:1.2.3` - Exact version, no param name
-/// - `com.example.EmailService:^1.0.0:emailService` - Caret pattern with param name
-/// - `com.example.OrderProcessor:[1.0.0,2.0.0):orderProcessor` - Range with param name
-///
-/// @param sliceClassName Fully qualified class name of the dependency slice
-/// @param versionPattern Version pattern for dependency resolution
-/// @param parameterName  Optional parameter name for factory method (for verification)
 @SuppressWarnings("JBCT-UTIL-02") public record DependencyDescriptor(String sliceClassName,
                                                                      VersionPattern versionPattern,
                                                                      Option<String> parameterName) {

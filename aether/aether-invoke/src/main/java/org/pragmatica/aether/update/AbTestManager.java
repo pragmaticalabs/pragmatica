@@ -38,18 +38,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Manages A/B test deployment operations across the cluster.
-///
-///
-/// A/B tests deploy multiple variant versions alongside a baseline and route
-/// traffic deterministically using configurable split rules. Unlike canary
-/// deployments, A/B tests have no automatic evaluation loop and run until
-/// manually concluded with a declared winning variant.
-///
-///
-/// A/B test state is stored in the KV-Store for persistence and visibility.
-/// Only the node currently assigned the STRATEGIES task group can create,
-/// conclude, or rollback tests.
 public interface AbTestManager extends DelegatedComponent {
     Promise<AbTestDeployment> createTest(ArtifactBase artifactBase,
                                          Map<String, Version> variantVersions,

@@ -25,7 +25,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Aether KV-Store structured keys for cluster state management
 @Codec@CodecFor(MethodName.class) @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-NAM-01"}) public sealed interface AetherKey extends StructuredKey {
     String asString();
 
@@ -1222,9 +1221,6 @@ import static org.pragmatica.lang.Result.success;
 
     Fn1<Cause, String> PROVISIONING_SLOT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid provisioning-slot key format: %s");
 
-    /// Mirrors a single CTM in-flight provisioning attempt to KV so the slot survives leader handoff.
-    /// `slotId` is a unique identifier (UUID-string) generated when `provisionNodes` dispatches.
-    /// Theme: Fix D — see synthesis-fixes-to-15.md and investigation-ssot-topology.md.
     record ProvisioningSlotKey(String slotId) implements AetherKey {
         private static final String PREFIX = "provisioning-slot/";
 
@@ -1247,6 +1243,31 @@ import static org.pragmatica.lang.Result.success;
             return success(new ProvisioningSlotKey(id));
         }
     }
+
+    record GenerationSnapshotKey() implements AetherKey {
+        private static final String KEY = "generation-snapshot";
+
+        @SuppressWarnings("JBCT-VO-02") public static final GenerationSnapshotKey SINGLETON = new GenerationSnapshotKey();
+
+        @Override public String asString() {
+            return KEY;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02") public static GenerationSnapshotKey generationSnapshotKey() {
+            return SINGLETON;
+        }
+
+        public static Result<GenerationSnapshotKey> generationSnapshotKey(String key) {
+            if (!KEY.equals(key)) {return GENERATION_SNAPSHOT_KEY_FORMAT_ERROR.apply(key).result();}
+            return success(SINGLETON);
+        }
+    }
+
+    Fn1<Cause, String> GENERATION_SNAPSHOT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid generation-snapshot key format: %s");
 
     record ConsumerGroupKey(String groupId, String streamName, int partition) implements AetherKey {
         private static final String PREFIX = "consumer-group/";

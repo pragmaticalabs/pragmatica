@@ -22,8 +22,6 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.Route.in;
 
 
-/// Proxy routes for observability endpoints.
-/// Forwards trace and depth configuration requests from the dashboard port to the leader's management port.
 public sealed interface ObservabilityProxyRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 

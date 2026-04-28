@@ -34,10 +34,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Fetches, caches, and manages JWKS (JSON Web Key Set) public keys.
-///
-/// Keys are cached with a configurable TTL. On cache miss for an unknown kid,
-/// the store refreshes from the remote JWKS endpoint (supporting key rotation).
 @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"}) class JwksKeyStore implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(JwksKeyStore.class);
 

@@ -17,10 +17,6 @@ import java.time.ZonedDateTime;
 import java.util.BitSet;
 
 
-/// Lightweight 5-field cron expression parser.
-///
-/// Supports standard cron syntax: minute hour day-of-month month day-of-week.
-/// Field syntax: `*`, specific values, ranges (`1-5`), steps (`*/5`, `1-30/5`), lists (`1,3,5`).
 public record CronExpression(BitSet minutes, BitSet hours, BitSet daysOfMonth, BitSet months, BitSet daysOfWeek) {
     private static final int MAX_SEARCH_YEARS = 4;
 

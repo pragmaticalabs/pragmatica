@@ -13,12 +13,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// A running Ember cluster instance.
-///
-/// Manages the lifecycle of an embedded Aether cluster including
-/// optional H2 database, cluster nodes, and configuration provider.
-/// Management API forwarding is built into every node (ManagementServer handles it),
-/// so no separate passive LB is needed.
 public final class EmberInstance {
     private static final Logger log = LoggerFactory.getLogger(EmberInstance.class);
 

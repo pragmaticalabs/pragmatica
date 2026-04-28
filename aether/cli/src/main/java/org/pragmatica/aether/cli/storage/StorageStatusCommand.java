@@ -19,10 +19,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STO
 import static org.pragmatica.aether.management.route.ManagementRoute.STORAGE_GET;
 
 
-/// Displays detailed status of a named storage instance.
-///
-/// Without `--node`, queries the cluster-wide detail endpoint.
-/// With `--node`, queries the per-node detail endpoint on the specified node.
 @Command(name = "status", description = "Show storage instance status") @SuppressWarnings("JBCT-RET-01") class StorageStatusCommand implements Callable<Integer> {
     @CommandLine.ParentCommand private StorageCommand parent;
 

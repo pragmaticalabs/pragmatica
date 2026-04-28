@@ -16,7 +16,6 @@ import java.util.List;
 import static org.pragmatica.aether.pg.schema.linter.LintDiagnostic.Severity.WARNING;
 
 
-/// Rules detecting migration practice issues.
 public final class MigrationPracticeRules {
     private MigrationPracticeRules() {}
 

@@ -50,27 +50,15 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Leader-side component that manages task group assignments. Only active on the leader node.
-///
-/// Built on the [`Fsm`] state machine — two states (`Dormant`, `Active`) with CAS-guarded
-/// transitions on caller thread. Dormant is a per-FSM singleton; Active is a fresh record per
-/// entry carrying the leader-tenure's working state (assignment map, failed-node tracking,
-/// reconcile timer).
+
 public sealed interface TaskAssignmentCoordinator {
     TimeSpan DEFAULT_RECONCILE_INTERVAL = timeSpan(5).seconds();
 
     long FAILURE_COOLDOWN_MS = 30_000L;
 
-    @Contract
-    @MessageReceiver
-    void onLeaderChange(LeaderChange leaderChange);
-
-    @Contract
-    @MessageReceiver
-    void onTopologyChange(TopologyChangeNotification notification);
-
+    @Contract@MessageReceiver void onLeaderChange(LeaderChange leaderChange);
+    @Contract@MessageReceiver void onTopologyChange(TopologyChangeNotification notification);
     Map<TaskGroup, TaskAssignmentValue> assignments();
-
     Promise<Unit> reassign(TaskGroup group, NodeId target);
 
     static TaskAssignmentCoordinator noOp() {
@@ -78,10 +66,17 @@ public sealed interface TaskAssignmentCoordinator {
     }
 
     record NoOpCoordinator() implements TaskAssignmentCoordinator {
-        @Contract @Override public void onLeaderChange(LeaderChange leaderChange) {}
-        @Contract @Override public void onTopologyChange(TopologyChangeNotification notification) {}
-        @Override public Map<TaskGroup, TaskAssignmentValue> assignments() { return Map.of(); }
-        @Override public Promise<Unit> reassign(TaskGroup group, NodeId target) { return Promise.UNIT; }
+        @Contract@Override public void onLeaderChange(LeaderChange leaderChange) {}
+
+        @Contract@Override public void onTopologyChange(TopologyChangeNotification notification) {}
+
+        @Override public Map<TaskGroup, TaskAssignmentValue> assignments() {
+            return Map.of();
+        }
+
+        @Override public Promise<Unit> reassign(TaskGroup group, NodeId target) {
+            return Promise.UNIT;
+        }
     }
 
     static TaskAssignmentCoordinator taskAssignmentCoordinator(NodeId self,
@@ -96,11 +91,14 @@ public sealed interface TaskAssignmentCoordinator {
                                                                KVStore<AetherKey, AetherValue> kvStore,
                                                                TopologyManager topologyManager,
                                                                TimeSpan reconcileInterval) {
-        return taskAssignmentCoordinator(self, clusterNode, kvStore, topologyManager,
-                                         reconcileInterval, System::currentTimeMillis);
+        return taskAssignmentCoordinator(self,
+                                         clusterNode,
+                                         kvStore,
+                                         topologyManager,
+                                         reconcileInterval,
+                                         System::currentTimeMillis);
     }
 
-    /// Full-arity factory with injectable clock — for tests that need deterministic time.
     static TaskAssignmentCoordinator taskAssignmentCoordinator(NodeId self,
                                                                ClusterNode<KVCommand<AetherKey>> clusterNode,
                                                                KVStore<AetherKey, AetherValue> kvStore,
@@ -108,9 +106,14 @@ public sealed interface TaskAssignmentCoordinator {
                                                                TimeSpan reconcileInterval,
                                                                LongSupplier clock) {
         var ctxHolder = new AtomicReference<Context>();
-        Function<Fsm<CoordinatorState, ClusterFsmEvent>, CoordinatorState> initialStateFactory =
-            f -> buildContextAndInitialState(ctxHolder, f, self, clusterNode, kvStore,
-                                             topologyManager, reconcileInterval, clock);
+        Function<Fsm<CoordinatorState, ClusterFsmEvent>, CoordinatorState> initialStateFactory = f -> buildContextAndInitialState(ctxHolder,
+                                                                                                                                  f,
+                                                                                                                                  self,
+                                                                                                                                  clusterNode,
+                                                                                                                                  kvStore,
+                                                                                                                                  topologyManager,
+                                                                                                                                  reconcileInterval,
+                                                                                                                                  clock);
         var fsm = Fsm.fsm("task-assignment", self.id(), initialStateFactory);
         return new TaskAssignmentCoordinatorAdapter(ctxHolder.get(), fsm);
     }
@@ -130,17 +133,15 @@ public sealed interface TaskAssignmentCoordinator {
 
     enum CoordinatorError implements Cause {
         NOT_LEADER("Task assignment coordinator is not active (not leader)");
-
         private final String message;
-
-        CoordinatorError(String message) { this.message = message; }
-
-        @Override public String message() { return message; }
+        CoordinatorError(String message) {
+            this.message = message;
+        }
+        @Override public String message() {
+            return message;
+        }
     }
 
-    /// Shared runtime context. Fully immutable: the `Dormant` singleton and the `Fsm` reference
-    /// are built inside the constructor via the constructor-driven initial-state factory in
-    /// [`taskAssignmentCoordinator`].
     final class Context {
         final Fsm<CoordinatorState, ClusterFsmEvent> fsm;
         final NodeId self;
@@ -176,9 +177,8 @@ public sealed interface TaskAssignmentCoordinator {
     sealed interface CoordinatorState extends FsmState<CoordinatorState, ClusterFsmEvent> permits Dormant, Active {}
 
     record Dormant(Context ctx) implements CoordinatorState {
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<CoordinatorState, ClusterFsmEvent> tx) {
-            switch (event) {
+        @Override public void handle(ClusterFsmEvent event, TransitionRequest<CoordinatorState, ClusterFsmEvent> tx) {
+            switch (event){
                 case ClusterFsmEvent.LeaderChange lc when lc.localIsLeader() -> tx.transitionTo(newActive(ctx));
                 default -> tx.ignore();
             }
@@ -193,27 +193,6 @@ public sealed interface TaskAssignmentCoordinator {
         }
     }
 
-    /// Theme K #2 (DEFERRED to rc2 #189): `failedNodes` is local in-memory cooldown state
-    /// — the set of (taskGroup, nodeId) pairs that recently failed an assignment.
-    /// On leader handoff a fresh `Active` is constructed with an empty `failedNodes` map,
-    /// so the new leader cannot observe the cooldown and may immediately re-assign a
-    /// task group to a node that just failed.
-    ///
-    /// Mitigating factor (already in place — `isRecentlyFailed` at lines below): the
-    /// cooldown check intersects `failedNodes` with `assignmentMap.values()` filtered by
-    /// `status == FAILED && assignedAtMs > cutoff`. Since `assignmentMap` is rebuilt from
-    /// KV (`readCurrentAssignments`) on every reconcile, the FAILED status survives leader
-    /// handoff. The in-memory `failedNodes` is a per-leader fast-path, not the source of
-    /// truth — the `assignedAtMs` timestamp on the persisted `TaskAssignmentValue` is.
-    ///
-    /// A full KV migration would either:
-    ///   (a) add a `TaskAssignmentCooldownKey` namespace mirroring the in-memory map, OR
-    ///   (b) extend `TaskAssignmentValue` with a `failedAt: long` field separate from
-    ///       `assignedAtMs` so the FAILED→ASSIGNED transition preserves the failure
-    ///       timestamp.
-    /// Both are tracked under rc2 #189. For rc1 the existing KV-derived check
-    /// (`isRecentlyFailed` matching against `assignmentMap.values()`) is the architectural
-    /// floor — `failedNodes` is a per-leader hint that lossy-reset on handoff is benign.
     record Active(Context ctx,
                   Map<TaskGroup, TaskAssignmentValue> assignmentMap,
                   Map<TaskGroup, Set<NodeId>> failedNodes,
@@ -221,23 +200,20 @@ public sealed interface TaskAssignmentCoordinator {
                   CancellableTask reconcileTimer) implements CoordinatorState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
 
-        @Override
-        public void onEntry() {
+        @Override public void onEntry() {
             log.info("Node {} became leader, activating task assignment coordinator", ctx.self);
             reconcile();
             reconcileTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcile, ctx.reconcileInterval));
         }
 
-        @Override
-        public void onExit() {
+        @Override public void onExit() {
             log.info("Node {} no longer leader, deactivating task assignment coordinator", ctx.self);
             reconcileTimer.cancel();
         }
 
-        @Override
-        public void handle(ClusterFsmEvent event, TransitionRequest<CoordinatorState, ClusterFsmEvent> tx) {
-            switch (event) {
-                case ClusterFsmEvent.LeaderChange lc when !lc.localIsLeader() -> tx.transitionTo(ctx.dormant);
+        @Override public void handle(ClusterFsmEvent event, TransitionRequest<CoordinatorState, ClusterFsmEvent> tx) {
+            switch (event){
+                case ClusterFsmEvent.LeaderChange lc when!lc.localIsLeader() -> tx.transitionTo(ctx.dormant);
                 case ClusterFsmEvent.NodeGone _ -> handleNodeDeparture();
                 default -> tx.ignore();
             }
@@ -280,20 +256,21 @@ public sealed interface TaskAssignmentCoordinator {
 
         private List<TaskGroup> identifyGroupsNeedingAssignment(List<NodeId> healthyNodes) {
             var healthySet = new HashSet<>(healthyNodes);
-            return java.util.Arrays.stream(TaskGroup.values())
-                                   .filter(group -> needsReassignment(group, healthySet))
-                                   .toList();
+            return java.util.Arrays.stream(TaskGroup.values()).filter(group -> needsReassignment(group, healthySet))
+                                          .toList();
         }
 
         private boolean needsReassignment(TaskGroup group, Set<NodeId> healthySet) {
             return Option.option(assignmentMap.get(group))
-                         .fold(() -> true, assignment -> isOrphanedOrFailed(group, assignment, healthySet));
+                                .fold(() -> true,
+                                      assignment -> isOrphanedOrFailed(group, assignment, healthySet));
         }
 
         private boolean isOrphanedOrFailed(TaskGroup group, TaskAssignmentValue assignment, Set<NodeId> healthySet) {
             if (!healthySet.contains(assignment.assignedTo())) {
                 log.info("Task group {} orphaned (node {} not in topology), will reassign",
-                         group, assignment.assignedTo());
+                         group,
+                         assignment.assignedTo());
                 return true;
             }
             if (assignment.status() == AssignmentStatus.FAILED) {
@@ -307,18 +284,11 @@ public sealed interface TaskAssignmentCoordinator {
         private void assignGroups(List<TaskGroup> groups, List<NodeId> healthyNodes) {
             var commands = new ArrayList<KVCommand<AetherKey>>();
             for (var group : groups) {appendCommandIfStillNeeded(group, healthyNodes, commands);}
-            if (!commands.isEmpty()) {
-                ctx.clusterNode.apply(commands)
-                               .onFailure(cause -> log.error("Consensus proposal failed for task assignments: {}",
-                                                             cause.message()));
-            }
+            if (!commands.isEmpty()) {ctx.clusterNode.apply(commands)
+                                                           .onFailure(cause -> log.error("Consensus proposal failed for task assignments: {}",
+                                                                                         cause.message()));}
         }
 
-        /// Theme E #189: per-group lock guards the snapshot → decide → re-read → Put
-        /// transaction so a concurrent writer flipping the assignment to ACTIVE cannot
-        /// race past us between `needsReassignment` and the consensus apply. Inside the
-        /// lock we re-read the live KV value; if status is now ACTIVE the reassignment
-        /// is dropped — the cluster has already converged.
         @Contract private void appendCommandIfStillNeeded(TaskGroup group,
                                                           List<NodeId> healthyNodes,
                                                           List<KVCommand<AetherKey>> commands) {
@@ -327,8 +297,7 @@ public sealed interface TaskAssignmentCoordinator {
             try {
                 var liveStatus = readLiveStatus(group);
                 if (liveStatus == AssignmentStatus.ACTIVE) {
-                    log.debug("Task group {} flipped to ACTIVE during reassignment decision, skipping Put",
-                              group);
+                    log.debug("Task group {} flipped to ACTIVE during reassignment decision, skipping Put", group);
                     return;
                 }
                 var target = selectLeastLoadedNode(group, healthyNodes).or(ctx.self);
@@ -344,37 +313,34 @@ public sealed interface TaskAssignmentCoordinator {
 
         private AssignmentStatus readLiveStatus(TaskGroup group) {
             var key = TaskAssignmentKey.taskAssignmentKey(group);
-            return ctx.kvStore.get(key)
-                              .filter(v -> v instanceof TaskAssignmentValue)
-                              .map(v -> ((TaskAssignmentValue) v).status())
-                              .or((AssignmentStatus) null);
+            return ctx.kvStore.get(key).filter(v -> v instanceof TaskAssignmentValue)
+                                  .map(v -> ((TaskAssignmentValue) v).status())
+                                  .or((AssignmentStatus) null);
         }
 
         private Option<NodeId> selectLeastLoadedNode(TaskGroup group, List<NodeId> healthyNodes) {
             var cooldownExpiry = ctx.nowMs() - FAILURE_COOLDOWN_MS;
             var recentlyFailed = failedNodes.getOrDefault(group, Set.of());
-            return Option.from(healthyNodes.stream()
-                                           .filter(node -> !isRecentlyFailed(node, recentlyFailed, cooldownExpiry))
-                                           .min(Comparator.<NodeId, Long>comparing(this::countActiveAssignments)
-                                                          .thenComparing(Comparator.naturalOrder())));
+            return Option.from(healthyNodes.stream().filter(node -> !isRecentlyFailed(node,
+                                                                                      recentlyFailed,
+                                                                                      cooldownExpiry))
+                                                  .min(Comparator.<NodeId, Long>comparing(this::countActiveAssignments)
+                                                                 .thenComparing(Comparator.naturalOrder())));
         }
 
         private boolean isRecentlyFailed(NodeId node, Set<NodeId> recentlyFailed, long cooldownExpiry) {
-            if (!recentlyFailed.contains(node)) {
-                return false;
-            }
+            if (!recentlyFailed.contains(node)) {return false;}
             return Option.from(assignmentMap.values().stream()
-                                            .filter(v -> v.assignedTo().equals(node) && v.status() == AssignmentStatus.FAILED)
-                                            .findFirst())
-                         .map(v -> v.assignedAtMs() > cooldownExpiry)
-                         .or(false);
+                                                   .filter(v -> v.assignedTo().equals(node) && v.status() == AssignmentStatus.FAILED)
+                                                   .findFirst()).map(v -> v.assignedAtMs() > cooldownExpiry)
+                              .or(false);
         }
 
         private long countActiveAssignments(NodeId node) {
             return assignmentMap.values().stream()
-                                .filter(v -> v.assignedTo().equals(node))
-                                .filter(v -> v.status() == AssignmentStatus.ACTIVE || v.status() == AssignmentStatus.ASSIGNED)
-                                .count();
+                                       .filter(v -> v.assignedTo().equals(node))
+                                       .filter(v -> v.status() == AssignmentStatus.ACTIVE || v.status() == AssignmentStatus.ASSIGNED)
+                                       .count();
         }
 
         private void trackFailedNode(TaskGroup group, NodeId node) {
@@ -383,9 +349,9 @@ public sealed interface TaskAssignmentCoordinator {
 
         private List<NodeId> collectHealthyCoreNodes() {
             return ctx.topologyManager.topology().stream()
-                                      .filter(id -> !ctx.topologyManager.isPassive(id))
-                                      .sorted()
-                                      .toList();
+                                               .filter(id -> !ctx.topologyManager.isPassive(id))
+                                               .sorted()
+                                               .toList();
         }
 
         private Promise<Unit> writeAssignment(TaskGroup group, NodeId target) {
@@ -393,53 +359,48 @@ public sealed interface TaskAssignmentCoordinator {
             var value = TaskAssignmentValue.taskAssignmentValue(target);
             assignmentMap.put(group, value);
             var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-            return ctx.clusterNode.apply(List.of(command))
-                                  .onSuccess(_ -> log.info("Task group {} assignment to node {} committed via consensus",
-                                                           group, target))
-                                  .onFailure(cause -> log.warn("Consensus proposal failed for task group {} assignment: {}",
-                                                               group, cause.message()))
-                                  .mapToUnit();
+            return ctx.clusterNode.apply(List.of(command)).onSuccess(_ -> log.info("Task group {} assignment to node {} committed via consensus",
+                                                                                   group,
+                                                                                   target))
+                                        .onFailure(cause -> log.warn("Consensus proposal failed for task group {} assignment: {}",
+                                                                     group,
+                                                                     cause.message()))
+                                        .mapToUnit();
         }
     }
 
     record TaskAssignmentCoordinatorAdapter(Context ctx, Fsm<CoordinatorState, ClusterFsmEvent> fsm) implements TaskAssignmentCoordinator {
-        @Contract @Override
-        public void onLeaderChange(LeaderChange leaderChange) {
+        @Contract@Override public void onLeaderChange(LeaderChange leaderChange) {
             fsm.dispatch(new ClusterFsmEvent.LeaderChange(leaderChange.leaderId(), leaderChange.localNodeIsLeader()));
         }
 
-        @Contract @Override
-        public void onTopologyChange(TopologyChangeNotification notification) {
-            switch (notification) {
-                case NodeRemoved(NodeId node, var topology) ->
-                    fsm.dispatch(new ClusterFsmEvent.NodeGone(node, topology));
+        @Contract@Override public void onTopologyChange(TopologyChangeNotification notification) {
+            switch (notification){
+                case NodeRemoved(NodeId node, var topology) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node, topology));
                 case NodeDown(NodeId node, var topology) -> {
-                    if (topology.isEmpty()) {
-                        fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
-                    } else {
-                        fsm.dispatch(new ClusterFsmEvent.NodeGone(node, topology));
-                    }
+                    if (topology.isEmpty()) {fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());} else {fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
+                                                                                                                                                     topology));}
                 }
-                default -> {
-                    // NodeAdded is not interesting for assignment coordination.
-                }
+                default -> {}
             }
         }
 
-        @Override
-        public Map<TaskGroup, TaskAssignmentValue> assignments() {
-            return fsm.current() instanceof Active active ? active.assignmentsSnapshot() : Map.of();
+        @Override public Map<TaskGroup, TaskAssignmentValue> assignments() {
+            return fsm.current() instanceof Active active
+                  ? active.assignmentsSnapshot()
+                  : Map.of();
         }
 
-        @Override
-        public Promise<Unit> reassign(TaskGroup group, NodeId target) {
+        @Override public Promise<Unit> reassign(TaskGroup group, NodeId target) {
             return fsm.current() instanceof Active active
-                   ? active.reassign(group, target)
-                   : CoordinatorError.NOT_LEADER.promise();
+                  ? active.reassign(group, target)
+                  : CoordinatorError.NOT_LEADER.promise();
         }
 
         Map<TaskGroup, TaskAssignmentValue> activeAssignments() {
-            return fsm.current() instanceof Active active ? active.assignmentsSnapshot() : Map.of();
+            return fsm.current() instanceof Active active
+                  ? active.assignmentsSnapshot()
+                  : Map.of();
         }
     }
 }

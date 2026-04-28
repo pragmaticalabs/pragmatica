@@ -8,9 +8,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
 
 
-/// Current owner of one DHT partition.
-///
-/// See `aether/docs/specs/cluster-generation-spec.md` §6 / §9.
 @Codec public record PartitionOwner(String partitionId,
                                     NodeId ownerNodeId,
                                     String ownerCommunityId,

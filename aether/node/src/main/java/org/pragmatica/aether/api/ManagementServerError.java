@@ -7,7 +7,6 @@ package org.pragmatica.aether.api;
 import org.pragmatica.lang.Cause;
 
 
-/// Errors for the Management Server.
 public sealed interface ManagementServerError extends Cause {
     record BindFailed(int port, Throwable cause) implements ManagementServerError {
         @Override public String message() {

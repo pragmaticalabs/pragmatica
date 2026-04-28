@@ -26,10 +26,6 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Azure Cloud implementation of the EnvironmentIntegration SPI.
-/// Provides compute capabilities backed by the Azure Cloud API.
-/// Optionally provides load balancer management and tag-based discovery when configured.
-/// Provides Azure Key Vault secrets resolution.
 public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
                                           Option<LoadBalancerProvider> loadBalancerProvider,
                                           Option<DiscoveryProvider> discoveryProvider,

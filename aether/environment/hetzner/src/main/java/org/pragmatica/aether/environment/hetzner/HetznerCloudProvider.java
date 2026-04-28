@@ -18,10 +18,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 
-/// Hetzner Cloud implementation of the CloudProvider SPI.
-/// Wraps the existing ComputeProvider to provide bootstrap/apply-level operations.
-/// Hetzner does not expose a quota API, so checkQuota returns unknown.
-/// Hetzner does not support preemptible/spot instances.
 public record HetznerCloudProvider(ComputeProvider computeProvider) implements CloudProvider {
     public static HetznerCloudProvider hetznerCloudProvider(ComputeProvider computeProvider) {
         return new HetznerCloudProvider(computeProvider);

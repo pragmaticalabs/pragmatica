@@ -13,12 +13,6 @@ import java.util.regex.Pattern;
 import static org.pragmatica.lang.Option.option;
 
 
-/// API Key value object with validation.
-///
-/// Validates that API keys conform to expected format:
-/// alphanumeric plus underscore/hyphen, 8-64 characters.
-///
-/// @param value the API key value
 public record ApiKey(String value) {
     private static final Pattern VALID_KEY = Pattern.compile("^[a-zA-Z0-9_-]{8,64}$");
 

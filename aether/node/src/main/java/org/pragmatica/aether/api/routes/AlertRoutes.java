@@ -21,7 +21,6 @@ import java.util.stream.Stream;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
-/// Routes for alert management: thresholds, active alerts, history.
 public final class AlertRoutes implements RouteSource {
     private final AlertManager alertManager;
 

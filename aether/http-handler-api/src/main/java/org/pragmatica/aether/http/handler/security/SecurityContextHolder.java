@@ -7,17 +7,6 @@ package org.pragmatica.aether.http.handler.security;
 import org.pragmatica.lang.Option;
 
 
-/// ScopedValue-based holder for propagating SecurityContext to slice handlers.
-///
-/// Set by AppHttpServer during request processing when security is enabled.
-/// Slice handlers access it via `SecurityContextHolder.currentContext()`.
-///
-/// Usage:
-/// ```{@code
-/// // In slice handler:
-/// var ctx = SecurityContextHolder.currentContext();
-/// ctx.onPresent(sc -> log.info("Authenticated as: {}", sc.principal().value()));
-/// }```
 public final class SecurityContextHolder {
     private static final ScopedValue<SecurityContext> SECURITY_CONTEXT = ScopedValue.newInstance();
 

@@ -6,24 +6,19 @@ package org.pragmatica.aether.metrics.fsm;
 
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
-import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
-import org.pragmatica.cluster.metrics.ClusterSyncMessage.SnapshotPayload;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.Fsm;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -31,61 +26,36 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
 import java.util.function.Supplier;
 
-/// Shared context for the cluster-sync scheduler FSM. Holds every long-lived artifact that is
-/// intentionally NOT on a state record:
-///
-/// - Collaborators and config (network, collector, suppliers, threshold, interval, signal sink).
-/// - The `topology` snapshot — read by `bufferCap` in every state (Dormant / Pinging / Stopped),
-///   so it cannot live on the `Pinging` record alone.
-/// - `quorumSequence` — intentionally kept here per the current adapter boundary: even though the
-///   FSM pattern would otherwise subsume it, `ClusterFsmRouter.wire` expects the caller to
-///   supply an external `AtomicLong` for stale-notification dedup; this field IS that
-///   deduplication anchor.
-/// - `observedEpoch` — per-peer pong-advanced epoch, queried via the public `observedEpochs()`
-///   accessor in every state (not owned by `Pinging`).
-/// - `observationStore` — node-level [`PeerObservationStore`] singleton. Both ping and pong
-///   paths write/read through this store; the context delegates the legacy `pushHealth` /
-///   `pushConnectivity` / `drainHealth` / `drainConnectivity` surface to the store and
-///   installs a topology-aware cap supplier on construction.
-/// - The ping timer is now owned by the [`Pinging`] record (eagerly scheduled in
-///   [`#schedulePingTimer`] called from `Pinging.fresh` / `Pinging.with`). Pinging.onExit /
-///   Pinging.onCasLost cancel the timer; Stopped.onEntry only clears observation buffers.
-///
-/// Thread safety: the atomic fields (`topology`, `quorumSequence`) and concurrent maps
-/// (`observedEpoch`) are thread-safe on their own. The store enforces its own concurrency. The
-/// FSM reference is `final` and safe for publication once the initial-state factory returns.
-public final class ClusterSyncContext {
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+
+public final class ClusterSyncContext {
     private static final Logger log = LoggerFactory.getLogger(ClusterSyncContext.class);
+
     private static final int PER_PEER_BURST = 4;
+
     private static final int MIN_BUFFER_CAP = 8;
 
     private final Fsm<ClusterSyncState, ClusterFsmEvent> fsm;
-
-    // Collaborators & config
     private final NodeId self;
     private final ClusterNetwork network;
     private final ClusterSyncCollector collector;
     private final TimeSpan interval;
     private final Supplier<Long> rabiaTermSupplier;
-    private final Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier;
-    private final Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder;
     private final HealthSignalSink signalSink;
     private final int pingTimeoutThreshold;
     private final Supplier<Epoch> epochSupplier;
 
-    // Long-lived state (all-states visible — NOT on Pinging record).
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
+
     private final AtomicLong quorumSequence = new AtomicLong();
+
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
 
-    // Node-level observation store (shared owner across leader/follower eras).
     private final PeerObservationStore observationStore;
-
-    // Per-FSM singletons for the data-free states.
     private final ClusterSyncState dormant;
     private final ClusterSyncState stopped;
 
@@ -95,8 +65,6 @@ public final class ClusterSyncContext {
                               ClusterSyncCollector collector,
                               TimeSpan interval,
                               Supplier<Long> rabiaTermSupplier,
-                              Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier,
-                              Function<ClusterGenerationSnapshot, byte[]> snapshotEncoder,
                               HealthSignalSink signalSink,
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
@@ -107,8 +75,6 @@ public final class ClusterSyncContext {
         this.collector = collector;
         this.interval = interval;
         this.rabiaTermSupplier = rabiaTermSupplier;
-        this.snapshotSupplier = snapshotSupplier;
-        this.snapshotEncoder = snapshotEncoder;
         this.signalSink = signalSink;
         this.pingTimeoutThreshold = pingTimeoutThreshold;
         this.epochSupplier = epochSupplier;
@@ -118,111 +84,103 @@ public final class ClusterSyncContext {
         this.stopped = new ClusterSyncState.Stopped(this);
     }
 
-    // --- FSM / state access ---
+    public Fsm<ClusterSyncState, ClusterFsmEvent> fsm() {
+        return fsm;
+    }
 
-    public Fsm<ClusterSyncState, ClusterFsmEvent> fsm() { return fsm; }
+    @Contract public void dispatch(ClusterFsmEvent event) {
+        fsm.dispatch(event);
+    }
 
-    @Contract public void dispatch(ClusterFsmEvent event) { fsm.dispatch(event); }
+    public ClusterSyncState dormant() {
+        return dormant;
+    }
 
-    public ClusterSyncState dormant() { return dormant; }
+    public ClusterSyncState stopped() {
+        return stopped;
+    }
 
-    public ClusterSyncState stopped() { return stopped; }
+    public NodeId self() {
+        return self;
+    }
 
-    // --- Configuration accessors ---
+    public Supplier<Epoch> epochSupplier() {
+        return epochSupplier;
+    }
 
-    public NodeId self() { return self; }
+    public int pingTimeoutThreshold() {
+        return pingTimeoutThreshold;
+    }
 
-    public Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier() { return snapshotSupplier; }
+    public AtomicLong quorumSequence() {
+        return quorumSequence;
+    }
 
-    public Supplier<Epoch> epochSupplier() { return epochSupplier; }
+    public List<NodeId> topology() {
+        return topology.get();
+    }
 
-    public int pingTimeoutThreshold() { return pingTimeoutThreshold; }
-
-    public AtomicLong quorumSequence() { return quorumSequence; }
-
-    // --- Topology ---
-
-    public List<NodeId> topology() { return topology.get(); }
-
-    @Contract public void setTopology(List<NodeId> newTopology) { topology.set(newTopology); }
-
-    // --- Observed-epoch accessor (public surface) ---
+    @Contract public void setTopology(List<NodeId> newTopology) {
+        topology.set(newTopology);
+    }
 
     @Contract public void recordObservedEpoch(NodeId nodeId, Epoch epoch) {
         observedEpoch.merge(nodeId, epoch, ClusterSyncContext::pickLater);
     }
 
     private static Epoch pickLater(Epoch prev, Epoch next) {
-        return next.isStrictlyAfter(prev) ? next : prev;
+        return next.isStrictlyAfter(prev)
+              ? next
+              : prev;
     }
 
-    public Map<NodeId, Epoch> observedEpochs() { return Map.copyOf(observedEpoch); }
+    public Map<NodeId, Epoch> observedEpochs() {
+        return Map.copyOf(observedEpoch);
+    }
 
-    @Contract public void forgetPeer(NodeId peer) { observedEpoch.remove(peer); }
+    @Contract public void forgetPeer(NodeId peer) {
+        observedEpoch.remove(peer);
+    }
 
-    // --- Ping scheduling lifecycle ---
-
-    /// Schedule the periodic ping tick. Called eagerly from `Pinging.fresh` / `Pinging.with`; the
-    /// returned future is owned by the `Pinging` record (cancelled in `onExit` / `onCasLost`).
     public ScheduledFuture<?> schedulePingTimer(Runnable tick) {
         return SharedScheduler.scheduleAtFixedRate(tick, interval);
     }
 
-    /// Drop both follower observation buffers. Called from `Stopped.onEntry` so the terminal
-    /// state does not retain dangling buffered observations.
     @Contract public void clearObservationBuffers() {
         observationStore.clear();
     }
 
-    /// Expose the underlying store so external wiring (e.g. `ClusterSyncCollectorImpl`) can
-    /// drain via the same node-level singleton without re-routing through the FSM.
-    public PeerObservationStore observationStore() { return observationStore; }
+    public PeerObservationStore observationStore() {
+        return observationStore;
+    }
 
-    // --- Send one ping to one peer — pure I/O, no state mutation. Returns the epoch the peer
-    //     should see as its new `lastSentEpoch`. Called from within the `Pinging` state handler
-    //     during a PingTick. ---
-
-    public Epoch sendOnePing(NodeId peer,
-                             Epoch currentEpoch,
-                             Option<Epoch> lastSentToPeer,
-                             Option<ClusterGenerationSnapshot> maybeSnapshot,
-                             long rabiaTerm) {
-        var payload = buildPayloadForTarget(currentEpoch, lastSentToPeer, maybeSnapshot);
+    public Epoch sendOnePing(NodeId peer, Epoch currentEpoch, long rabiaTerm) {
         var ping = new ClusterSyncPing(self,
                                        collector.allMetrics(),
                                        rabiaTerm,
                                        currentEpoch.rabiaTerm(),
-                                       currentEpoch.localCounter(),
-                                       payload);
+                                       currentEpoch.localCounter());
         log.debug("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",
-                  peer, rabiaTerm, currentEpoch.rabiaTerm(), currentEpoch.localCounter());
+                  peer,
+                  rabiaTerm,
+                  currentEpoch.rabiaTerm(),
+                  currentEpoch.localCounter());
         network.send(peer, ping);
         return currentEpoch;
     }
 
-    private Option<SnapshotPayload> buildPayloadForTarget(Epoch currentEpoch,
-                                                          Option<Epoch> lastSentToPeer,
-                                                          Option<ClusterGenerationSnapshot> maybeSnapshot) {
-        var alreadyUpToDate = lastSentToPeer.filter(last -> !currentEpoch.isStrictlyAfter(last)).isPresent();
-        if (alreadyUpToDate) {
-            return Option.none();
-        }
-        return maybeSnapshot.map(snapshotEncoder::apply).map(SnapshotPayload::snapshotPayload);
+    public long currentRabiaTerm() {
+        return rabiaTermSupplier.get();
     }
 
-    public long currentRabiaTerm() { return rabiaTermSupplier.get(); }
-
-    public Option<ClusterGenerationSnapshot> currentSnapshot() { return snapshotSupplier.get(); }
-
     @Contract public void emitPingTimeoutIfExceeded(NodeId peer, int missed) {
-        if (missed < pingTimeoutThreshold) { return; }
+        if (missed <pingTimeoutThreshold) {return;}
         signalSink.emit(new HealthSignal.PingTimeout(peer, missed, epochSupplier.get()));
     }
 
-    // --- Buffers (delegate to the node-level store) ---
-
     public int bufferCap() {
-        var peers = Math.max(topology.get().size() - 1, 0);
+        var peers = Math.max(topology.get().size() - 1,
+                             0);
         return Math.max(peers * PER_PEER_BURST, MIN_BUFFER_CAP);
     }
 

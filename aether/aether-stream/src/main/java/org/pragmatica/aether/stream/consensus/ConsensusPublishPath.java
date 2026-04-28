@@ -9,15 +9,6 @@ import org.pragmatica.lang.Promise;
 import static org.pragmatica.aether.stream.consensus.StreamConsensusCommand.streamConsensusCommand;
 
 
-/// Publish path for STRONG consistency streams.
-///
-/// Events are proposed through Rabia consensus before being appended locally.
-/// The consensus state machine handler is responsible for applying the committed
-/// command to the local `StreamPartitionManager` on every node.
-///
-/// This class only handles the proposal side — it creates the command and submits
-/// it through the `ConsensusProposer`. The local append happens in the state machine
-/// callback (wired in the node module), not here.
 public final class ConsensusPublishPath {
     private final ConsensusProposer proposer;
 

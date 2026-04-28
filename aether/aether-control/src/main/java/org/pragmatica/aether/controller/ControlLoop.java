@@ -40,28 +40,17 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/// Control loop that runs the [`ClusterController`] periodically on the leader node.
-///
-/// Responsibilities:
-///
-///   - Run only on leader node (driven by `DelegatedComponent.activate/deactivate` from
-///     `TaskGroupActivator`, or directly by `LeaderChange` / `QuorumDisappeared` events).
-///   - Periodically evaluate controller with current metrics.
-///   - Apply scaling decisions by updating blueprints in KV-Store.
-///
-/// The lifecycle is implemented as an explicit FSM whose states live in
-/// [`org.pragmatica.aether.controller.fsm`]. See [`ControlLoopState`] for the transition diagram.
-@Contract
-public interface ControlLoop extends DelegatedComponent {
+
+@Contract public interface ControlLoop extends DelegatedComponent {
     @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
@@ -87,10 +76,17 @@ public interface ControlLoop extends DelegatedComponent {
                                    ControllerConfig config,
                                    Consumer<ScalingEvent> eventPublisher) {
         var ctxHolder = new AtomicReference<ControlLoopContext>();
-        Function<Fsm<ControlLoopState, ClusterFsmEvent>, ControlLoopState> initialStateFactory =
-            fsm -> buildContext(ctxHolder, fsm, self, controller, metricsCollector,
-                                invocationMetricsCollector, cluster, kvStore, interval,
-                                config, eventPublisher);
+        Function<Fsm<ControlLoopState, ClusterFsmEvent>, ControlLoopState> initialStateFactory = fsm -> buildContext(ctxHolder,
+                                                                                                                     fsm,
+                                                                                                                     self,
+                                                                                                                     controller,
+                                                                                                                     metricsCollector,
+                                                                                                                     invocationMetricsCollector,
+                                                                                                                     cluster,
+                                                                                                                     kvStore,
+                                                                                                                     interval,
+                                                                                                                     config,
+                                                                                                                     eventPublisher);
         var fsm = Fsm.fsm("control-loop", self.id(), initialStateFactory);
         return new ControlLoopAdapter(ctxHolder.get(), fsm);
     }
@@ -106,8 +102,16 @@ public interface ControlLoop extends DelegatedComponent {
                                                  TimeSpan interval,
                                                  ControllerConfig config,
                                                  Consumer<ScalingEvent> eventPublisher) {
-        var ctx = new ControlLoopContext(fsm, self, controller, metricsCollector, invocationMetricsCollector,
-                                         cluster, kvStore, interval, config, eventPublisher);
+        var ctx = new ControlLoopContext(fsm,
+                                         self,
+                                         controller,
+                                         metricsCollector,
+                                         invocationMetricsCollector,
+                                         cluster,
+                                         kvStore,
+                                         interval,
+                                         config,
+                                         eventPublisher);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }
@@ -115,56 +119,47 @@ public interface ControlLoop extends DelegatedComponent {
     record ControlLoopAdapter(ControlLoopContext ctx, Fsm<ControlLoopState, ClusterFsmEvent> fsm) implements ControlLoop {
         private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
 
-        @Override
-        public Promise<Unit> activate() {
+        @Override public Promise<Unit> activate() {
             log.info("Node {} activating control loop", ctx.self());
             fsm.dispatch(new Activate());
             return Promise.unitPromise();
         }
 
-        @Override
-        public Promise<Unit> deactivate() {
+        @Override public Promise<Unit> deactivate() {
             log.info("Node {} deactivating control loop", ctx.self());
             fsm.dispatch(new Deactivate());
             return Promise.unitPromise();
         }
 
-        @Override
-        public TaskGroup taskGroup() {
+        @Override public TaskGroup taskGroup() {
             return TaskGroup.SCALING;
         }
 
-        @Override
-        public boolean isActive() {
+        @Override public boolean isActive() {
             var current = fsm.current();
-            return !(current instanceof ControlLoopState.Dormant || current instanceof ControlLoopState.Stopped);
+            return ! (current instanceof ControlLoopState.Dormant || current instanceof ControlLoopState.Stopped);
         }
 
-        // NodeDown falls through to the default branch; it's handled via onQuorumStateChange
-        // when quorum disappears.
-        @Override
-        public void onTopologyChange(TopologyChangeNotification topologyChange) {
-            switch (topologyChange) {
+        @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
+            switch (topologyChange){
                 case NodeAdded(_, var newTopology) -> ctx.setTopology(newTopology);
                 case NodeRemoved(_, var newTopology) -> ctx.setTopology(newTopology);
                 default -> {}
             }
         }
 
-        @Override
-        public void onQuorumStateChange(QuorumStateNotification notification) {
+        @Override public void onQuorumStateChange(QuorumStateNotification notification) {
             if (!notification.advanceSequence(ctx.quorumSequence())) {
                 log.debug("Ignoring stale QuorumStateNotification: {}", notification);
                 return;
             }
-            switch (notification.state()) {
+            switch (notification.state()){
                 case ESTABLISHED -> fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
                 case DISAPPEARED -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
         }
 
-        @Override
-        public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+        @Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
             registerBlueprint(key.artifactBase().withVersion(value.currentVersion()),
@@ -172,53 +167,45 @@ public interface ControlLoop extends DelegatedComponent {
                               value.effectiveMinInstances());
         }
 
-        @Override
-        public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+        @Override public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
             ctx.removeBlueprintMatching(valueRemove.cause().key());
         }
 
-        @Override
-        public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        @Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
-            ctx.recordSliceState(new SliceNodeKey(key.artifact(), key.nodeId()), value.state());
+            ctx.recordSliceState(new SliceNodeKey(key.artifact(), key.nodeId()),
+                                 value.state());
         }
 
-        @Override
-        public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        @Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             var key = valueRemove.cause().key();
             ctx.clearSliceState(new SliceNodeKey(key.artifact(), key.nodeId()));
         }
 
-        @Override
-        public void registerBlueprint(Artifact artifact, int instances, int minInstances) {
+        @Override public void registerBlueprint(Artifact artifact, int instances, int minInstances) {
             ctx.putBlueprint(artifact, instances, minInstances);
             log.info("Registered blueprint: {} with {} instances (min: {})", artifact, instances, minInstances);
         }
 
-        @Override
-        public void unregisterBlueprint(Artifact artifact) {
+        @Override public void unregisterBlueprint(Artifact artifact) {
             ctx.removeBlueprint(artifact);
             log.info("Unregistered blueprint: {}", artifact);
         }
 
-        @Override
-        public ControllerConfig configuration() {
+        @Override public ControllerConfig configuration() {
             return ctx.config();
         }
 
-        @Override
-        public void updateConfiguration(ControllerConfig config) {
+        @Override public void updateConfiguration(ControllerConfig config) {
             ctx.setConfig(config);
         }
 
-        @Override
-        public void stop() {
+        @Override public void stop() {
             fsm.dispatch(new ClusterFsmEvent.Shutdown());
         }
 
-        @Override
-        public void onCommunityScalingRequest(CommunityScalingRequest request) {
+        @Override public void onCommunityScalingRequest(CommunityScalingRequest request) {
             if (!isActive()) {
                 log.debug("Ignoring community scaling request: not active");
                 return;
@@ -226,13 +213,11 @@ public interface ControlLoop extends DelegatedComponent {
             ctx.handleCommunityScalingRequest(request);
         }
 
-        @Override
-        public void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot) {
+        @Override public void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot) {
             ctx.storeCommunitySnapshot(snapshot);
         }
 
-        @Override
-        public Map<String, CommunityMetricsSnapshot> communitySnapshots() {
+        @Override public Map<String, CommunityMetricsSnapshot> communitySnapshots() {
             return ctx.communitySnapshots();
         }
     }
