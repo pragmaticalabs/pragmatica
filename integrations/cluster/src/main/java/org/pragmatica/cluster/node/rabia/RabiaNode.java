@@ -440,8 +440,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                     .onFailure(cause -> log.error("Failed to create KV snapshot: {}", cause));
     }
 
-    /// Default timeout for leader proposals.
-    TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(3).seconds();
+    /// Default timeout for leader proposals. Must outlast QUIC reconcile (5s) so a
+    /// proposal mid-reconnect doesn't time out before the link is rebuilt — otherwise
+    /// election cascades retry-loops under chaos.
+    TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(8).seconds();
 
     @SuppressWarnings("unchecked")
     private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus,

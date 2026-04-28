@@ -428,6 +428,12 @@ public class RabiaEngine<C extends Command> {
         cleanupTask.onPresent(task -> task.cancel(false));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
         exitState(oldState);
+        // Synchronously fail in-flight promises BEFORE executor.shutdown(); otherwise
+        // clusterDisconnected() schedules doClusterDisconnected() on the executor and
+        // shutdown's DiscardPolicy may drop it, leaving callers (e.g. publisher.runApply)
+        // waiting on cluster.apply(...) Promises forever.
+        correlationMap.forEach((_, p) -> p.fail(ConsensusError.nodeInactive(self)));
+        correlationMap.clear();
         clusterDisconnected();
         executor.shutdown();
         promise.succeed(Unit.unit());

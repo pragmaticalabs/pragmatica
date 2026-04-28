@@ -290,7 +290,10 @@ import static org.pragmatica.lang.Unit.unit;
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerLeft(NodeId peerId) {
         if (!active.get()) {return;}
-        bumpRealActualStability("quic-peer-left " + peerId);
+        log.info("CTM: QUIC peer {} left, scheduling immediate reconcile (no anchor bump — loss must trigger, not delay)",
+                 peerId);
+        SharedScheduler.schedule(this::reconcile,
+                                 TimeSpan.timeSpan(0).millis());
     }
 
     private void handleNodeAdded(NodeAdded added) {

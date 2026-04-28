@@ -1141,7 +1141,6 @@ public interface AetherNode extends ManageableNode {
                                                               config::self,
                                                               initialCoreSizeSupplier,
                                                               clusterNode);
-        bootstrapModule.onBootstrapCommitted(clusterTopologyManager::activate);
         var decommissionedAtomGc = org.pragmatica.aether.deployment.generation.DecommissionedAtomGc.decommissionedAtomGc(clusterNode,
                                                                                                                          kvStore::snapshot,
                                                                                                                          isLeaderSupplier,
@@ -1604,9 +1603,9 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static void deactivateOnLeaderChangeIfNotLeader(LeaderNotification.LeaderChange change,
-                                                                                             ClusterTopologyManager ctm) {
-        if (!change.localNodeIsLeader()) {ctm.deactivate();}
+    @SuppressWarnings("JBCT-RET-01") private static void toggleCtmOnLeaderChange(LeaderNotification.LeaderChange change,
+                                                                                 ClusterTopologyManager ctm) {
+        if (change.localNodeIsLeader()) {ctm.activate();} else {ctm.deactivate();}
     }
 
     private static void startSwimOnQuorum(QuorumStateNotification notification,
@@ -2049,8 +2048,7 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               consumerGroupCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> deactivateOnLeaderChangeIfNotLeader(change,
-                                                                                            clusterTopologyManager)));
+                                              change -> toggleCtmOnLeaderChange(change, clusterTopologyManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()
