@@ -1060,18 +1060,26 @@ public class RabiaEngine<C extends Command> {
         log.trace("Node {} received decision {}", self, decision);
         var state = engineState.get();
         if (state instanceof EngineState.Stopped || state instanceof EngineState.Syncing) {
-            // Bound the buffer: when full, drop the OLDEST entry. The post-restore drain
-            // filters by phase >= currentPhase, so older entries are the most likely to be
-            // discarded anyway. Triggering a fresh resync on overflow would defeat the
-            // purpose; the buffer is a transient holding cell during normal sync windows.
-            bufferedDecisions.offer(decision);
-            if (bufferedDecisionCount.incrementAndGet() > MAX_BUFFERED_DECISIONS) {
-                bufferedDecisions.pollFirst();
-                bufferedDecisionCount.decrementAndGet();
-            }
+            bufferDecisionForReplay(decision);
+            return;
+        }
+        if (isFarFuturePhase(decision.phase(), currentPhase.get())) {
+            log.warn("Node {} received Decision {} but currentPhase={}; gap={} > {} — buffering and resyncing",
+                     self, decision.phase(), currentPhase.get(),
+                     decision.phase().value() - currentPhase.get().value(), MAX_PHASE_AHEAD);
+            bufferDecisionForReplay(decision);
+            triggerResync();
             return;
         }
         commitDecision(getOrCreatePhaseData(decision.phase()), decision);
+    }
+
+    private void bufferDecisionForReplay(Decision<C> decision) {
+        bufferedDecisions.offer(decision);
+        if (bufferedDecisionCount.incrementAndGet() > MAX_BUFFERED_DECISIONS) {
+            bufferedDecisions.pollFirst();
+            bufferedDecisionCount.decrementAndGet();
+        }
     }
 
     /// Drains the buffered Decisions queue after `activate()` has transitioned the engine
@@ -1112,7 +1120,7 @@ public class RabiaEngine<C extends Command> {
     /// @param forceLock if true, always lock the value (for carry-forward per spec)
     private void advancePhase(Phase fromPhase, StateValue value, boolean forceLock) {
         var nextPhase = fromPhase.successor();
-        this.currentPhase.set(nextPhase);
+        this.currentPhase.updateAndGet(p -> p.compareTo(nextPhase) >= 0 ? p : nextPhase);
         if (observerMode) {
             advancePhaseAsObserver(nextPhase);
             return;
