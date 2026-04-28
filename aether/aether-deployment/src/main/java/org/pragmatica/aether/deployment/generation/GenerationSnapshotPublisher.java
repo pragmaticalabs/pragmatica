@@ -165,10 +165,6 @@ public final class GenerationSnapshotPublisher {
         }
         var current = readCurrentFromKv();
         var projected = projectFromKv(current);
-        if (matches(current, projected)) {
-            dispatch(PublisherEvent.ApplyDone.INSTANCE);
-            return;
-        }
         cluster.apply(List.<KVCommand<AetherKey>>of(new KVCommand.Put<>(GenerationSnapshotKey.SINGLETON,
                                                                         GenerationSnapshotValue.generationSnapshotValue(projected))))
         .onResult(result -> {
@@ -209,18 +205,6 @@ public final class GenerationSnapshotPublisher {
                                                                                nodesWithArtifacts,
                                                                                hints);
         return projector.project(input);
-    }
-
-    private static boolean matches(Option<ClusterGenerationSnapshot> current, ClusterGenerationSnapshot projected) {
-        return current.map(c -> sameContent(c, projected)).or(false);
-    }
-
-    private static boolean sameContent(ClusterGenerationSnapshot a, ClusterGenerationSnapshot b) {
-        return a.epoch().rabiaTerm() == b.epoch().rabiaTerm() && a.desiredCoreSize() == b.desiredCoreSize() && a.coreMembers()
-                                                                                                                            .equals(b.coreMembers()) && a.nodesWithoutSlices()
-                                                                                                                                                                            .equals(b.nodesWithoutSlices()) && a.communities()
-                                                                                                                                                                                                                            .equals(b.communities()) && a.partitions()
-                                                                                                                                                                                                                                                                    .equals(b.partitions()) && a.derivedMode() == b.derivedMode() && a.quiescence() == b.quiescence();
     }
 
     private static Option<Integer> collectDesiredCoreSize(Map<AetherKey, AetherValue> kv) {
