@@ -96,6 +96,11 @@
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-maven-plugin</artifactId>
                 <version>${platform.version}</version>
+                <configuration>
+                    <!-- Align with PackageBlueprintMojo's default ${project.basedir}/schema
+                         so generate-blueprint and package-slices read the same migration tree. -->
+                    <schemaDirectory>${project.basedir}/schema</schemaDirectory>
+                </configuration>
                 <executions>
                     <execution>
                         <id>slice-deps</id>
