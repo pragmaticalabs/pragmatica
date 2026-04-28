@@ -296,9 +296,10 @@ public sealed interface TaskAssignmentCoordinator {
             var lock = reassignmentLocks.computeIfAbsent(group, _ -> new ReentrantLock());
             lock.lock();
             try {
-                var liveStatus = readLiveStatus(group);
-                if (liveStatus == AssignmentStatus.ACTIVE) {
-                    log.debug("Task group {} flipped to ACTIVE during reassignment decision, skipping Put", group);
+                var liveAssignment = readLiveAssignment(group);
+                if (liveAssignment.map(v -> v.status() == AssignmentStatus.ACTIVE && healthyNodes.contains(v.assignedTo()))
+                                      .or(false)) {
+                    log.debug("Task group {} ACTIVE on healthy node during reassignment decision, skipping Put", group);
                     return;
                 }
                 var target = selectLeastLoadedNode(group, healthyNodes).or(ctx.self);
@@ -312,11 +313,10 @@ public sealed interface TaskAssignmentCoordinator {
             }
         }
 
-        private AssignmentStatus readLiveStatus(TaskGroup group) {
+        private Option<TaskAssignmentValue> readLiveAssignment(TaskGroup group) {
             var key = TaskAssignmentKey.taskAssignmentKey(group);
             return ctx.kvStore.get(key).filter(v -> v instanceof TaskAssignmentValue)
-                                  .map(v -> ((TaskAssignmentValue) v).status())
-                                  .or((AssignmentStatus) null);
+                                  .map(v -> (TaskAssignmentValue) v);
         }
 
         private Option<NodeId> selectLeastLoadedNode(TaskGroup group, List<NodeId> healthyNodes) {
