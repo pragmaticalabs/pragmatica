@@ -27,6 +27,7 @@ SELECTED_SUITES=""
 SKIP_BUILD=false
 SKIP_DEPLOY=false
 SKIP_TEARDOWN=false
+SKIP_IMAGE_PUSH=false
 
 RESULTS_FILE="$(mktemp /tmp/aether-test-results.XXXXXX)"
 RESULTS_JSON="${SCRIPT_DIR}/test-results.json"
@@ -72,6 +73,7 @@ while [ $# -gt 0 ]; do
         --skip-build)    SKIP_BUILD=true; shift ;;
         --skip-deploy)   SKIP_DEPLOY=true; shift ;;
         --skip-teardown) SKIP_TEARDOWN=true; shift ;;
+        --skip-image-push) SKIP_IMAGE_PUSH=true; shift ;;
         -h|--help)
             echo "Usage: $0 --env docker|remote|cloud [OPTIONS]"
             echo ""
@@ -81,6 +83,7 @@ while [ $# -gt 0 ]; do
             echo "  --skip-build       Skip build.sh and blueprint builds"
             echo "  --skip-deploy      Skip cluster provisioning (reuse running clusters)"
             echo "  --skip-teardown    Leave clusters running after tests"
+            echo "  --skip-image-push  Skip pushing aether-node.jar + rebuilding remote image (reuse what is already on remote)"
             echo ""
             echo "Environment variables:"
             echo "  TARGET_HOST        Host for docker/remote (default: localhost)"
@@ -401,8 +404,10 @@ rebuild_remote_node_image() {
 deploy_docker() {
     local host="${TARGET_HOST:-localhost}"
 
-    if [ "$host" != "localhost" ]; then
+    if [ "$host" != "localhost" ] && [ "$SKIP_IMAGE_PUSH" = false ]; then
         rebuild_remote_node_image "$host"
+    elif [ "$host" != "localhost" ]; then
+        log_info "Skipping image push (--skip-image-push); reusing existing aether-node:local on ${host}"
     fi
 
     log_step "Deploying Cluster A (non-destructive)"
