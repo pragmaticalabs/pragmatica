@@ -285,17 +285,18 @@ import static org.pragmatica.lang.Unit.unit;
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerJoined(NodeId peerId) {
         if (!active.get()) {return;}
-        bumpRealActualStability("quic-peer-joined " + peerId);
+        // Raw QUIC transport events (joined/left) are decoupled from the stability anchor.
+        // During cold-boot the QUIC mesh handshake is asymmetric and lossy; peer-left/joined
+        // can fire many times per peer per second. Bumping the anchor on every transport flap
+        // never closes the 5s stability window, gating reconciliation indefinitely (observed:
+        // 240+s post-compose-up before leader could elect). HIGH-18 phantom-replacement
+        // protection still holds via the topology-change handlers (NodeAdded/Removed/Down)
+        // and the snapshot-count change detector observeRealActualForStability.
     }
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerLeft(NodeId peerId) {
         if (!active.get()) {return;}
-        // Bump the anchor on peer-left to dampen the pre-existing QUIC reconnection storm:
-        // peers can oscillate connected/disconnected once per second after a chaos kill, and
-        // without this bump CTM provisions phantom replacements during transient flap (Step F
-        // experiment produced ghost container aether-core-node-1-ea4b072c4 that destabilized
-        // consensus). The QUIC storm itself is a separate post-RC1 issue.
-        bumpRealActualStability("quic-peer-left " + peerId);
+        // See onQuicPeerJoined: anchor bump removed to break cold-boot stall on QUIC flap.
     }
 
     private void handleNodeAdded(NodeAdded added) {
