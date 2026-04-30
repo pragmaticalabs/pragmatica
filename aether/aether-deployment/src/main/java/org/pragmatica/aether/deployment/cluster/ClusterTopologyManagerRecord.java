@@ -285,17 +285,10 @@ import static org.pragmatica.lang.Unit.unit;
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerJoined(NodeId peerId) {
         if (!active.get()) {return;}
-        bumpRealActualStability("quic-peer-joined " + peerId);
     }
 
     @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerLeft(NodeId peerId) {
         if (!active.get()) {return;}
-        // Bump the anchor on peer-left to dampen the pre-existing QUIC reconnection storm:
-        // peers can oscillate connected/disconnected once per second after a chaos kill, and
-        // without this bump CTM provisions phantom replacements during transient flap (Step F
-        // experiment produced ghost container aether-core-node-1-ea4b072c4 that destabilized
-        // consensus). The QUIC storm itself is a separate post-RC1 issue.
-        bumpRealActualStability("quic-peer-left " + peerId);
     }
 
     private void handleNodeAdded(NodeAdded added) {

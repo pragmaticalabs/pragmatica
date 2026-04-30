@@ -78,8 +78,8 @@ class CoreSwimHealthDetectorHintEmissionTest {
         detector = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig, serializer, deserializer,
                                                                    sink, () -> Epoch.epoch(7L, 3L),
                                                                    () -> true, store);
-        // Q6: SWIM Stopped/Starting ignore peer events. Drive the FSM to Running so the
-        // membership-callback assertions exercise the production-active code path.
+        // Drive the FSM to Running so the membership-callback assertions exercise the
+        // production-active code path with a live SwimProtocol behind the listener.
         driveToRunning(detector);
     }
 

@@ -45,10 +45,22 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                                               TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
             switch (event){
                 case StartRequested _ -> tx.transitionTo(ctx.starting());
-                case PeerJoined _, PeerSuspect _, PeerFaulty _, PeerLeft _, PeerConnected _, ReportHint _ -> tx.ignore();
+                case PeerJoined pj -> tx.handle(() -> handleStoppedPeerJoined(ctx, pj.member()));
+                case PeerSuspect ps -> tx.handle(() -> ctx.reportHint(ps.member().nodeId(),
+                                                                      HealthHint.SUSPECTED));
+                case PeerFaulty pf -> tx.handle(() -> ctx.routeFaulty(pf.member().nodeId(),
+                                                                      Option.none()));
+                case PeerLeft pl -> tx.handle(() -> ctx.routeFaulty(pl.peer(), Option.none()));
+                case PeerConnected pc -> tx.handle(() -> ctx.reportHint(pc.peer(), HealthHint.HEALTHY));
+                case ReportHint rh -> tx.handle(() -> ctx.reportHint(rh.peer(), rh.hint()));
                 case StopRequested _, LeaderChanged _, ProtocolReady _, StartFailed _ -> tx.ignore();
             }
         }
+    }
+
+    private static void handleStoppedPeerJoined(SwimHealthContext ctx, SwimMember member) {
+        LOG.info("SWIM member joined (detector stopped): {}", member.nodeId());
+        ctx.reportHint(member.nodeId(), HealthHint.HEALTHY);
     }
 
     record Starting(SwimHealthContext ctx) implements SwimHealthState {
@@ -62,7 +74,14 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                                                                         Option.none()));
                 case StartFailed _ -> tx.transitionTo(ctx.stopped());
                 case StopRequested _ -> tx.transitionTo(ctx.stopped());
-                case PeerJoined _, PeerSuspect _, PeerFaulty _, PeerLeft _, PeerConnected _, ReportHint _ -> tx.ignore();
+                case PeerJoined pj -> tx.handle(() -> handleStoppedPeerJoined(ctx, pj.member()));
+                case PeerSuspect ps -> tx.handle(() -> ctx.reportHint(ps.member().nodeId(),
+                                                                      HealthHint.SUSPECTED));
+                case PeerFaulty pf -> tx.handle(() -> ctx.routeFaulty(pf.member().nodeId(),
+                                                                      Option.none()));
+                case PeerLeft pl -> tx.handle(() -> ctx.routeFaulty(pl.peer(), Option.none()));
+                case PeerConnected pc -> tx.handle(() -> ctx.reportHint(pc.peer(), HealthHint.HEALTHY));
+                case ReportHint rh -> tx.handle(() -> ctx.reportHint(rh.peer(), rh.hint()));
                 case StartRequested _, LeaderChanged _ -> tx.ignore();
             }
         }

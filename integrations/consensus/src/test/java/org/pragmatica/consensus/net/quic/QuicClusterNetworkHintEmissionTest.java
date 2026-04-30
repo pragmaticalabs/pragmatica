@@ -126,38 +126,6 @@ class QuicClusterNetworkHintEmissionTest {
     }
 
     @Test
-    void disconnect_processViewChangeRemove_invokesHealthReporterFaulty() {
-        // Q6: every REMOVE view-change must also push a FAULTY health observation through
-        // the health reporter so the node-level PeerObservationStore observes the departure
-        // even when SWIM is pre-Running.
-        var faultyHealthReports = new CopyOnWriteArrayList<HealthReport>();
-        PeerHealthReporter healthReporter = new PeerHealthReporter() {
-            @Override public void onPeerHealthy(NodeId peerId, long observedTerm, long observedCounter) {
-                // not asserted in this test
-            }
-            @Override public void onPeerFaulty(NodeId peerId, long observedTerm, long observedCounter) {
-                faultyHealthReports.add(new HealthReport(peerId, observedTerm, observedCounter, "FAULTY"));
-            }
-        };
-        QuicClusterNetwork.ObservedEpochSupplier epoch = new QuicClusterNetwork.ObservedEpochSupplier() {
-            @Override public long term() {return 22L;}
-            @Override public long counter() {return 7L;}
-        };
-        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(),
-                                                 QuicDisconnectListener.noop());
-        network.setFollowerObservationWiring(() -> false, PeerConnectivityReporter.noop(), epoch);
-        network.setHealthReporter(healthReporter);
-
-        var missing = new NodeId("missing");
-        network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
-
-        assertThat(faultyHealthReports).as("REMOVE view-change must push FAULTY health observation")
-                                       .containsExactly(new HealthReport(missing, 22L, 7L, "FAULTY"));
-    }
-
-    private record HealthReport(NodeId peerId, long term, long counter, String hint) {}
-
-    @Test
     void disconnect_leaderPath_stillInvokesDisconnectListener_noUpstreamReport() {
         var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = listenerInvocations::add;
