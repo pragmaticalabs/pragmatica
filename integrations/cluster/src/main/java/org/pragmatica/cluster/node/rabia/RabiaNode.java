@@ -440,11 +440,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                     .onFailure(cause -> log.error("Failed to create KV snapshot: {}", cause));
     }
 
-    /// Default timeout for leader proposals. Restored to alpha-tag value (3s) — step-F's
-    /// 8s bump was load-bearing only because the CTM stability anchor (now decoupled from
-    /// raw QUIC events) was holding consensus open during cold boot. Long timeouts here
-    /// previously turned a 15s election into ~40s under retry pressure.
-    TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(3).seconds();
+    /// Default timeout for leader proposals. Must outlast QUIC reconcile (5s) so a
+    /// proposal mid-reconnect doesn't time out before the link is rebuilt — otherwise
+    /// election cascades retry-loops under chaos.
+    TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(8).seconds();
 
     @SuppressWarnings("unchecked")
     private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus,
