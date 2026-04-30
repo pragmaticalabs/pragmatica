@@ -618,12 +618,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         drainOfflineBufferInto(state, connection);
 
         if (isReconnect) {
-            // Peer is already known to upstream consumers. Suppress duplicate ADD; emit a
-            // transparent RECONNECT view-change so QUIC-aware components (e.g. CTM via
-            // onQuicPeerJoined) can refresh peer-state without bumping membership stability.
-            router.route(new NetworkServiceMessage.ConnectionEstablished(peerId));
-            processViewChange(RECONNECT, peerId);
-            log.debug("Node {} reconnected via QUIC Hello handshake (suppressed duplicate ADD)", peerId);
+            finalizeReconnect(peerId, unknownNodeInfo);
             return;
         }
 
@@ -642,6 +637,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private Option<NodeInfo> buildUnknownNodeInfo(NodeId peerId, NodeRole peerRole, NodeAddress peerAddress, Map<String, String> peerLabels) {
         log.info("Unknown node {} connected via QUIC Hello with address {}", peerId, peerAddress.asString());
         return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerRole, peerLabels));
+    }
+
+    /// Finalize a RECONNECTED attach. Suppresses the duplicate ADD view-change but re-registers
+    /// the peer when topology forgot it between attach cycles (e.g. HealthReconciler snapshot
+    /// wipe after chaos kill+recreate). Without this re-registration the post-recreate heartbeat
+    /// loop evicts the peer at 1Hz because writes resolve against an `Unknown node` lookup.
+    /// Package-private to allow direct exercise from regression tests without driving a full
+    /// QUIC handshake.
+    @Contract
+    void finalizeReconnect(NodeId peerId, Option<NodeInfo> unknownNodeInfo) {
+        unknownNodeInfo.onPresent(topologyManager::registerPeer);
+        router.route(new NetworkServiceMessage.ConnectionEstablished(peerId));
+        processViewChange(RECONNECT, peerId);
+        log.debug("Node {} reconnected via QUIC Hello handshake (suppressed duplicate ADD)", peerId);
     }
 
     /// Drain the per-peer offline buffer into a freshly-attached connection. Called from
