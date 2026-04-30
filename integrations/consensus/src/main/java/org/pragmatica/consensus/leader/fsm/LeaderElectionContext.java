@@ -43,9 +43,9 @@ public final class LeaderElectionContext {
     public static final TimeSpan DEFAULT_PROPOSAL_RETRY_DELAY = TimeSpan.timeSpan(500).millis();
     public static final TimeSpan DEFAULT_BASE_ELECTION_DELAY = TimeSpan.timeSpan(2).seconds();
     public static final TimeSpan DEFAULT_PER_RANK_DELAY = TimeSpan.timeSpan(1).seconds();
-    /// Floor for leader-proposal completion. Must be >= RabiaNode.DEFAULT_PROPOSAL_TIMEOUT (8s)
+    /// Floor for leader-proposal completion. Must be >= RabiaNode.DEFAULT_PROPOSAL_TIMEOUT (3s)
     /// so the election layer doesn't conclude "lost election" while Rabia is still resolving.
-    public static final TimeSpan DEFAULT_MIN_PROPOSAL_TIMEOUT = TimeSpan.timeSpan(10).seconds();
+    public static final TimeSpan DEFAULT_MIN_PROPOSAL_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     public static final int DEFAULT_STUCK_ELECTION_THRESHOLD = 10;
 
     /// Default jitter source — uniform random in [0.0, 0.5). Captured once per FSM so tests can

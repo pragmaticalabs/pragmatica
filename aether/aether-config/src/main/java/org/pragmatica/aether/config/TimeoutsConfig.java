@@ -110,7 +110,7 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         public static ConsensusTimeouts consensusTimeouts() {
             return new ConsensusTimeouts(timeSpan(5).seconds(),
                                          timeSpan(60).seconds(),
-                                         timeSpan(8).seconds(),
+                                         timeSpan(3).seconds(),
                                          timeSpan(500).millis(),
                                          timeSpan(30).seconds());
         }
