@@ -380,7 +380,6 @@ run_cluster_b_suites() {
 # Without this, restarting compose pulls a stale image and code changes never reach the cluster.
 rebuild_remote_node_image() {
     local host="$1"
-    local user="${AETHER_SSH_USER:-root}"
     local jar="${REPO_ROOT}/node/target/aether-node.jar"
     local dockerfile="${REPO_ROOT}/docker/aether-node/Dockerfile"
     local config="${REPO_ROOT}/docker/aether-node/aether.toml"
@@ -390,9 +389,9 @@ rebuild_remote_node_image() {
     fi
     log_step "Pushing aether-node.jar to ${host} and rebuilding aether-node:local"
     remote_exec "mkdir -p ~/aether-build/node/target ~/aether-build/docker/aether-node"
-    scp -q -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$jar" "${user}@${host}:~/aether-build/node/target/aether-node.jar"
-    scp -q -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$dockerfile" "${user}@${host}:~/aether-build/docker/aether-node/Dockerfile"
-    scp -q -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$config" "${user}@${host}:~/aether-build/docker/aether-node/aether.toml"
+    remote_scp "$jar"        "~/aether-build/node/target/aether-node.jar"
+    remote_scp "$dockerfile" "~/aether-build/docker/aether-node/Dockerfile"
+    remote_scp "$config"     "~/aether-build/docker/aether-node/aether.toml"
     # --no-cache prevents BuildKit from reusing a stale jar layer when bytes appear
     # equivalent (build-info.properties may be regenerated on a different cadence than
     # bytecode, so layer-hash collisions ship outdated images into the cluster).
@@ -419,7 +418,7 @@ deploy_docker() {
         docker volume rm -f aether_pgdata 2>/dev/null || true
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
-        scp -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$COMPOSE_A" "${AETHER_SSH_USER:-root}@${host}:~/docker-compose-a.yml"
+        remote_scp "$COMPOSE_A" "~/docker-compose-a.yml"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true; docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
     fi
 
@@ -428,7 +427,7 @@ deploy_docker() {
         docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
-        scp -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no "$COMPOSE_B" "${AETHER_SSH_USER:-root}@${host}:~/docker-compose-b.yml"
+        remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
         remote_exec "cd ~ && docker compose -f docker-compose-b.yml down -v 2>/dev/null || true; docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
     fi
 }

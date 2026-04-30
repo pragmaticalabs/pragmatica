@@ -292,13 +292,35 @@ json_len() {
 }
 
 # ---------------------------------------------------------------------------
-# SSH helper
+# SSH / SCP helpers
 # ---------------------------------------------------------------------------
+# Single source of truth for SSH options. Used by remote_exec, remote_scp, and
+# cloud_ssh so a future change (timeout, ProxyJump, ControlMaster) lands in one
+# place. ServerAliveInterval+ServerAliveCountMax detect stalled TCP within ~60s
+# and abort — without them, ssh/scp block indefinitely on half-closed sockets
+# (observed: 90+ min stall on a stale connection).
+SSH_OPTS=(-o StrictHostKeyChecking=no
+          -o ConnectTimeout=10
+          -o ServerAliveInterval=15
+          -o ServerAliveCountMax=4)
+
 remote_exec() {
     : "${AETHER_SSH_USER:?AETHER_SSH_USER must be set for remote_exec}"
     : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote_exec}"
-    ssh -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+    ssh -i "$AETHER_SSH_KEY" "${SSH_OPTS[@]}" \
         "${AETHER_SSH_USER}@${TARGET_HOST}" "$@"
+}
+
+# Copy a local file to a remote path on TARGET_HOST.
+# Usage: remote_scp <local-src> <remote-dst>
+# Fails loudly if AETHER_SSH_USER / AETHER_SSH_KEY are unset — no silent
+# fallback to root, which previously masked auth failures as TCP timeouts.
+remote_scp() {
+    : "${AETHER_SSH_USER:?AETHER_SSH_USER must be set for remote_scp}"
+    : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote_scp}"
+    local src="$1" dst="$2"
+    scp -q -i "$AETHER_SSH_KEY" "${SSH_OPTS[@]}" \
+        "$src" "${AETHER_SSH_USER}@${TARGET_HOST}:${dst}"
 }
 
 # ---------------------------------------------------------------------------
@@ -323,7 +345,7 @@ cloud_ssh() {
     local node_id="$1"; shift
     local ip
     ip=$(cloud_node_ip "$node_id")
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+    ssh "${SSH_OPTS[@]}" \
         -J "${AETHER_SSH_USER}@${BASTION_IP}" \
         -i "${AETHER_SSH_KEY}" \
         "${AETHER_SSH_USER}@${ip}" "$@"
