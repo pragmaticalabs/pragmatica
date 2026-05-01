@@ -1244,6 +1244,31 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
+    record ClusterPhaseKey() implements AetherKey {
+        private static final String KEY = "cluster-phase";
+
+        @SuppressWarnings("JBCT-VO-02") public static final ClusterPhaseKey SINGLETON = new ClusterPhaseKey();
+
+        @Override public String asString() {
+            return KEY;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02") public static ClusterPhaseKey clusterPhaseKey() {
+            return SINGLETON;
+        }
+
+        public static Result<ClusterPhaseKey> clusterPhaseKey(String key) {
+            if (!KEY.equals(key)) {return CLUSTER_PHASE_KEY_FORMAT_ERROR.apply(key).result();}
+            return success(SINGLETON);
+        }
+    }
+
+    Fn1<Cause, String> CLUSTER_PHASE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-phase key format: %s");
+
     record GenerationSnapshotKey() implements AetherKey {
         private static final String KEY = "generation-snapshot";
 

@@ -595,6 +595,31 @@ import static org.pragmatica.lang.Option.none;
         SHUTTING_DOWN
     }
 
+    /// Cluster-wide membership phase persisted in `ClusterPhaseKey` and projected to every
+    /// node via consensus. See membership-architecture-spec §4.3, §5, §7.2.
+    @Codec enum ClusterPhase {
+        /// Cold-boot: cluster forming. Auto-heal suspended; no LEFT/DECOMMISSIONED writes.
+        BOOTING,
+        /// Steady state: full signal processing.
+        NORMAL,
+        /// Quorum lost: auto-heal active, may decommission unrecoverable peers.
+        RECOVERING
+    }
+
+    record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
+        public ClusterPhaseValue {
+            if (phase == null) {phase = ClusterPhase.BOOTING;}
+        }
+
+        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase) {
+            return new ClusterPhaseValue(phase, System.currentTimeMillis());
+        }
+
+        public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase, long updatedAt) {
+            return new ClusterPhaseValue(phase, updatedAt);
+        }
+    }
+
     @Codec enum ProvisioningSource {
         CTM,
         MANUAL,

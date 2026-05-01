@@ -27,6 +27,9 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
+import org.pragmatica.aether.deployment.health.ClusterPhaseChanged;
+import org.pragmatica.aether.deployment.health.HealthReconciler;
+import org.pragmatica.aether.deployment.health.HealthReconcilerConfig;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
@@ -194,6 +197,7 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 
 import java.nio.file.Path;
@@ -851,6 +855,28 @@ public interface AetherNode extends ManageableNode {
                                                                                    slotReader,
                                                                                    clusterCommandApplier,
                                                                                    drainCoordinator);
+        Supplier<Option<AetherValue.ClusterPhase>> clusterPhaseReader = () -> kvStore.get(AetherKey.ClusterPhaseKey.SINGLETON).filter(v -> v instanceof AetherValue.ClusterPhaseValue)
+                                                                                         .map(v -> ((AetherValue.ClusterPhaseValue) v).phase());
+        Supplier<Integer> onDutyCountSupplier = () -> {
+            var counter = new java.util.concurrent.atomic.AtomicInteger();
+            kvStore.forEach(AetherKey.NodeLifecycleKey.class,
+                            AetherValue.NodeLifecycleValue.class,
+                            (_, value) -> {
+                                if (value.state() == AetherValue.NodeLifecycleState.ON_DUTY) {counter.incrementAndGet();}
+                            });
+            return counter.get();
+        };
+        Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager().leader();
+        var healthReconciler = HealthReconciler.healthReconciler(config.self(),
+                                                                 config.topology().coreNodes()
+                                                                                .size(),
+                                                                 lifecycleReader,
+                                                                 clusterPhaseReader,
+                                                                 healthLeaderSupplier,
+                                                                 onDutyCountSupplier,
+                                                                 clusterCommandApplier,
+                                                                 HealthReconcilerConfig.DEFAULT);
+        healthReconciler.start();
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
@@ -1103,6 +1129,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    swimHealthDetector,
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
+        swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
@@ -1224,6 +1251,9 @@ public interface AetherNode extends ManageableNode {
                                                         _ -> generationSnapshotPublisher.markDirty())
                                                  .onRemove(AetherKey.DhtPartitionOwnershipKey.class,
                                                            _ -> generationSnapshotPublisher.markDirty())
+                                                 .onPut(AetherKey.ClusterPhaseKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterPhaseKey, AetherValue.ClusterPhaseValue> notification) -> notifyHealthReconcilerOfPhase(notification,
+                                                                                                                                                                                               healthReconciler))
                                                  .build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
         Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = snapshotSupplier;
@@ -1449,6 +1479,11 @@ public interface AetherNode extends ManageableNode {
                                                     }
                                                     return node;
                                                 });
+    }
+
+    @Contract private static void notifyHealthReconcilerOfPhase(KVStoreNotification.ValuePut<AetherKey.ClusterPhaseKey, AetherValue.ClusterPhaseValue> notification,
+                                                                HealthReconciler reconciler) {
+        if (notification.cause().value() instanceof AetherValue.ClusterPhaseValue value) {reconciler.onClusterPhasePut(value);}
     }
 
     @SuppressWarnings({"JBCT-RET-01", "unchecked"}) private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,

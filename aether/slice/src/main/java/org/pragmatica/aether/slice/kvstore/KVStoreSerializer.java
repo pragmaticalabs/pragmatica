@@ -163,6 +163,7 @@ import static org.pragmatica.lang.Result.success;
             case SpokesmanKey _ -> "spokesman";
             case ProvisioningSlotKey _ -> "provisioning-slot";
             case GenerationSnapshotKey _ -> "generation-snapshot";
+            case ClusterPhaseKey _ -> "cluster-phase";
         };
     }
 
@@ -229,6 +230,7 @@ import static org.pragmatica.lang.Result.success;
             case SpokesmanValue v -> serializeSpokesman(v);
             case ProvisioningSlotValue v -> serializeProvisioningSlot(v);
             case GenerationSnapshotValue _ -> "";
+            case ClusterPhaseValue v -> v.phase().name();
         };
     }
 
