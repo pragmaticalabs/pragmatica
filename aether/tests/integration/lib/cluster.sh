@@ -53,6 +53,68 @@ pick_non_leader() {
     done
 }
 
+# Wait for every node (ports MGMT_PORT..MGMT_PORT+NODE_COUNT-1) to report
+# /health/ready=UP locally. Each node's readiness gates on consensus + quorum +
+# routes being ready on THAT node — so an UP across all 5 ports means no
+# half-warm node remains after a kill/resurrect cycle.
+#
+# Why this matters: `restart_all_nodes` rotates MGMT_ENTRY_POINT in its own
+# subshell and validates against the rotated node. The next test script runs
+# in a fresh subshell that re-pins MGMT_ENTRY_POINT to the suite default
+# (run-tests.sh:253-257) — typically the node we just killed and resurrected.
+# Without per-node readiness confirmation here, the next test's first poll
+# hits a still-warming node and drags a ~15-30s convergence into a multi-
+# minute timeout cascade (60s healthy + 120s leader + JVM cold-start cost
+# in `aether status` per iter).
+#
+# Uses raw curl to keep per-iter cost ~50ms (vs ~5-15s/iter for `aether status`).
+wait_for_all_nodes_ready() {
+    local timeout="${1:-120}"
+    local deadline=$(($(date +%s) + timeout))
+    local pending=()
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        pending+=($((MGMT_PORT + i)))
+    done
+    while [ "$(date +%s)" -lt "$deadline" ] && [ "${#pending[@]}" -gt 0 ]; do
+        local still_pending=()
+        for port in "${pending[@]}"; do
+            local body
+            body=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
+                        "http://${TARGET_HOST}:${port}/health/ready" 2>/dev/null) || {
+                still_pending+=("$port")
+                continue
+            }
+            if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"UP"'; then
+                continue
+            fi
+            still_pending+=("$port")
+        done
+        # `set -u` rejects "${still_pending[@]}" when the array is empty (all nodes ready).
+        # Guard explicitly: if everything is ready, clear pending and break out.
+        if [ "${#still_pending[@]}" -eq 0 ]; then
+            pending=()
+            break
+        fi
+        pending=("${still_pending[@]}")
+        sleep 1
+    done
+    if [ "${#pending[@]}" -gt 0 ]; then
+        log_warn "wait_for_all_nodes_ready: not ready on ports: ${pending[*]}"
+        # Diagnostic: dump full /health/ready body for each pending node so we can see
+        # which ComponentHealth (consensus / routes / quorum) is DOWN. Without this,
+        # all we know is "not ready" — useless for nailing down the actual bug.
+        for port in "${pending[@]}"; do
+            local diag
+            diag=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
+                        "http://${TARGET_HOST}:${port}/health/ready" 2>&1 \
+                        || echo '<no response or non-2xx>')
+            log_warn "wait_for_all_nodes_ready: port=${port} body=${diag}"
+        done
+        return 1
+    fi
+    return 0
+}
+
 # Rotate MGMT_ENTRY_POINT to any surviving core node reachable on ports MGMT_PORT..MGMT_PORT+NODE_COUNT-1.
 # Chaos tests that kill the current entry point call this AFTER the kill to restore CLI access.
 # Normal tests don't need this — they rely on the pinned entry point + product forwarding.
@@ -375,7 +437,13 @@ restart_all_nodes() {
         log_fail "restart_all_nodes: cluster leader and node count recovered but generation did not quiesce within 90s"
         return 1
     fi
-    log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced)"
+    # Per-node readiness — guarantees the next test passes its first poll regardless
+    # of which port run-tests.sh re-pins MGMT_ENTRY_POINT to in its fresh subshell.
+    if ! wait_for_all_nodes_ready 90; then
+        log_fail "restart_all_nodes: not all nodes reported /health/ready=UP within 90s — next test would hit a half-warm node"
+        return 1
+    fi
+    log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced, all nodes ready)"
     return 0
 }
 
