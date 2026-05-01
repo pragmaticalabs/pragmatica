@@ -78,11 +78,13 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         this.hostname = hostname;
         this.sslConfig = sslConfig;
         this.useSsl = sslConfig.mode() != SslConfig.SslMode.DISABLE;
-        if (sslConfig.mode() == SslConfig.SslMode.ALLOW || sslConfig.mode() == SslConfig.SslMode.PREFER) {
-            // PREFER/ALLOW require protocol-level fallback negotiation. Until that lands,
-            // these modes behave like REQUIRE (TLS mandatory). Tracked as follow-up.
-            log.warn("SslMode.{} requested but fallback negotiation is not yet implemented; behaving like REQUIRE",
-                     sslConfig.mode());
+        if (sslConfig.mode() == SslConfig.SslMode.ALLOW) {
+            // libpq's ALLOW is "plain first, retry with TLS on failure" — a connection-level
+            // retry. Pragmatic interpretation here: treat as PREFER (TLS first, fall back to
+            // plain). Both produce a working connection against either server config; the
+            // strict ALLOW semantics matter only if a network observer can be reasoned about.
+            log.warn("SslMode.ALLOW currently behaves as PREFER (TLS first, plain fallback); "
+                      + "true ALLOW (plain first, TLS retry) is tracked as follow-up");
         }
         this.channelPipeline = new Bootstrap()
             .group(eventLoopGroup)
@@ -170,26 +172,43 @@ public class NettyPgProtocolStream extends PgProtocolStream {
             @Override
             protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception {
                 if (in.readableBytes() >= 1) {
-                    if ('S' == in.readByte()) { // SSL supported response
-                        ctx.pipeline().remove(this);
-                        var port = address instanceof InetSocketAddress isa ? isa.getPort() : -1;
-                        var sslHandler = buildSslContext()
-                            .newHandler(ctx.alloc(), hostname, port);
-                        if (sslConfig.mode() == SslConfig.SslMode.VERIFY_FULL) {
-                            // Enable JDK hostname verification — without this, Netty's default
-                            // SslHandler does not verify the hostname even when given hostname/port.
-                            var sslEngine = sslHandler.engine();
-                            var params = sslEngine.getSSLParameters();
-                            params.setEndpointIdentificationAlgorithm("HTTPS");
-                            sslEngine.setSSLParameters(params);
-                        }
-                        ctx.pipeline().addFirst(sslHandler);
+                    var response = in.readByte();
+                    ctx.pipeline().remove(this);
+                    if ('S' == response) {
+                        installSslHandler(ctx);
+                    } else if (allowPlainFallback()) {
+                        // PREFER/ALLOW: server doesn't support TLS — fall back to plain text.
+                        // Reuse the SslHandshake sentinel to signal "negotiation done, proceed
+                        // to send StartupMessage" via connectSslOrDirect.
+                        log.warn("Postgres server does not support TLS; falling back to plain text per SslMode.{}",
+                                  sslConfig.mode());
+                        gotMessage(SslHandshake.INSTANCE);
                     } else {
-                        ctx.fireExceptionCaught(new IllegalStateException("SSL required but not supported by Postgres"));
+                        ctx.fireExceptionCaught(new IllegalStateException(
+                            "SSL required (SslMode." + sslConfig.mode() + ") but not supported by Postgres server"));
                     }
                 }
             }
         };
+    }
+
+    private boolean allowPlainFallback() {
+        return sslConfig.mode() == SslConfig.SslMode.PREFER
+               || sslConfig.mode() == SslConfig.SslMode.ALLOW;
+    }
+
+    private void installSslHandler(ChannelHandlerContext ctx) throws Exception {
+        var port = address instanceof InetSocketAddress isa ? isa.getPort() : -1;
+        var sslHandler = buildSslContext().newHandler(ctx.alloc(), hostname, port);
+        if (sslConfig.mode() == SslConfig.SslMode.VERIFY_FULL) {
+            // Enable JDK hostname verification — without this, Netty's default
+            // SslHandler does not verify the hostname even when given hostname/port.
+            var sslEngine = sslHandler.engine();
+            var params = sslEngine.getSSLParameters();
+            params.setEndpointIdentificationAlgorithm("HTTPS");
+            sslEngine.setSSLParameters(params);
+        }
+        ctx.pipeline().addFirst(sslHandler);
     }
 
     private SslContext buildSslContext() throws Exception {
