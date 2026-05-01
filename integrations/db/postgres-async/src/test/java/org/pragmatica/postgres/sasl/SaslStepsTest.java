@@ -18,22 +18,37 @@ public class SaslStepsTest {
     private static final String SERVER_FIRST_MESSAGE = "r=" + CLIENT_NONCE + SERVER_NONCE + ",s=" + SERVER_SALT + ",i=" + I;
 
     @Test
-    public void clientFirstMessage() {
-        SASLInitialResponse saslInitialResponse = new SASLInitialResponse(Authentication.SUPPORTED_SASL, null, USER_NAME, CLIENT_NONCE);
+    public void clientFirstMessage_noChannelBinding() {
+        SASLInitialResponse saslInitialResponse = new SASLInitialResponse(Authentication.SUPPORTED_SASL, null, false, USER_NAME, CLIENT_NONCE);
         assertEquals("n,,", saslInitialResponse.gs2Header());
         assertEquals("n,,n=" + USER_NAME + ",r=" + CLIENT_NONCE, saslInitialResponse.clientFirstMessage());
-        // Here should be "n,,n=<USER_NAME>,r=" + CLIENT_NONCE, but Postgres expects an empty user name because of the startup message
+    }
+
+    @Test
+    public void clientFirstMessage_clientSupportsCbindButServerDoesNot() {
+        SASLInitialResponse saslInitialResponse = new SASLInitialResponse(Authentication.SUPPORTED_SASL, null, true, USER_NAME, CLIENT_NONCE);
+        assertEquals("y,,", saslInitialResponse.gs2Header());
+        assertEquals("y,,n=" + USER_NAME + ",r=" + CLIENT_NONCE, saslInitialResponse.clientFirstMessage());
+    }
+
+    @Test
+    public void clientFirstMessage_withChannelBinding() {
+        SASLInitialResponse saslInitialResponse = new SASLInitialResponse(Authentication.SUPPORTED_SASL_PLUS, "tls-server-end-point", true, USER_NAME, CLIENT_NONCE);
+        assertEquals("p=tls-server-end-point,,", saslInitialResponse.gs2Header());
+        assertEquals("p=tls-server-end-point,,n=" + USER_NAME + ",r=" + CLIENT_NONCE, saslInitialResponse.clientFirstMessage());
     }
 
     @Test
     public void clientFinalMessage() {
-        SASLInitialResponse saslInitialResponse = new SASLInitialResponse(Authentication.SUPPORTED_SASL, null, USER_NAME, CLIENT_NONCE);
-        SASLResponse saslResponse = SASLResponse.of(USER_PASSWORD, SERVER_FIRST_MESSAGE, CLIENT_NONCE, saslInitialResponse.gs2Header(), saslInitialResponse.clientFirstMessageBare());
+        SASLInitialResponse saslInitialResponse = new SASLInitialResponse(Authentication.SUPPORTED_SASL, null, false, USER_NAME, CLIENT_NONCE);
+        SASLResponse saslResponse = SASLResponse.of(USER_PASSWORD, SERVER_FIRST_MESSAGE, CLIENT_NONCE,
+                                                     saslInitialResponse.gs2Header(),
+                                                     saslInitialResponse.clientFirstMessageBare(),
+                                                     null);
 
         assertEquals("n,,", saslResponse.gs2Header());
         assertEquals(CLIENT_NONCE + SERVER_NONCE, saslResponse.serverNonce());
         assertEquals("n=" + USER_NAME + ",r=" + CLIENT_NONCE, saslResponse.clientFirstMessageBare());
-        // Here should be "n,,n=<USER_NAME>,r=" + CLIENT_NONCE, but Postgres expects an empty user name because of the startup message
         assertEquals(I, saslResponse.i());
         assertEquals(USER_PASSWORD, saslResponse.password());
         assertEquals(SERVER_FIRST_MESSAGE, saslResponse.serverFirstMessage());

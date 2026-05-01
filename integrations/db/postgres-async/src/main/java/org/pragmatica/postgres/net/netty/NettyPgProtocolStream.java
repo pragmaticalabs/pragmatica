@@ -22,6 +22,8 @@ import org.pragmatica.postgres.message.frontend.SSLRequest;
 import org.pragmatica.postgres.message.frontend.StartupMessage;
 import org.pragmatica.postgres.message.frontend.Terminate;
 import org.pragmatica.postgres.net.SslConfig;
+import org.pragmatica.postgres.sasl.ChannelBindingDigest;
+import org.pragmatica.lang.Option;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -45,6 +47,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.Charset;
+import java.security.cert.X509Certificate;
 import java.util.List;
 
 import static org.pragmatica.lang.Unit.unit;
@@ -195,6 +198,32 @@ public class NettyPgProtocolStream extends PgProtocolStream {
     private boolean allowPlainFallback() {
         return sslConfig.mode() == SslConfig.SslMode.PREFER
                || sslConfig.mode() == SslConfig.SslMode.ALLOW;
+    }
+
+    @Override
+    protected SslConfig.ChannelBinding channelBindingPolicy() {
+        return sslConfig.channelBinding();
+    }
+
+    @Override
+    protected Option<byte[]> tlsServerEndPointDigest() {
+        if (ctx == null) {
+            return Option.none();
+        }
+        var sslHandler = ctx.pipeline().get(SslHandler.class);
+        if (sslHandler == null) {
+            return Option.none();
+        }
+        try {
+            var peerCerts = sslHandler.engine().getSession().getPeerCertificates();
+            if (peerCerts.length == 0 || !(peerCerts[0] instanceof X509Certificate x509)) {
+                return Option.none();
+            }
+            return Option.some(ChannelBindingDigest.tlsServerEndPoint(x509));
+        } catch (javax.net.ssl.SSLPeerUnverifiedException e) {
+            log.debug("Cannot extract server certificate for channel binding: {}", e.getMessage());
+            return Option.none();
+        }
     }
 
     private void installSslHandler(ChannelHandlerContext ctx) throws Exception {

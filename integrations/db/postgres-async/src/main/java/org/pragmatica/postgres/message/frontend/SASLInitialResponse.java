@@ -3,10 +3,15 @@ package org.pragmatica.postgres.message.frontend;
 import org.pragmatica.postgres.message.FrontendMessage;
 import org.pragmatica.postgres.sasl.SaslPrep;
 
-/**
- * it is a bit weired to have a username both here and in a {@link StartupMessage}.
- * But according to the SCRAM specification in RFC5802 we have to have it :(
- */
+/// SASL InitialResponse — sends GS2 header + client-first-message-bare to the server.
+///
+/// GS2 header (RFC 5802 §6) varies by channel-binding state:
+/// - `n,,` — client doesn't support channel binding
+/// - `y,,` — client supports channel binding but isn't using it (server didn't advertise PLUS)
+/// - `p=<cb-name>,,` — client uses channel binding of the named type (e.g. `tls-server-end-point`)
+///
+/// The server uses this header to detect downgrade attacks: if it advertised PLUS and we
+/// reply with `n` or `y`, it rejects the authentication.
 public final class SASLInitialResponse implements FrontendMessage {
 
     private final String saslMechanism;
@@ -17,14 +22,28 @@ public final class SASLInitialResponse implements FrontendMessage {
     private final String clientFirstMessage;
     private final String clientFirstMessageBare;
 
-    public SASLInitialResponse(String saslMechanism, String channelBindingType, String userName, String clientNonce) {
+    /// @param saslMechanism `SCRAM-SHA-256` or `SCRAM-SHA-256-PLUS`
+    /// @param channelBindingType `null` for `n`/`y` headers; otherwise the cb-name (e.g. `tls-server-end-point`)
+    /// @param clientSupportsCbind `true` if client supports channel binding; affects `n` vs `y` choice
+    /// @param userName user name (Postgres requires empty string here per protocol; see PgProtocolStream)
+    /// @param clientNonce client-generated nonce
+    public SASLInitialResponse(String saslMechanism, String channelBindingType, boolean clientSupportsCbind,
+                                String userName, String clientNonce) {
         this.saslMechanism = saslMechanism;
         this.channelBindingType = channelBindingType;
         this.userName = userName;
         this.nonce = clientNonce;
 
-        String channelBinding = channelBindingType != null && !channelBindingType.isBlank() ? "p=" + channelBindingType + "," : "n,";
-        gs2Header = channelBinding + ","; // It could be '"a=" + msg.getUsername() + ",";' but it is not needed unless we are using impersonate techniques.
+        String gs2Flag;
+        if (channelBindingType != null && !channelBindingType.isBlank()) {
+            gs2Flag = "p=" + channelBindingType;
+        } else if (clientSupportsCbind) {
+            // Client could've used channel binding but server didn't advertise PLUS.
+            gs2Flag = "y";
+        } else {
+            gs2Flag = "n";
+        }
+        gs2Header = gs2Flag + ",,";
 
         clientFirstMessageBare = "n=" + SaslPrep.asQueryString(userName) + ",r=" + clientNonce;
         clientFirstMessage = gs2Header + clientFirstMessageBare;

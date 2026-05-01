@@ -72,7 +72,7 @@ public class AuthenticationDecoder implements Decoder<Authentication> {
             case PASSWORD_MD5_CHALLENGE -> {
                 byte[] md5Salt = new byte[4];
                 buffer.get(md5Salt);
-                yield  new Authentication(false, false, md5Salt, null, null);
+                yield  new Authentication(false, false, false, md5Salt, null, null);
             }
             case AUTHENTICATION_SSPI -> throw new UnsupportedOperationException(AUTHENTICATION_IS_NOT_SUPPORTED);
             case AUTHENTICATION_GSS -> throw new UnsupportedOperationException("AuthenticationGss" + AUTHENTICATION_IS_NOT_SUPPORTED);
@@ -83,15 +83,18 @@ public class AuthenticationDecoder implements Decoder<Authentication> {
             case OK -> Authentication.OK;
             case SASL -> {
                 boolean scramSha256Met = false;
+                boolean scramSha256PlusMet = false;
                 String sasl = IO.getCString(buffer, encoding);
                 while (!sasl.isEmpty()) {
                     if (Authentication.SUPPORTED_SASL.equals(sasl)) {
                         scramSha256Met = true;
+                    } else if (Authentication.SUPPORTED_SASL_PLUS.equals(sasl)) {
+                        scramSha256PlusMet = true;
                     }
                     sasl = IO.getCString(buffer, encoding);
                 }
-                if (scramSha256Met) {
-                    yield  Authentication.SCRAM_SHA_256;
+                if (scramSha256Met || scramSha256PlusMet) {
+                    yield new Authentication(false, scramSha256Met, scramSha256PlusMet, null, null, null);
                 } else {
                     throw new UnsupportedOperationException("The server doesn't support " + Authentication.SUPPORTED_SASL + " SASL mechanism");
                 }
@@ -99,12 +102,12 @@ public class AuthenticationDecoder implements Decoder<Authentication> {
             case SASL_CONTINUE -> {
                 byte[] saslContinueData = new byte[contentLength - 4]; // Minus type field size
                 buffer.get(saslContinueData);
-                yield new Authentication(false, false, null, new String(saslContinueData, encoding), null);
+                yield new Authentication(false, false, false, null, new String(saslContinueData, encoding), null);
             }
             case SASL_FINAL -> {
                 byte[] saslAdditionalData = new byte[contentLength - 4]; // Minus type field size
                 buffer.get(saslAdditionalData);
-                yield new Authentication(false, false, null, null, saslAdditionalData);
+                yield new Authentication(false, false, false, null, null, saslAdditionalData);
             }
             default -> throw new UnsupportedOperationException("Unsupported authentication type: " + type);
         };
