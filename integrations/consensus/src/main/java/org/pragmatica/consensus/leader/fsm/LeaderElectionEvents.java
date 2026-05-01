@@ -31,4 +31,10 @@ public final class LeaderElectionEvents {
     /// (submitted to consensus, not yet necessarily committed); `success=false` means it failed
     /// or timed out.
     public record ProposalSettled(NodeId candidate, boolean success, String detail) implements ClusterFsmEvent {}
+
+    /// Fired by [`LeaderElectionState.AwaitingKvSync`] when its grace timer elapses without
+    /// observing a committed leader via the KV-sync push notification path. Triggers the
+    /// fall-through transition into `Electing` / `ReElecting` so a genuinely fresh cluster
+    /// (no leader committed anywhere) can elect one.
+    public record KvSyncGraceTimeout() implements ClusterFsmEvent {}
 }

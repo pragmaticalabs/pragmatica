@@ -79,15 +79,18 @@ class QuorumWaitingPeriodicRecheckTest {
         ready.set(true);
 
         // Poll up to 5s — the periodic re-check runs at 1Hz, so we expect a transition within
-        // ~1 tick (give it 5s of slack to absorb scheduler jitter on busy CI runners).
+        // ~1 tick (give it 5s of slack to absorb scheduler jitter on busy CI runners). The
+        // FSM advances QuorumWaiting → AwaitingKvSync (the cold-boot self-proposal gate;
+        // Electing comes only after the KvSync grace window elapses).
         var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
         while (System.nanoTime() < deadline
-               && !(h.state() instanceof LeaderElectionState.Electing)) {
+               && !(h.state() instanceof LeaderElectionState.AwaitingKvSync)) {
             Thread.sleep(50);
         }
         assertThat(h.state())
-                .as("periodic re-check observes the false→true edge and advances")
-                .isInstanceOf(LeaderElectionState.Electing.class);
+                .as("periodic re-check observes the false→true edge and advances to the "
+                    + "KvSync grace gate (AwaitingKvSync)")
+                .isInstanceOf(LeaderElectionState.AwaitingKvSync.class);
 
         // The poll future on the (now-departed) QuorumWaiting record must have been cancelled
         // by `onExit`. The holder is also drained.
@@ -107,11 +110,14 @@ class QuorumWaitingPeriodicRecheckTest {
 
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
 
-        // Synchronous dispatch path — we should already be in Electing, having passed through
-        // QuorumWaiting in a single dispatch tick.
+        // Synchronous dispatch path — we should already be in AwaitingKvSync, having passed
+        // through QuorumWaiting in a single dispatch tick. The cold-boot self-proposal gate
+        // (AwaitingKvSync) sits between QuorumWaiting and Electing; Electing comes only after
+        // the KvSync grace window elapses (or a peer-committed leader arrives).
         assertThat(h.state())
-                .as("supplier true at entry: synchronous ConsensusReady dispatch advances the FSM")
-                .isInstanceOf(LeaderElectionState.Electing.class);
+                .as("supplier true at entry: synchronous ConsensusReady dispatch advances the FSM "
+                    + "to the KvSync grace gate")
+                .isInstanceOf(LeaderElectionState.AwaitingKvSync.class);
 
         // Cleanup.
         h.dispatch(new ClusterFsmEvent.Shutdown());

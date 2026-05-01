@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
@@ -37,6 +38,11 @@ class LeaderElectionStaleTimerTest {
     private static final TimeSpan PER_RANK_DELAY = TimeSpan.timeSpan(1).seconds();
     private static final TimeSpan PROPOSAL_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
+    /// Long KvSync grace delay so the timer never fires during the test — these tests assert
+    /// behaviour AFTER the FSM reaches Electing/ReElecting, which requires manually dispatching
+    /// `KvSyncGraceTimeout` to drive the AwaitingKvSync → Electing/ReElecting transition.
+    private static final TimeSpan KV_SYNC_GRACE_DELAY = TimeSpan.timeSpan(60).seconds();
+
     private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> buildHarness() {
         return FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness(
                 "leader-election-stale-timer-test",
@@ -50,7 +56,12 @@ class LeaderElectionStaleTimerTest {
                                                         BASE_ELECTION_DELAY,
                                                         PER_RANK_DELAY,
                                                         PROPOSAL_TIMEOUT,
-                                                        LeaderElectionContext.DEFAULT_STUCK_ELECTION_THRESHOLD);
+                                                        LeaderElectionContext.DEFAULT_STUCK_ELECTION_THRESHOLD,
+                                                        LeaderElectionContext.DEFAULT_JITTER_SOURCE,
+                                                        LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                                                        LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                                                        LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER,
+                                                        KV_SYNC_GRACE_DELAY);
                     return ctx.dormant();
                 });
     }
@@ -61,6 +72,8 @@ class LeaderElectionStaleTimerTest {
         // Drive the FSM into Electing via Dormant → QuorumWaiting → Electing.
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        // Drive the AwaitingKvSync → Electing fall-through manually (long grace timer suppressed).
+        h.dispatch(new KvSyncGraceTimeout());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Electing.class);
         var electing = (LeaderElectionState.Electing) h.state();
         var pendingTick = electing.tickFuture().get();
@@ -80,6 +93,7 @@ class LeaderElectionStaleTimerTest {
         var h = buildHarness();
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        h.dispatch(new KvSyncGraceTimeout());
         var electing = (LeaderElectionState.Electing) h.state();
         var pendingTick = electing.tickFuture().get();
 
@@ -100,6 +114,9 @@ class LeaderElectionStaleTimerTest {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B)));
         h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        // LeaderCommitted handled directly by AwaitingKvSync.handle — no need for the grace
+        // timeout. This mirrors the cold-boot fix path: AwaitingKvSync absorbs the leader-commit
+        // notification and transitions straight to Led without ever entering Electing.
         h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted(SELF));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         h.dispatch(new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B)));
@@ -125,6 +142,7 @@ class LeaderElectionStaleTimerTest {
         // Drive into QuorumLost (a non-Electing state).
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        h.dispatch(new KvSyncGraceTimeout());
         h.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumLost.class);
         var fsm = h.fsm();
@@ -157,6 +175,7 @@ class LeaderElectionStaleTimerTest {
         var h = buildHarness();
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        h.dispatch(new KvSyncGraceTimeout());
         h.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumLost.class);
 
@@ -180,6 +199,7 @@ class LeaderElectionStaleTimerTest {
         var h = buildHarness();
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         h.dispatch(new org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady());
+        h.dispatch(new KvSyncGraceTimeout());
         var electing = (LeaderElectionState.Electing) h.state();
         AtomicReference<ScheduledFuture<?>> holder = electing.tickFuture();
         assertThat(holder).isNotNull();

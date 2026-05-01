@@ -48,6 +48,22 @@ public final class LeaderElectionContext {
     public static final TimeSpan DEFAULT_MIN_PROPOSAL_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     public static final int DEFAULT_STUCK_ELECTION_THRESHOLD = 10;
 
+    /// Grace window after [`LeaderElectionState.QuorumWaiting`] before the FSM gives up on
+    /// observing a peer-committed leader and falls through to [`LeaderElectionState.Electing`] /
+    /// [`LeaderElectionState.ReElecting`]. Sized to absorb the typical KV-sync propagation
+    /// latency across a cold-booted cluster:
+    ///
+    ///   - QUIC reconnect window: ~1-2s under good conditions
+    ///   - Rabia engine activation + decision propagation: ~500ms-1s
+    ///   - KV-store snapshot apply + ValuePut notification dispatch: ~100-300ms
+    ///
+    /// 3s is the smallest value that consistently absorbs all three above on integration test
+    /// hardware while still bounding the worst-case "genuinely fresh cluster, all nodes proposing
+    /// in parallel" path so it doesn't sit idle waiting for an event that will never arrive.
+    /// Production callers can override via the full-arity factory; the default is intentionally
+    /// conservative so a misconfiguration doesn't introduce a deadlock-shaped bug.
+    public static final TimeSpan DEFAULT_KV_SYNC_GRACE_DELAY = TimeSpan.timeSpan(3).seconds();
+
     /// Default jitter source — uniform random in [0.0, 0.5). Captured once per FSM so tests can
     /// inject a deterministic alternative via the full-arity constructor.
     public static final DoubleSupplier DEFAULT_JITTER_SOURCE =
@@ -83,6 +99,7 @@ public final class LeaderElectionContext {
     private final TimeSpan baseElectionDelay;
     private final TimeSpan perRankDelay;
     private final TimeSpan proposalTimeout;
+    private final TimeSpan kvSyncGraceDelay;
     private final int stuckElectionThreshold;
     private final DoubleSupplier jitterSource;
     private final Supplier<Long> rabiaTermSupplier;
@@ -216,6 +233,31 @@ public final class LeaderElectionContext {
                           Supplier<Long> rabiaTermSupplier,
                           Supplier<Boolean> consensusReadySupplier,
                           Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
+             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
+             jitterSource, rabiaTermSupplier, consensusReadySupplier,
+             currentLeaderFromKvSupplier, DEFAULT_KV_SYNC_GRACE_DELAY);
+    }
+
+    /// Full-arity constructor adding the KvSync grace delay — the cold-boot self-proposal gate.
+    /// Existing callers stay on the prior overload (which forwards
+    /// [`#DEFAULT_KV_SYNC_GRACE_DELAY`]); tests that need to drive the fall-through path
+    /// deterministically use this constructor with a short delay (e.g. 50ms).
+    LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                          NodeId self,
+                          Option<LeaderProposalHandler> proposalHandler,
+                          List<NodeId> expectedCluster,
+                          MessageRouter router,
+                          TimeSpan proposalRetryDelay,
+                          TimeSpan baseElectionDelay,
+                          TimeSpan perRankDelay,
+                          TimeSpan proposalTimeout,
+                          int stuckElectionThreshold,
+                          DoubleSupplier jitterSource,
+                          Supplier<Long> rabiaTermSupplier,
+                          Supplier<Boolean> consensusReadySupplier,
+                          Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                          TimeSpan kvSyncGraceDelay) {
         this.fsm = fsm;
         this.self = self;
         this.proposalHandler = proposalHandler;
@@ -225,6 +267,7 @@ public final class LeaderElectionContext {
         this.baseElectionDelay = baseElectionDelay;
         this.perRankDelay = perRankDelay;
         this.proposalTimeout = proposalTimeout;
+        this.kvSyncGraceDelay = kvSyncGraceDelay;
         this.stuckElectionThreshold = stuckElectionThreshold;
         this.jitterSource = jitterSource;
         this.rabiaTermSupplier = rabiaTermSupplier;
@@ -263,6 +306,12 @@ public final class LeaderElectionContext {
     public TimeSpan baseElectionDelay() { return baseElectionDelay; }
     public TimeSpan perRankDelay() { return perRankDelay; }
     public TimeSpan proposalTimeout() { return proposalTimeout; }
+
+    /// Grace window used by [`LeaderElectionState.AwaitingKvSync`]. Defaults to
+    /// [`#DEFAULT_KV_SYNC_GRACE_DELAY`]; tests inject shorter values to drive the timeout
+    /// fall-through deterministically.
+    public TimeSpan kvSyncGraceDelay() { return kvSyncGraceDelay; }
+
     public int stuckElectionThreshold() { return stuckElectionThreshold; }
 
     // --- Mutable state accessors ---
@@ -326,6 +375,9 @@ public final class LeaderElectionContext {
     /// Fresh data-carrying instance per call. Each instance owns its own consensus-readiness
     /// poll `ScheduledFuture` and cancels it on `onExit`/`onCasLost`.
     public LeaderElectionState.QuorumWaiting quorumWaiting() { return LeaderElectionState.QuorumWaiting.fresh(this); }
+    /// Fresh data-carrying instance per call. Each instance owns its own KvSync grace
+    /// `ScheduledFuture` and cancels it on `onExit`/`onCasLost`.
+    public LeaderElectionState.AwaitingKvSync awaitingKvSync() { return LeaderElectionState.AwaitingKvSync.fresh(this); }
     /// Fresh data-carrying instance per call. Each instance owns its own pending-tick /
     /// proposal-timeout `ScheduledFuture`s and cancels them on `onExit`/`onCasLost`.
     public LeaderElectionState.Electing electing() { return LeaderElectionState.Electing.fresh(this); }

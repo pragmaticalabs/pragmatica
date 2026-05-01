@@ -13,6 +13,7 @@ import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ElectionTick;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ProposalSettled;
 import org.pragmatica.lang.Option;
@@ -49,6 +50,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public sealed interface LeaderElectionState extends FsmState<LeaderElectionState, ClusterFsmEvent>
         permits LeaderElectionState.Dormant,
                 LeaderElectionState.QuorumWaiting,
+                LeaderElectionState.AwaitingKvSync,
                 LeaderElectionState.Electing,
                 LeaderElectionState.Led,
                 LeaderElectionState.ReElecting,
@@ -143,13 +145,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ConsensusReady _ -> {
-                    if (ctx.hasEverHadLeader()) {
-                        tx.transitionTo(ctx.reElecting());
-                    } else {
-                        tx.transitionTo(ctx.electing());
-                    }
-                }
+                case ConsensusReady _ -> tx.transitionTo(ctx.awaitingKvSync());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
@@ -157,6 +153,90 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
                 default -> tx.ignore();
             }
+        }
+    }
+
+    /// Brief grace state inserted between [`QuorumWaiting`] and [`Electing`]/[`ReElecting`] to
+    /// prevent a cold-boot self-proposal race. When all cluster nodes boot simultaneously with
+    /// empty local KV-stores, the prior path ran:
+    ///
+    ///   `QuorumWaiting --ConsensusReady--> Electing` → eager tick → propose self
+    ///
+    /// against the parallel cluster path where 4-of-5 peers were busy committing a leader
+    /// through Rabia. The self-proposing node won the local race even though consensus had
+    /// already named someone else (or was about to). The new gate is:
+    ///
+    ///   `QuorumWaiting --ConsensusReady--> AwaitingKvSync ` → wait briefly for either
+    ///     - `LeaderCommitted` (push-side: KVSync from a peer applies `LeaderKey`, AetherNode's
+    ///       `handleLeaderCommit` dispatches `LeaderCommitted` → transition to `Led(thatLeader)`),
+    ///     - `KvSyncGraceTimeout` (no peer has committed a leader within the grace window;
+    ///       cluster is genuinely fresh — fall through to `Electing`/`ReElecting`).
+    ///
+    /// On entry the state ALSO consults [`LeaderElectionContext#currentLeaderFromKvSupplier`]
+    /// (pull-side) and dispatches a synthetic `LeaderCommitted` if the local KV already records
+    /// a leader. This handles the auto-heal path: a single replacement node joining a live
+    /// cluster receives the leader via KV-sync before this state's `onEntry` runs, so the
+    /// pull-side check fires immediately and the state passes through in a single dispatch tick
+    /// without paying any grace latency.
+    record AwaitingKvSync(LeaderElectionContext ctx,
+                          AtomicReference<ScheduledFuture<?>> graceTimeoutFuture) implements LeaderElectionState {
+
+        public static AwaitingKvSync fresh(LeaderElectionContext ctx) {
+            return new AwaitingKvSync(ctx, new AtomicReference<>());
+        }
+
+        @Override
+        public void onEntry() {
+            // Pull-side fast path — if KV already has a leader (auto-heal: replacement node
+            // joined an existing cluster, KVSync already applied LeaderKey before we got here),
+            // synthesize LeaderCommitted now. Synchronous dispatch — re-entry into `handle`
+            // happens before this method returns and transitions to `Led(leader)`.
+            adoptLeaderFromKvIfPresent(ctx);
+            // If the synchronous dispatch already advanced us out of AwaitingKvSync, skip
+            // scheduling the grace timer — this record's CAS reservation is gone, but the new
+            // state owns its own timers.
+            if (!(ctx.fsm().current() instanceof AwaitingKvSync)) {
+                log.debug("AwaitingKvSync.onEntry: KV-side leader adopted synchronously — skipping grace timer");
+                return;
+            }
+            log.info("Entering AwaitingKvSync: deferring leader-proposal for {}ms to absorb KV-sync from peers",
+                     ctx.kvSyncGraceDelay().millis());
+            var future = SharedScheduler.schedule(() -> dispatchSelf(ctx, new KvSyncGraceTimeout()),
+                                                   ctx.kvSyncGraceDelay());
+            graceTimeoutFuture.set(future);
+        }
+
+        @Override
+        public void onExit() {
+            cancelFuture(graceTimeoutFuture);
+        }
+
+        @Override
+        public void onCasLost() {
+            cancelFuture(graceTimeoutFuture);
+        }
+
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            switch (event) {
+                case LeaderCommitted lc -> adoptLeaderIfInTopology(ctx, lc, tx);
+                case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx);
+                case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
+                case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
+                case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
+                case ClusterFsmEvent.NodeGone ng -> ctx.setCurrentTopology(ng.topology());
+                default -> tx.ignore();
+            }
+        }
+    }
+
+    private static void graceTimeoutFallthrough(LeaderElectionContext ctx,
+                                                TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        log.info("AwaitingKvSync grace window elapsed without observing a committed leader — proceeding to election");
+        if (ctx.hasEverHadLeader()) {
+            tx.transitionTo(ctx.reElecting());
+        } else {
+            tx.transitionTo(ctx.electing());
         }
     }
 
@@ -344,13 +424,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ClusterFsmEvent.QuorumEstablished _ -> {
-                    if (ctx.hasEverHadLeader()) {
-                        tx.transitionTo(ctx.reElecting());
-                    } else {
-                        tx.transitionTo(ctx.electing());
-                    }
-                }
+                // QuorumEstablished after a transient quorum loss re-enters the AwaitingKvSync
+                // gate. We skip the intermediate QuorumWaiting consensus-readiness re-check
+                // because consensus was already active before the quorum dropped, and remains
+                // active here (QuorumLost is a topology-only state). The KvSync grace window
+                // still absorbs leader-commit propagation across the surviving peers, mirroring
+                // the cold-boot fix.
+                case ClusterFsmEvent.QuorumEstablished _ -> tx.transitionTo(ctx.awaitingKvSync());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 // ConsensusReady arriving in QuorumLost is acknowledged but causes no
                 // transition — consensus-readiness will be re-queried via

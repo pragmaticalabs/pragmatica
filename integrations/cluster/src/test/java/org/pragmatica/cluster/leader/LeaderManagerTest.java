@@ -155,8 +155,11 @@ class LeaderManagerTest {
             // Simulate what AetherNode does: explicitly trigger election after consensus sync
             localLeaderManager.triggerElection();
 
-            // Wait for proposal (rank 0 = BASE_ELECTION_DELAY of 2s + margin)
-            Thread.sleep(3_000);
+            // Wait for proposal (KvSync grace 3s + BASE_ELECTION_DELAY of 2s + margin).
+            // The cold-boot self-proposal gate (AwaitingKvSync) defers the first proposal by
+            // [`LeaderElectionContext#DEFAULT_KV_SYNC_GRACE_DELAY`] (3s); the test runs without
+            // a peer KV-sync, so it falls through via the timeout path.
+            Thread.sleep(6_500);
 
             // Proposal should have been submitted by min node
             assertThat(localProposals).hasSize(1);
@@ -246,8 +249,8 @@ class LeaderManagerTest {
             // Trigger election — node-b should submit a proposal for the lex-first candidate.
             localManager.triggerElection();
 
-            // Wait for stagger delay so the first ElectionTick fires.
-            Thread.sleep(5_000);
+            // Wait for KvSync grace (3s) + stagger delay (rank 1 = 2s base + 1s rank).
+            Thread.sleep(8_000);
 
             var expectedCandidate = nodes.stream().sorted().toList().getFirst();
             assertThat(localProposals).isNotEmpty()
@@ -291,8 +294,8 @@ class LeaderManagerTest {
             // Simulate AetherNode triggering election after consensus sync
             localManager.triggerElection();
 
-            // Wait for proposal (rank 0 = BASE_ELECTION_DELAY of 2s + margin)
-            Thread.sleep(3_000);
+            // Wait for proposal (KvSync grace 3s + BASE_ELECTION_DELAY 2s + margin).
+            Thread.sleep(6_500);
 
             // Despite flapping, proposals should eventually be submitted
             assertThat(localProposals).isNotEmpty();
@@ -325,7 +328,9 @@ class LeaderManagerTest {
             localManager.triggerElection();
             Thread.sleep(500);
 
-            // Commit leader — resets retry count and sets hasEverHadLeader=true
+            // Commit leader — resets retry count and sets hasEverHadLeader=true. We can commit
+            // before the AwaitingKvSync grace window expires; LeaderCommitted is handled in
+            // AwaitingKvSync (transitioning straight to Led without entering Electing).
             localManager.onLeaderCommitted(minNode);
 
             // Record proposal count after initial election
@@ -336,8 +341,8 @@ class LeaderManagerTest {
             Thread.sleep(50);
             localRouter.route(QuorumStateNotification.established());
 
-            // Wait for re-election proposal (auto-triggered by start() since hasEverHadLeader=true)
-            Thread.sleep(1_000);
+            // Wait for re-election proposal (KvSync grace 3s + retry tick 0.5s + margin).
+            Thread.sleep(5_000);
 
             // Min node should submit a new proposal for re-election
             assertThat(localProposals.size()).isGreaterThan(proposalsAfterInitial);
@@ -382,8 +387,8 @@ class LeaderManagerTest {
             // Now trigger election (as AetherNode does after adoption)
             localManager.triggerElection();
 
-            // Wait past the base election delay + rank stagger + margin
-            Thread.sleep(3_000);
+            // Wait past KvSync grace (3s) + base election delay (2s) + rank stagger + margin.
+            Thread.sleep(6_500);
 
             // The min node must NOT submit a proposal because a leader was already adopted.
             // Without the adoption fix, hasEverHadLeader=false and min-rank would propose itself,
@@ -461,8 +466,12 @@ class LeaderManagerTest {
             var survivors = List.of(follower, nodes.getLast());
             localRouter.route(nodeRemoved(leaderNode, survivors));
 
-            // Wait for re-election tick (proposalRetryDelay ~500ms + jitter)
-            Thread.sleep(1500);
+            // Wait for re-election tick (KvSync grace 3s + proposalRetryDelay ~500ms + jitter).
+            // ReElecting is reached via Led → ReElecting (NodeGone of leader); ReElecting itself
+            // does NOT pass through AwaitingKvSync, but the FSM's prior Led state was reached
+            // through AwaitingKvSync — once in Led, the subsequent Led → ReElecting transition
+            // skips the gate entirely. Sleep tuned for the proposal-retry delay only.
+            Thread.sleep(2_000);
 
             assertThat(localManager.leader()).isEqualTo(Option.none());
             assertThat(localWatcher.collected())
@@ -521,11 +530,12 @@ class LeaderManagerTest {
             }
 
             // Establish quorum — QuorumWaiting.onEntry queries the supplier (true) and
-            // self-dispatches ConsensusReady, advancing to Electing without external nudge.
+            // self-dispatches ConsensusReady, advancing through AwaitingKvSync (KvSync grace 3s)
+            // to Electing without external nudge.
             localRouter.route(QuorumStateNotification.established());
 
-            // Wait past staggered initial delay (base 2s + rank 0)
-            Thread.sleep(3_000);
+            // Wait past KvSync grace (3s) + staggered initial delay (base 2s + rank 0) + margin.
+            Thread.sleep(6_500);
 
             assertThat(localProposals).isNotEmpty();
             assertThat(localProposals.getFirst().candidate()).isEqualTo(minNode);
