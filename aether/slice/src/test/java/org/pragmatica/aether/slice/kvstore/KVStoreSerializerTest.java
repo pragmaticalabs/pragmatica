@@ -341,6 +341,37 @@ class KVStoreSerializerTest {
         }
 
         @Test
+        void roundTrip_apiKeyValue_preservesAuthorizationRole() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            entries.put(ApiKeyKey.apiKeyKey("ak_admin01"),
+                        AetherValue.ApiKeyValue.apiKeyValue("ak_admin01", "deadbeef", 5000L, "ADMIN"));
+            entries.put(ApiKeyKey.apiKeyKey("ak_oper001"),
+                        AetherValue.ApiKeyValue.apiKeyValue("ak_oper001", "cafe1234", 5000L, "OPERATOR"));
+            entries.put(ApiKeyKey.apiKeyKey("ak_view001"),
+                        AetherValue.ApiKeyValue.apiKeyValue("ak_view001", "feedface", 5000L, "VIEWER"));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 var admin = (AetherValue.ApiKeyValue) restored.get(ApiKeyKey.apiKeyKey("ak_admin01"));
+                                 assertThat(admin.authorizationRole()).isEqualTo("ADMIN");
+
+                                 var operator = (AetherValue.ApiKeyValue) restored.get(ApiKeyKey.apiKeyKey("ak_oper001"));
+                                 assertThat(operator.authorizationRole()).isEqualTo("OPERATOR");
+
+                                 var viewer = (AetherValue.ApiKeyValue) restored.get(ApiKeyKey.apiKeyKey("ak_view001"));
+                                 assertThat(viewer.authorizationRole()).isEqualTo("VIEWER");
+                             });
+        }
+
+        @Test
+        void apiKeyValue_factoryWithoutRole_defaultsToViewer() {
+            var keyValue = AetherValue.ApiKeyValue.apiKeyValue("ak_test", "hash", 1000L);
+            assertThat(keyValue.authorizationRole()).isEqualTo("VIEWER");
+        }
+
+        @Test
         void roundTrip_ephemeralKeys_excludedFromOutput() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
 
