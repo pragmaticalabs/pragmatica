@@ -155,17 +155,23 @@ class TopologyObserverSnapshotDualModeTest {
         }
 
         @Test
-        void readyNodes_noSnapshot_fallsBackToLegacy() {
+        void readyNodes_noSnapshot_markReadyIsInert_R4() {
+            // R4: markReady is an inert no-op. With no snapshot live, readyNodeCount
+            // falls back to the legacy `readyNodes` set, which can no longer be
+            // populated via markReady. The count remains zero regardless of how many
+            // markReady calls land — KV NodeLifecycleKey writes (HealthReconciler) are
+            // the sole source of ON_DUTY truth.
             var source = new StubSource(); // empty view
             var observer = observerWith(source);
 
-            // Nothing has been marked ready locally and no snapshot is present.
             assertThat(observer.readyNodeCount()).isZero();
 
             observer.markReady(PEER_A);
             observer.markReady(PEER_B);
 
-            assertThat(observer.readyNodeCount()).isEqualTo(2);
+            assertThat(observer.readyNodeCount())
+                .as("R4: markReady is inert — readyNodeCount stays zero without a snapshot")
+                .isZero();
         }
     }
 
@@ -196,20 +202,26 @@ class TopologyObserverSnapshotDualModeTest {
     }
 
     @Nested
-    class WritePathsUnaffected {
+    class WritePathsInertR4 {
         @Test
-        void writeLegacyPathStillWorks() {
+        void registerPeer_isInert_topologyUnchanged() {
+            // R4: registerPeer is a no-op. The static-config seeded `nodeStatesById`
+            // is unchanged by direct mutation calls. KV NodeLifecycleKey is the sole
+            // authority for projection growth.
             var source = new StubSource(); // noop-equivalent: no view
             var observer = observerWith(source);
+            var before = observer.topology();
 
             var newPeer = NodeInfo.nodeInfo(PEER_C, NodeAddress.nodeAddress("localhost", 5003).unwrap());
             observer.registerPeer(newPeer);
 
-            // Legacy in-memory state sees the new node: topology()/coreNodes() reflect it
-            // because no snapshot is live.
-            assertThat(observer.topology()).contains(PEER_C);
-            assertThat(observer.coreNodes()).contains(PEER_C);
-            assertThat(observer.get(PEER_C).isPresent()).isTrue();
+            assertThat(observer.topology())
+                .as("R4: registerPeer is inert — topology unchanged")
+                .isEqualTo(before)
+                .doesNotContain(PEER_C);
+            assertThat(observer.get(PEER_C).isEmpty())
+                .as("R4: registerPeer must not add unknown nodes")
+                .isTrue();
         }
     }
 }

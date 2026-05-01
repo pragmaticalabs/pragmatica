@@ -12,7 +12,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.messaging.MessageReceiver;
@@ -265,19 +264,20 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public void registerPeer(NodeInfo peerInfo) {
-                // Clear tombstone so the node can rejoin on explicit re-add (e.g. restarted container
-                // handshakes via QUIC Hello and gets routed as an unknown-node registration).
-                tombstonedNodes.remove(peerInfo.id());
-                addNode(peerInfo);
+                // R4: TopologyObserver is a pure read-only projection of KV NodeLifecycleKey
+                // (HealthReconciler is sole writer per spec §4.3 P4). Direct mutation is no longer
+                // permitted from any caller. This method survives as a compile-time no-op only to
+                // keep R5 (transport narrowing) decoupled from R4 — QUIC/Netty adapters still call
+                // it on Hello-handshake completion. R5 removes the call sites and this method.
+                log.trace("registerPeer({}) ignored — R4: TopologyObserver is read-only", peerInfo.id());
             }
 
             @Override
             public void unregisterPeer(NodeId peerId) {
-                // Tombstone prevents initReconcile from resurrecting this node from the static
-                // config.coreNodes() list. Cleared on explicit re-add via registerPeer or when the
-                // observer drains to self-only.
-                tombstonedNodes.add(peerId);
-                removeNode(peerId);
+                // R4: see registerPeer rationale. The authoritative DECOMMISSIONED transition flows
+                // through HealthReconciler → KV NodeLifecycleKey → snapshot projection. Transport
+                // adapters still invoke this on connection teardown; the call is silently ignored.
+                log.trace("unregisterPeer({}) ignored — R4: TopologyObserver is read-only", peerId);
             }
 
             @Override
@@ -303,59 +303,22 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {
-                // Transport-level event only: mutate per-peer NodeState (HEALTHY → SUSPECTED) so
-                // `requestConnectionIfEligible` honours the reconnect backoff, but DO NOT trigger
-                // `evaluateQuorumState`. Quorum-state edge transitions are owned by authoritative
-                // membership signals (SWIM → HealthReconciler → KV NodeLifecycle atom →
-                // `addNode`/`removeNode` / snapshot source). Routing transport flaps through the
-                // canonical publisher would re-introduce the QUIC-handshake-storm cascade that
-                // Phase A (commit `5c29a104f`) and Option C (commit `3c66e9e65`) demoted from the
-                // health-observation pipeline.
-                var nodeId = connectionFailed.nodeId();
-                nodeStatesById.computeIfPresent(nodeId, (_, state) ->
-                    processConnectionFailure(state, connectionFailed.cause()));
-            }
-
-            private NodeState processConnectionFailure(NodeState state, Cause cause) {
-                var nodeId = state.info()
-                                  .id();
-                var newAttempts = state.failedAttempts() + 1;
-                var backoff = config.backoff();
-                var now = now();
-                var delay = backoff.backoffStrategy()
-                                   .nextTimeout(newAttempts);
-                var jitteredDelayMs = JitterUtil.applyJitter(delay.millis(),
-                                                             JitterUtil.MIN_FACTOR_DEFAULT,
-                                                             JitterUtil.MAX_FACTOR_DEFAULT);
-                var jitteredDelay = TimeSpan.timeSpan(jitteredDelayMs).millis();
-                var nextAttempt = now.plusNanos(jitteredDelay.nanos());
-                log.debug("Node {} connection failed (attempt {}), next attempt after {} (jittered from {}): {}",
-                          nodeId,
-                          newAttempts,
-                          jitteredDelay,
-                          delay,
-                          cause.message());
-                return NodeState.suspected(state.info(), newAttempts, now, nextAttempt);
+                // R4: TopologyObserver is read-only. Transport-level reconnect-backoff bookkeeping
+                // is handled internally by the QUIC/Netty adapters' own per-peer state machinery
+                // (PeerState in QuicClusterNetwork, equivalent in NettyClusterNetwork); it no
+                // longer mutates the topology projection here. R5 will remove this method and the
+                // transport call sites entirely.
+                log.trace("handleConnectionFailed({}) ignored — R4: TopologyObserver is read-only",
+                          connectionFailed.nodeId());
             }
 
             @Override
             public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {
-                // Transport-level event only: clear the SUSPECTED reconnect-backoff so the next
-                // reconcile pass treats this peer as eligible. Quorum-state transitions are owned
-                // by authoritative membership signals — see `handleConnectionFailed` for the full
-                // architectural rationale. A QUIC handshake landing must not, on its own, fire
-                // `QuorumStateNotification.established` because the peer's authoritative ON_DUTY
-                // status is determined by SWIM/HealthReconciler, not by transport readiness.
-                var nodeId = connectionEstablished.nodeId();
-                nodeStatesById.computeIfPresent(nodeId, (_, state) ->
-                    processConnectionEstablished(state));
-            }
-
-            private NodeState processConnectionEstablished(NodeState state) {
-                if (state.health() == NodeHealth.SUSPECTED) {
-                    log.debug("Node {} recovered from suspected state", state.info().id());
-                }
-                return NodeState.healthy(state.info(), now());
+                // R4: see handleConnectionFailed rationale. Transport-readiness no longer drives
+                // topology mutation — authoritative ON_DUTY status is owned by HealthReconciler
+                // and observed via the KV NodeLifecycleKey snapshot.
+                log.trace("handleConnectionEstablished({}) ignored — R4: TopologyObserver is read-only",
+                          connectionEstablished.nodeId());
             }
 
             private void addNode(NodeInfo nodeInfo) {
@@ -445,27 +408,29 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public void markReady(NodeId nodeId) {
-                readyNodes.add(nodeId);
-                log.debug("Node {} marked ready (ON_DUTY). Ready nodes: {}", nodeId, readyNodes.size());
+                // R4: TopologyObserver no longer maintains a separate ON_DUTY tracker — readers
+                // resolve ON_DUTY status from the GenerationSnapshot's MembershipView, which is
+                // sourced from KV NodeLifecycleKey writes (HealthReconciler is the sole writer).
+                // This method survives only for compile-time compatibility with legacy callers
+                // that have not yet been migrated; it is a deliberate no-op.
+                log.trace("markReady({}) ignored — R4: TopologyObserver is read-only", nodeId);
             }
 
             @Override
             public void markReady(NodeId nodeId, NodeAddress address) {
-                readyNodes.add(nodeId);
-                // If this node is not in our topology, it was dynamically provisioned
-                // by another leader. Add it and request connection.
-                if (nodeStatesById.get(nodeId) == null && !nodeId.equals(config.self())) {
-                    var nodeInfo = NodeInfo.nodeInfo(nodeId, address);
-                    addNode(nodeInfo);
-                    log.info("Node {} added to topology via ON_DUTY notification at {}", nodeId, address.asString());
-                }
-                log.debug("Node {} marked ready (ON_DUTY) with address. Ready nodes: {}", nodeId, readyNodes.size());
+                // R4: see markReady(NodeId) rationale. Address publication for dynamically
+                // provisioned nodes flows through KV NodeLifecycleValue.host/port instead.
+                log.trace("markReady({}, {}) ignored — R4: TopologyObserver is read-only",
+                          nodeId,
+                          address.asString());
             }
 
             @Override
             public void markDeparted(NodeId nodeId) {
-                readyNodes.remove(nodeId);
-                log.debug("Node {} marked departed. Ready nodes: {}", nodeId, readyNodes.size());
+                // R4: see markReady(NodeId) rationale. Departure is observed via KV
+                // NodeLifecycleKey transitions (DECOMMISSIONED / SHUTTING_DOWN) or removal,
+                // not via direct mutation here.
+                log.trace("markDeparted({}) ignored — R4: TopologyObserver is read-only", nodeId);
             }
 
             @Override

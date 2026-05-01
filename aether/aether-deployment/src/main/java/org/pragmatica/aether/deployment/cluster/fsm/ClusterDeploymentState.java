@@ -1191,7 +1191,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             artifactKeysToRemove.stream().<KVCommand<AetherKey>>map(KVCommand.Remove::new)
                                        .forEach(consensusCommands::add);
             consensusCommands.addAll(nodeRouteCommands);
-            consensusCommands.add(new KVCommand.Remove<>(NodeLifecycleKey.nodeLifecycleKey(removedNode)));
             workerNodes.remove(removedNode);
             log.info("Removed {} slice states, {} node-artifact entries, and {} node-routes updates for departed node {}",
                      sliceKeysToRemove.size(),

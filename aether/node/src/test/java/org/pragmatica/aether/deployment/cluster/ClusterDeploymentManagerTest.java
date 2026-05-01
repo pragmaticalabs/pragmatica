@@ -337,13 +337,19 @@ class ClusterDeploymentManagerTest {
         assertThat(naRemoves.getFirst().key().nodeId()).isEqualTo(node3);
         assertThat(naRemoves.getFirst().key().artifact()).isEqualTo(artifact);
 
-        // Consensus commands should include Remove for lifecycle key
-        var removeCommands = clusterNode.appliedCommands.stream()
-                                                         .filter(cmd -> cmd instanceof KVCommand.Remove<?>)
-                                                         .map(cmd -> ((KVCommand.Remove<?>) cmd).key())
-                                                         .toList();
-        assertThat(removeCommands).anySatisfy(key ->
-            assertThat(key).isInstanceOf(AetherKey.NodeLifecycleKey.class));
+        // R4: ClusterDeploymentState no longer removes NodeLifecycleKey directly.
+        // HealthReconciler is the sole writer per spec §4.3 P4. The FSM must NOT
+        // emit a Remove for the lifecycle key on node removal — DECOMMISSIONED is
+        // written by HealthReconciler on departure observation, and a future
+        // compaction step will GC stale entries.
+        var lifecycleKeyRemoves = clusterNode.appliedCommands.stream()
+                                                              .filter(cmd -> cmd instanceof KVCommand.Remove<?>)
+                                                              .map(cmd -> ((KVCommand.Remove<?>) cmd).key())
+                                                              .filter(key -> key instanceof AetherKey.NodeLifecycleKey)
+                                                              .toList();
+        assertThat(lifecycleKeyRemoves)
+            .as("R4: ClusterDeploymentState no longer removes NodeLifecycleKey — HealthReconciler is sole writer")
+            .isEmpty();
     }
 
     // === Slice State Tracking Tests ===
