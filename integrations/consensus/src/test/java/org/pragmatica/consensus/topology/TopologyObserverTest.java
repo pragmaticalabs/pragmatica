@@ -312,7 +312,9 @@ class TopologyObserverTest {
             var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
             var router = routerCapturing(notifications);
             var observer = TopologyObserver.topologyObserver(selfOnlyConfig(), router).unwrap();
-            // Self-only at construction: peers=0, +1=1 < quorum=2 → no fire.
+            observer.start().await();
+            // Self-only at startup: peers=0, +1=1 < quorum=2 → no fire (initial publish is
+            // disappeared-as-default, but quorumEstablished latch starts false so no edge).
             assertThat(notifications).isEmpty();
 
             // First peer brings peers=1, +1=2 = quorum=2 → established edge transition.
@@ -330,6 +332,7 @@ class TopologyObserverTest {
             var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
             var router = routerCapturing(notifications);
             var observer = TopologyObserver.topologyObserver(selfOnlyConfig(), router).unwrap();
+            observer.start().await();
 
             // Push above quorum: register two peers (peers=2, +1=3 >= quorum=2 → established).
             observer.registerPeer(INFO_A);
@@ -354,6 +357,7 @@ class TopologyObserverTest {
             var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
             var router = routerCapturing(notifications);
             var observer = TopologyObserver.topologyObserver(selfOnlyConfig(), router).unwrap();
+            observer.start().await();
 
             // Cross up once.
             observer.registerPeer(INFO_A);
@@ -382,6 +386,7 @@ class TopologyObserverTest {
                                             timeSpan(1).seconds(),
                                             List.of(INFO_SELF));
             var observer = TopologyObserver.topologyObserver(config, router).unwrap();
+            observer.start().await();
 
             // peers=0, +1=1 < quorum=3 — no fire.
             observer.registerPeer(INFO_A);   // peers=1, +1=2 < 3 — still below
@@ -414,6 +419,7 @@ class TopologyObserverTest {
             var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
             var router = routerCapturing(notifications);
             var observer = TopologyObserver.topologyObserver(selfOnlyConfig(), router).unwrap();
+            observer.start().await();
 
             // Establish quorum first.
             observer.registerPeer(INFO_A);
@@ -435,19 +441,80 @@ class TopologyObserverTest {
         }
 
         @Test
-        void constructionWithFullCoreNodes_routesEstablishedAtStartup() {
-            // baseConfig() seeds SELF + PEER_A + PEER_B. After construction, peers=2 (excl self),
-            // +1=3 >= quorum=2 → quorum-established edge fires once.
+        void constructionWithFullCoreNodes_doesNotRouteUntilStart() {
+            // baseConfig() seeds SELF + PEER_A + PEER_B. The constructor used to call
+            // `evaluateQuorumState()` for every seeded `addNode`, which crashed at startup
+            // when the production `MessageRouter.DelegateRouter` had a null delegate field.
+            // Construction must NOT publish; only `start()` may.
             var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
             var router = routerCapturing(notifications);
 
-            TopologyObserver.topologyObserver(baseConfig(), router).unwrap();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), router).unwrap();
 
             assertThat(notifications)
-                .as("ctor seeds healthy peers; observer fires established at startup")
+                .as("construction-time evaluateQuorumState must be deferred until start()")
+                .isEmpty();
+
+            // Now start: peers=2 (excl self), +1=3 >= quorum=2 → established edge fires once.
+            observer.start().await();
+
+            assertThat(notifications)
+                .as("start() publishes the initial edge after the router is fully wired")
                 .hasSize(1);
             assertThat(notifications.getFirst().state())
                 .isEqualTo(QuorumStateNotification.State.ESTABLISHED);
+        }
+
+        @Test
+        void construction_withPartiallyWiredDelegateRouter_doesNotNpe() {
+            // Regression for HEAD 3c66e9e65 NPE: the production wiring uses a
+            // `MessageRouter.DelegateRouter` whose `delegate` field is null at construction
+            // time and is populated by node bootstrap before `start()` is called. The
+            // pre-fix `evaluateQuorumState()` invoked from constructor-time `addNode` would
+            // call `delegate.route(...)` on the null delegate and crash every container.
+            //
+            // This test reproduces that exact wiring order: delegate null at construction
+            // (so any `router.route(...)` call NPEs), then populated, then `start()`.
+            // The fix gates `evaluateQuorumState()` on a `started` flag so the constructor
+            // path no-ops; `start()` flips the flag and publishes once with a live router.
+            var delegate = MessageRouter.DelegateRouter.delegate();
+            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
+
+            // Construct with a delegate router whose inner delegate is still null.
+            // Pre-fix: NPE here. Post-fix: silent no-op via the started gate.
+            var observer = TopologyObserver.topologyObserver(baseConfig(), delegate).unwrap();
+            assertThat(notifications)
+                .as("construction with partially-wired router must not NPE and must not publish")
+                .isEmpty();
+
+            // Populate the delegate (mirrors node bootstrap order: handlers register first,
+            // then the real router replaces the placeholder before start()).
+            var realRouter = routerCapturing(notifications);
+            delegate.replaceDelegate(realRouter);
+
+            observer.start().await();
+
+            assertThat(notifications)
+                .as("start() with fully-wired router publishes initial established edge")
+                .hasSize(1);
+            assertThat(notifications.getFirst().state())
+                .isEqualTo(QuorumStateNotification.State.ESTABLISHED);
+        }
+
+        @Test
+        void start_belowQuorum_doesNotRouteEstablished() {
+            // Self-only config below quorum (clusterSize=3, peers=0, +1=1 < quorum=2):
+            // start() must not fire an `established` notification because no edge has been
+            // crossed (latch starts false, threshold-test is false → no transition).
+            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
+            var router = routerCapturing(notifications);
+
+            var observer = TopologyObserver.topologyObserver(selfOnlyConfig(), router).unwrap();
+            observer.start().await();
+
+            assertThat(notifications)
+                .as("start() below quorum must not publish established")
+                .isEmpty();
         }
     }
 }

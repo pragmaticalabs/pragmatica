@@ -156,7 +156,8 @@ public interface TopologyObserver extends TopologyManager {
                        Set<NodeId> tombstonedNodes,
                        GenerationSnapshotSource snapshotSource,
                        Predicate<NodeId> isDecommissioned,
-                       AtomicBoolean quorumEstablished) implements TopologyObserver {
+                       AtomicBoolean quorumEstablished,
+                       AtomicBoolean started) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -171,7 +172,8 @@ public interface TopologyObserver extends TopologyManager {
                     Set<NodeId> tombstonedNodes,
                     GenerationSnapshotSource snapshotSource,
                     Predicate<NodeId> isDecommissioned,
-                    AtomicBoolean quorumEstablished) {
+                    AtomicBoolean quorumEstablished,
+                    AtomicBoolean started) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -185,6 +187,7 @@ public interface TopologyObserver extends TopologyManager {
                 this.snapshotSource = snapshotSource;
                 this.isDecommissioned = isDecommissioned;
                 this.quorumEstablished = quorumEstablished;
+                this.started = started;
                 this.effectiveClusterSize.set(config.clusterSize());
                 // Mirror the `initReconcile` filter: a peer the cluster has durably retired
                 // (KV NodeLifecycleValue.DECOMMISSIONED) must not be reconstructed from
@@ -506,7 +509,21 @@ public interface TopologyObserver extends TopologyManager {
             /// The peer count excludes self; the `+ 1` adds self as the implicitly-healthy
             /// observer. This matches the formula previously used by `QuicClusterNetwork`
             /// and `NettyClusterNetwork`.
+            ///
+            /// Startup gate: this method short-circuits while `started` is false. The
+            /// constructor seeds `coreNodes` (including self) via `addNode`, which would
+            /// otherwise route through this publisher before the production
+            /// `MessageRouter.DelegateRouter` has had its delegate field populated by the
+            /// node bootstrap wiring — causing an NPE on `delegate.route(...)`. `start()`
+            /// flips `started=true` and immediately invokes this method once so the initial
+            /// edge state (established or disappeared) is published exactly once after the
+            /// router is fully wired. Subsequent mutations (registerPeer, connection
+            /// events, cluster-size changes) follow the normal idempotent edge-transition
+            /// rules.
             private void evaluateQuorumState() {
+                if (!started.get()) {
+                    return;
+                }
                 var haveQuorum = (healthyActivePeerCount() + 1) >= quorumSize();
                 if (haveQuorum) {
                     if (quorumEstablished.compareAndSet(false, true)) {
@@ -596,6 +613,15 @@ public interface TopologyObserver extends TopologyManager {
             public Promise<Unit> start() {
                 if (active().compareAndSet(false, true)) {
                     log.trace("Starting topology observer at {}", config.self());
+                    // Flip the startup gate before publishing so the first
+                    // `evaluateQuorumState` call below — and any racing mutation
+                    // that lands while `start()` is in flight — observes a fully
+                    // wired router. Constructor-time `addNode` fires for self and
+                    // any non-decommissioned core nodes ran with `started=false`
+                    // and were no-ops; this single explicit call publishes the
+                    // initial edge (established or disappeared) exactly once.
+                    started.set(true);
+                    evaluateQuorumState();
                     initReconcile();
                 }
                 return Promise.success(Unit.unit());
@@ -642,6 +668,7 @@ public interface TopologyObserver extends TopologyManager {
                                           ConcurrentHashMap.newKeySet(),
                                           snapshotSource,
                                           isDecommissioned,
+                                          new AtomicBoolean(false),
                                           new AtomicBoolean(false)));
     }
 }
