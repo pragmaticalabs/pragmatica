@@ -47,7 +47,6 @@ import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Cause;
@@ -112,7 +111,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final Map<NodeId, PeerState> peers = new ConcurrentHashMap<>();
     private final Map<NodeId, Map<StreamType, Queue<byte[]>>> outboundQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
-    private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
 
     /// Per-peer eviction-driven reconnect backoff. Without this, an eviction storm at the
@@ -1021,17 +1019,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     // --- Internal: view change ---
 
-    /// Authoritative membership state for QUIC lives in `TopologyObserver`. This method:
-    ///   - ADD: registers the peer with `TopologyObserver` (already done at `onPeerConnected`) and
-    ///     emits an informational `TopologyChangeNotification.nodeAdded`. If quorum is now reached,
-    ///     fires `QuorumStateNotification.established` immediately.
+    /// QUIC is pure transport — peer-link state, peerLinks table, hello handshakes, message
+    /// routing. Membership and quorum decisions are owned by `TopologyObserver` (canonical
+    /// publisher of `QuorumStateNotification`, fed by SWIM via `HealthReconciler`). This
+    /// method:
+    ///   - ADD: emits an informational `TopologyChangeNotification.nodeAdded` and reports
+    ///     the peer-joined signal to the local listener (advisory).
     ///   - REMOVE: fires a `HealthSignal.QuicDisconnect` via the listener (advisory; leader's
     ///     `HealthReconciler` counts it), calls `topologyManager.unregisterPeer` directly (spec §12:
     ///     QUIC is the authoritative source of "this peer is gone from my view"), and emits an
     ///     informational `TopologyChangeNotification.nodeRemoved`. No hysteresis buffering — §8
     ///     single-writer rule means `HealthReconciler` is the only component that decides whether
     ///     membership atoms actually change.
-    ///   - SHUTDOWN: fires `QuorumStateNotification.disappeared` immediately.
+    ///   - SHUTDOWN: emits `TopologyChangeNotification.nodeDown`. No quorum-disappeared
+    ///     fire — that's the canonical publisher's job.
+    ///   - RECONNECT: transparent re-attach, suppress duplicate ADD.
     @SuppressWarnings("JBCT-PAT-01") // Switch expression with side effects
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
         // Self should never appear in view changes — guard against cascading self-removal
@@ -1042,17 +1044,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var activePeerCount = activeConnectedCount();
         var quorumSize = topologyManager.quorumSize();
         var clusterSize = topologyManager.clusterSize();
-        var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
 
-        log.info("processViewChange: op={}, peer={}, activePeerCount={}, clusterSize={}, quorumSize={}, haveQuorum={}, wasEstablished={}",
-                 operation, peerId, activePeerCount, clusterSize, quorumSize, currentlyHaveQuorum, quorumEstablished.get());
+        log.info("processViewChange: op={}, peer={}, activePeerCount={}, clusterSize={}, quorumSize={}",
+                 operation, peerId, activePeerCount, clusterSize, quorumSize);
 
         var viewChange = switch (operation) {
             case ADD -> {
-                if (currentlyHaveQuorum && quorumEstablished.compareAndSet(false, true)) {
-                    log.info("Quorum established with {} active peer(s) (need {})", activePeerCount, quorumSize);
-                    router.route(QuorumStateNotification.established());
-                }
                 // QUIC handshake is a transport-only signal. Membership decisions (HEALTHY/
                 // FAULTY/SUSPECTED) are owned by SWIM (canonical source). We emit
                 // TopologyChangeNotification.nodeAdded so upstream consumers see the
@@ -1072,15 +1069,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // SWIM (canonical source) — we do NOT push a FAULTY observation from QUIC.
                 peerStateListener.onPeerLeft(peerId);
                 topologyManager.unregisterPeer(peerId);
-                if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
-                    log.warn("Quorum lost — {} active peer(s), need {}", activePeerCount, quorumSize);
-                    router.route(QuorumStateNotification.disappeared());
-                }
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {
-                quorumEstablished.set(false);
-                router.route(QuorumStateNotification.disappeared());
+                // Self-shutdown is a local-only event; the canonical quorum publisher
+                // (TopologyObserver) sees membership changes through its own SWIM signal
+                // and edge-transitions QuorumStateNotification accordingly.
                 yield TopologyChangeNotification.nodeDown(peerId);
             }
             case RECONNECT -> {

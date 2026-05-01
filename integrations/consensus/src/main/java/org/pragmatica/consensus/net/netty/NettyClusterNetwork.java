@@ -10,7 +10,6 @@ import org.pragmatica.consensus.net.NetworkMessage.Hello;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -69,7 +68,6 @@ public class NettyClusterNetwork implements ClusterNetwork {
     private final Set<Channel> pendingChannels = ConcurrentHashMap.newKeySet();
     private final Map<Channel, ScheduledFuture<?>> helloTimeouts = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
-    private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
     private final TopologyObserver topologyManager;
     private final Supplier<List<ChannelHandler>> handlers;
     private final MessageRouter router;
@@ -220,13 +218,12 @@ public class NettyClusterNetwork implements ClusterNetwork {
               .onPresent(nodeId -> {
                              passivePeers.remove(nodeId);
                              channelEstablishedAt.remove(nodeId);
-                             // Only process view change if quorum was already established.
-                             // This prevents quorum oscillation during initial startup while
-                             // ensuring proper quorum tracking after partition/disconnect events.
-                             if (quorumEstablished.get()) {
-                                 processViewChange(REMOVE, nodeId);
-                             }
-                             log.info("Node {} TCP disconnected, quorumWasEstablished={}", nodeId, quorumEstablished.get());
+                             // Quorum oscillation during initial startup is now suppressed by
+                             // the canonical publisher (TopologyObserver) via its own
+                             // edge-transition latch — the formerly-required `quorumEstablished`
+                             // guard here is no longer the right place to gate it.
+                             processViewChange(REMOVE, nodeId);
+                             log.info("Node {} TCP disconnected", nodeId);
                          });
     }
 
@@ -392,39 +389,27 @@ public class NettyClusterNetwork implements ClusterNetwork {
         }
     }
 
+    /// Netty is pure transport — peer-link state, peerLinks table, hello handshakes,
+    /// message routing. Membership and quorum decisions are owned by `TopologyObserver`
+    /// (canonical publisher of `QuorumStateNotification`, fed by SWIM via `HealthReconciler`).
+    /// Symmetric counterpart of the QUIC demotion in `QuicClusterNetwork.processViewChange`.
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
         var activePeerCount = peerLinks.size() - passivePeers.size();
         var quorumSize = topologyManager.quorumSize();
         var clusterSize = topologyManager.clusterSize();
-        var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
-        log.info("processViewChange: op={}, peer={}, activePeerCount={}, clusterSize={}, quorumSize={}, haveQuorum={}, wasEstablished={}",
+        log.info("processViewChange: op={}, peer={}, activePeerCount={}, clusterSize={}, quorumSize={}",
                  operation,
                  peerId,
                  activePeerCount,
                  clusterSize,
-                 quorumSize,
-                 currentlyHaveQuorum,
-                 quorumEstablished.get());
+                 quorumSize);
         var viewChange = switch (operation) {
-            case ADD -> {
-                // Only notify on transition from below to at/above quorum
-                if (currentlyHaveQuorum && quorumEstablished.compareAndSet(false, true)) {
-                    router.route(QuorumStateNotification.established());
-                }
-                yield TopologyChangeNotification.nodeAdded(peerId, currentView());
-            }
+            case ADD -> TopologyChangeNotification.nodeAdded(peerId, currentView());
             case REMOVE -> {
-                if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
-                    router.route(QuorumStateNotification.disappeared());
-                }
                 topologyManager.unregisterPeer(peerId);
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
-            case SHUTDOWN -> {
-                quorumEstablished.set(false);
-                router.route(QuorumStateNotification.disappeared());
-                yield TopologyChangeNotification.nodeDown(peerId);
-            }
+            case SHUTDOWN -> TopologyChangeNotification.nodeDown(peerId);
         };
         log.info("Routing topology change: {}", viewChange);
         router.route(viewChange);

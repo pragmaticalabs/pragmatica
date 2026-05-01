@@ -155,7 +155,8 @@ public interface TopologyObserver extends TopologyManager {
                        Set<NodeId> coreNodeIds,
                        Set<NodeId> tombstonedNodes,
                        GenerationSnapshotSource snapshotSource,
-                       Predicate<NodeId> isDecommissioned) implements TopologyObserver {
+                       Predicate<NodeId> isDecommissioned,
+                       AtomicBoolean quorumEstablished) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -169,7 +170,8 @@ public interface TopologyObserver extends TopologyManager {
                     Set<NodeId> coreNodeIds,
                     Set<NodeId> tombstonedNodes,
                     GenerationSnapshotSource snapshotSource,
-                    Predicate<NodeId> isDecommissioned) {
+                    Predicate<NodeId> isDecommissioned,
+                    AtomicBoolean quorumEstablished) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -182,6 +184,7 @@ public interface TopologyObserver extends TopologyManager {
                 this.tombstonedNodes = tombstonedNodes;
                 this.snapshotSource = snapshotSource;
                 this.isDecommissioned = isDecommissioned;
+                this.quorumEstablished = quorumEstablished;
                 this.effectiveClusterSize.set(config.clusterSize());
                 // Mirror the `initReconcile` filter: a peer the cluster has durably retired
                 // (KV NodeLifecycleValue.DECOMMISSIONED) must not be reconstructed from
@@ -300,6 +303,7 @@ public interface TopologyObserver extends TopologyManager {
                 var nodeId = connectionFailed.nodeId();
                 nodeStatesById.computeIfPresent(nodeId, (_, state) ->
                     processConnectionFailure(state, connectionFailed.cause()));
+                evaluateQuorumState();
             }
 
             private NodeState processConnectionFailure(NodeState state, Cause cause) {
@@ -329,6 +333,7 @@ public interface TopologyObserver extends TopologyManager {
                 var nodeId = connectionEstablished.nodeId();
                 nodeStatesById.computeIfPresent(nodeId, (_, state) ->
                     processConnectionEstablished(state));
+                evaluateQuorumState();
             }
 
             private NodeState processConnectionEstablished(NodeState state) {
@@ -355,6 +360,7 @@ public interface TopologyObserver extends TopologyManager {
                 if (active().get()) {
                                        requestConnection(nodeInfo.id());
                                    }
+                                   evaluateQuorumState();
                                });
             }
 
@@ -378,6 +384,7 @@ public interface TopologyObserver extends TopologyManager {
                                      nodeIdsByAddress.remove(state.info()
                                                                   .address());
                                      router().route(new NetworkServiceMessage.DisconnectNode(nodeId));
+                                     evaluateQuorumState();
                                  });
             }
 
@@ -481,6 +488,64 @@ public interface TopologyObserver extends TopologyManager {
                                           .count();
             }
 
+            /// Canonical edge-transition publisher for `QuorumStateNotification`.
+            ///
+            /// Phase A (commit `5c29a104f`) made SWIM the canonical source for membership
+            /// observations: SWIM observations flow through HealthReconciler → topology KV
+            /// atoms → `TopologyObserver`. This method completes the symmetric counterpart
+            /// for the quorum-loss path: QUIC/Netty transports no longer publish quorum
+            /// state — they only manage peer-link state. The observer owns the quorum view
+            /// because it already has all the bookkeeping (`quorumSize`, `nodeStatesById`,
+            /// health states).
+            ///
+            /// Idempotent: only fires on `false → true` (established) or `true → false`
+            /// (disappeared) edge transitions. SWIM filters transient flap upstream via
+            /// its suspect-window so the observer sees only post-filtered membership
+            /// decisions — no debounce needed here.
+            ///
+            /// The peer count excludes self; the `+ 1` adds self as the implicitly-healthy
+            /// observer. This matches the formula previously used by `QuicClusterNetwork`
+            /// and `NettyClusterNetwork`.
+            private void evaluateQuorumState() {
+                var haveQuorum = (healthyActivePeerCount() + 1) >= quorumSize();
+                if (haveQuorum) {
+                    if (quorumEstablished.compareAndSet(false, true)) {
+                        log.info("Quorum established (healthy active peers + 1 >= {})", quorumSize());
+                        router.route(QuorumStateNotification.established());
+                    }
+                } else {
+                    if (quorumEstablished.compareAndSet(true, false)) {
+                        log.warn("Quorum lost (healthy active peers + 1 < {})", quorumSize());
+                        router.route(QuorumStateNotification.disappeared());
+                    }
+                }
+            }
+
+            /// Healthy active peers, excluding self. Used by the canonical quorum-state
+            /// publisher: `+ 1` is added back to include self, matching the formula
+            /// formerly used by the QUIC/Netty transports.
+            private int healthyActivePeerCount() {
+                return snapshotSource.currentMembershipView()
+                                     .map(this::peerHealthyOnDutyCount)
+                                     .or(this::legacyHealthyActivePeerCount);
+            }
+
+            /// Snapshot's `healthyOnDutyCount` may include self; subtract it deterministically
+            /// so the `+ 1` in `evaluateQuorumState` does not double-count.
+            private int peerHealthyOnDutyCount(MembershipView view) {
+                var selfHealthy = view.onDutyMemberIds().contains(config.self()) ? 1 : 0;
+                return Math.max(0, view.healthyOnDutyCount() - selfHealthy);
+            }
+
+            private int legacyHealthyActivePeerCount() {
+                return (int) nodeStatesById.values()
+                                          .stream()
+                                          .filter(state -> !state.info().id().equals(config.self()))
+                                          .filter(state -> state.info().role() != NodeRole.PASSIVE)
+                                          .filter(state -> state.health() == NodeHealth.HEALTHY)
+                                          .count();
+            }
+
             @Override
             public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {
                 int newSize = message.clusterSize();
@@ -503,19 +568,19 @@ public interface TopologyObserver extends TopologyManager {
                 }
                 int oldQuorum = currentSize / 2 + 1;
                 int newQuorum = newSize / 2 + 1;
-                int activeNodes = activeTopologySize();
-                boolean wasBelow = activeNodes < oldQuorum;
-                boolean nowAbove = activeNodes >= newQuorum;
                 effectiveClusterSize.set(newSize);
                 log.info("Cluster size changed from {} to {} (quorum: {} -> {})",
                          currentSize,
                          newSize,
                          oldQuorum,
                          newQuorum);
-                if (wasBelow && nowAbove) {
-                    log.info("Quorum re-established after cluster size change");
-                    router.route(QuorumStateNotification.established());
-                }
+                // Cluster-size changes shift the quorum threshold without touching
+                // `nodeStatesById`. Route through the canonical edge-transition publisher
+                // so the same latch state is used everywhere — preserving the original
+                // size-shrink "quorum re-established" fire while also covering the
+                // size-grow "quorum lost because threshold rose above current healthy"
+                // case that the legacy single-direction check missed.
+                evaluateQuorumState();
             }
 
             @Override
@@ -576,6 +641,7 @@ public interface TopologyObserver extends TopologyManager {
                                           ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet(),
                                           snapshotSource,
-                                          isDecommissioned));
+                                          isDecommissioned,
+                                          new AtomicBoolean(false)));
     }
 }
