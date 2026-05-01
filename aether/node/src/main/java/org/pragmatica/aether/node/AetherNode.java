@@ -76,7 +76,6 @@ import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.GenerationChangedSink;
-import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
@@ -1188,11 +1187,7 @@ public interface AetherNode extends ManageableNode {
                                                   java.util.concurrent.TimeUnit.SECONDS);
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
-        attachQuicPeerStateListener(clusterNode.network(),
-                                    clusterTopologyManager,
-                                    stableHealthSink,
-                                    leaderEpochSupplier,
-                                    swimHealthDetector);
+        attachQuicPeerStateListener(clusterNode.network(), clusterTopologyManager, swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
                                                                                       leaderTerm,
@@ -1486,24 +1481,10 @@ public interface AetherNode extends ManageableNode {
         if (notification.cause().value() instanceof AetherValue.ClusterPhaseValue value) {reconciler.onClusterPhasePut(value);}
     }
 
-    @SuppressWarnings({"JBCT-RET-01", "unchecked"}) private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
-                                                                                        ClusterTopologyManager ctm) {
-        if (put.cause().value() instanceof AetherValue.NodeLifecycleValue lifecycleValue && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {
-            var nodeId = put.cause().key()
-                                  .nodeId();
-            markReadyWithAddress(ctm, nodeId, lifecycleValue);
-            ctm.onNodeReady(nodeId);
-        }
-    }
-
-    private static void markReadyWithAddress(ClusterTopologyManager ctm,
-                                             NodeId nodeId,
-                                             AetherValue.NodeLifecycleValue lifecycleValue) {
-        if (lifecycleValue.hasAddress()) {ctm.observer()
-                                                      .markReady(nodeId,
-                                                                 new NodeAddress(lifecycleValue.host(),
-                                                                                 lifecycleValue.port()));} else {ctm.observer()
-                                                                                                                             .markReady(nodeId);}
+    @SuppressWarnings("unchecked") private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
+                                                                       ClusterTopologyManager ctm) {
+        if (put.cause().value() instanceof AetherValue.NodeLifecycleValue lifecycleValue && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {ctm.onNodeReady(put.cause().key()
+                                                                                                                                                                                        .nodeId());}
     }
 
     private static NodeAddress findSelfAddress(AetherNodeConfig config) {
@@ -1527,8 +1508,6 @@ public interface AetherNode extends ManageableNode {
 
     private static void attachQuicPeerStateListener(ClusterNetwork network,
                                                     ClusterTopologyManager ctm,
-                                                    HealthSignalSink healthSink,
-                                                    Supplier<Epoch> epochSupplier,
                                                     CoreSwimHealthDetector swimDetector) {
         LOG.debug("attachQuicPeerStateListener: network class={}",
                   network == null
@@ -1540,42 +1519,30 @@ public interface AetherNode extends ManageableNode {
         }
         var listener = new QuicPeerStateListener() {
             @Override@Contract public void onPeerJoined(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable) + CTM bump + legacy SwimHint",
-                          nodeId);
+                LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable)", nodeId);
                 ctm.onQuicPeerJoined(nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-                emitLegacyHealthyHint(nodeId);
             }
 
             @Override@Contract public void onPeerReconnected(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable) + CTM bump + legacy SwimHint",
-                          nodeId);
+                LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable)", nodeId);
                 ctm.onQuicPeerJoined(nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-                emitLegacyHealthyHint(nodeId);
             }
 
             @Override@Contract public void onPeerLeft(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable) + CTM notify", nodeId);
+                LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
                 ctm.onQuicPeerLeft(nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
                                                                                           QuicTransportCause.PEER_LEFT));
-            }
-
-            private void emitLegacyHealthyHint(NodeId peer) {
-                var epoch = epochSupplier.get();
-                healthSink.emit(new HealthSignal.SwimHint(peer, HealthHint.HEALTHY, epoch));
             }
         };
         quicNetwork.setPeerStateListener(listener);
         quicNetwork.connectedPeers()
                                   .forEach(peer -> {
-                                               LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) + legacy SwimHint for already-connected peer {}",
+                                               LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) for already-connected peer {}",
                                                          peer);
                                                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
-                                               healthSink.emit(new HealthSignal.SwimHint(peer,
-                                                                                         HealthHint.HEALTHY,
-                                                                                         epochSupplier.get()));
                                            });
     }
 
@@ -2014,10 +1981,6 @@ public interface AetherNode extends ManageableNode {
                                                          clusterDeploymentManager::onNodeLifecyclePut)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          put -> notifyCtmOnDuty(put, clusterTopologyManager))
-                                                  .onRemove(AetherKey.NodeLifecycleKey.class,
-                                                            remove -> clusterTopologyManager.observer()
-                                                                                                     .markDeparted(remove.cause().key()
-                                                                                                                               .nodeId()))
                                                   .onPut(AetherKey.ActivationDirectiveKey.class,
                                                          clusterDeploymentManager::onActivationDirectivePut)
                                                   .onRemove(AetherKey.ActivationDirectiveKey.class,
@@ -2174,8 +2137,6 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onConnectionEstablished));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
                                               eventAggregator::onConnectionFailed));
-        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
-                                              topologyManager::handleConnectionFailed));
         entries.add(MessageRouter.Entry.route(OperationalEvent.AccessDenied.class, eventAggregator::onAccessDenied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,
                                               eventAggregator::onNodeLifecycleChanged));

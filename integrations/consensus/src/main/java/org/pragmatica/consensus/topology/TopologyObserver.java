@@ -6,7 +6,6 @@ import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -52,26 +51,11 @@ public interface TopologyObserver extends TopologyManager {
     @MessageReceiver
     void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList);
 
-    /// Idempotently add a peer to the topology. Network adapters call this directly when an
-    /// unknown peer completes the Hello handshake (QUIC/Netty Hello handlers → `registerPeer`).
-    @Contract void registerPeer(NodeInfo peerInfo);
-
-    /// Idempotently remove a peer from the topology and tombstone it so static-config
-    /// reconciliation will not resurrect it. Network adapters call this directly on confirmed
-    /// peer departures.
-    @Contract void unregisterPeer(NodeId peerId);
-
     @MessageReceiver
     void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes);
 
     @MessageReceiver
     void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes);
-
-    @MessageReceiver
-    void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed);
-
-    @MessageReceiver
-    void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished);
 
     @MessageReceiver
     void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message);
@@ -263,24 +247,6 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             @Override
-            public void registerPeer(NodeInfo peerInfo) {
-                // R4: TopologyObserver is a pure read-only projection of KV NodeLifecycleKey
-                // (HealthReconciler is sole writer per spec §4.3 P4). Direct mutation is no longer
-                // permitted from any caller. This method survives as a compile-time no-op only to
-                // keep R5 (transport narrowing) decoupled from R4 — QUIC/Netty adapters still call
-                // it on Hello-handshake completion. R5 removes the call sites and this method.
-                log.trace("registerPeer({}) ignored — R4: TopologyObserver is read-only", peerInfo.id());
-            }
-
-            @Override
-            public void unregisterPeer(NodeId peerId) {
-                // R4: see registerPeer rationale. The authoritative DECOMMISSIONED transition flows
-                // through HealthReconciler → KV NodeLifecycleKey → snapshot projection. Transport
-                // adapters still invoke this on connection teardown; the call is silently ignored.
-                log.trace("unregisterPeer({}) ignored — R4: TopologyObserver is read-only", peerId);
-            }
-
-            @Override
             public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {
                 var nodeInfos = nodeStatesById.values()
                                               .stream()
@@ -299,26 +265,6 @@ public interface TopologyObserver extends TopologyManager {
                                .stream()
                                .filter(info -> !tombstonedNodes.contains(info.id()))
                                .forEach(this::addNode);
-            }
-
-            @Override
-            public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {
-                // R4: TopologyObserver is read-only. Transport-level reconnect-backoff bookkeeping
-                // is handled internally by the QUIC/Netty adapters' own per-peer state machinery
-                // (PeerState in QuicClusterNetwork, equivalent in NettyClusterNetwork); it no
-                // longer mutates the topology projection here. R5 will remove this method and the
-                // transport call sites entirely.
-                log.trace("handleConnectionFailed({}) ignored — R4: TopologyObserver is read-only",
-                          connectionFailed.nodeId());
-            }
-
-            @Override
-            public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {
-                // R4: see handleConnectionFailed rationale. Transport-readiness no longer drives
-                // topology mutation — authoritative ON_DUTY status is owned by HealthReconciler
-                // and observed via the KV NodeLifecycleKey snapshot.
-                log.trace("handleConnectionEstablished({}) ignored — R4: TopologyObserver is read-only",
-                          connectionEstablished.nodeId());
             }
 
             private void addNode(NodeInfo nodeInfo) {
@@ -407,39 +353,12 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             @Override
-            public void markReady(NodeId nodeId) {
-                // R4: TopologyObserver no longer maintains a separate ON_DUTY tracker — readers
-                // resolve ON_DUTY status from the GenerationSnapshot's MembershipView, which is
-                // sourced from KV NodeLifecycleKey writes (HealthReconciler is the sole writer).
-                // This method survives only for compile-time compatibility with legacy callers
-                // that have not yet been migrated; it is a deliberate no-op.
-                log.trace("markReady({}) ignored — R4: TopologyObserver is read-only", nodeId);
-            }
-
-            @Override
-            public void markReady(NodeId nodeId, NodeAddress address) {
-                // R4: see markReady(NodeId) rationale. Address publication for dynamically
-                // provisioned nodes flows through KV NodeLifecycleValue.host/port instead.
-                log.trace("markReady({}, {}) ignored — R4: TopologyObserver is read-only",
-                          nodeId,
-                          address.asString());
-            }
-
-            @Override
-            public void markDeparted(NodeId nodeId) {
-                // R4: see markReady(NodeId) rationale. Departure is observed via KV
-                // NodeLifecycleKey transitions (DECOMMISSIONED / SHUTTING_DOWN) or removal,
-                // not via direct mutation here.
-                log.trace("markDeparted({}) ignored — R4: TopologyObserver is read-only", nodeId);
-            }
-
-            @Override
             public int readyNodeCount() {
                 // Prefer snapshot-projected ON_DUTY set: dynamically provisioned nodes may be
-                // ON_DUTY in the leader-projected view before appearing in local nodeStatesById
-                // (and therefore before the local readyNodes membership tracker gets populated
-                // via markReady from consensus). Fall back to legacy readyNodes when the
-                // snapshot source is absent or no snapshot has arrived yet.
+                // ON_DUTY in the leader-projected view before appearing in local nodeStatesById.
+                // Fall back to the (now-empty post-R5) legacy readyNodes set when the snapshot
+                // source is absent or no snapshot has arrived yet — KV NodeLifecycleKey writes
+                // (HealthReconciler) are the sole source of ON_DUTY truth.
                 return snapshotSource.currentMembershipView()
                                      .map(view -> view.onDutyMemberIds().size())
                                      .or(() -> (int) readyNodes.stream()
@@ -494,9 +413,8 @@ public interface TopologyObserver extends TopologyManager {
             /// node bootstrap wiring — causing an NPE on `delegate.route(...)`. `start()`
             /// flips `started=true` and immediately invokes this method once so the initial
             /// edge state (established or disappeared) is published exactly once after the
-            /// router is fully wired. Subsequent mutations (registerPeer, connection
-            /// events, cluster-size changes) follow the normal idempotent edge-transition
-            /// rules.
+            /// router is fully wired. Subsequent KV-driven mutations (snapshot updates,
+            /// cluster-size changes) follow the normal idempotent edge-transition rules.
             private void evaluateQuorumState() {
                 if (!started.get()) {
                     return;

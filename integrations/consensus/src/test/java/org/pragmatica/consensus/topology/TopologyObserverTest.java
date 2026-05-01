@@ -13,9 +13,7 @@ package org.pragmatica.consensus.topology;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
@@ -27,23 +25,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Verifies R4 semantics on `TopologyObserver`: the mutation API surface
+/// Verifies R5 semantics on `TopologyObserver`: the mutation API surface
 /// (`registerPeer`, `unregisterPeer`, `markReady`, `markDeparted`,
-/// `handleConnectionFailed`, `handleConnectionEstablished`) is now inert.
+/// `handleConnectionFailed`, `handleConnectionEstablished`) is **deleted**.
 /// HealthReconciler is the sole writer of `NodeLifecycleKey`; the observer's
-/// authoritative readers project `MembershipView` from KV via `GenerationSnapshotSource`.
-/// The legacy mutation methods remain on the interface only for compile-time
-/// compatibility with R5-pending transport adapters; they perform no state changes.
+/// authoritative readers project `MembershipView` from KV via
+/// `GenerationSnapshotSource`. Compile-time absence of the legacy methods is
+/// the strongest possible enforcement of spec §4.4 (Layer 3 is read-only).
 class TopologyObserverTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
     private static final NodeId PEER_B = nodeId("node-b").unwrap();
-    private static final NodeId NEW_PEER = nodeId("node-new").unwrap();
 
     private static final NodeInfo INFO_SELF = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("localhost", 6000).unwrap());
     private static final NodeInfo INFO_A = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("localhost", 6001).unwrap());
     private static final NodeInfo INFO_B = NodeInfo.nodeInfo(PEER_B, NodeAddress.nodeAddress("localhost", 6002).unwrap());
-    private static final NodeInfo INFO_NEW = NodeInfo.nodeInfo(NEW_PEER, NodeAddress.nodeAddress("localhost", 6003).unwrap());
 
     private static TopologyConfig baseConfig() {
         return new TopologyConfig(SELF,
@@ -51,134 +47,6 @@ class TopologyObserverTest {
                                   timeSpan(60).seconds(),
                                   timeSpan(1).seconds(),
                                   List.of(INFO_SELF, INFO_A, INFO_B));
-    }
-
-    private static TopologyObserver newObserver(MessageRouter router) {
-        return TopologyObserver.topologyObserver(baseConfig(), router).unwrap();
-    }
-
-    /// R4: mutation methods are inert no-ops. Topology state is sourced from
-    /// `config.coreNodes()` at construction (filtered by the KV-decommissioned
-    /// predicate) and from KV `NodeLifecycleKey` changes via the snapshot source.
-    @Nested
-    class MutationApiInert {
-        @Test
-        void registerPeer_isNoOp_doesNotMutateTopology() {
-            var observer = newObserver(MessageRouter.mutable());
-            var before = observer.topology();
-
-            observer.registerPeer(INFO_NEW);
-
-            assertThat(observer.topology())
-                .as("R4: registerPeer is inert — topology projection unchanged")
-                .isEqualTo(before)
-                .doesNotContain(NEW_PEER);
-            assertThat(observer.get(NEW_PEER).isEmpty())
-                .as("R4: registerPeer must not add unknown nodes")
-                .isTrue();
-        }
-
-        @Test
-        void registerPeer_isNoOp_doesNotRouteConnectNode() {
-            var router = MessageRouter.mutable();
-            var connectRequests = new CopyOnWriteArrayList<NodeId>();
-            router.addRoute(NetworkServiceMessage.ConnectNode.class, msg -> connectRequests.add(msg.node()));
-
-            var observer = newObserver(router);
-            observer.start().await();
-
-            observer.registerPeer(INFO_NEW);
-
-            assertThat(connectRequests)
-                .as("R4: registerPeer must not emit ConnectNode")
-                .doesNotContain(NEW_PEER);
-        }
-
-        @Test
-        void unregisterPeer_isNoOp_doesNotMutateTopology() {
-            var observer = newObserver(MessageRouter.mutable());
-
-            observer.unregisterPeer(PEER_A);
-
-            assertThat(observer.topology())
-                .as("R4: unregisterPeer is inert — KV is the sole authority for removal")
-                .contains(PEER_A);
-        }
-
-        @Test
-        void unregisterPeer_isNoOp_doesNotRouteDisconnectNode() {
-            var router = MessageRouter.mutable();
-            var disconnectRequests = new CopyOnWriteArrayList<NodeId>();
-            router.addRoute(NetworkServiceMessage.DisconnectNode.class, msg -> disconnectRequests.add(msg.nodeId()));
-            router.addRoute(NetworkServiceMessage.ConnectNode.class, _ -> {});
-
-            var observer = newObserver(router);
-
-            observer.unregisterPeer(PEER_A);
-
-            assertThat(disconnectRequests)
-                .as("R4: unregisterPeer must not emit DisconnectNode")
-                .doesNotContain(PEER_A);
-        }
-
-        @Test
-        void markReady_isNoOp_doesNotMutateReadyTracker() {
-            var observer = newObserver(MessageRouter.mutable());
-            var before = observer.readyNodeCount();
-
-            observer.markReady(NEW_PEER);
-            observer.markReady(NEW_PEER, NodeAddress.nodeAddress("localhost", 6003).unwrap());
-
-            assertThat(observer.readyNodeCount())
-                .as("R4: markReady is inert — readyNodeCount sourced from KV/snapshot only")
-                .isEqualTo(before);
-        }
-
-        @Test
-        void markDeparted_isNoOp_doesNotMutateReadyTracker() {
-            var observer = newObserver(MessageRouter.mutable());
-            var before = observer.readyNodeCount();
-
-            observer.markDeparted(PEER_A);
-
-            assertThat(observer.readyNodeCount())
-                .as("R4: markDeparted is inert — KV NodeLifecycleKey REMOVE is sole authority")
-                .isEqualTo(before);
-        }
-
-        @Test
-        void handleConnectionFailed_isNoOp_doesNotMutateTopology() {
-            var observer = newObserver(MessageRouter.mutable());
-            var before = observer.topology();
-
-            observer.handleConnectionFailed(new NetworkServiceMessage.ConnectionFailed(PEER_A, Causes.cause("link reset")));
-
-            assertThat(observer.topology())
-                .as("R4: transport-level events do not mutate topology projection")
-                .isEqualTo(before);
-        }
-
-        @Test
-        void handleConnectionEstablished_isNoOp_doesNotMutateTopology() {
-            var observer = newObserver(MessageRouter.mutable());
-            var before = observer.topology();
-
-            observer.handleConnectionEstablished(new NetworkServiceMessage.ConnectionEstablished(PEER_A));
-
-            assertThat(observer.topology())
-                .as("R4: transport-level events do not mutate topology projection")
-                .isEqualTo(before);
-        }
-
-        @Test
-        void unregisterPeer_self_isStillIgnored() {
-            var observer = newObserver(MessageRouter.mutable());
-
-            observer.unregisterPeer(SELF);
-
-            assertThat(observer.topology()).contains(SELF);
-            assertThat(observer.self().id()).isEqualTo(SELF);
-        }
     }
 
     /// `initReconcile` consults the KV-Store's `NodeLifecycleValue.DECOMMISSIONED`
@@ -281,61 +149,6 @@ class TopologyObserverTest {
             assertThat(notifications)
                 .as("start() below quorum must not publish established")
                 .isEmpty();
-        }
-
-        @Test
-        void quicHandshakeFlap_doesNotChangeQuorumState_R4_inert() {
-            // R4: transport-level events are inert on TopologyObserver. A QUIC handshake
-            // storm that calls handleConnectionFailed/Established many times must not
-            // produce any QuorumStateNotification edges — these methods are no-ops.
-            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
-            var router = routerCapturing(notifications);
-            router.addRoute(NetworkServiceMessage.ConnectNode.class, _ -> {});
-            router.addRoute(NetworkServiceMessage.DisconnectNode.class, _ -> {});
-            router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
-
-            var observer = TopologyObserver.topologyObserver(baseConfig(), router).unwrap();
-            observer.start().await();
-            // Initial established (peers=2 from config seed crosses up).
-            assertThat(notifications).hasSize(1);
-
-            // Simulate the handshake storm: each peer flaps connect/fail/connect 5 times.
-            for (var i = 0; i < 5; i++) {
-                observer.handleConnectionFailed(new NetworkServiceMessage.ConnectionFailed(PEER_A, Causes.cause("flap " + i)));
-                observer.handleConnectionEstablished(new NetworkServiceMessage.ConnectionEstablished(PEER_A));
-                observer.handleConnectionFailed(new NetworkServiceMessage.ConnectionFailed(PEER_B, Causes.cause("flap " + i)));
-                observer.handleConnectionEstablished(new NetworkServiceMessage.ConnectionEstablished(PEER_B));
-            }
-
-            assertThat(notifications)
-                .as("R4: transport flaps must not change quorum state")
-                .hasSize(1);
-        }
-
-        @Test
-        void connectionFailed_isTransportOnly_doesNotRouteQuorumTransition() {
-            // POST-FIX INVARIANT (R4): transport-level events do not route quorum
-            // transitions. With register/unregister also inert, the only way quorum
-            // state can change in tests is via a snapshot source (KV-projected).
-            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
-            var router = routerCapturing(notifications);
-
-            var observer = TopologyObserver.topologyObserver(baseConfig(), router).unwrap();
-            observer.start().await();
-            // Initial published edge from start() — established.
-            assertThat(notifications).hasSize(1);
-
-            // Sink other transport-level routes.
-            router.addRoute(NetworkServiceMessage.ConnectNode.class, _ -> {});
-            router.addRoute(NetworkServiceMessage.DisconnectNode.class, _ -> {});
-            router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
-
-            observer.handleConnectionFailed(new NetworkServiceMessage.ConnectionFailed(PEER_A, Causes.cause("link reset")));
-            observer.handleConnectionFailed(new NetworkServiceMessage.ConnectionFailed(PEER_B, Causes.cause("link reset")));
-
-            assertThat(notifications)
-                .as("transport-level ConnectionFailed must not fire QuorumStateNotification")
-                .hasSize(1);
         }
 
         @Test

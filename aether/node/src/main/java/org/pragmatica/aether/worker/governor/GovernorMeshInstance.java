@@ -6,8 +6,6 @@ package org.pragmatica.aether.worker.governor;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
-import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.parse.Number;
@@ -27,21 +25,17 @@ import org.slf4j.LoggerFactory;
     private final Map<String, NodeId> governors = new ConcurrentHashMap<>();
 
     private final Option<DelegateRouter> delegateRouter;
-    private final Option<TopologyObserver> topologyObserver;
 
     GovernorMeshInstance() {
         this.delegateRouter = Option.empty();
-        this.topologyObserver = Option.empty();
     }
 
     GovernorMeshInstance(DelegateRouter delegateRouter) {
         this.delegateRouter = Option.option(delegateRouter);
-        this.topologyObserver = Option.empty();
     }
 
-    GovernorMeshInstance(DelegateRouter delegateRouter, TopologyObserver topologyObserver) {
+    GovernorMeshInstance(DelegateRouter delegateRouter, @SuppressWarnings("unused") TopologyObserver topologyObserver) {
         this.delegateRouter = Option.option(delegateRouter);
-        this.topologyObserver = Option.option(topologyObserver);
     }
 
     @Override public void registerGovernor(String communityId, NodeId governorId) {
@@ -81,8 +75,9 @@ import org.slf4j.LoggerFactory;
     }
 
     private void registerInTopology(NodeId governorId, NodeAddress addr) {
-        var nodeInfo = NodeInfo.nodeInfo(governorId, addr, NodeRole.PASSIVE);
-        topologyObserver.onPresent(observer -> observer.registerPeer(nodeInfo));
+        LOG.debug("GovernorMesh: requesting transport connect to governor {} at {} (PASSIVE role; topology projection driven by KV)",
+                  governorId,
+                  addr.asString());
         delegateRouter.onPresent(router -> router.route(new NetworkServiceMessage.ConnectNode(governorId)));
     }
 

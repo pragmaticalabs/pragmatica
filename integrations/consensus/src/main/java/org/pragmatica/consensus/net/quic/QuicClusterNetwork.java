@@ -607,8 +607,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
 
-        // Register BEFORE ConnectionEstablished if unknown — direct call on topology observer.
-        unknownNodeInfo.onPresent(topologyManager::registerPeer);
+        // R5 (spec §4.1): transport never mutates the topology projection. The Hello
+        // handshake is reported upward via processViewChange → peerStateListener →
+        // SWIM `recordTransportHint` (PeerReachable). HealthReconciler (sole writer of
+        // NodeLifecycleKey) projects the resulting MembershipView for Layer 3.
         router.route(new NetworkServiceMessage.ConnectionEstablished(peerId));
         processViewChange(ADD, peerId);
 
@@ -624,18 +626,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerRole, peerLabels));
     }
 
-    /// Finalize a RECONNECTED attach. Suppresses the duplicate ADD view-change but re-registers
-    /// the peer when topology forgot it between attach cycles (e.g. HealthReconciler snapshot
-    /// wipe after chaos kill+recreate). Without this re-registration the post-recreate heartbeat
-    /// loop evicts the peer at 1Hz because writes resolve against an `Unknown node` lookup.
-    /// Package-private to allow direct exercise from regression tests without driving a full
-    /// QUIC handshake.
+    /// Finalize a RECONNECTED attach. Suppresses the duplicate ADD view-change.
+    /// R5 (spec §4.1): transport never mutates topology — the resilient peer-state
+    /// machinery (`PeerState`) is the only memory of the peer at the QUIC layer; any
+    /// recovered view of the peer is projected into Layer 3 via SWIM hints.
+    /// Package-private to allow direct exercise from regression tests without driving a
+    /// full QUIC handshake.
     @Contract
     void finalizeReconnect(NodeId peerId, Option<NodeInfo> unknownNodeInfo) {
-        unknownNodeInfo.onPresent(topologyManager::registerPeer);
+        // unknownNodeInfo is retained for diagnostic logging in the surrounding caller; the
+        // R4 pre-cursor version called topologyManager.registerPeer here, that mutation has
+        // been removed (transport is read-only against TopologyObserver).
         router.route(new NetworkServiceMessage.ConnectionEstablished(peerId));
         processViewChange(RECONNECT, peerId);
-        log.debug("Node {} reconnected via QUIC Hello handshake (suppressed duplicate ADD)", peerId);
+        log.debug("Node {} reconnected via QUIC Hello handshake (suppressed duplicate ADD), unknownNodeInfo={}",
+                  peerId, unknownNodeInfo);
     }
 
     /// Drain the per-peer offline buffer into a freshly-attached connection. Called from
@@ -831,7 +836,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private void handleWriteFailure(NodeId peerId) {
         // Write failure is advisory — the QUIC channel-close handler owns authoritative
-        // peer removal (unregisterPeer + processViewChange(REMOVE)). Clearing peer state
+        // peer removal (processViewChange(REMOVE) emits the TransportObservation hint
+        // toward SWIM; topology mutation is HealthReconciler's responsibility, not ours).
+        // Clearing peer state
         // here races with handshake completion from the reverse direction and prematurely
         // drops the peer from Rabia's membership view.
         log.debug("Write to {} failed; deferring removal to QUIC channel lifecycle", peerId);
@@ -1021,18 +1028,22 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// QUIC is pure transport — peer-link state, peerLinks table, hello handshakes, message
     /// routing. Membership and quorum decisions are owned by `TopologyObserver` (canonical
-    /// publisher of `QuorumStateNotification`, fed by SWIM via `HealthReconciler`). This
-    /// method:
-    ///   - ADD: emits an informational `TopologyChangeNotification.nodeAdded` and reports
-    ///     the peer-joined signal to the local listener (advisory).
-    ///   - REMOVE: fires a `HealthSignal.QuicDisconnect` via the listener (advisory; leader's
-    ///     `HealthReconciler` counts it), calls `topologyManager.unregisterPeer` directly (spec §12:
-    ///     QUIC is the authoritative source of "this peer is gone from my view"), and emits an
-    ///     informational `TopologyChangeNotification.nodeRemoved`. No hysteresis buffering — §8
-    ///     single-writer rule means `HealthReconciler` is the only component that decides whether
-    ///     membership atoms actually change.
-    ///   - SHUTDOWN: emits `TopologyChangeNotification.nodeDown`. No quorum-disappeared
-    ///     fire — that's the canonical publisher's job.
+    /// publisher of `QuorumStateNotification`, fed by SWIM via `HealthReconciler`).
+    ///
+    /// R5 (spec §4.1): transport must NOT mutate topology. The only upward signal allowed
+    /// is `TransportObservation` via `peerStateListener` (which the Aether wiring forwards
+    /// to `swimDetector.recordTransportHint`). The `TopologyChangeNotification` emissions
+    /// kept here remain informational and route via the observer's own subscription path
+    /// — the observer treats them as advisory and does not derive membership from them.
+    /// This method:
+    ///   - ADD: notifies `peerStateListener.onPeerJoined` (informational hint to SWIM
+    ///     via Aether's wiring) and emits an informational
+    ///     `TopologyChangeNotification.nodeAdded`.
+    ///   - REMOVE: fires a `HealthSignal.QuicDisconnect` via the disconnect listener
+    ///     (advisory; leader's `HealthReconciler` counts it for ClusterSync), notifies
+    ///     `peerStateListener.onPeerLeft` (informational hint to SWIM), emits an
+    ///     informational `TopologyChangeNotification.nodeRemoved`. NO topology mutation.
+    ///   - SHUTDOWN: emits `TopologyChangeNotification.nodeDown`.
     ///   - RECONNECT: transparent re-attach, suppress duplicate ADD.
     @SuppressWarnings("JBCT-PAT-01") // Switch expression with side effects
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
@@ -1050,10 +1061,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         var viewChange = switch (operation) {
             case ADD -> {
-                // QUIC handshake is a transport-only signal. Membership decisions (HEALTHY/
-                // FAULTY/SUSPECTED) are owned by SWIM (canonical source). We emit
-                // TopologyChangeNotification.nodeAdded so upstream consumers see the
-                // peer-known event, but do NOT write into the health-observation pipeline.
+                // R5: transport-only event. Forwarded as TransportObservation hint to SWIM
+                // via the Aether peerStateListener wiring. No topology mutation.
                 peerStateListener.onPeerJoined(peerId);
                 yield TopologyChangeNotification.nodeAdded(peerId, currentView());
             }
@@ -1062,13 +1071,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // `HealthReconciler`; on a follower the observation is buffered into the next
                 // outbound `ClusterSyncPong` so the leader folds it through PeerObservationReducer
                 // (ClusterSync refactor commit 2 — followers are sensor-only).
-                // `topologyManager.unregisterPeer` stays put on both roles: it is local transport
-                // hygiene (drops the peer from the QUIC peer table), not a cluster-membership decision.
                 reportPeerRemoval(peerId);
-                // Channel-close is a transport-only signal. Membership decisions are owned by
-                // SWIM (canonical source) — we do NOT push a FAULTY observation from QUIC.
+                // R5: transport-only event. Forwarded as TransportObservation hint to SWIM
+                // via the Aether peerStateListener wiring. No topology mutation —
+                // authoritative DECOMMISSIONED transitions flow through HealthReconciler.
                 peerStateListener.onPeerLeft(peerId);
-                topologyManager.unregisterPeer(peerId);
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {

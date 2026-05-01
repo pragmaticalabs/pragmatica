@@ -155,22 +155,16 @@ class TopologyObserverSnapshotDualModeTest {
         }
 
         @Test
-        void readyNodes_noSnapshot_markReadyIsInert_R4() {
-            // R4: markReady is an inert no-op. With no snapshot live, readyNodeCount
-            // falls back to the legacy `readyNodes` set, which can no longer be
-            // populated via markReady. The count remains zero regardless of how many
-            // markReady calls land — KV NodeLifecycleKey writes (HealthReconciler) are
-            // the sole source of ON_DUTY truth.
+        void readyNodes_noSnapshot_isZero_R5() {
+            // R5: markReady has been removed entirely. With no snapshot live,
+            // readyNodeCount falls back to the (now permanently empty) legacy
+            // `readyNodes` set — KV NodeLifecycleKey writes (HealthReconciler) are
+            // the sole source of ON_DUTY truth. The count is zero by construction.
             var source = new StubSource(); // empty view
             var observer = observerWith(source);
 
-            assertThat(observer.readyNodeCount()).isZero();
-
-            observer.markReady(PEER_A);
-            observer.markReady(PEER_B);
-
             assertThat(observer.readyNodeCount())
-                .as("R4: markReady is inert — readyNodeCount stays zero without a snapshot")
+                .as("R5: with no snapshot, readyNodeCount is zero — the fallback set is unwritable")
                 .isZero();
         }
     }
@@ -201,27 +195,4 @@ class TopologyObserverSnapshotDualModeTest {
         }
     }
 
-    @Nested
-    class WritePathsInertR4 {
-        @Test
-        void registerPeer_isInert_topologyUnchanged() {
-            // R4: registerPeer is a no-op. The static-config seeded `nodeStatesById`
-            // is unchanged by direct mutation calls. KV NodeLifecycleKey is the sole
-            // authority for projection growth.
-            var source = new StubSource(); // noop-equivalent: no view
-            var observer = observerWith(source);
-            var before = observer.topology();
-
-            var newPeer = NodeInfo.nodeInfo(PEER_C, NodeAddress.nodeAddress("localhost", 5003).unwrap());
-            observer.registerPeer(newPeer);
-
-            assertThat(observer.topology())
-                .as("R4: registerPeer is inert — topology unchanged")
-                .isEqualTo(before)
-                .doesNotContain(PEER_C);
-            assertThat(observer.get(PEER_C).isEmpty())
-                .as("R4: registerPeer must not add unknown nodes")
-                .isTrue();
-        }
-    }
 }

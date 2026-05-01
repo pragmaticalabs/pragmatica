@@ -218,6 +218,63 @@ class QuicClusterNetworkHintEmissionTest {
             .isFalse();
     }
 
+    /// R5 (spec §4.1, §6 Signal Catalog): the `QuicPeerStateListener` is the canonical
+    /// upward channel from QUIC transport. Aether wiring forwards listener events into
+    /// `swimDetector.recordTransportHint(...)`. This test verifies the listener fires on
+    /// peer-left events emitted by the transport.
+    @Test
+    void quicTransport_peerConnectionLost_invokesOnPeerLeft() {
+        var leftCalls = new CopyOnWriteArrayList<NodeId>();
+        var joinedCalls = new CopyOnWriteArrayList<NodeId>();
+        var reconnectedCalls = new CopyOnWriteArrayList<NodeId>();
+        QuicPeerStateListener listener = new QuicPeerStateListener() {
+            @Override public void onPeerJoined(NodeId nodeId) { joinedCalls.add(nodeId); }
+            @Override public void onPeerReconnected(NodeId nodeId) { reconnectedCalls.add(nodeId); }
+            @Override public void onPeerLeft(NodeId nodeId) { leftCalls.add(nodeId); }
+        };
+        var network = createNetworkWithListener(NodeId.randomNodeId(),
+                                                 List.of(),
+                                                 MessageRouter.mutable(),
+                                                 QuicDisconnectListener.noop());
+        network.setPeerStateListener(listener);
+
+        var missing = new NodeId("departed-peer");
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
+
+        assertThat(leftCalls)
+            .as("R5: REMOVE view-change must invoke onPeerLeft (TransportObservation hint to SWIM)")
+            .containsExactly(missing);
+        assertThat(joinedCalls).as("disconnect must not synthesize a join").isEmpty();
+        assertThat(reconnectedCalls).as("disconnect must not synthesize a reconnect").isEmpty();
+    }
+
+    /// R5: the peer-state listener is the only authoritative upward signal from QUIC
+    /// — no TopologyChangeNotification edges are needed for SWIM, and no emission of
+    /// removed-API mutations happens. The compile-time absence of `topologyManager
+    /// .unregisterPeer/markDeparted` enforces this; this test additionally confirms the
+    /// runtime path doesn't accidentally invoke a no-op shim.
+    @Test
+    void quicTransport_remove_routesNodeRemovedNotification() {
+        // R5: REMOVE view-change emits an informational NodeRemoved notification — the
+        // observer treats it as advisory only (authoritative state flows through KV).
+        var removed = new CopyOnWriteArrayList<NodeId>();
+        var router = MessageRouter.mutable();
+        router.addRoute(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved.class,
+                        n -> removed.add(n.nodeId()));
+
+        var network = createNetworkWithListener(NodeId.randomNodeId(),
+                                                 List.of(),
+                                                 router,
+                                                 QuicDisconnectListener.noop());
+
+        var missing = new NodeId("departed-peer");
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
+
+        assertThat(removed)
+            .as("REMOVE emits an informational NodeRemoved notification (advisory, not authoritative)")
+            .containsExactly(missing);
+    }
+
     @Test
     void defaultConstructor_usesNoopListener_withoutCrashing() {
         var nodeId = NodeId.randomNodeId();
@@ -268,12 +325,8 @@ class QuicClusterNetworkHintEmissionTest {
                 return result;
             }
             @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
-            @Override public void registerPeer(NodeInfo peerInfo) {}
-            @Override public void unregisterPeer(NodeId peerId) {}
             @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}
             @Override public void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes) {}
-            @Override public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {}
-            @Override public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {}
             @Override public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {}
         };
     }

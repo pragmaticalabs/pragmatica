@@ -193,8 +193,9 @@ public class NettyClusterNetwork implements ClusterNetwork {
         channelEstablishedAt.put(hello.sender(), System.nanoTime());
         // Track passive peers
         trackPassiveRole(hello.sender(), unknownNodeInfo);
-        // Register BEFORE ConnectionEstablished if unknown — direct call on topology observer.
-        unknownNodeInfo.onPresent(topologyManager::registerPeer);
+        // R5 (spec §4.1): transport never mutates the topology projection. ConnectionEstablished
+        // and processViewChange(ADD) emit informational signals only; HealthReconciler is the
+        // sole writer of NodeLifecycleKey.
         router.route(new NetworkServiceMessage.ConnectionEstablished(hello.sender()));
         processViewChange(ADD, hello.sender());
         // Initiate topology discovery only for unknown nodes
@@ -392,7 +393,11 @@ public class NettyClusterNetwork implements ClusterNetwork {
     /// Netty is pure transport — peer-link state, peerLinks table, hello handshakes,
     /// message routing. Membership and quorum decisions are owned by `TopologyObserver`
     /// (canonical publisher of `QuorumStateNotification`, fed by SWIM via `HealthReconciler`).
-    /// Symmetric counterpart of the QUIC demotion in `QuicClusterNetwork.processViewChange`.
+    ///
+    /// R5 (spec §4.1): transport never mutates topology. The `TopologyChangeNotification`
+    /// emitted here is informational only — Layer 3 (TopologyObserver) projects authoritative
+    /// membership exclusively from KV `NodeLifecycleKey` writes by HealthReconciler.
+    /// Symmetric counterpart of `QuicClusterNetwork.processViewChange`.
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
         var activePeerCount = peerLinks.size() - passivePeers.size();
         var quorumSize = topologyManager.quorumSize();
@@ -405,10 +410,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
                  quorumSize);
         var viewChange = switch (operation) {
             case ADD -> TopologyChangeNotification.nodeAdded(peerId, currentView());
-            case REMOVE -> {
-                topologyManager.unregisterPeer(peerId);
-                yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
-            }
+            case REMOVE -> TopologyChangeNotification.nodeRemoved(peerId, currentView());
             case SHUTDOWN -> TopologyChangeNotification.nodeDown(peerId);
         };
         log.info("Routing topology change: {}", viewChange);

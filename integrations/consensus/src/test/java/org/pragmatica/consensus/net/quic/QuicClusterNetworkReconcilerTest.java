@@ -282,12 +282,8 @@ class QuicClusterNetworkReconcilerTest {
             return peers.stream().anyMatch(p -> p.id().equals(nodeId) && p.role() == NodeRole.PASSIVE);
         }
         @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
-        @Override public void registerPeer(NodeInfo peerInfo) {}
-        @Override public void unregisterPeer(NodeId peerId) {}
         @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}
         @Override public void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes) {}
-        @Override public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {}
-        @Override public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {}
         @Override public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {}
     }
 

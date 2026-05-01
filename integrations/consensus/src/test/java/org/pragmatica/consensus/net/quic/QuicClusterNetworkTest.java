@@ -184,22 +184,22 @@ class QuicClusterNetworkTest {
         }
     }
 
-    /// Regression coverage for the chaos kill+recreate reconnect storm: when QUIC re-attach
-    /// returns RECONNECTED but the upstream topology has already pruned the peer (e.g. via a
-    /// HealthReconciler snapshot wipe), the peer must be re-registered before the heartbeat
-    /// loop runs, otherwise sends resolve against an `Unknown node` lookup and evict at 1Hz.
+    /// R5 (spec §4.1): transport never mutates topology. The chaos kill+recreate
+    /// reconnect path emits a `ConnectionEstablished` and forwards the
+    /// `TransportObservation` upward via the peer-state listener — but does NOT call
+    /// `registerPeer` on `TopologyObserver` (which has been removed). Authoritative
+    /// membership flows through HealthReconciler → KV → snapshot.
     @Nested
     class ReconnectFinalization {
 
         @Test
-        void finalizeReconnect_unknownPeerInfo_registersIntoTopology() {
-            var registered = new CopyOnWriteArrayList<NodeInfo>();
+        void finalizeReconnect_routesConnectionEstablished_doesNotMutateTopology() {
             var router = MessageRouter.mutable();
             var establishedFor = new CopyOnWriteArrayList<NodeId>();
             router.addRoute(NetworkServiceMessage.ConnectionEstablished.class,
                             msg -> establishedFor.add(msg.nodeId()));
 
-            var network = createNetworkWithCapturingTopology(NodeId.randomNodeId(), registered, router);
+            var network = createNetworkWithStubTopology(NodeId.randomNodeId(), router);
 
             var peerId = NodeId.randomNodeId();
             var address = NodeAddress.nodeAddress("10.0.0.5", 19500)
@@ -208,25 +208,26 @@ class QuicClusterNetworkTest {
 
             network.finalizeReconnect(peerId, Option.some(info));
 
-            assertThat(registered)
-                .as("topology must be re-registered when reconnect finds an unknown peer")
-                .containsExactly(info);
             assertThat(establishedFor)
-                .as("ConnectionEstablished still routes through during reconnect finalization")
+                .as("ConnectionEstablished routes through during reconnect finalization")
                 .containsExactly(peerId);
         }
 
         @Test
-        void finalizeReconnect_topologyAlreadyKnowsPeer_doesNotRegister() {
-            var registered = new CopyOnWriteArrayList<NodeInfo>();
-            var network = createNetworkWithCapturingTopology(NodeId.randomNodeId(), registered, MessageRouter.mutable());
+        void finalizeReconnect_knownPeer_routesConnectionEstablished() {
+            var router = MessageRouter.mutable();
+            var establishedFor = new CopyOnWriteArrayList<NodeId>();
+            router.addRoute(NetworkServiceMessage.ConnectionEstablished.class,
+                            msg -> establishedFor.add(msg.nodeId()));
+            var network = createNetworkWithStubTopology(NodeId.randomNodeId(), router);
 
+            var peerId = NodeId.randomNodeId();
             // Empty Option signals "topology already knew this peer at the call site".
-            network.finalizeReconnect(NodeId.randomNodeId(), Option.empty());
+            network.finalizeReconnect(peerId, Option.empty());
 
-            assertThat(registered)
-                .as("known peer must not be re-registered to avoid duplicate notifications")
-                .isEmpty();
+            assertThat(establishedFor)
+                .as("ConnectionEstablished routes through even for known peers")
+                .containsExactly(peerId);
         }
     }
 
@@ -247,16 +248,15 @@ class QuicClusterNetworkTest {
         return network;
     }
 
-    /// Build a network whose topology stub records every `registerPeer` call into `registered`.
-    /// Used by reconnect-finalization tests that drive the post-attach path directly without
-    /// standing up a real QUIC handshake.
-    private QuicClusterNetwork createNetworkWithCapturingTopology(NodeId nodeId,
-                                                                  List<NodeInfo> registered,
-                                                                  MessageRouter router) {
+    /// Build a QUIC network with the standard stub topology, used by reconnect-finalization
+    /// tests that drive the post-attach path directly without standing up a real handshake.
+    /// R5: transport never mutates topology — the stub no longer needs to capture
+    /// `registerPeer` calls (the API is gone).
+    private QuicClusterNetwork createNetworkWithStubTopology(NodeId nodeId, MessageRouter router) {
         var nodeAddress = NodeAddress.nodeAddress("127.0.0.1", 19998)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
         var selfInfo = NodeInfo.nodeInfo(nodeId, nodeAddress);
-        TopologyObserver topology = capturingTopologyManager(selfInfo, registered);
+        TopologyObserver topology = stubTopologyManager(selfInfo, List.of());
 
         var network = new QuicClusterNetwork(topology, codec, codec, router, serverSsl, clientSsl);
         networks.add(network);
@@ -282,35 +282,6 @@ class QuicClusterNetworkTest {
     }
 
     private record StubProtocolMessage(NodeId sender) implements org.pragmatica.consensus.ProtocolMessage {}
-
-    /// Stub topology that mirrors `stubTopologyManager` but records every `registerPeer` call
-    /// into the supplied list. Returns `Option.empty()` from `get(...)` for any non-self peer
-    /// so the caller observes the "topology forgot this peer" state under test.
-    private TopologyObserver capturingTopologyManager(NodeInfo self, List<NodeInfo> registered) {
-        return new TopologyObserver() {
-            @Override public NodeInfo self() { return self; }
-            @Override public Option<NodeInfo> get(NodeId id) {
-                return id.equals(self.id()) ? Option.some(self) : Option.empty();
-            }
-            @Override public int clusterSize() { return 1; }
-            @Override public Option<NodeId> reverseLookup(SocketAddress socketAddress) { return Option.empty(); }
-            @Override public Promise<Unit> start() { return Promise.unitPromise(); }
-            @Override public Promise<Unit> stop() { return Promise.unitPromise(); }
-            @Override public TimeSpan pingInterval() { return PING_INTERVAL; }
-            @Override public TimeSpan helloTimeout() { return HELLO_TIMEOUT; }
-            @Override public Option<TlsConfig> tls() { return Option.empty(); }
-            @Override public Option<NodeState> getState(NodeId id) { return Option.empty(); }
-            @Override public List<NodeId> topology() { return List.of(self.id()); }
-            @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
-            @Override public void registerPeer(NodeInfo peerInfo) { registered.add(peerInfo); }
-            @Override public void unregisterPeer(NodeId peerId) {}
-            @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}
-            @Override public void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes) {}
-            @Override public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {}
-            @Override public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {}
-            @Override public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {}
-        };
-    }
 
     private TopologyObserver stubTopologyManager(NodeInfo self, List<NodeInfo> peers) {
         return new TopologyObserver() {
@@ -380,12 +351,8 @@ class QuicClusterNetworkTest {
             }
 
             @Override public void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList) {}
-            @Override public void registerPeer(NodeInfo peerInfo) {}
-            @Override public void unregisterPeer(NodeId peerId) {}
             @Override public void handleDiscoverNodes(NetworkMessage.DiscoverNodes discoverNodes) {}
             @Override public void handleDiscoveredNodes(NetworkMessage.DiscoveredNodes discoveredNodes) {}
-            @Override public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {}
-            @Override public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {}
             @Override public void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message) {}
         };
     }

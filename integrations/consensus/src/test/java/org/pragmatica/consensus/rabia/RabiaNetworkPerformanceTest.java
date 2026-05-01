@@ -269,12 +269,12 @@ class RabiaNetworkPerformanceTest {
             topologyManager = TopologyObserver.topologyObserver(config, router)
                                                 .expect("valid topology config");
 
-            // Wire up topology manager message routes
+            // Wire up topology manager message routes. R5 (spec §4.4): TopologyObserver
+            // no longer accepts transport-level events; ConnectionEstablished/Failed are
+            // not routed into it.
             router.addRoute(NetworkMessage.DiscoverNodes.class, topologyManager::handleDiscoverNodes);
             router.addRoute(NetworkMessage.DiscoveredNodes.class, topologyManager::handleDiscoveredNodes);
             router.addRoute(NetworkServiceMessage.ConnectedNodesList.class, topologyManager::reconcile);
-            router.addRoute(NetworkServiceMessage.ConnectionEstablished.class, topologyManager::handleConnectionEstablished);
-            router.addRoute(NetworkServiceMessage.ConnectionFailed.class, topologyManager::handleConnectionFailed);
 
             // Create network
             network = new NettyClusterNetwork(topologyManager, codec, codec, router);

@@ -23,7 +23,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import java.net.SocketAddress;
@@ -112,20 +111,6 @@ public interface TopologyManager {
                                .filter(id -> getState(id).map(state -> state.health() == NodeHealth.HEALTHY).or(false))
                                .count();
     }
-
-    /// Mark a node as ready (ON_DUTY). Called when a node registers its lifecycle state.
-    /// The observer tracks ready nodes independently of QUIC connections.
-    default void markReady(NodeId nodeId) {}
-
-    /// Mark a node as ready (ON_DUTY) with its cluster address.
-    /// When the node is not yet in the local topology, it will be added automatically.
-    /// This enables dynamically provisioned nodes to become visible after leader failover.
-    default void markReady(NodeId nodeId, NodeAddress address) {
-        markReady(nodeId);
-    }
-
-    /// Mark a node as departed (lifecycle removed or node dead).
-    default void markDeparted(NodeId nodeId) {}
 
     /// Returns the set of core (non-passive) node IDs in the topology.
     /// Used by the passive LB to select forwarding targets for management API requests.
