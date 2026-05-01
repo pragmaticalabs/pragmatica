@@ -710,8 +710,12 @@ public class DataConverter {
         KNOWN_TYPES.put(Instant.class, TemporalConversions::toInstant);
     }
 
-    @SuppressWarnings("unchecked")
     public <T> T toObject(Oid oid, byte[] value, Class<T> type) {
+        return toObject(oid, value, type, false);
+    }
+
+    @SuppressWarnings("unchecked")
+    public <T> T toObject(Oid oid, byte[] value, Class<T> type, boolean binary) {
         if (value == null) {
             return null;
         }
@@ -750,7 +754,8 @@ public class DataConverter {
             case BOOL -> toBoolean(oid, value);
             case INT2_ARRAY, INT4_ARRAY, INT8_ARRAY, NUMERIC_ARRAY, FLOAT4_ARRAY, FLOAT8_ARRAY,
                 TEXT_ARRAY, CHAR_ARRAY, BPCHAR_ARRAY, VARCHAR_ARRAY,
-                TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY, TIMETZ_ARRAY, TIME_ARRAY, BOOL_ARRAY -> toArray(Object[].class, oid, value);
+                TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY, TIMETZ_ARRAY, TIME_ARRAY, BOOL_ARRAY,
+                BYTEA_ARRAY, UUID_ARRAY, DATE_ARRAY -> toArray(Object[].class, oid, value, binary);
             default -> throw new IllegalArgumentException("Unknown conversion target: " + oid);
         };
     }
