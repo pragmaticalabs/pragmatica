@@ -237,10 +237,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         // Backdate the suspect timestamp so the next tick re-evaluates within
         // the floor window. Authoritative state is unchanged — only the timer
         // shifts forward (i.e., timestamp moves earlier in time).
-        var ts = suspectTimestamps.get(peer);
-        if (ts == null) {
-            return;
-        }
+        option(suspectTimestamps.get(peer)).onPresent(ts -> shortenSuspectExpiryWith(peer, ts));
+    }
+
+    private void shortenSuspectExpiryWith(NodeId peer, long ts) {
         var defaultMs = config.suspectTimeout().millis();
         if (defaultMs <= TRANSPORT_HINT_SUSPECT_FLOOR_MS) {
             return;
@@ -380,7 +380,11 @@ public final class SwimProtocol implements SwimMessageHandler {
             return none();
         }
 
-        var index = probeIndex.getAndUpdate(i -> (i + 1) % candidates.size()) % candidates.size();
+        // Capture size locally so a concurrent membership change between modulo and get()
+        // cannot drive the index out of bounds. `Math.floorMod` keeps the index non-negative
+        // across the eventual `getAndIncrement` overflow at Integer.MIN_VALUE.
+        var size = candidates.size();
+        var index = Math.floorMod(probeIndex.getAndIncrement(), size);
         return option(candidates.get(index));
     }
 
@@ -723,12 +727,19 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        var previous = lastEmittedHealth.put(peer, target);
-        if (previous == target) {
-            // Same edge already emitted — suppress re-emission (P5).
-            return;
+        // `compute` serializes per-key against concurrent mutations, so two threads
+        // racing the same (peer, target) edge cannot both observe `prev != target`
+        // and both deliver. Delivering inside the lambda keeps the edge transition
+        // and the listener fan-out atomic.
+        lastEmittedHealth.compute(peer, (_, prev) -> emitIfEdge(prev, target, factory));
+    }
+
+    private SwimHealth emitIfEdge(SwimHealth prev, SwimHealth target, Supplier<SwimObservation> factory) {
+        if (prev == target) {
+            return prev;
         }
         deliverObservation(factory.get());
+        return target;
     }
 
     private void deliverObservation(SwimObservation observation) {

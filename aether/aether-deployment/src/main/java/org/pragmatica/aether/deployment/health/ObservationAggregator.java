@@ -10,12 +10,13 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimObservation;
 
-import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -30,11 +31,11 @@ public final class ObservationAggregator {
 
     private final long aggregationWindowMs;
 
-    private final Map<NodeId, Deque<Entry>> windows = new HashMap<>();
+    private final Map<NodeId, Deque<Entry>> windows = new ConcurrentHashMap<>();
 
-    private final Map<NodeId, NodeLifecycleState> lastAggregated = new HashMap<>();
+    private final Map<NodeId, NodeLifecycleState> lastAggregated = new ConcurrentHashMap<>();
 
-    private final Set<NodeId> everSeenHealthy = new HashSet<>();
+    private final Set<NodeId> everSeenHealthy = ConcurrentHashMap.newKeySet();
 
     private ObservationAggregator(long aggregationWindowMs) {
         this.aggregationWindowMs = aggregationWindowMs;
@@ -68,13 +69,12 @@ public final class ObservationAggregator {
     }
 
     public int observerCount(NodeId target) {
-        var window = windows.get(target);
-        if (window == null) {return 0;}
-        return countDistinctObservers(window);
+        return Option.option(windows.get(target)).map(ObservationAggregator::countDistinctObservers)
+                            .or(0);
     }
 
     private void recordCleanup(NodeId target, NodeId observer, Option<NodeLifecycleState> translated, long nowMs) {
-        var window = windows.computeIfAbsent(target, _ -> new ArrayDeque<>());
+        var window = windows.computeIfAbsent(target, _ -> new ConcurrentLinkedDeque<>());
         evictStale(window, nowMs);
         translated.onPresent(state -> appendEntry(window, observer, state, nowMs));
     }
@@ -103,8 +103,11 @@ public final class ObservationAggregator {
     }
 
     private Option<StateChanged> computeEdge(NodeId target, int onDutyCount, long nowMs) {
-        var window = windows.get(target);
-        if (window == null) {return none();}
+        return Option.option(windows.get(target))
+                            .flatMap(window -> computeEdgeForWindow(target, window, onDutyCount, nowMs));
+    }
+
+    private Option<StateChanged> computeEdgeForWindow(NodeId target, Deque<Entry> window, int onDutyCount, long nowMs) {
         evictStale(window, nowMs);
         var threshold = quorumThreshold(onDutyCount);
         return tally(window, threshold).flatMap(state -> respectColdBoot(target, state))
@@ -135,8 +138,8 @@ public final class ObservationAggregator {
     }
 
     private Option<StateChanged> emitIfChanged(NodeId target, NodeLifecycleState newState) {
-        var prior = lastAggregated.get(target);
-        if (prior == newState) {return none();}
+        if (Option.option(lastAggregated.get(target)).map(prior -> prior == newState)
+                         .or(false)) {return none();}
         lastAggregated.put(target, newState);
         return some(new StateChanged(target, newState));
     }

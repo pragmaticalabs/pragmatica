@@ -17,6 +17,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.swim.SwimObservation;
@@ -51,6 +52,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
     private final SelfOnDutyAtomFactory selfOnDutyAtomFactory;
 
     private final Object aggregatorLock = new Object();
+
+    private final Object phaseListenerLock = new Object();
 
     private final Map<NodeId, Long> lastWriteAt = new ConcurrentHashMap<>();
 
@@ -144,7 +147,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
         if (!selfReady.get()) {return;}
         if (selfPromoted.get()) {return;}
         if (selfAlreadyOnDuty()) {
-            selfPromoted.set(true);
+            selfPromoted.compareAndSet(false, true);
             return;
         }
         promoteSelfToOnDuty(nowMs);
@@ -161,13 +164,12 @@ final class HealthReconcilerImpl implements HealthReconciler {
         proposeSelfOnDutyWrite(nowMs);
     }
 
-    private void proposeSelfOnDutyWrite(long nowMs) {
+    @Contract private void proposeSelfOnDutyWrite(long nowMs) {
         var prior = lifecycleReader.apply(self);
         var value = prior.isPresent()
                    ? buildLifecycleValue(prior, NodeLifecycleState.ON_DUTY, nowMs)
                    : selfOnDutyAtomFactory.build(NodeLifecycleState.ON_DUTY, nowMs);
-        @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(self),
-                                                                                                                                    value);
+        var command = putLifecycleAtom(NodeLifecycleKey.nodeLifecycleKey(self), value);
         commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("HealthReconciler: failed to write ON_DUTY for self {}: {}",
                                                                            self,
                                                                            cause.message()))
@@ -175,8 +177,9 @@ final class HealthReconcilerImpl implements HealthReconciler {
     }
 
     private Option<ObservationAggregator.StateChanged> aggregateEdge(SwimObservation observation, long nowMs) {
+        var onDutyCount = onDutyCountSupplier.get();
         synchronized (aggregatorLock) {
-            return aggregator.onObservation(self, observation, onDutyCountSupplier.get(), nowMs);
+            return aggregator.onObservation(self, observation, onDutyCount, nowMs);
         }
     }
 
@@ -204,21 +207,29 @@ final class HealthReconcilerImpl implements HealthReconciler {
     }
 
     private boolean cooldownActive(NodeId target, long nowMs) {
-        var lastAt = lastWriteAt.get(target);
-        if (lastAt == null) {return false;}
-        return nowMs - lastAt <config.cooldownMs();
+        return Option.option(lastWriteAt.get(target)).map(lastAt -> nowMs - lastAt <config.cooldownMs())
+                            .or(false);
     }
 
-    private void proposeLifecycleWrite(NodeId target, NodeLifecycleState newState, long nowMs) {
+    @Contract private void proposeLifecycleWrite(NodeId target, NodeLifecycleState newState, long nowMs) {
         var prior = lifecycleReader.apply(target);
         var value = buildLifecycleValue(prior, newState, nowMs);
-        @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(target),
-                                                                                                                                    value);
+        var command = putLifecycleAtom(NodeLifecycleKey.nodeLifecycleKey(target), value);
         commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("HealthReconciler: failed to write {} for {}: {}",
                                                                            newState,
                                                                            target,
                                                                            cause.message()))
                             .onSuccess(_ -> recordWrite(target, newState, nowMs));
+    }
+
+    @SuppressWarnings("unchecked") private static KVCommand<AetherKey> putLifecycleAtom(NodeLifecycleKey key,
+                                                                                        NodeLifecycleValue value) {
+        return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(key, value);
+    }
+
+    @SuppressWarnings("unchecked") private static KVCommand<AetherKey> putClusterPhaseAtom(ClusterPhaseKey key,
+                                                                                           ClusterPhaseValue value) {
+        return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(key, value);
     }
 
     private void recordWrite(NodeId target, NodeLifecycleState newState, long nowMs) {
@@ -262,8 +273,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
         var nowMs = System.currentTimeMillis();
         var prior = lifecycleReader.apply(target);
         var value = buildLifecycleValue(prior, newState, nowMs);
-        @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(target),
-                                                                                                                                    value);
+        var command = putLifecycleAtom(NodeLifecycleKey.nodeLifecycleKey(target), value);
         return commandApplier.apply(List.of(command)).onSuccess(_ -> recordWrite(target, newState, nowMs))
                                    .mapError(cause -> new HealthReconcilerError.ProposalRejected(target, cause))
                                    .mapToUnit();
@@ -337,11 +347,10 @@ final class HealthReconcilerImpl implements HealthReconciler {
         return phase;
     }
 
-    private void proposeClusterPhase(ClusterPhase target) {
+    @Contract private void proposeClusterPhase(ClusterPhase target) {
         var nowMs = System.currentTimeMillis();
         var value = ClusterPhaseValue.clusterPhaseValue(target, nowMs);
-        @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterPhaseKey.SINGLETON,
-                                                                                                                                    value);
+        var command = putClusterPhaseAtom(ClusterPhaseKey.SINGLETON, value);
         commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("HealthReconciler: failed to write ClusterPhaseValue={}: {}",
                                                                            target,
                                                                            cause.message()))
@@ -349,22 +358,22 @@ final class HealthReconcilerImpl implements HealthReconciler {
     }
 
     @Override@Contract public void onClusterPhasePut(ClusterPhaseValue value) {
-        var previous = currentPhase.getAndSet(value.phase());
-        if (previous == value.phase()) {return;}
-        stableSinceMs.set(0L);
-        var event = ClusterPhaseChanged.clusterPhaseChanged(previous, value.phase());
-        phaseListeners.forEach(listener -> notifyListener(listener, event));
-        log.info("HealthReconciler: cluster phase transitioned {} -> {}",
-                 previous,
-                 value.phase());
+        synchronized (phaseListenerLock) {
+            var previous = currentPhase.getAndSet(value.phase());
+            if (previous == value.phase()) {return;}
+            stableSinceMs.set(0L);
+            var event = ClusterPhaseChanged.clusterPhaseChanged(previous, value.phase());
+            phaseListeners.forEach(listener -> notifyListener(listener, event));
+            log.info("HealthReconciler: cluster phase transitioned {} -> {}",
+                     previous,
+                     value.phase());
+        }
     }
 
     private static void notifyListener(Consumer<ClusterPhaseChanged> listener, ClusterPhaseChanged event) {
-        try {
-            listener.accept(event);
-        } catch (RuntimeException ex) {
-            log.warn("HealthReconciler: phase listener failed: {}",
-                     Causes.fromThrowable(ex).message());
-        }
+        Result.lift(Causes::fromThrowable,
+                    () -> listener.accept(event))
+        .onFailure(cause -> log.warn("HealthReconciler: phase listener failed: {}",
+                                     cause.message()));
     }
 }

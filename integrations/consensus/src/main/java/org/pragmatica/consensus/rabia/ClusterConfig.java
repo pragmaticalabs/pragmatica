@@ -19,6 +19,7 @@ package org.pragmatica.consensus.rabia;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import java.util.List;
 import java.util.Set;
@@ -41,13 +42,10 @@ public record ClusterConfig(List<NodeId> members) {
     }
 
     public static Result<ClusterConfig> clusterConfig(List<NodeId> members) {
-        if (members == null || members.isEmpty()) {
-            return ClusterConfigError.EMPTY_MEMBERSHIP.result();
-        }
-        if (Set.copyOf(members).size() != members.size()) {
-            return ClusterConfigError.DUPLICATE_MEMBERS.result();
-        }
-        return Result.success(new ClusterConfig(members));
+        return Verify.ensure(members, Verify.Is::notNull, ClusterConfigError.EMPTY_MEMBERSHIP)
+                     .filter(ClusterConfigError.EMPTY_MEMBERSHIP, m -> !m.isEmpty())
+                     .filter(ClusterConfigError.DUPLICATE_MEMBERS, m -> Set.copyOf(m).size() == m.size())
+                     .map(ClusterConfig::new);
     }
 
     public int clusterSize() {
@@ -58,7 +56,7 @@ public record ClusterConfig(List<NodeId> members) {
     /// Used to decide whether a `reconfigure` call is a true membership change
     /// (and thus requires a state reset) or a no-op replay of the same config.
     public boolean sameMembership(ClusterConfig other) {
-        return other != null && Set.copyOf(members).equals(Set.copyOf(other.members));
+        return Set.copyOf(members).equals(Set.copyOf(other.members));
     }
 
     public enum ClusterConfigError implements Cause {

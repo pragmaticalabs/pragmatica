@@ -139,7 +139,8 @@ public interface TopologyObserver extends TopologyManager {
                        GenerationSnapshotSource snapshotSource,
                        Predicate<NodeId> isDecommissioned,
                        AtomicBoolean quorumEstablished,
-                       AtomicBoolean started) implements TopologyObserver {
+                       AtomicBoolean started,
+                       Object lifecycleLock) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -154,7 +155,8 @@ public interface TopologyObserver extends TopologyManager {
                     GenerationSnapshotSource snapshotSource,
                     Predicate<NodeId> isDecommissioned,
                     AtomicBoolean quorumEstablished,
-                    AtomicBoolean started) {
+                    AtomicBoolean started,
+                    Object lifecycleLock) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -168,6 +170,7 @@ public interface TopologyObserver extends TopologyManager {
                 this.isDecommissioned = isDecommissioned;
                 this.quorumEstablished = quorumEstablished;
                 this.started = started;
+                this.lifecycleLock = lifecycleLock;
                 this.effectiveClusterSize.set(config.clusterSize());
                 // Mirror the `initReconcile` filter: a peer the cluster has durably retired
                 // (KV NodeLifecycleValue.DECOMMISSIONED) must not be reconstructed from
@@ -413,15 +416,18 @@ public interface TopologyObserver extends TopologyManager {
                 if (!started.get()) {
                     return;
                 }
-                var haveQuorum = (healthyActivePeerCount() + 1) >= quorumSize();
+                var peers = healthyActivePeerCount();
+                var quorum = quorumSize();
+                var haveQuorum = (peers + 1) >= quorum;
+                log.debug("Quorum evaluation: healthyActivePeers+1={} threshold={}", peers + 1, quorum);
                 if (haveQuorum) {
                     if (quorumEstablished.compareAndSet(false, true)) {
-                        log.info("Quorum established (healthy active peers + 1 >= {})", quorumSize());
+                        log.info("Quorum established");
                         router.route(QuorumStateNotification.established());
                     }
                 } else {
                     if (quorumEstablished.compareAndSet(true, false)) {
-                        log.warn("Quorum lost (healthy active peers + 1 < {})", quorumSize());
+                        log.warn("Quorum lost");
                         router.route(QuorumStateNotification.disappeared());
                     }
                 }
@@ -457,14 +463,14 @@ public interface TopologyObserver extends TopologyManager {
                 int newSize = message.clusterSize();
                 int currentSize = effectiveClusterSize.get();
                 if (newSize < 3) {
-                    log.warn("Rejecting cluster size change to {}: minimum is 3 for Byzantine fault tolerance", newSize);
+                    log.info("rejected: cluster size change to {} below minimum 3 for Byzantine fault tolerance", newSize);
                     return;
                 }
                 if (newSize > currentSize) {
                     int newQuorum = newSize / 2 + 1;
                     int activeNodes = activeTopologySize();
                     if (activeNodes < newQuorum) {
-                        log.warn("Rejecting cluster size increase from {} to {}: only {} active nodes, need {} for new quorum",
+                        log.info("rejected: insufficient healthy nodes for cluster size {} -> {} (active={}, required quorum={})",
                                  currentSize,
                                  newSize,
                                  activeNodes,
@@ -500,25 +506,36 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public Promise<Unit> start() {
-                if (active().compareAndSet(false, true)) {
-                    log.trace("Starting topology observer at {}", config.self());
-                    // Flip the startup gate before publishing so the first
-                    // `evaluateQuorumState` call below — and any racing mutation
-                    // that lands while `start()` is in flight — observes a fully
-                    // wired router. Constructor-time `addNode` fires for self and
-                    // any non-decommissioned core nodes ran with `started=false`
-                    // and were no-ops; this single explicit call publishes the
-                    // initial edge (established or disappeared) exactly once.
-                    started.set(true);
-                    evaluateQuorumState();
-                    initReconcile();
+                synchronized (lifecycleLock) {
+                    if (active().compareAndSet(false, true)) {
+                        log.trace("Starting topology observer at {}", config.self());
+                        // Flip the startup gate before publishing so the first
+                        // `evaluateQuorumState` call below — and any racing mutation
+                        // that lands while `start()` is in flight — observes a fully
+                        // wired router. Constructor-time `addNode` fires for self and
+                        // any non-decommissioned core nodes ran with `started=false`
+                        // and were no-ops; this single explicit call publishes the
+                        // initial edge (established or disappeared) exactly once.
+                        // The lifecycle lock ensures concurrent KV-driven addNode/
+                        // removeNode mutations cannot land between flipping `started`
+                        // and the synchronous initial-edge publication.
+                        started.set(true);
+                        evaluateQuorumState();
+                        initReconcile();
+                    }
                 }
                 return Promise.success(Unit.unit());
             }
 
             @Override
             public Promise<Unit> stop() {
-                active().set(false);
+                synchronized (lifecycleLock) {
+                    // Reset `started` so a subsequent `start()` re-publishes the initial
+                    // edge cleanly (otherwise `evaluateQuorumState` short-circuits while
+                    // `initReconcile` could re-seed tombstoned nodes — see review item #10).
+                    started.set(false);
+                    active().set(false);
+                }
                 return Promise.success(Unit.unit());
             }
 
@@ -557,6 +574,7 @@ public interface TopologyObserver extends TopologyManager {
                                           snapshotSource,
                                           isDecommissioned,
                                           new AtomicBoolean(false),
-                                          new AtomicBoolean(false)));
+                                          new AtomicBoolean(false),
+                                          new Object()));
     }
 }

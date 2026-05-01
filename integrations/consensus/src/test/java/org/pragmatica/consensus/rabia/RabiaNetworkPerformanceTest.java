@@ -50,6 +50,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs;
@@ -64,6 +65,12 @@ class RabiaNetworkPerformanceTest {
     private static final int CLUSTER_SIZE = 5;
     private static final int WARMUP_ROUNDS = 20;
     private static final int BENCHMARK_ROUNDS = 100;
+    /// Tolerance for benchmark-completion assertions: accept up to 5% missed decisions
+    /// to absorb localhost-TCP scheduling jitter without masking real regressions. Below
+    /// this threshold the perf test silently hid every consensus regression — see review
+    /// item #13.
+    private static final int BENCHMARK_DECISION_TOLERANCE = Math.max(5, BENCHMARK_ROUNDS / 20);
+    private static final long BENCHMARK_COMPLETION_TIMEOUT_SECONDS = 60L;
 
     private int basePort;
     private List<NetworkNode> nodes;
@@ -134,16 +141,26 @@ class RabiaNetworkPerformanceTest {
 
         // Benchmark
         long startTime = System.nanoTime();
+        var roundsCompleted = 0;
         for (int i = 0; i < BENCHMARK_ROUNDS; i++) {
             decisionLatch = new CountDownLatch(CLUSTER_SIZE);
             proposer.submitCommands(List.of(new TestCommand(WARMUP_ROUNDS + i)));
-            if (!decisionLatch.await(5, TimeUnit.SECONDS)) {
+            if (decisionLatch.await(BENCHMARK_COMPLETION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                roundsCompleted++;
+            } else {
                 System.err.println("Timeout waiting for decision " + i);
             }
         }
         long endTime = System.nanoTime();
 
         printResults("Single Proposer (TCP)", startTime, endTime, BENCHMARK_ROUNDS);
+
+        assertThat(roundsCompleted)
+            .as("rounds completed within timeout (single proposer)")
+            .isGreaterThanOrEqualTo(BENCHMARK_ROUNDS - BENCHMARK_DECISION_TOLERANCE);
+        assertThat(decisionsReached.get())
+            .as("decisions reached across cluster (single proposer)")
+            .isGreaterThanOrEqualTo((BENCHMARK_ROUNDS - BENCHMARK_DECISION_TOLERANCE) * CLUSTER_SIZE);
     }
 
     @Test
@@ -160,17 +177,27 @@ class RabiaNetworkPerformanceTest {
 
         // Benchmark
         long startTime = System.nanoTime();
+        var roundsCompleted = 0;
         for (int i = 0; i < BENCHMARK_ROUNDS; i++) {
             decisionLatch = new CountDownLatch(CLUSTER_SIZE);
             var proposer = nodes.get(i % CLUSTER_SIZE);
             proposer.submitCommands(List.of(new TestCommand(WARMUP_ROUNDS + i)));
-            if (!decisionLatch.await(5, TimeUnit.SECONDS)) {
+            if (decisionLatch.await(BENCHMARK_COMPLETION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                roundsCompleted++;
+            } else {
                 System.err.println("Timeout waiting for decision " + i);
             }
         }
         long endTime = System.nanoTime();
 
         printResults("Round-Robin Proposers (TCP)", startTime, endTime, BENCHMARK_ROUNDS);
+
+        assertThat(roundsCompleted)
+            .as("rounds completed within timeout (round-robin)")
+            .isGreaterThanOrEqualTo(BENCHMARK_ROUNDS - BENCHMARK_DECISION_TOLERANCE);
+        assertThat(decisionsReached.get())
+            .as("decisions reached across cluster (round-robin)")
+            .isGreaterThanOrEqualTo((BENCHMARK_ROUNDS - BENCHMARK_DECISION_TOLERANCE) * CLUSTER_SIZE);
     }
 
     @Test
@@ -188,18 +215,28 @@ class RabiaNetworkPerformanceTest {
 
         // Benchmark
         long startTime = System.nanoTime();
+        var roundsCompleted = 0;
         for (int i = 0; i < BENCHMARK_ROUNDS; i++) {
             decisionLatch = new CountDownLatch(CLUSTER_SIZE);
             for (int j = 0; j < CLUSTER_SIZE; j++) {
                 nodes.get(j).submitCommands(List.of(new TestCommand((WARMUP_ROUNDS + i) * 100 + j)));
             }
-            if (!decisionLatch.await(5, TimeUnit.SECONDS)) {
+            if (decisionLatch.await(BENCHMARK_COMPLETION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                roundsCompleted++;
+            } else {
                 System.err.println("Timeout waiting for decision " + i);
             }
         }
         long endTime = System.nanoTime();
 
         printResults("Concurrent Proposers (TCP)", startTime, endTime, BENCHMARK_ROUNDS);
+
+        assertThat(roundsCompleted)
+            .as("rounds completed within timeout (concurrent proposers)")
+            .isGreaterThanOrEqualTo(BENCHMARK_ROUNDS - BENCHMARK_DECISION_TOLERANCE);
+        assertThat(decisionsReached.get())
+            .as("decisions reached across cluster (concurrent proposers)")
+            .isGreaterThanOrEqualTo((BENCHMARK_ROUNDS - BENCHMARK_DECISION_TOLERANCE) * CLUSTER_SIZE);
     }
 
     private void printResults(String scenario, long startNanos, long endNanos, int rounds) {

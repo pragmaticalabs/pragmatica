@@ -27,6 +27,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.concurrent.AtomicHolder;
 import org.pragmatica.lang.Promise;
@@ -310,7 +311,9 @@ public class RabiaEngine<C extends Command> {
         return engineState.get().isObserving();
     }
 
-    @SuppressWarnings("JBCT-RET-01") // Side-effect callback — void inherent
+    // Side-effect callback for `Option.onPresent` — void inherent. Triggered by
+    // `pendingQuorum.getAndClear()` consumer chain in `authorizeObservation()`.
+    @Contract
     private void replayQuorumForObserver(QuorumStateNotification notification) {
         log.info("Node {}: replaying stored quorum notification for observer mode", self);
         clusterConnected();
@@ -653,10 +656,8 @@ public class RabiaEngine<C extends Command> {
         if (phaseData.hasProposal(self)) {
             return;
         }
-        var batchEntry = pendingBatches.firstEntry();
-        if (batchEntry != null) {
-            broadcastOwnProposal(phase, phaseData, batchEntry.getValue());
-        }
+        Option.option(pendingBatches.firstEntry())
+              .onPresent(batchEntry -> broadcastOwnProposal(phase, phaseData, batchEntry.getValue()));
     }
 
     /// Starts a new phase with pending commands.
@@ -671,15 +672,19 @@ public class RabiaEngine<C extends Command> {
         if (!(current instanceof EngineState.Idle)) {
             return;
         }
-        var batchEntry = pendingBatches.firstEntry();
-        if (batchEntry == null) {
-            // Re-check after - a batch may have been added during the window
-            if (!pendingBatches.isEmpty()) {
-                executor.execute(this::startPhase);
-            }
-            return;
+        Option.option(pendingBatches.firstEntry())
+              .onEmpty(this::reExecuteStartPhaseIfBatchPending)
+              .onPresent(batchEntry -> startPhaseWithBatch(current, batchEntry.getValue()));
+    }
+
+    private void reExecuteStartPhaseIfBatchPending() {
+        // Re-check after — a batch may have been added during the window
+        if (!pendingBatches.isEmpty()) {
+            executor.execute(this::startPhase);
         }
-        var batch = batchEntry.getValue();
+    }
+
+    private void startPhaseWithBatch(EngineState current, Batch<C> batch) {
         var phase = currentPhase.get();
         log.trace("Node {} starting phase {} with batch {}", self, phase, batch.id());
         var stallDetector = createStallDetector();
@@ -869,10 +874,10 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         var phase = currentPhase.get();
-        var phaseData = phases.get(phase);
-        if (phaseData == null) {
-            return;
-        }
+        Option.option(phases.get(phase)).onPresent(phaseData -> checkPhaseStallFor(phase, phaseData));
+    }
+
+    private void checkPhaseStallFor(Phase phase, PhaseData<C> phaseData) {
         var quorumSize = topologyManager.quorumSize();
         if (!phaseData.hasQuorumProposals(quorumSize) && phaseData.hasProposal(self)) {
             log.debug("Node {} stall detected in phase {}: {}/{} proposals, re-broadcasting own proposal",
@@ -881,19 +886,23 @@ public class RabiaEngine<C extends Command> {
                   .onPresent(batch -> network.broadcast(new Propose<>(self, phase, batch)));
         }
         if (phaseData.hasVotedRound1(self) && !phaseData.hasRound1MajorityVotes(quorumSize)) {
-            var value = phaseData.getRound1Vote(self);
-            if (value != null) {
-                log.debug("Node {} stall detected in phase {}: round1 votes short of quorum, re-broadcasting own R1 vote", self, phase);
-                network.broadcast(new VoteRound1(self, phase, value));
-            }
+            Option.option(phaseData.getRound1Vote(self))
+                  .onPresent(value -> rebroadcastRound1Stall(phase, value));
         }
         if (phaseData.hasVotedRound2(self) && !phaseData.hasRound2MajorityVotes(quorumSize)) {
-            var value = phaseData.getRound2Vote(self);
-            if (value != null) {
-                log.debug("Node {} stall detected in phase {}: round2 votes short of quorum, re-broadcasting own R2 vote", self, phase);
-                network.broadcast(new VoteRound2(self, phase, value));
-            }
+            Option.option(phaseData.getRound2Vote(self))
+                  .onPresent(value -> rebroadcastRound2Stall(phase, value));
         }
+    }
+
+    private void rebroadcastRound1Stall(Phase phase, StateValue value) {
+        log.debug("Node {} stall detected in phase {}: round1 votes short of quorum, re-broadcasting own R1 vote", self, phase);
+        network.broadcast(new VoteRound1(self, phase, value));
+    }
+
+    private void rebroadcastRound2Stall(Phase phase, StateValue value) {
+        log.debug("Node {} stall detected in phase {}: round2 votes short of quorum, re-broadcasting own R2 vote", self, phase);
+        network.broadcast(new VoteRound2(self, phase, value));
     }
 
     /// Handles a synchronization request from another node.
@@ -1003,10 +1012,8 @@ public class RabiaEngine<C extends Command> {
             stallDetector.cancel(false);
             return;
         }
-        var batchEntry = pendingBatches.firstEntry();
-        if (batchEntry != null) {
-            broadcastOwnProposal(proposalPhase, phaseData, batchEntry.getValue());
-        }
+        Option.option(pendingBatches.firstEntry())
+              .onPresent(batchEntry -> broadcastOwnProposal(proposalPhase, phaseData, batchEntry.getValue()));
         // Broadcast locked value if present (same as startPhase does)
         broadcastLockedValueIfPresent(proposalPhase, phaseData);
     }
@@ -1189,15 +1196,12 @@ public class RabiaEngine<C extends Command> {
                                                    .commands());
         // Get the batch from pendingBatches BEFORE removing - this has all merged correlationIds.
         // The decision.value() may have partial IDs if the proposer hadn't received all batches yet.
-        var localBatch = pendingBatches.remove(decision.value()
-                                                       .id());
+        var localBatch = Option.option(pendingBatches.remove(decision.value().id()));
         metrics.updatePendingBatches(self, pendingBatches.size());
         // Use correlationIds from our local pendingBatches (fully merged) rather than
         // from decision.value() (which may have partial IDs from early proposals)
-        var correlationIds = localBatch != null
-                             ? localBatch.correlationIds()
-                             : decision.value()
-                                       .correlationIds();
+        var correlationIds = localBatch.map(Batch::correlationIds)
+                                       .or(() -> decision.value().correlationIds());
         for (var correlationId : correlationIds) {
             Option.option(correlationMap.remove(correlationId))
                   .onPresent(promise -> promise.succeed(results));

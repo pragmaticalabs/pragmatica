@@ -136,7 +136,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // below advances the FSM. Synchronous dispatch — the FSM is single-threaded on the
             // caller thread, so re-entry into `handle` happens before this method returns.
             if (ctx.consensusReadySupplier().get()) {
-                log.info("Consensus engine reports ready on entry to QuorumWaiting — advancing");
+                log.debug("Consensus engine reports ready on entry to QuorumWaiting — advancing");
                 dispatchSelf(ctx, new ConsensusReady());
                 return;
             }
@@ -617,10 +617,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         log.debug("Scheduling election tick #{} in {}ms", retry, jitterMs);
         var future = SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
                                               TimeSpan.timeSpan(jitterMs).millis());
-        var prior = holder.getAndSet(future);
-        if (prior != null) {
-            prior.cancel(false);
-        }
+        Option.option(holder.getAndSet(future)).onPresent(prior -> prior.cancel(false));
     }
 
     private static void trySubmitProposal(LeaderElectionContext ctx,
@@ -696,20 +693,22 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// (cancels the old one), so a fresh proposal after a retry doesn't leak the prior timer.
     private static void storeProposalTimeoutFuture(LeaderElectionState owner,
                                                     ScheduledFuture<?> future) {
-        var holder = switch (owner) {
+        var holderOpt = Option.option(switch (owner) {
             case Electing e -> e.proposalTimeoutFuture();
             case ReElecting r -> r.proposalTimeoutFuture();
             default -> null;
-        };
-        if (holder == null) {
-            log.debug("storeProposalTimeoutFuture: owner is not electing — cancelling timeout immediately");
-            future.cancel(false);
-            return;
-        }
-        var prior = holder.getAndSet(future);
-        if (prior != null) {
-            prior.cancel(false);
-        }
+        });
+        holderOpt.onEmpty(() -> cancelImmediatelyForNonElecting(future))
+                 .onPresent(holder -> swapAndCancelPrior(holder, future));
+    }
+
+    private static void cancelImmediatelyForNonElecting(ScheduledFuture<?> future) {
+        log.debug("storeProposalTimeoutFuture: owner is not electing — cancelling timeout immediately");
+        future.cancel(false);
+    }
+
+    private static void swapAndCancelPrior(AtomicReference<ScheduledFuture<?>> holder, ScheduledFuture<?> future) {
+        Option.option(holder.getAndSet(future)).onPresent(prior -> prior.cancel(false));
     }
 
     private static void handleProposalSettled(LeaderElectionContext ctx, ProposalSettled event) {
@@ -729,9 +728,6 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     private static void cancelFuture(AtomicReference<ScheduledFuture<?>> holder) {
-        var future = holder.getAndSet(null);
-        if (future != null) {
-            future.cancel(false);
-        }
+        Option.option(holder.getAndSet(null)).onPresent(future -> future.cancel(false));
     }
 }

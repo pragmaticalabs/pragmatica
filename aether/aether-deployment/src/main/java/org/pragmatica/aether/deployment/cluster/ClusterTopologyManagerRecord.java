@@ -531,7 +531,6 @@ import static org.pragmatica.lang.Unit.unit;
         var configured = view.desiredCoreSize();
         if (configured == 0) {return;}
         var actual = snapshotHealthyOnDutyCount();
-        observeRealActualForStability(actual);
         var deficit = configured - actual;
         log.debug("CTM reconcile: actual={} desired={} deficit={} hints={}",
                   actual,
@@ -546,6 +545,7 @@ import static org.pragmatica.lang.Unit.unit;
             if (configured <actual) {cancelInFlightProvisions("target shrank to " + configured + " during Reconciling");}
             transitionTo(new NodeReconcilerState.Converged());
             effectiveState = stateRef.get();
+            observeRealActualForStability(actual);
         }
         if (actual == configured) {
             if (effectiveState instanceof NodeReconcilerState.Converged) {log.debug("CTM converged: actual={} matches desired={}",
@@ -555,6 +555,7 @@ import static org.pragmatica.lang.Unit.unit;
                 transitionTo(new NodeReconcilerState.Converged());
                 deleteAllSlotAtoms("converged");
             }
+            observeRealActualForStability(actual);
             return;
         }
         if (effectiveState instanceof NodeReconcilerState.Converged) {log.info("CTM deficit detected: actual={} desired={} deficit={} hints={}",
@@ -670,6 +671,7 @@ import static org.pragmatica.lang.Unit.unit;
                      next);
             return;
         }
+        observeRealActualForStability(actual);
         log.info("CTM: deficit={} (real={}, inFlight={}, target={}); provisioning {} more replacement(s)",
                  topupDeficit,
                  actual,
@@ -690,6 +692,7 @@ import static org.pragmatica.lang.Unit.unit;
                          next);
                 return;
             }
+            observeRealActualForStability(actual);
             log.debug("CTM: Cluster deficit of {} but no ComputeProvider, cannot auto-provision", deficit);
             return;
         }
@@ -706,6 +709,7 @@ import static org.pragmatica.lang.Unit.unit;
                      next);
             return;
         }
+        observeRealActualForStability(actual);
         log.info("CTM: Cluster at {}/{}, provisioning {} replacement(s)", actual, desired, batchSize);
         provisionNodes(batchSize);
     }
@@ -735,6 +739,7 @@ import static org.pragmatica.lang.Unit.unit;
                      next);
             return;
         }
+        observeRealActualForStability(actual);
         log.info("CTM: Cluster at {}/{}, terminating {} surplus node(s): {}",
                  actual,
                  configured,

@@ -7,13 +7,9 @@ package org.pragmatica.aether.deployment.health;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.messaging.Message;
 
-import java.util.concurrent.atomic.AtomicLong;
 
-
-public record ClusterPhaseChanged(ClusterPhase previous, ClusterPhase current, long sequence) implements Message.Local {
-    private static final AtomicLong SEQUENCE = new AtomicLong();
-
+public record ClusterPhaseChanged(ClusterPhase previous, ClusterPhase current) implements Message.Local {
     public static ClusterPhaseChanged clusterPhaseChanged(ClusterPhase previous, ClusterPhase current) {
-        return new ClusterPhaseChanged(previous, current, SEQUENCE.incrementAndGet());
+        return new ClusterPhaseChanged(previous, current);
     }
 }
