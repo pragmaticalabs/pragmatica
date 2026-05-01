@@ -12,4 +12,5 @@ import org.pragmatica.lang.Unit;
 public interface LifecycleWriter {
     Promise<Unit> requestDrain(NodeId target);
     Promise<Unit> requestDecommission(NodeId target);
+    Promise<Unit> requestActivate(NodeId target);
 }

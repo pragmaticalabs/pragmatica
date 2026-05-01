@@ -37,14 +37,12 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -58,8 +56,6 @@ import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public interface NodeDeploymentManager {
@@ -405,8 +401,6 @@ public interface NodeDeploymentManager {
     final class DeploymentManagerAdapter implements NodeDeploymentManager {
         private static final Logger log = LoggerFactory.getLogger(DeploymentManagerAdapter.class);
 
-        private static final int MAX_LIFECYCLE_RETRIES = 60;
-
         private final NodeDeploymentContext ctx;
 
         private final AtomicReference<Option<Runnable>> selfReadySignal = new AtomicReference<>(Option.none());
@@ -422,13 +416,14 @@ public interface NodeDeploymentManager {
 
         @Contract private void onActiveEntry() {
             var signal = selfReadySignal.get();
-            if (signal.isPresent()) {
-                log.info("Node {} signalling self-ready to HealthReconciler",
+            if (signal.isEmpty()) {
+                log.warn("Node {} active-entry without self-ready signal — HealthReconciler must be wired",
                          ctx.self().id());
-                signal.unwrap().run();
                 return;
             }
-            registerLifecycleOnDuty();
+            log.info("Node {} signalling self-ready to HealthReconciler",
+                     ctx.self().id());
+            signal.unwrap().run();
         }
 
         @Contract@Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
@@ -480,78 +475,14 @@ public interface NodeDeploymentManager {
         @Contract@Override public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
             var key = valueRemove.cause().key();
             if (key.nodeId().equals(ctx.self()) && isActive()) {
-                log.warn("Node {} lifecycle key removed unexpectedly — re-registering ON_DUTY",
+                log.warn("Node {} lifecycle key removed unexpectedly — re-emitting self-ready (HealthReconciler will rewrite ON_DUTY)",
                          ctx.self().id());
-                registerLifecycleOnDuty();
+                selfReadySignal.get().onPresent(Runnable::run);
             }
         }
 
         @Contract@Override public void setShutdownCallback(Runnable callback) {
             ctx.setShutdownCallback(callback);
-        }
-
-        private void registerLifecycleOnDuty() {
-            var lifecycleKey = NodeLifecycleKey.nodeLifecycleKey(ctx.self());
-            ctx.kvStore().get(lifecycleKey)
-                       .flatMap(v -> v instanceof NodeLifecycleValue lv
-                                    ? Option.some(lv)
-                                    : Option.empty())
-                       .filter(v -> v.state() == NodeLifecycleState.DECOMMISSIONED)
-                       .onEmpty(() -> writeLifecycleOnDuty(lifecycleKey, 1));
-        }
-
-        private void writeLifecycleOnDuty(NodeLifecycleKey lifecycleKey, int attempt) {
-            var seedEpoch = ctx.currentEpochSupplier().get()
-                                                    .or(Epoch.ZERO);
-            var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
-                                                              System.currentTimeMillis(),
-                                                              ctx.selfAddress().host(),
-                                                              ctx.selfAddress().port(),
-                                                              seedEpoch,
-                                                              HlcTimestamp.ZERO,
-                                                              detectProvisioningSource());
-            ctx.cluster().apply(List.of(new KVCommand.Put<>(lifecycleKey, value)))
-                       .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY (source={}, observedCoreEpoch={})",
-                                                ctx.self().id(),
-                                                value.provisioningSource(),
-                                                seedEpoch))
-                       .onFailure(cause -> retryLifecycleOnDuty(lifecycleKey, attempt, cause));
-        }
-
-        private static AetherValue.ProvisioningSource detectProvisioningSource() {
-            var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY")).filter(v -> !v.isBlank())
-                                   .map(String::trim)
-                                   .map(String::toLowerCase);
-            return raw.map(DeploymentManagerAdapter::provisioningSourceFrom).or(AetherValue.ProvisioningSource.MANUAL);
-        }
-
-        private static AetherValue.ProvisioningSource provisioningSourceFrom(String raw) {
-            return switch (raw){
-                case "ctm" -> AetherValue.ProvisioningSource.CTM;
-                case "manual" -> AetherValue.ProvisioningSource.MANUAL;
-                default -> AetherValue.ProvisioningSource.UNKNOWN;
-            };
-        }
-
-        @Contract private void retryLifecycleOnDuty(NodeLifecycleKey lifecycleKey, int attempt, Cause cause) {
-            if (attempt >= MAX_LIFECYCLE_RETRIES) {
-                log.error("Node {} failed to register lifecycle ON_DUTY after {} attempts: {}",
-                          ctx.self().id(),
-                          attempt,
-                          cause.message());
-                return;
-            }
-            if (!isActive()) {
-                log.debug("Node {} skipping ON_DUTY retry — no longer active",
-                          ctx.self().id());
-                return;
-            }
-            log.warn("Node {} failed to register lifecycle ON_DUTY (attempt {}/{}): {} — retrying in 2s",
-                     ctx.self().id(),
-                     attempt,
-                     MAX_LIFECYCLE_RETRIES,
-                     cause.message());
-            SharedScheduler.schedule(() -> writeLifecycleOnDuty(lifecycleKey, attempt + 1), timeSpan(2).seconds());
         }
     }
 }

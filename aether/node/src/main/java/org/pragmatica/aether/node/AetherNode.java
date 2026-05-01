@@ -26,6 +26,8 @@ import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
+import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
+import org.pragmatica.aether.node.lifecycle.NodeStateChanged;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.health.ClusterPhaseChanged;
@@ -479,6 +481,8 @@ public interface AetherNode extends ManageableNode {
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
                           HealthSignalSink healthSignalSink,
+                          LifecycleWriter lifecycleWriter,
+                          NodeLifecycle nodeLifecycle,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -857,6 +861,15 @@ public interface AetherNode extends ManageableNode {
             return counter.get();
         };
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager().leader();
+        var healthReconcilerSelfAddress = findSelfAddress(config);
+        var healthReconcilerProvisioningSource = detectProvisioningSource();
+        HealthReconciler.SelfOnDutyAtomFactory selfOnDutyAtomFactory = (state, nowMs) -> AetherValue.NodeLifecycleValue.nodeLifecycleValue(state,
+                                                                                                                                           nowMs,
+                                                                                                                                           healthReconcilerSelfAddress.host(),
+                                                                                                                                           healthReconcilerSelfAddress.port(),
+                                                                                                                                           leaderEpochSupplier.get(),
+                                                                                                                                           org.pragmatica.hlc.HlcTimestamp.ZERO,
+                                                                                                                                           healthReconcilerProvisioningSource);
         var healthReconciler = HealthReconciler.healthReconciler(config.self(),
                                                                  config.topology().coreNodes()
                                                                                 .size(),
@@ -865,7 +878,8 @@ public interface AetherNode extends ManageableNode {
                                                                  healthLeaderSupplier,
                                                                  onDutyCountSupplier,
                                                                  clusterCommandApplier,
-                                                                 HealthReconcilerConfig.DEFAULT);
+                                                                 HealthReconcilerConfig.DEFAULT,
+                                                                 selfOnDutyAtomFactory);
         healthReconciler.start();
         LifecycleWriter ctmLifecycleWriter = new LifecycleWriter() {
             @Override public Promise<Unit> requestDrain(NodeId target) {
@@ -874,6 +888,10 @@ public interface AetherNode extends ManageableNode {
 
             @Override public Promise<Unit> requestDecommission(NodeId target) {
                 return healthReconciler.requestDecommission(target);
+            }
+
+            @Override public Promise<Unit> requestActivate(NodeId target) {
+                return healthReconciler.requestActivate(target);
             }
         };
         Supplier<AetherValue.ClusterPhase> ctmPhaseSupplier = () -> clusterPhaseReader.get()
@@ -890,7 +908,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    drainCoordinator,
                                                                                    ctmLifecycleWriter,
                                                                                    ctmPhaseSupplier);
-        healthReconciler.addPhaseListener(event -> clusterTopologyManager.onClusterPhaseChanged(event.current()));
+        healthReconciler.addPhaseListener(event -> dispatchPhaseChangeToCtm(clusterTopologyManager, event));
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
@@ -1342,6 +1360,7 @@ public interface AetherNode extends ManageableNode {
                                                               appHttpServer,
                                                               managementServerRef::get);
         var startTimeMs = System.currentTimeMillis();
+        var nodeLifecycle = NodeLifecycle.nodeLifecycle();
         var node = new aetherNode(config,
                                   delegateRouter,
                                   kvStore,
@@ -1396,9 +1415,12 @@ public interface AetherNode extends ManageableNode {
                                   discoveryProvider,
                                   certRenewalScheduler,
                                   stableHealthSink,
+                                  ctmLifecycleWriter,
+                                  nodeLifecycle,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
-        nodeDeploymentManager.setSelfReadySignal(healthReconciler::signalSelfReady);
+        nodeDeploymentManager.setSelfReadySignal(() -> bridgeSelfReadyToLifecycle(healthReconciler, nodeLifecycle));
+        nodeLifecycle.subsystemsReady();
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
                                            .map(_ -> {
                                                     if (config.managementPort() > 0) {
@@ -1486,6 +1508,8 @@ public interface AetherNode extends ManageableNode {
                                                                               discoveryProvider,
                                                                               certRenewalScheduler,
                                                                               stableHealthSink,
+                                                                              ctmLifecycleWriter,
+                                                                              nodeLifecycle,
                                                                               startTimeMs);
                                                     }
                                                     return node;
@@ -1495,6 +1519,17 @@ public interface AetherNode extends ManageableNode {
     @Contract private static void notifyHealthReconcilerOfPhase(KVStoreNotification.ValuePut<AetherKey.ClusterPhaseKey, AetherValue.ClusterPhaseValue> notification,
                                                                 HealthReconciler reconciler) {
         if (notification.cause().value() instanceof AetherValue.ClusterPhaseValue value) {reconciler.onClusterPhasePut(value);}
+    }
+
+    @Contract private static void dispatchPhaseChangeToCtm(ClusterTopologyManager ctm, ClusterPhaseChanged event) {
+        if (event.previous() == event.current()) {return;}
+        ctm.onClusterPhaseChanged(event.current());
+    }
+
+    @Contract private static void bridgeSelfReadyToLifecycle(HealthReconciler healthReconciler,
+                                                             NodeLifecycle nodeLifecycle) {
+        healthReconciler.signalSelfReady();
+        nodeLifecycle.signalReady();
     }
 
     @SuppressWarnings("unchecked") private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
@@ -1510,6 +1545,21 @@ public interface AetherNode extends ManageableNode {
                               .map(NodeInfo::address)
                               .findFirst()
                               .orElse(new NodeAddress("", 0));
+    }
+
+    private static AetherValue.ProvisioningSource detectProvisioningSource() {
+        var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY")).filter(v -> !v.isBlank())
+                               .map(String::trim)
+                               .map(String::toLowerCase);
+        return raw.map(AetherNode::provisioningSourceFrom).or(AetherValue.ProvisioningSource.MANUAL);
+    }
+
+    private static AetherValue.ProvisioningSource provisioningSourceFrom(String raw) {
+        return switch (raw){
+            case "ctm" -> AetherValue.ProvisioningSource.CTM;
+            case "manual" -> AetherValue.ProvisioningSource.MANUAL;
+            default -> AetherValue.ProvisioningSource.UNKNOWN;
+        };
     }
 
     private static void attachQuicDisconnectListener(ClusterNetwork network,

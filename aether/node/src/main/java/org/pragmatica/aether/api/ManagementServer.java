@@ -887,7 +887,11 @@ class ManagementServerImpl implements ManagementServer {
 
     @SuppressWarnings("JBCT-PAT-01") private boolean handleProbeRequest(String path, ResponseWriter response) {
         if ("/health/live".equals(path)) {
-            writeProbeJson(response, statusRoutes.buildLivenessResponse(), HttpStatus.OK);
+            var liveness = statusRoutes.buildLivenessResponse();
+            var httpStatus = "UP".equals(liveness.status())
+                            ? HttpStatus.OK
+                            : HttpStatus.SERVICE_UNAVAILABLE;
+            writeProbeJson(response, liveness, httpStatus);
             return true;
         }
         if ("/health/ready".equals(path)) {

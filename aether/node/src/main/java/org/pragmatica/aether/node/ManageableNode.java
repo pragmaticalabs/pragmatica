@@ -10,6 +10,8 @@ import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
+import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
 import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -94,5 +96,7 @@ public interface ManageableNode {
     List<NodeId> initialTopology();
     TopologyConfig topologyConfig();
     HealthSignalSink healthSignalSink();
+    LifecycleWriter lifecycleWriter();
+    NodeLifecycle nodeLifecycle();
     @SuppressWarnings("JBCT-RET-01") void route(Message message);
 }

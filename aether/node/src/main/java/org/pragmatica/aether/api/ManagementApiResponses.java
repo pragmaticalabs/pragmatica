@@ -47,9 +47,13 @@ public sealed interface ManagementApiResponses {
                           int sliceCount,
                           String buildTimestamp){}
 
-    record LivenessResponse(String status, String nodeId){}
+    record LivenessResponse(String status, String nodeId, String state, boolean ready){}
 
-    record ReadinessResponse(String status, String nodeId, List<ComponentHealth> components){}
+    record ReadinessResponse(String status,
+                             String nodeId,
+                             String state,
+                             boolean ready,
+                             List<ComponentHealth> components){}
 
     record ComponentHealth(String name, String status, String detail){}
 

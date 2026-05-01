@@ -343,6 +343,7 @@ class ClusterTopologyManagerPhaseAwareTest {
     private static final class RecordingLifecycleWriter implements LifecycleWriter {
         final AtomicInteger drainCount = new AtomicInteger();
         final AtomicInteger decommissionCount = new AtomicInteger();
+        final AtomicInteger activateCount = new AtomicInteger();
 
         @Override public Promise<Unit> requestDrain(NodeId target) {
             drainCount.incrementAndGet();
@@ -351,6 +352,11 @@ class ClusterTopologyManagerPhaseAwareTest {
 
         @Override public Promise<Unit> requestDecommission(NodeId target) {
             decommissionCount.incrementAndGet();
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<Unit> requestActivate(NodeId target) {
+            activateCount.incrementAndGet();
             return Promise.success(Unit.unit());
         }
     }

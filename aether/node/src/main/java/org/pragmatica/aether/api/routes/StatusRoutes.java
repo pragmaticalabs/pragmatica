@@ -171,23 +171,34 @@ public final class StatusRoutes implements RouteSource {
     }
 
     public LivenessResponse buildLivenessResponse() {
-        var nodeId = nodeSupplier.get().self()
-                                     .id();
-        return new LivenessResponse("UP", nodeId);
+        var node = nodeSupplier.get();
+        var nodeId = node.self().id();
+        var state = node.nodeLifecycle().currentState();
+        var status = state.isLive()
+                    ? "UP"
+                    : "DOWN";
+        return new LivenessResponse(status, nodeId, state.name(), state.isReady());
     }
 
     @SuppressWarnings("JBCT-PAT-01") public ReadinessResponse buildReadinessResponse() {
         var node = nodeSupplier.get();
         var nodeId = node.self().id();
+        var state = node.nodeLifecycle().currentState();
         var components = new ArrayList<ComponentHealth>();
+        components.add(buildLifecycleHealth(state));
         components.add(buildConsensusHealth(node));
         components.add(buildRoutesHealth());
         components.add(buildQuorumHealth(node));
-        var allUp = components.stream().allMatch(c -> "UP".equals(c.status()));
-        var status = allUp
+        var status = state.isReady()
                     ? "UP"
                     : "DOWN";
-        return new ReadinessResponse(status, nodeId, List.copyOf(components));
+        return new ReadinessResponse(status, nodeId, state.name(), state.isReady(), List.copyOf(components));
+    }
+
+    private static ComponentHealth buildLifecycleHealth(org.pragmatica.aether.node.lifecycle.NodeState state) {
+        return new ComponentHealth("lifecycle", state.isReady()
+                                               ? "UP"
+                                               : "DOWN", "NodeLifecycle state: " + state.name());
     }
 
     private static ComponentHealth buildConsensusHealth(ManageableNode node) {

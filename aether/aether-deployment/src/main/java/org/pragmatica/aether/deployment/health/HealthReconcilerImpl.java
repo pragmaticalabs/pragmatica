@@ -48,6 +48,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier;
     private final HealthReconcilerConfig config;
     private final ObservationAggregator aggregator;
+    private final SelfOnDutyAtomFactory selfOnDutyAtomFactory;
 
     private final Object aggregatorLock = new Object();
 
@@ -72,7 +73,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                  Supplier<Option<NodeId>> leaderReader,
                                  Supplier<Integer> onDutyCountSupplier,
                                  Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                 HealthReconcilerConfig config) {
+                                 HealthReconcilerConfig config,
+                                 SelfOnDutyAtomFactory selfOnDutyAtomFactory) {
         this.self = self;
         this.expectedClusterSize = expectedClusterSize;
         this.lifecycleReader = lifecycleReader;
@@ -81,6 +83,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
         this.onDutyCountSupplier = onDutyCountSupplier;
         this.commandApplier = commandApplier;
         this.config = config;
+        this.selfOnDutyAtomFactory = selfOnDutyAtomFactory;
         this.aggregator = ObservationAggregator.observationAggregator(config.aggregationWindowMs());
     }
 
@@ -91,7 +94,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                                      Supplier<Option<NodeId>> leaderReader,
                                                      Supplier<Integer> onDutyCountSupplier,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                     HealthReconcilerConfig config) {
+                                                     HealthReconcilerConfig config,
+                                                     SelfOnDutyAtomFactory selfOnDutyAtomFactory) {
         return new HealthReconcilerImpl(self,
                                         expectedClusterSize,
                                         lifecycleReader,
@@ -99,7 +103,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                         leaderReader,
                                         onDutyCountSupplier,
                                         commandApplier,
-                                        config);
+                                        config,
+                                        selfOnDutyAtomFactory);
     }
 
     @Override public Promise<Unit> start() {
@@ -153,7 +158,20 @@ final class HealthReconcilerImpl implements HealthReconciler {
     private void promoteSelfToOnDuty(long nowMs) {
         if (!selfPromoted.compareAndSet(false, true)) {return;}
         log.info("HealthReconciler: promoting self {} to ON_DUTY (phase={})", self, currentPhase.get());
-        proposeLifecycleWrite(self, NodeLifecycleState.ON_DUTY, nowMs);
+        proposeSelfOnDutyWrite(nowMs);
+    }
+
+    private void proposeSelfOnDutyWrite(long nowMs) {
+        var prior = lifecycleReader.apply(self);
+        var value = prior.isPresent()
+                   ? buildLifecycleValue(prior, NodeLifecycleState.ON_DUTY, nowMs)
+                   : selfOnDutyAtomFactory.build(NodeLifecycleState.ON_DUTY, nowMs);
+        @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(self),
+                                                                                                                                    value);
+        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("HealthReconciler: failed to write ON_DUTY for self {}: {}",
+                                                                           self,
+                                                                           cause.message()))
+                            .onSuccess(_ -> recordWrite(self, NodeLifecycleState.ON_DUTY, nowMs));
     }
 
     private Option<ObservationAggregator.StateChanged> aggregateEdge(SwimObservation observation, long nowMs) {
@@ -235,6 +253,11 @@ final class HealthReconcilerImpl implements HealthReconciler {
         return forceLifecycleWrite(target, NodeLifecycleState.DECOMMISSIONED);
     }
 
+    @Override public Promise<Unit> requestActivate(NodeId target) {
+        if (!started.get()) {return HealthReconcilerError.General.NOT_STARTED.promise();}
+        return forceLifecycleWrite(target, NodeLifecycleState.ON_DUTY);
+    }
+
     private Promise<Unit> forceLifecycleWrite(NodeId target, NodeLifecycleState newState) {
         var nowMs = System.currentTimeMillis();
         var prior = lifecycleReader.apply(target);
@@ -252,6 +275,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
 
     @Override@Contract public void addPhaseListener(Consumer<ClusterPhaseChanged> listener) {
         phaseListeners.add(listener);
+        var current = currentPhase.get();
+        notifyListener(listener, ClusterPhaseChanged.clusterPhaseChanged(current, current));
     }
 
     private void evaluatePhaseTransition(long nowMs) {

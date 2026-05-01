@@ -217,6 +217,10 @@ import static org.pragmatica.lang.Unit.unit;
             @Override public Promise<Unit> requestDecommission(NodeId target) {
                 return legacyWrite(target, NodeLifecycleState.DECOMMISSIONED, commandApplier, lifecycleReader, clock);
             }
+
+            @Override public Promise<Unit> requestActivate(NodeId target) {
+                return legacyWrite(target, NodeLifecycleState.ON_DUTY, commandApplier, lifecycleReader, clock);
+            }
         };
     }
 

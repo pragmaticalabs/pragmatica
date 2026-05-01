@@ -8,20 +8,16 @@ import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.aether.slice.generation.HealthSignal;
-import org.pragmatica.aether.slice.generation.OperatorIntent;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.HttpError;
 import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 
@@ -94,30 +90,34 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
-        return checkDisruptionBudget(nodeIdStr).flatMap(_ -> emitDrainIntent(nodeIdStr));
+        return checkDisruptionBudget(nodeIdStr).flatMap(_ -> guardAndRequestDrain(nodeIdStr));
     }
 
-    private Promise<TransitionResult> emitDrainIntent(String nodeIdStr) {
-        return resolveNodeLifecycle(nodeIdStr).flatMap(current -> guardDrainIntent(nodeIdStr, current));
+    private Promise<TransitionResult> guardAndRequestDrain(String nodeIdStr) {
+        return resolveNodeLifecycle(nodeIdStr).flatMap(current -> guardDrainState(nodeIdStr, current));
     }
 
-    private Promise<TransitionResult> guardDrainIntent(String nodeIdStr, NodeLifecycleValue current) {
+    private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeLifecycleValue current) {
         if (current.state() != NodeLifecycleState.ON_DUTY) {return Promise.success(new TransitionResult(false,
                                                                                                         nodeIdStr,
                                                                                                         current.state()
                                                                                                                      .name(),
                                                                                                         "Cannot drain from " + current.state() + " (must be ON_DUTY)"));}
         return NodeId.nodeId(nodeIdStr).async()
-                            .map(nodeId -> emitDrainSignalAndBuildResult(nodeId, nodeIdStr));
+                            .flatMap(this::routeDrainThroughHealthReconciler)
+                            .map(_ -> drainSuccessResult(nodeIdStr));
     }
 
-    private TransitionResult emitDrainSignalAndBuildResult(NodeId nodeId, String nodeIdStr) {
+    private Promise<org.pragmatica.lang.Unit> routeDrainThroughHealthReconciler(NodeId nodeId) {
+        return nodeSupplier.get().lifecycleWriter()
+                               .requestDrain(nodeId);
+    }
+
+    private TransitionResult drainSuccessResult(String nodeIdStr) {
         var result = new TransitionResult(true,
                                           nodeIdStr,
                                           NodeLifecycleState.DRAINING.name(),
                                           "Transition to " + NodeLifecycleState.DRAINING + " initiated");
-        nodeSupplier.get().healthSignalSink()
-                        .emit(new HealthSignal.OperatorAction(new OperatorIntent.DrainMember(nodeId)));
         auditAndEmitLifecycleTransition(result, NodeLifecycleState.DRAINING);
         return result;
     }
@@ -153,45 +153,53 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return HttpError.httpError(HttpStatus.CONFLICT, Causes.cause(message));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private Promise<TransitionResult> activateNode(String nodeIdStr) {
-        return resolveNodeLifecycle(nodeIdStr).flatMap(current -> activateFromState(nodeIdStr, current));
+    private Promise<TransitionResult> activateNode(String nodeIdStr) {
+        return resolveNodeLifecycle(nodeIdStr).flatMap(current -> guardActivateState(nodeIdStr, current));
     }
 
-    private Promise<TransitionResult> activateFromState(String nodeIdStr, NodeLifecycleValue current) {
-        if (current.state() == NodeLifecycleState.DRAINING || current.state() == NodeLifecycleState.DECOMMISSIONED) {return writeLifecycleState(nodeIdStr,
-                                                                                                                                                NodeLifecycleState.ON_DUTY);}
-        return Promise.success(new TransitionResult(false,
-                                                    nodeIdStr,
-                                                    current.state().name(),
-                                                    "Cannot activate from " + current.state() + " (must be DRAINING or DECOMMISSIONED)"));
+    private Promise<TransitionResult> guardActivateState(String nodeIdStr, NodeLifecycleValue current) {
+        if (current.state() != NodeLifecycleState.DRAINING && current.state() != NodeLifecycleState.DECOMMISSIONED) {return Promise.success(new TransitionResult(false,
+                                                                                                                                                                 nodeIdStr,
+                                                                                                                                                                 current.state()
+                                                                                                                                                                              .name(),
+                                                                                                                                                                 "Cannot activate from " + current.state() + " (must be DRAINING or DECOMMISSIONED)"));}
+        return NodeId.nodeId(nodeIdStr).async()
+                            .flatMap(this::routeActivateThroughHealthReconciler)
+                            .map(_ -> activateSuccessResult(nodeIdStr));
+    }
+
+    private Promise<org.pragmatica.lang.Unit> routeActivateThroughHealthReconciler(NodeId nodeId) {
+        return nodeSupplier.get().lifecycleWriter()
+                               .requestActivate(nodeId);
+    }
+
+    private TransitionResult activateSuccessResult(String nodeIdStr) {
+        var result = new TransitionResult(true,
+                                          nodeIdStr,
+                                          NodeLifecycleState.ON_DUTY.name(),
+                                          "Transition to " + NodeLifecycleState.ON_DUTY + " initiated");
+        auditAndEmitLifecycleTransition(result, NodeLifecycleState.ON_DUTY);
+        return result;
     }
 
     private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
         return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(_ -> writeLifecycleState(nodeIdStr, NodeLifecycleState.SHUTTING_DOWN));
+                            .flatMap(this::routeDecommissionThroughHealthReconciler)
+                            .map(_ -> shutdownSuccessResult(nodeIdStr));
     }
 
-    private Promise<TransitionResult> transitionLifecycle(String nodeIdStr,
-                                                          NodeLifecycleState requiredState,
-                                                          NodeLifecycleState targetState,
-                                                          String operationName) {
-        return resolveNodeLifecycle(nodeIdStr).flatMap(current -> guardStateTransition(nodeIdStr,
-                                                                                       current,
-                                                                                       requiredState,
-                                                                                       targetState,
-                                                                                       operationName));
+    private Promise<org.pragmatica.lang.Unit> routeDecommissionThroughHealthReconciler(NodeId nodeId) {
+        return nodeSupplier.get().lifecycleWriter()
+                               .requestDecommission(nodeId);
     }
 
-    private Promise<TransitionResult> guardStateTransition(String nodeIdStr,
-                                                           NodeLifecycleValue current,
-                                                           NodeLifecycleState requiredState,
-                                                           NodeLifecycleState targetState,
-                                                           String operationName) {
-        if (current.state() != requiredState) {return Promise.success(new TransitionResult(false,
-                                                                                           nodeIdStr,
-                                                                                           current.state().name(),
-                                                                                           "Cannot " + operationName + " from " + current.state() + " (must be " + requiredState + ")"));}
-        return writeLifecycleState(nodeIdStr, targetState);
+    private TransitionResult shutdownSuccessResult(String nodeIdStr) {
+        var result = new TransitionResult(true,
+                                          nodeIdStr,
+                                          NodeLifecycleState.DECOMMISSIONED.name(),
+                                          "Transition to " + NodeLifecycleState.DECOMMISSIONED + " initiated");
+        auditAndEmitLifecycleTransition(result, NodeLifecycleState.DECOMMISSIONED);
+        return result;
     }
 
     private Promise<NodeLifecycleValue> resolveNodeLifecycle(String nodeIdStr) {
@@ -201,21 +209,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private Promise<NodeLifecycleValue> lookupLifecycleValue(NodeId nodeId) {
         var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
-        return nodeSupplier.get().kvStore()
-                               .get(key)
-                               .filter(v -> v instanceof NodeLifecycleValue)
-                               .map(v -> (NodeLifecycleValue) v)
-                               .async(LIFECYCLE_NOT_FOUND);
-    }
-
-    private Promise<TransitionResult> writeLifecycleState(String nodeIdStr, NodeLifecycleState newState) {
-        return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(nodeId -> applyLifecycleCommand(nodeId, newState))
-                            .map(_ -> new TransitionResult(true,
-                                                           nodeIdStr,
-                                                           newState.name(),
-                                                           "Transition to " + newState + " initiated"))
-                            .onSuccess(r -> auditAndEmitLifecycleTransition(r, newState));
+        return readPriorLifecycle(key).async(LIFECYCLE_NOT_FOUND);
     }
 
     private void auditAndEmitLifecycleTransition(TransitionResult result, NodeLifecycleState newState) {
@@ -226,30 +220,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                                                           "api"));
     }
 
-    private Promise<List<Long>> applyLifecycleCommand(NodeId nodeId, NodeLifecycleState newState) {
-        var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
-        AetherValue value = buildLifecycleAtom(readPriorLifecycle(key), newState);
-        KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
-        return nodeSupplier.get().apply(List.of(command));
-    }
-
-    private org.pragmatica.lang.Option<NodeLifecycleValue> readPriorLifecycle(NodeLifecycleKey key) {
+    private Option<NodeLifecycleValue> readPriorLifecycle(NodeLifecycleKey key) {
         return nodeSupplier.get().kvStore()
                                .get(key)
                                .filter(v -> v instanceof NodeLifecycleValue)
                                .map(v -> (NodeLifecycleValue) v);
-    }
-
-    static NodeLifecycleValue buildLifecycleAtom(org.pragmatica.lang.Option<NodeLifecycleValue> prior,
-                                                 NodeLifecycleState newState) {
-        if (prior.isEmpty()) {return NodeLifecycleValue.nodeLifecycleValue(newState);}
-        var p = prior.unwrap();
-        return NodeLifecycleValue.nodeLifecycleValue(newState,
-                                                     System.currentTimeMillis(),
-                                                     p.host(),
-                                                     p.port(),
-                                                     p.observedCoreEpoch(),
-                                                     p.transitionedAt(),
-                                                     p.provisioningSource());
     }
 }
