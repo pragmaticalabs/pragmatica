@@ -4,6 +4,7 @@ import org.pragmatica.postgres.Oid;
 import org.pragmatica.postgres.PgColumn;
 import org.pragmatica.postgres.net.Converter;
 import org.pragmatica.postgres.net.PgValue;
+import org.pragmatica.postgres.net.PgWriter;
 import org.pragmatica.lang.Functions.Fn2;
 
 import java.math.BigDecimal;
@@ -589,7 +590,11 @@ public class DataConverter {
         return converter;
     }
 
-    private String fromObject(Object o) {
+    /// Text-only formatting for in-array element rendering (`ArrayConversions.fromArray`)
+    /// and as the default text path for built-in types. Custom-type values inside arrays
+    /// run their `Converter.from` through a temporary writer and require text output —
+    /// binary-format custom converter values cannot be embedded inside an array literal.
+    private String fromObjectAsText(Object o) {
         return switch (o) {
             case null -> null;
             case LocalDate localDate -> fromLocalDate(localDate);
@@ -604,18 +609,48 @@ public class DataConverter {
 
             default -> {
                 if (o.getClass().isArray()) {
-                    yield ArrayConversions.fromArray(o, this::fromObject);
+                    yield ArrayConversions.fromArray(o, this::fromObjectAsText);
                 } else {
-                    yield fromConvertible(o);
+                    yield convertibleAsText(o);
                 }
             }
         };
     }
 
-    @SuppressWarnings("unchecked")
-    private <T> String fromConvertible(T value) {
-        var converter = getConverter((Class<T>) value.getClass());
-        return converter.from(value);
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private String convertibleAsText(Object value) {
+        var converter = (Converter<Object>) getConverter((Class) value.getClass());
+        var writer = new CapturingPgWriter(encoding);
+        converter.from(value, writer);
+        if (writer.isBinary()) {
+            throw new IllegalArgumentException(
+                "Custom converter for " + value.getClass()
+                + " produced binary output, which cannot be embedded inside a text-format array literal");
+        }
+        return new String(writer.bytes(), encoding);
+    }
+
+    /// Write a single parameter into the bind sink. Built-in types and arrays are written
+    /// as text via `fromObjectAsText`; custom types delegate to `Converter.from(value, writer)`.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void writeObject(Object o, PgWriter writer) {
+        if (o == null) {
+            throw new IllegalArgumentException("writeObject must not be called with null");
+        }
+        if (o.getClass().isArray() || isBuiltInWriteType(o)) {
+            writer.writeText(fromObjectAsText(o));
+            return;
+        }
+        var converter = (Converter<Object>) getConverter((Class) o.getClass());
+        converter.from(o, writer);
+    }
+
+    private static boolean isBuiltInWriteType(Object o) {
+        return switch (o) {
+            case LocalDate _, LocalTime _, LocalDateTime _, ZonedDateTime _, OffsetDateTime _, Instant _,
+                 byte[] _, Boolean _, String _, Number _, Character _, UUID _ -> true;
+            default -> false;
+        };
     }
 
     @SuppressWarnings("unused")
@@ -625,10 +660,19 @@ public class DataConverter {
 
     public byte[][] fromParameters(Object[] parameters) {
         byte[][] params = new byte[parameters.length][];
-        int i = 0;
-        for (var param : parameters) {
-            var converted = fromObject(param);
-            params[i++] = converted == null ? null : converted.getBytes(encoding);
+        var writer = new CapturingPgWriter(encoding);
+        for (int i = 0; i < parameters.length; i++) {
+            if (parameters[i] == null) {
+                params[i] = null;
+                continue;
+            }
+            writer.reset();
+            writeObject(parameters[i], writer);
+            if (writer.isBinary()) {
+                throw new IllegalArgumentException(
+                    "Binary-format parameters are not supported in text-mode binding (parameter index " + i + ")");
+            }
+            params[i] = writer.bytes();
         }
         return params;
     }
@@ -639,6 +683,7 @@ public class DataConverter {
     public EncodedParams fromParametersBinary(Object[] parameters, Oid[] types) {
         byte[][] values = new byte[parameters.length][];
         short[] formatCodes = new short[parameters.length];
+        var writer = new CapturingPgWriter(encoding);
 
         for (int i = 0; i < parameters.length; i++) {
             if (parameters[i] == null) {
@@ -656,9 +701,10 @@ public class DataConverter {
                 buf.get(values[i]);
                 formatCodes[i] = 1;
             } else {
-                var converted = fromObject(parameters[i]);
-                values[i] = converted == null ? null : converted.getBytes(encoding);
-                formatCodes[i] = 0;
+                writer.reset();
+                writeObject(parameters[i], writer);
+                values[i] = writer.bytes();
+                formatCodes[i] = (short) (writer.isBinary() ? 1 : 0);
             }
         }
         return new EncodedParams(values, formatCodes);
@@ -725,7 +771,8 @@ public class DataConverter {
             var converter = (Converter<T>) typeToConverter.get(type);
 
             if (converter != null) {
-                return converter.to(oid, new String(value, encoding));
+                PgValue pgValue = binary ? new PgValue.Binary(oid, value) : new PgValue.Text(oid, value, encoding);
+                return converter.to(pgValue);
             }
 
             // Try known converter
