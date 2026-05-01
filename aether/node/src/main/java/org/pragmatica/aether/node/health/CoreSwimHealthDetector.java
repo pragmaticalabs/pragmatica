@@ -23,17 +23,21 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.swim.GossipEncryptor;
+import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.NettySwimTransport;
 import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMembershipListener;
 import org.pragmatica.swim.SwimMessage;
+import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
+import org.pragmatica.swim.TransportObservation;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -226,6 +230,26 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     public boolean isLocallyDisconnected() {
         return context.fsm().current() instanceof SwimHealthState.LocalDisconnect;
+    }
+
+    @Contract public void recordTransportHint(TransportObservation hint) {
+        protocol().onPresent(p -> p.recordTransportHint(hint.peer(), hint));
+    }
+
+    @Contract public void addObservationListener(Consumer<SwimObservation> consumer) {
+        protocol().onPresent(p -> p.addObservationListener(consumer));
+    }
+
+    public Option<HealthSnapshot> currentHealth() {
+        return protocol().map(SwimProtocol::currentHealth);
+    }
+
+    private Option<SwimProtocol> protocol() {
+        return switch (context.fsm().current()){
+            case SwimHealthState.Running r -> option(r.swim());
+            case SwimHealthState.LocalDisconnect ld -> option(ld.swim());
+            default -> none();
+        };
     }
 
     private Result<SwimTransport> createTransport(Option<EventLoopGroup> sharedEventLoopGroup,

@@ -185,6 +185,7 @@ import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
 import org.pragmatica.swim.SwimConfig;
+import org.pragmatica.swim.TransportObservation;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -1160,7 +1161,11 @@ public interface AetherNode extends ManageableNode {
                                                   java.util.concurrent.TimeUnit.SECONDS);
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
-        attachQuicPeerStateListener(clusterNode.network(), clusterTopologyManager, stableHealthSink, leaderEpochSupplier);
+        attachQuicPeerStateListener(clusterNode.network(),
+                                    clusterTopologyManager,
+                                    stableHealthSink,
+                                    leaderEpochSupplier,
+                                    swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
                                                                                       leaderTerm,
@@ -1488,7 +1493,8 @@ public interface AetherNode extends ManageableNode {
     private static void attachQuicPeerStateListener(ClusterNetwork network,
                                                     ClusterTopologyManager ctm,
                                                     HealthSignalSink healthSink,
-                                                    Supplier<Epoch> epochSupplier) {
+                                                    Supplier<Epoch> epochSupplier,
+                                                    CoreSwimHealthDetector swimDetector) {
         LOG.debug("attachQuicPeerStateListener: network class={}",
                   network == null
                   ? "null"
@@ -1499,24 +1505,29 @@ public interface AetherNode extends ManageableNode {
         }
         var listener = new QuicPeerStateListener() {
             @Override@Contract public void onPeerJoined(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerJoined({}) — bumping CTM stability + emitting SwimHint(HEALTHY)", nodeId);
+                LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable) + CTM bump + legacy SwimHint",
+                          nodeId);
                 ctm.onQuicPeerJoined(nodeId);
-                emitHealthyHint(nodeId);
+                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
+                emitLegacyHealthyHint(nodeId);
             }
 
             @Override@Contract public void onPeerReconnected(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerReconnected({}) — bumping CTM stability + emitting SwimHint(HEALTHY)",
+                LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable) + CTM bump + legacy SwimHint",
                           nodeId);
                 ctm.onQuicPeerJoined(nodeId);
-                emitHealthyHint(nodeId);
+                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
+                emitLegacyHealthyHint(nodeId);
             }
 
             @Override@Contract public void onPeerLeft(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerLeft({}) — notifying CTM", nodeId);
+                LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable) + CTM notify", nodeId);
                 ctm.onQuicPeerLeft(nodeId);
+                swimDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
+                                                                                          QuicTransportCause.PEER_LEFT));
             }
 
-            private void emitHealthyHint(NodeId peer) {
+            private void emitLegacyHealthyHint(NodeId peer) {
                 var epoch = epochSupplier.get();
                 healthSink.emit(new HealthSignal.SwimHint(peer, HealthHint.HEALTHY, epoch));
             }
@@ -1524,12 +1535,24 @@ public interface AetherNode extends ManageableNode {
         quicNetwork.setPeerStateListener(listener);
         quicNetwork.connectedPeers()
                                   .forEach(peer -> {
-                                               LOG.debug("QuicPeerState: catch-up SwimHint(HEALTHY) for already-connected peer {}",
+                                               LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) + legacy SwimHint for already-connected peer {}",
                                                          peer);
+                                               swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
                                                healthSink.emit(new HealthSignal.SwimHint(peer,
                                                                                          HealthHint.HEALTHY,
                                                                                          epochSupplier.get()));
                                            });
+    }
+
+    enum QuicTransportCause implements Cause {
+        PEER_LEFT("QUIC peer connection closed");
+        private final String message;
+        QuicTransportCause(String message) {
+            this.message = message;
+        }
+        @Override public String message() {
+            return message;
+        }
     }
 
     private static void attachQuicFollowerWiring(ClusterNetwork network,

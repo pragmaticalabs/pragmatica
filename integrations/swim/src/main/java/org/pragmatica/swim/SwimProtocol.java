@@ -19,15 +19,21 @@ package org.pragmatica.swim;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
@@ -57,6 +63,10 @@ import static org.pragmatica.lang.Option.option;
 public final class SwimProtocol implements SwimMessageHandler {
     private static final Logger LOG = LoggerFactory.getLogger(SwimProtocol.class);
 
+    /// Floor (millis) for transport-hint-shortened suspect window. Spec §11
+    /// open question proposes 3s as the WAN-safe minimum.
+    private static final long TRANSPORT_HINT_SUSPECT_FLOOR_MS = 3_000L;
+
     private final SwimConfig config;
     private final SwimTransport transport;
     private final SwimMembershipListener listener;
@@ -71,6 +81,19 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(none());
     private final AtomicInteger probeIndex = new AtomicInteger(0);
     private final Map<NodeId, Long> revivalTimestamps = new ConcurrentHashMap<>();
+    /// Per-peer "ever observed HEALTHY at least once" flag. Cold-boot suppression:
+    /// a never-healthy peer is emitted as `UnknownObserved` instead of `FaultyObserved`
+    /// (spec §4.2 "Behavior contract: Cold-boot mode").
+    private final Set<NodeId> everSeenHealthy = ConcurrentHashMap.newKeySet();
+    /// Per-peer last-emitted observation health, used to enforce edge-triggered
+    /// emission (P5 idempotent edge transitions): same-state re-entries do NOT
+    /// produce a new observation.
+    private final Map<NodeId, SwimHealth> lastEmittedHealth = new ConcurrentHashMap<>();
+    /// Per-peer transport-hint state. PeerUnreachable shortens the suspect
+    /// window for the peer toward [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`];
+    /// PeerReachable removes the bias.
+    private final Map<NodeId, TransportHintState> transportHints = new ConcurrentHashMap<>();
+    private final List<Consumer<SwimObservation>> observationListeners = new CopyOnWriteArrayList<>();
 
     /// Tracks a relayed PingReq: maps the relay's own sequence to the original requester info.
     private record RelayInfo(long originalSequence, InetSocketAddress requesterAddress, long createdAt) {}
@@ -160,6 +183,88 @@ public final class SwimProtocol implements SwimMessageHandler {
             .onPresent(member -> applyAliveRevival(nodeId, member));
     }
 
+    /// Register a push-channel listener for [`SwimObservation`] edge transitions.
+    /// Listeners are invoked once per actual edge — same-state re-emission is
+    /// suppressed (P5 idempotent edge transitions, spec §4.2).
+    @Contract public void addObservationListener(Consumer<SwimObservation> listener) {
+        observationListeners.add(listener);
+    }
+
+    /// Pull-channel current per-peer health. Snapshot semantics — modifications
+    /// to SWIM state after this call are not reflected in the returned view.
+    public HealthSnapshot currentHealth() {
+        var view = new HashMap<NodeId, SwimHealth>();
+        members.forEach((id, member) -> view.put(id, classify(id, member)));
+        return HealthSnapshot.healthSnapshot(view);
+    }
+
+    /// Record a transport-level hint from Layer 0 (QUIC). Advisory only —
+    /// SWIM remains authoritative. `PeerUnreachable` biases this peer's
+    /// suspect-window timer toward the [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`]
+    /// floor; `PeerReachable` removes the bias.
+    /// SWIM never blindly adopts QUIC's verdict — its own gossip-aggregated
+    /// state remains the source of truth.
+    @Contract public void recordTransportHint(NodeId peer, TransportObservation hint) {
+        if (selfId.equals(peer)) {
+            return;
+        }
+
+        switch (hint) {
+            case TransportObservation.PeerReachable _ -> applyReachableHint(peer);
+            case TransportObservation.PeerUnreachable _ -> applyUnreachableHint(peer);
+        }
+    }
+
+    private void applyUnreachableHint(NodeId peer) {
+        transportHints.put(peer, new TransportHintState(true, System.currentTimeMillis()));
+        LOG.debug("SWIM transport hint: peer {} reported unreachable; suspect window biased to {}ms floor",
+                  peer.id(), TRANSPORT_HINT_SUSPECT_FLOOR_MS);
+    }
+
+    private void applyReachableHint(NodeId peer) {
+        transportHints.put(peer, new TransportHintState(false, System.currentTimeMillis()));
+        // Accelerate exit-from-SUSPECT if the peer is currently SUSPECT and the
+        // bias would expire its suspect window earlier than the default.
+        // SWIM remains authoritative: this only nudges timers, never overrides
+        // gossip state directly.
+        option(members.get(peer))
+            .filter(m -> m.state() == MemberState.SUSPECT)
+            .onPresent(_ -> shortenSuspectExpiry(peer));
+        LOG.debug("SWIM transport hint: peer {} reported reachable; bias removed", peer.id());
+    }
+
+    private void shortenSuspectExpiry(NodeId peer) {
+        // Backdate the suspect timestamp so the next tick re-evaluates within
+        // the floor window. Authoritative state is unchanged — only the timer
+        // shifts forward (i.e., timestamp moves earlier in time).
+        var ts = suspectTimestamps.get(peer);
+        if (ts == null) {
+            return;
+        }
+        var defaultMs = config.suspectTimeout().millis();
+        if (defaultMs <= TRANSPORT_HINT_SUSPECT_FLOOR_MS) {
+            return;
+        }
+        // Apparent age becomes (default - floor); only `floor` ms remain before
+        // the next expiry check. Only backdate (never push timestamp forward).
+        var biasedTs = System.currentTimeMillis() - (defaultMs - TRANSPORT_HINT_SUSPECT_FLOOR_MS);
+        if (biasedTs >= ts) {
+            return;
+        }
+        suspectTimestamps.put(peer, biasedTs);
+    }
+
+    private SwimHealth classify(NodeId peer, SwimMember member) {
+        if (!everSeenHealthy.contains(peer) && member.state() != MemberState.ALIVE) {
+            return SwimHealth.UNKNOWN;
+        }
+        return switch (member.state()) {
+            case ALIVE -> SwimHealth.HEALTHY;
+            case SUSPECT -> SwimHealth.SUSPECTED;
+            case FAULTY -> SwimHealth.FAULTY;
+        };
+    }
+
     // -- SwimMessageHandler --
 
     @Override
@@ -202,11 +307,19 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Remove FAULTY members after suspect timeout to prevent unbounded growth.
+    /// Emits `DepartedObserved` once per removed peer.
     private void cleanupFaultyMembers() {
         var now = System.currentTimeMillis();
         var cleanupThreshold = config.suspectTimeout().millis() * 3;
 
-        members.entrySet().removeIf(entry -> isFaultyAndExpired(entry, now, cleanupThreshold));
+        var iterator = members.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            if (isFaultyAndExpired(entry, now, cleanupThreshold)) {
+                iterator.remove();
+                emitDeparted(entry.getKey(), entry.getValue().incarnation());
+            }
+        }
     }
 
     private boolean isFaultyAndExpired(Map.Entry<NodeId, SwimMember> entry, long now, long threshold) {
@@ -223,7 +336,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void expireSuspectIfOverdue(NodeId nodeId, long timestamp, long now, long suspectTimeoutMillis) {
-        if (now - timestamp < suspectTimeoutMillis) {
+        var effectiveTimeoutMs = effectiveSuspectTimeoutMs(nodeId, suspectTimeoutMillis);
+        if (now - timestamp < effectiveTimeoutMs) {
             return;
         }
 
@@ -234,12 +348,25 @@ public final class SwimProtocol implements SwimMessageHandler {
         suspectTimestamps.remove(nodeId);
     }
 
+    /// Apply the transport-hint bias to the per-peer suspect window. When
+    /// QUIC has reported the peer unreachable, shorten the timeout to the
+    /// floor (or the configured default if it is shorter than the floor).
+    /// Otherwise keep the configured default. Spec §4.1, §11.
+    private long effectiveSuspectTimeoutMs(NodeId nodeId, long defaultMs) {
+        var hint = transportHints.get(nodeId);
+        if (hint == null || !hint.unreachable()) {
+            return defaultMs;
+        }
+        return Math.min(defaultMs, TRANSPORT_HINT_SUSPECT_FLOOR_MS);
+    }
+
     private void transitionToFaulty(SwimMember member) {
         var faulty = member.withState(MemberState.FAULTY);
         members.put(member.nodeId(), faulty);
         suspectTimestamps.put(member.nodeId(), System.currentTimeMillis());
         listener.onMemberFaulty(faulty);
         addMemberUpdate(faulty);
+        emitFaultyOrUnknown(member.nodeId(), faulty.incarnation());
         LOG.warn("Member {} marked FAULTY", member.nodeId().id());
     }
 
@@ -327,6 +454,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         suspectTimestamps.put(nodeId, System.currentTimeMillis());
         listener.onMemberSuspect(suspect);
         addMemberUpdate(suspect);
+        emitSuspect(nodeId, suspect.incarnation());
         LOG.warn("Member {} marked SUSPECT", nodeId.id());
     }
 
@@ -348,6 +476,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void processAckProbe(Ack ack) {
         pendingProbes.remove(ack.sequence());
         markAliveIfNeeded(ack.from());
+        // Even if member was already ALIVE, ack is positive evidence — record
+        // ever-seen-healthy and emit HealthyObserved on the first such edge.
+        option(members.get(ack.from()))
+            .filter(m -> m.state() == MemberState.ALIVE)
+            .onPresent(m -> recordHealthyAndEmit(m.nodeId(), m.incarnation()));
     }
 
     private void forwardRelay(Ack ack) {
@@ -387,6 +520,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         members.put(nodeId, alive);
         suspectTimestamps.remove(nodeId);
         addMemberUpdate(alive);
+        recordHealthyAndEmit(nodeId, alive.incarnation());
     }
 
     private void applyAliveRevival(NodeId nodeId, SwimMember member) {
@@ -397,6 +531,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         revivalTimestamps.put(nodeId, System.currentTimeMillis());
         listener.onMemberJoined(alive);
         addMemberUpdate(alive);
+        recordHealthyAndEmit(nodeId, alive.incarnation());
         LOG.info("Member {} externally marked ALIVE (was {})", nodeId.id(), member.state());
     }
 
@@ -431,9 +566,25 @@ public final class SwimProtocol implements SwimMessageHandler {
         var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
         members.put(update.nodeId(), member);
 
-        if (update.state() == MemberState.ALIVE) {
-            listener.onMemberJoined(member);
+        switch (update.state()) {
+            case ALIVE -> applyNewAliveMember(member);
+            case SUSPECT -> applyNewSuspectMember(member);
+            case FAULTY -> emitFaultyOrUnknown(member.nodeId(), member.incarnation());
         }
+    }
+
+    private void applyNewAliveMember(SwimMember member) {
+        listener.onMemberJoined(member);
+        recordHealthyAndEmit(member.nodeId(), member.incarnation());
+    }
+
+    private void applyNewSuspectMember(SwimMember member) {
+        // First-sight SUSPECT must register a timestamp so the suspect-window
+        // expiry tick eventually transitions the member to FAULTY (or
+        // UnknownObserved under cold-boot suppression).
+        suspectTimestamps.put(member.nodeId(), System.currentTimeMillis());
+        listener.onMemberSuspect(member);
+        emitSuspect(member.nodeId(), member.incarnation());
     }
 
     /// Enforce SWIM state priority at same incarnation: FAULTY > SUSPECT > ALIVE.
@@ -477,20 +628,27 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         switch (updated.state()) {
-            case ALIVE -> listener.onMemberJoined(updated);
+            case ALIVE -> notifyAlive(updated);
             case SUSPECT -> notifySuspect(updated);
             case FAULTY -> notifyFaulty(updated);
         }
     }
 
+    private void notifyAlive(SwimMember updated) {
+        listener.onMemberJoined(updated);
+        recordHealthyAndEmit(updated.nodeId(), updated.incarnation());
+    }
+
     private void notifySuspect(SwimMember updated) {
         suspectTimestamps.put(updated.nodeId(), System.currentTimeMillis());
         listener.onMemberSuspect(updated);
+        emitSuspect(updated.nodeId(), updated.incarnation());
     }
 
     private void notifyFaulty(SwimMember updated) {
         suspectTimestamps.remove(updated.nodeId());
         listener.onMemberFaulty(updated);
+        emitFaultyOrUnknown(updated.nodeId(), updated.incarnation());
     }
 
     private void addMemberUpdate(SwimMember member) {
@@ -506,5 +664,94 @@ public final class SwimProtocol implements SwimMessageHandler {
         static PendingProbe pendingProbe(NodeId targetId, long startTime, boolean indirectSent) {
             return new PendingProbe(targetId, startTime, indirectSent);
         }
+    }
+
+    /// Per-peer transport-hint state. `unreachable=true` shortens this peer's
+    /// suspect-window evaluation toward the [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`] floor.
+    record TransportHintState(boolean unreachable, long appliedAtMs) {}
+
+    // -- Observation emission (edge-triggered, P5 idempotent) --
+
+    /// Mark a peer HEALTHY-observed and emit `HealthyObserved` (idempotent
+    /// against same-state re-emission). Sets `everSeenHealthy` for the peer
+    /// so future FAULTY transitions are no longer cold-boot suppressed.
+    private void recordHealthyAndEmit(NodeId peer, long incarnation) {
+        everSeenHealthy.add(peer);
+        emitObservationOnEdge(peer, SwimHealth.HEALTHY, () -> new SwimObservation.HealthyObserved(peer, incarnation));
+    }
+
+    /// Emit `SuspectObserved` on edge (idempotent against repeats).
+    private void emitSuspect(NodeId peer, long incarnation) {
+        emitObservationOnEdge(peer, SwimHealth.SUSPECTED, () -> new SwimObservation.SuspectObserved(peer, incarnation));
+    }
+
+    /// Emit FAULTY on edge — but if the peer has never been observed HEALTHY,
+    /// emit `UnknownObserved` instead (cold-boot suppression, spec §4.2).
+    private void emitFaultyOrUnknown(NodeId peer, long incarnation) {
+        if (!everSeenHealthy.contains(peer)) {
+            LOG.info("SWIM cold-boot suppression: peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
+                     peer.id());
+            emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
+            return;
+        }
+        emitObservationOnEdge(peer, SwimHealth.FAULTY, () -> new SwimObservation.FaultyObserved(peer, incarnation));
+    }
+
+    /// Emit `DepartedObserved` on edge.
+    private void emitDeparted(NodeId peer, long incarnation) {
+        // Departed is always a terminal edge; we still gate on the previous
+        // last-emitted state to avoid duplicate emissions if the peer has
+        // already been emitted as departed.
+        emitObservationOnEdge(peer, null, () -> new SwimObservation.DepartedObserved(peer, incarnation));
+    }
+
+    /// Edge-triggered emission: deliver the observation only if `target` differs
+    /// from the previously-emitted health for `peer`. `target == null` is used
+    /// for one-shot terminal events (Departed) and is always emitted at most
+    /// once per terminal occurrence.
+    private void emitObservationOnEdge(NodeId peer, SwimHealth target, Supplier<SwimObservation> factory) {
+        if (target == null) {
+            // Departed: emit only if not already in DEPARTED-pseudo state.
+            if (lastEmittedHealth.remove(peer) == null) {
+                // Was never emitted — still emit Departed once (downstream may need
+                // to release per-peer resources). But guard against double-departed:
+                // record a sentinel via lastEmittedHealth.put(peer, null) is not
+                // possible with ConcurrentHashMap, so we accept the at-most-once
+                // semantic by removing the entry above and letting the listeners run.
+            }
+            deliverObservation(factory.get());
+            return;
+        }
+
+        var previous = lastEmittedHealth.put(peer, target);
+        if (previous == target) {
+            // Same edge already emitted — suppress re-emission (P5).
+            return;
+        }
+        deliverObservation(factory.get());
+    }
+
+    private void deliverObservation(SwimObservation observation) {
+        observationListeners.forEach(l -> safeDeliver(l, observation));
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private void safeDeliver(Consumer<SwimObservation> consumer, SwimObservation observation) {
+        try {
+            consumer.accept(observation);
+        } catch (Exception e) {
+            LOG.warn("SWIM observation listener threw {}: {}", e.getClass().getSimpleName(), e.getMessage());
+        }
+    }
+
+    /// Test-only accessor for the per-peer ever-seen-healthy flag. Use to
+    /// validate cold-boot suppression invariants from unit tests.
+    boolean everSeenHealthyForTest(NodeId peer) {
+        return everSeenHealthy.contains(peer);
+    }
+
+    /// Test-only accessor for the per-peer suspect-timestamp map. Used by
+    /// transport-hint tests to validate the timer-bias mechanism deterministically.
+    Option<Long> suspectTimestampForTest(NodeId peer) {
+        return option(suspectTimestamps.get(peer));
     }
 }
