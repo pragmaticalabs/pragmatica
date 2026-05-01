@@ -255,20 +255,33 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     /// Data-carrying state. Fresh instance per entry; holds the eagerly-scheduled first-tick
     /// `ScheduledFuture` plus an [`AtomicReference`] for subsequent reschedules (proposal retries,
-    /// topology changes) and a separate slot for the in-flight proposal-timeout dispatcher. Both
-    /// futures are cancelled in `onExit` / `onCasLost` to prevent stale ticks from firing after
-    /// the FSM has moved on.
+    /// topology changes), a separate slot for the in-flight proposal-timeout dispatcher, AND an
+    /// independent peer-observation `ScheduledFuture` that calls [`#adoptLeaderFromKvIfPresent`]
+    /// at [`LeaderElectionContext#peerObservationInterval`] cadence. The observation timer is
+    /// independent of `proposalInFlight` — it fires regardless of whether a self-proposal is in
+    /// flight, so a peer-committed leader that arrives during the proposal window is observed
+    /// promptly (preempting the in-flight proposal) instead of waiting for the proposal timeout
+    /// (`proposalTimeout`, default 10s) to fire `ProposalSettled.failure`.
+    /// All three futures are cancelled in `onExit` / `onCasLost`.
     record Electing(LeaderElectionContext ctx,
                     AtomicReference<ScheduledFuture<?>> tickFuture,
-                    AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture) implements LeaderElectionState {
+                    AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture,
+                    AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
 
         public static Electing fresh(LeaderElectionContext ctx) {
             var rank = ctx.rankOfSelf();
             var delay = ctx.baseElectionDelay().millis() + rank * ctx.perRankDelay().millis();
-            log.info("Entering Electing: rank={}, first-tick delay={}ms", rank, delay);
-            var future = SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
-                                                  TimeSpan.timeSpan(delay).millis());
-            return new Electing(ctx, new AtomicReference<>(future), new AtomicReference<>());
+            log.info("Entering Electing: rank={}, first-tick delay={}ms, peer-observation interval={}ms",
+                     rank, delay, ctx.peerObservationInterval().millis());
+            var tickFuture = SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
+                                                      TimeSpan.timeSpan(delay).millis());
+            var observationFuture = SharedScheduler.scheduleAtFixedRate(
+                    () -> adoptLeaderFromKvIfPresent(ctx),
+                    ctx.peerObservationInterval());
+            return new Electing(ctx,
+                                new AtomicReference<>(tickFuture),
+                                new AtomicReference<>(),
+                                new AtomicReference<>(observationFuture));
         }
 
         @Override
@@ -282,6 +295,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         public void onExit() {
             cancelFuture(tickFuture);
             cancelFuture(proposalTimeoutFuture);
+            cancelFuture(observationFuture);
             ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
         }
@@ -290,6 +304,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         public void onCasLost() {
             cancelFuture(tickFuture);
             cancelFuture(proposalTimeoutFuture);
+            cancelFuture(observationFuture);
         }
 
         @Override
@@ -361,17 +376,25 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     /// Data-carrying state. Same lifecycle as [`Electing`]: holds the eagerly-scheduled first-tick
-    /// `ScheduledFuture` and a slot for the in-flight proposal-timeout dispatcher; both are
-    /// cancelled in `onExit` / `onCasLost`.
+    /// `ScheduledFuture`, a slot for the in-flight proposal-timeout dispatcher, AND the
+    /// independent peer-observation timer (see [`Electing`] for the rationale — symmetric fix
+    /// applies here so a re-election proposal in flight cannot blind the FSM to a peer-committed
+    /// leader). All three futures are cancelled in `onExit` / `onCasLost`.
     record ReElecting(LeaderElectionContext ctx,
                       AtomicReference<ScheduledFuture<?>> tickFuture,
-                      AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture) implements LeaderElectionState {
+                      AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture,
+                      AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
 
         public static ReElecting fresh(LeaderElectionContext ctx) {
-            log.info("Entering ReElecting: scheduling tick in {}ms", ctx.proposalRetryDelay().millis());
+            log.info("Entering ReElecting: scheduling tick in {}ms, peer-observation interval={}ms",
+                     ctx.proposalRetryDelay().millis(), ctx.peerObservationInterval().millis());
             var holder = new AtomicReference<ScheduledFuture<?>>();
             scheduleElectionTickInto(ctx, holder);
-            return new ReElecting(ctx, holder, new AtomicReference<>());
+            var observationFuture = SharedScheduler.scheduleAtFixedRate(
+                    () -> adoptLeaderFromKvIfPresent(ctx),
+                    ctx.peerObservationInterval());
+            return new ReElecting(ctx, holder, new AtomicReference<>(),
+                                  new AtomicReference<>(observationFuture));
         }
 
         @Override
@@ -385,6 +408,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         public void onExit() {
             cancelFuture(tickFuture);
             cancelFuture(proposalTimeoutFuture);
+            cancelFuture(observationFuture);
             ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
         }
@@ -393,6 +417,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         public void onCasLost() {
             cancelFuture(tickFuture);
             cancelFuture(proposalTimeoutFuture);
+            cancelFuture(observationFuture);
         }
 
         @Override

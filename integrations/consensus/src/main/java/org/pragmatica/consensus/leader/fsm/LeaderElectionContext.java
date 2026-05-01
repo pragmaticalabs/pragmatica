@@ -64,6 +64,27 @@ public final class LeaderElectionContext {
     /// conservative so a misconfiguration doesn't introduce a deadlock-shaped bug.
     public static final TimeSpan DEFAULT_KV_SYNC_GRACE_DELAY = TimeSpan.timeSpan(3).seconds();
 
+    /// Cadence for the independent peer-observation timer scheduled in
+    /// [`LeaderElectionState.Electing`] / [`LeaderElectionState.ReElecting`]. Names a real
+    /// architectural smell: `Electing.handle` previously conflated "drive my own proposal" with
+    /// "observe peers" — once `proposalInFlight=true` the FSM rescheduled neither
+    /// `ElectionTick` (the only carrier of `adoptLeaderFromKvIfPresent`) nor any other pull-side
+    /// check until the in-flight `proposalTimeout` fired. During that window the FSM was blind
+    /// to peer-committed leaders if the push notification was buffered (Rabia decisions held
+    /// during the Syncing window) or the listener was wired late. Result: a node that fell
+    /// through to `Electing` and submitted a self-proposal could sit ~`proposalTimeout`
+    /// (10s default) without observing a leader its peers had already committed.
+    ///
+    /// Decoupling peer-observation from proposal lifecycle: the new periodic timer calls
+    /// `adoptLeaderFromKvIfPresent` regardless of `proposalInFlight`. If KV records a leader
+    /// in topology, the helper synthesises a `LeaderCommitted`, the existing handler
+    /// transitions to `Led(thatLeader)`, and the in-flight proposal is preempted — its timeout
+    /// is cancelled in `Electing.onExit` / `ReElecting.onExit`.
+    ///
+    /// 500ms is the smallest cadence that doesn't measurably load the KV-store accessor while
+    /// keeping the worst-case observation latency well under any meaningful operator timeout.
+    public static final TimeSpan DEFAULT_PEER_OBSERVATION_INTERVAL = TimeSpan.timeSpan(500).millis();
+
     /// Default jitter source — uniform random in [0.0, 0.5). Captured once per FSM so tests can
     /// inject a deterministic alternative via the full-arity constructor.
     public static final DoubleSupplier DEFAULT_JITTER_SOURCE =
@@ -100,6 +121,7 @@ public final class LeaderElectionContext {
     private final TimeSpan perRankDelay;
     private final TimeSpan proposalTimeout;
     private final TimeSpan kvSyncGraceDelay;
+    private final TimeSpan peerObservationInterval;
     private final int stuckElectionThreshold;
     private final DoubleSupplier jitterSource;
     private final Supplier<Long> rabiaTermSupplier;
@@ -239,10 +261,12 @@ public final class LeaderElectionContext {
              currentLeaderFromKvSupplier, DEFAULT_KV_SYNC_GRACE_DELAY);
     }
 
-    /// Full-arity constructor adding the KvSync grace delay — the cold-boot self-proposal gate.
+    /// Constructor adding the KvSync grace delay — the cold-boot self-proposal gate.
     /// Existing callers stay on the prior overload (which forwards
     /// [`#DEFAULT_KV_SYNC_GRACE_DELAY`]); tests that need to drive the fall-through path
-    /// deterministically use this constructor with a short delay (e.g. 50ms).
+    /// deterministically use this constructor with a short delay (e.g. 50ms). The peer
+    /// observation interval defaults to [`#DEFAULT_PEER_OBSERVATION_INTERVAL`]; tests that
+    /// drive the observation path deterministically should call the next overload directly.
     LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
                           NodeId self,
                           Option<LeaderProposalHandler> proposalHandler,
@@ -258,6 +282,34 @@ public final class LeaderElectionContext {
                           Supplier<Boolean> consensusReadySupplier,
                           Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
                           TimeSpan kvSyncGraceDelay) {
+        this(fsm, self, proposalHandler, expectedCluster, router, proposalRetryDelay,
+             baseElectionDelay, perRankDelay, proposalTimeout, stuckElectionThreshold,
+             jitterSource, rabiaTermSupplier, consensusReadySupplier,
+             currentLeaderFromKvSupplier, kvSyncGraceDelay,
+             DEFAULT_PEER_OBSERVATION_INTERVAL);
+    }
+
+    /// Full-arity constructor adding the peer-observation interval — the independent
+    /// observation cadence used by [`LeaderElectionState.Electing`] /
+    /// [`LeaderElectionState.ReElecting`] to pull-check the KV-store leader without coupling
+    /// to the proposal lifecycle. Tests that drive the observation path deterministically use
+    /// this constructor with a short interval (e.g. 50ms).
+    LeaderElectionContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                          NodeId self,
+                          Option<LeaderProposalHandler> proposalHandler,
+                          List<NodeId> expectedCluster,
+                          MessageRouter router,
+                          TimeSpan proposalRetryDelay,
+                          TimeSpan baseElectionDelay,
+                          TimeSpan perRankDelay,
+                          TimeSpan proposalTimeout,
+                          int stuckElectionThreshold,
+                          DoubleSupplier jitterSource,
+                          Supplier<Long> rabiaTermSupplier,
+                          Supplier<Boolean> consensusReadySupplier,
+                          Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                          TimeSpan kvSyncGraceDelay,
+                          TimeSpan peerObservationInterval) {
         this.fsm = fsm;
         this.self = self;
         this.proposalHandler = proposalHandler;
@@ -268,6 +320,7 @@ public final class LeaderElectionContext {
         this.perRankDelay = perRankDelay;
         this.proposalTimeout = proposalTimeout;
         this.kvSyncGraceDelay = kvSyncGraceDelay;
+        this.peerObservationInterval = peerObservationInterval;
         this.stuckElectionThreshold = stuckElectionThreshold;
         this.jitterSource = jitterSource;
         this.rabiaTermSupplier = rabiaTermSupplier;
@@ -311,6 +364,12 @@ public final class LeaderElectionContext {
     /// [`#DEFAULT_KV_SYNC_GRACE_DELAY`]; tests inject shorter values to drive the timeout
     /// fall-through deterministically.
     public TimeSpan kvSyncGraceDelay() { return kvSyncGraceDelay; }
+
+    /// Observation cadence for the independent peer-observation timer scheduled in
+    /// [`LeaderElectionState.Electing`] / [`LeaderElectionState.ReElecting`]. Defaults to
+    /// [`#DEFAULT_PEER_OBSERVATION_INTERVAL`]; tests inject shorter values to drive the
+    /// observation path deterministically.
+    public TimeSpan peerObservationInterval() { return peerObservationInterval; }
 
     public int stuckElectionThreshold() { return stuckElectionThreshold; }
 
