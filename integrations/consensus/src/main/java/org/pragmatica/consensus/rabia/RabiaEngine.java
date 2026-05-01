@@ -127,6 +127,12 @@ public class RabiaEngine<C extends Command> {
     private final Option<ScheduledFuture<?>> cleanupTask;
     private final AtomicLong quorumSequence = new AtomicLong();
 
+    /// Current cluster membership (consensus-level view).
+    /// Tracked locally so [#reconfigure] can detect a true membership change vs a no-op
+    /// replay of the same config. `none` until the first explicit reconfigure (or the
+    /// first quorum activation observed against a known TopologyManager.topology()).
+    private final AtomicReference<Option<ClusterConfig>> currentConfig = new AtomicReference<>(Option.none());
+
     //--------------------------------- Node State End
     /// Creates a new Rabia consensus engine without metrics or activation gating.
     ///
@@ -240,7 +246,7 @@ public class RabiaEngine<C extends Command> {
         log.trace("Node {} received quorum state {}", self, quorumStateNotification);
         switch (quorumStateNotification.state()) {
             case ESTABLISHED -> handleEstablished(quorumStateNotification);
-            case DISAPPEARED -> clusterDisconnected();
+            case DISAPPEARED -> pauseForQuorumLoss();
         }
     }
 
@@ -250,7 +256,16 @@ public class RabiaEngine<C extends Command> {
             pendingQuorum.set(notification);
             return;
         }
-        clusterConnected();
+        // Membership-architecture-spec §4.5 / §7.3: distinguish quorum-resume (Paused → Idle,
+        // no state reset) from cold-start (Stopped → Syncing). The Paused branch keeps the
+        // engine's existing currentPhase / phases / pendingBatches / lockedValue intact;
+        // any Decisions delivered during the pause have already been applied, so we just
+        // re-arm phase processing.
+        if (engineState.get().isPaused()) {
+            resumeFromPause();
+        } else {
+            clusterConnected();
+        }
     }
 
     /// Authorize a gated engine to start consensus participation.
@@ -301,6 +316,12 @@ public class RabiaEngine<C extends Command> {
         clusterConnected();
     }
 
+    /// Cold-start path: engine is `Stopped`, quorum has just been established for the
+    /// first time (or after a full reset via [#reconfigure]). Initiates a sync round to
+    /// catch up state from peers, then transitions to `Active`.
+    ///
+    /// This is NOT used for quorum-return after a transient pause — that path goes through
+    /// [#resumeFromPause] which preserves all in-memory state.
     private void clusterConnected() {
         log.info("Node {}: quorum connected. Starting synchronization attempts", self);
         executor.execute(this::doClusterConnected);
@@ -315,22 +336,125 @@ public class RabiaEngine<C extends Command> {
         exitState(oldState);
     }
 
-    private void clusterDisconnected() {
-        executor.execute(this::doClusterDisconnected);
+    /// Membership-architecture-spec §4.5 / §7.3 — quorum-loss handler.
+    ///
+    /// Transitions Active (Idle/InPhase) or Observing engines to `Paused`, retaining ALL
+    /// in-memory protocol state: `phases`, `currentPhase`, `pendingBatches`, `lockedValue`,
+    /// `correlationMap`, `bufferedDecisions`. The state machine is NOT reset.
+    ///
+    /// On the subsequent quorum `ESTABLISHED` notification, [#resumeFromPause] re-arms
+    /// phase processing without a sync round — Decisions delivered during the pause are
+    /// applied directly by [#handleDecision], keeping the engine current.
+    ///
+    /// In-flight stall/sync timers are cancelled. State is also persisted to durable
+    /// storage so that a crash during the pause leaves a recoverable snapshot.
+    private void pauseForQuorumLoss() {
+        executor.execute(this::doPauseForQuorumLoss);
     }
 
-    private void doClusterDisconnected() {
+    private void doPauseForQuorumLoss() {
         var current = engineState.get();
-        if (!current.isActive() && !current.isObserving()) {
+        if (!current.isActive() && !current.isObserving() && !current.isPaused() && !(current instanceof EngineState.Syncing)) {
+            // Stopped engines stay Stopped — nothing to pause.
             return;
         }
-        var oldState = engineState.getAndSet(new EngineState.Stopped());
+        if (current.isPaused()) {
+            return;
+        }
+        var oldState = engineState.getAndSet(new EngineState.Paused());
         exitState(oldState);
         persistence.save(stateMachine,
                          currentPhase.get(),
                          pendingBatches.values())
-                   .onSuccessRun(() -> log.info("Node {} disconnected. State persisted", self))
-                   .onFailure(cause -> log.error("Node {} failed to persist state: {}", self, cause));
+                   .onSuccessRun(() -> log.info("Node {} paused (quorum lost). State retained, snapshot persisted. currentPhase={}, pendingBatches={}",
+                                                self, currentPhase.get(), pendingBatches.size()))
+                   .onFailure(cause -> log.error("Node {} failed to persist state on pause: {}", self, cause));
+    }
+
+    /// Membership-architecture-spec §4.5 / §7.3 — quorum-return handler when previously paused.
+    ///
+    /// Transitions `Paused` → `Idle`, preserving `currentPhase`, `phases`, `pendingBatches`,
+    /// `lockedValue`. Re-arms phase processing if pending batches remain. No sync round —
+    /// Decisions delivered during the pause have already been applied.
+    private void resumeFromPause() {
+        executor.execute(this::doResumeFromPause);
+    }
+
+    private void doResumeFromPause() {
+        var current = engineState.get();
+        if (!current.isPaused()) {
+            return;
+        }
+        engineState.set(new EngineState.Idle());
+        log.info("Node {} resumed from pause (quorum returned). currentPhase={}, pendingBatches={}",
+                 self, currentPhase.get(), pendingBatches.size());
+        // Drain any far-future Decisions that were buffered while Paused. Decisions with
+        // phase < currentPhase are safely discarded; same/higher-phase ones are committed
+        // idempotently (PhaseData.tryMarkDecided makes re-application a no-op).
+        drainBufferedDecisions();
+        if (!pendingBatches.isEmpty()) {
+            executor.execute(this::startPhase);
+        }
+    }
+
+    /// Membership-architecture-spec §4.5 — full reset, the ONLY path that wipes proposal state.
+    ///
+    /// Applying a `ClusterConfig` whose membership differs from the engine's current view
+    /// drains in-flight proposals (failing them with [ConsensusError.NodeInactive]), clears
+    /// all phase data, resets `currentPhase` to ZERO, resets the state machine, and persists
+    /// an empty snapshot. The engine transitions to `Stopped`; the next quorum `ESTABLISHED`
+    /// notification will trigger a fresh sync round against the new membership.
+    ///
+    /// Replaying the same membership is a no-op — no state is wiped if `newConfig` already
+    /// matches the engine's current view. Returns success on no-op too.
+    public Promise<Result<Unit>> reconfigure(ClusterConfig newConfig) {
+        var promise = Promise.<Result<Unit>>promise();
+        executor.execute(() -> doReconfigure(newConfig, promise));
+        return promise;
+    }
+
+    private void doReconfigure(ClusterConfig newConfig, Promise<Result<Unit>> promise) {
+        var existing = currentConfig.get();
+        if (existing.map(c -> c.sameMembership(newConfig)).or(false)) {
+            log.info("Node {}: reconfigure called with identical membership, no-op", self);
+            currentConfig.set(Option.some(newConfig));
+            promise.succeed(Result.unitResult());
+            return;
+        }
+        log.info("Node {}: reconfigure to new membership {} (was {})",
+                 self, newConfig.members(), existing.map(ClusterConfig::members).or(List.of()));
+        var oldState = engineState.getAndSet(new EngineState.Stopped());
+        exitState(oldState);
+        persistence.save(stateMachine, Phase.ZERO, List.of())
+                   .onFailure(cause -> log.error("Node {} failed to persist empty state on reconfigure: {}", self, cause));
+        phases.clear();
+        currentPhase.set(Phase.ZERO);
+        lockedValue.set(Option.none());
+        stateMachine.reset();
+        startPromise.set(Promise.promise());
+        pendingBatches.clear();
+        bufferedDecisions.clear();
+        bufferedDecisionCount.set(0);
+        correlationMap.forEach((_, p) -> p.fail(ConsensusError.nodeInactive(self)));
+        correlationMap.clear();
+        currentConfig.set(Option.some(newConfig));
+        log.info("Node {}: reconfigure complete; awaiting quorum to start sync against new membership", self);
+        promise.succeed(Result.unitResult());
+    }
+
+    /// Hard-shutdown path used only by [#stop]. Performs the full state-clearing reset that
+    /// `clusterDisconnected()` used to do under quorum-loss; in the new design, quorum-loss
+    /// goes through [#pauseForQuorumLoss] and only `stop()` (and [#reconfigure]) reset state.
+    private void shutdownAndReset() {
+        var current = engineState.get();
+        if (current instanceof EngineState.Stopped) {
+            // Already stopped via performStop's pre-set; just clear state.
+        }
+        persistence.save(stateMachine,
+                         currentPhase.get(),
+                         pendingBatches.values())
+                   .onSuccessRun(() -> log.info("Node {} stopped. State persisted", self))
+                   .onFailure(cause -> log.error("Node {} failed to persist state on stop: {}", self, cause));
         phases.clear();
         currentPhase.set(Phase.ZERO);
         lockedValue.set(Option.none());
@@ -345,6 +469,30 @@ public class RabiaEngine<C extends Command> {
 
     public boolean isActive() {
         return engineState.get().isActive();
+    }
+
+    /// Returns true when the engine is in the `Paused` state — quorum is currently
+    /// unavailable, in-memory protocol state is retained, and new `apply()` submissions
+    /// are rejected with [ConsensusError.QuorumPaused]. Mutually exclusive with `isActive`.
+    public boolean isPaused() {
+        return engineState.get().isPaused();
+    }
+
+    /// Package-private test hook: current Rabia phase.
+    /// Used by R1 unit tests to verify state retention across pause/resume.
+    Phase currentPhaseForTesting() {
+        return currentPhase.get();
+    }
+
+    /// Package-private test hook: number of pending batches awaiting consensus.
+    /// Used by R1 unit tests to verify state retention across pause/resume.
+    int pendingBatchCountForTesting() {
+        return pendingBatches.size();
+    }
+
+    /// Package-private test hook: current cluster config (set by [#reconfigure]).
+    Option<ClusterConfig> currentConfigForTesting() {
+        return currentConfig.get();
     }
 
     public <R> Promise<List<R>> apply(List<C> commands) {
@@ -381,7 +529,12 @@ public class RabiaEngine<C extends Command> {
             return ConsensusError.commandBatchIsEmpty()
                                  .result();
         }
-        if (!engineState.get().isActive()) {
+        var state = engineState.get();
+        if (state.isPaused()) {
+            return ConsensusError.quorumPaused(self)
+                                 .result();
+        }
+        if (!state.isActive()) {
             return ConsensusError.nodeInactive(self)
                                  .result();
         }
@@ -429,12 +582,11 @@ public class RabiaEngine<C extends Command> {
         var oldState = engineState.getAndSet(new EngineState.Stopped());
         exitState(oldState);
         // Synchronously fail in-flight promises BEFORE executor.shutdown(); otherwise
-        // clusterDisconnected() schedules doClusterDisconnected() on the executor and
-        // shutdown's DiscardPolicy may drop it, leaving callers (e.g. publisher.runApply)
-        // waiting on cluster.apply(...) Promises forever.
+        // shutdownAndReset() may execute concurrently with the DiscardPolicy and leave
+        // callers (e.g. publisher.runApply) waiting on cluster.apply(...) Promises forever.
         correlationMap.forEach((_, p) -> p.fail(ConsensusError.nodeInactive(self)));
         correlationMap.clear();
-        clusterDisconnected();
+        shutdownAndReset();
         executor.shutdown();
         promise.succeed(Unit.unit());
     }
@@ -1062,6 +1214,11 @@ public class RabiaEngine<C extends Command> {
     /// `currentPhase`. Live KV writes from the cluster's current phase silently disappear
     /// from the rejoiner's local state machine, leaving it stuck (its FSM proposes against a
     /// phantom phase counter and never commits because the cluster is at a different phase).
+    ///
+    /// Membership-architecture-spec §4.5: while `Paused` (transient quorum loss), Decisions
+    /// MUST be applied directly so the engine catches up transparently when quorum returns.
+    /// Buffering on Paused would defeat the purpose — state would silently drift and require
+    /// a full sync round on resume, which the new design explicitly avoids.
     private void handleDecision(Decision<C> decision) {
         log.trace("Node {} received decision {}", self, decision);
         var state = engineState.get();
@@ -1070,11 +1227,17 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         if (isFarFuturePhase(decision.phase(), currentPhase.get())) {
-            log.warn("Node {} received Decision {} but currentPhase={}; gap={} > {} — buffering and resyncing",
+            log.warn("Node {} received Decision {} but currentPhase={}; gap={} > {} — buffering{}",
                      self, decision.phase(), currentPhase.get(),
-                     decision.phase().value() - currentPhase.get().value(), MAX_PHASE_AHEAD);
+                     decision.phase().value() - currentPhase.get().value(), MAX_PHASE_AHEAD,
+                     state.isPaused() ? " (paused; deferring resync to ESTABLISHED)" : " and resyncing");
             bufferDecisionForReplay(decision);
-            triggerResync();
+            // While Paused, do not flip to Syncing on far-future decisions — quorum is by
+            // definition unavailable, so a sync round cannot succeed. The next ESTABLISHED
+            // will drive the resume; the buffered decision will be drained then.
+            if (!state.isPaused()) {
+                triggerResync();
+            }
             return;
         }
         commitDecision(getOrCreatePhaseData(decision.phase()), decision);

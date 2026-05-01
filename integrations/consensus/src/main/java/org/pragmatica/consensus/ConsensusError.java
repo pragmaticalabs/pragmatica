@@ -62,6 +62,17 @@ public sealed interface ConsensusError extends Cause {
         }
     }
 
+    /// Returned when [org.pragmatica.consensus.rabia.RabiaEngine#apply] is invoked while
+    /// the engine is in `Paused` state (quorum currently unavailable). The engine retains
+    /// all in-memory state and will resume automatically once quorum returns; callers may
+    /// retry the submission then.
+    record QuorumPaused(NodeId nodeId) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Node " + nodeId.id() + " is paused: quorum unavailable";
+        }
+    }
+
     static ConsensusError commandBatchIsEmpty() {
         return new CommandBatchIsEmpty();
     }
@@ -84,5 +95,9 @@ public sealed interface ConsensusError extends Cause {
 
     static ConsensusError backpressureExceeded(int pending, int limit) {
         return new BackpressureExceeded(pending, limit);
+    }
+
+    static ConsensusError quorumPaused(NodeId nodeId) {
+        return new QuorumPaused(nodeId);
     }
 }

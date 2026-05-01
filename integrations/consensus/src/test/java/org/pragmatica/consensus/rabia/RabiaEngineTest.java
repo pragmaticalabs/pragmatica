@@ -117,14 +117,23 @@ class RabiaEngineTest {
     class QuorumHandling {
 
         @Test
-        void disconnection_resets_engine_state() throws InterruptedException {
+        void disconnection_pauses_engine_and_rejects_submissions() throws InterruptedException {
+            // Membership-architecture-spec §4.5 / §7.3: quorum-loss transitions Active → Paused
+            // (not a reset). New apply() submissions are rejected with QuorumPaused while the
+            // engine retains all in-memory state ready for resume on the next ESTABLISHED.
             activateEngine();
 
             engine.quorumState(QuorumStateNotification.disappeared());
             Thread.sleep(50);
 
+            assertThat(engine.isPaused()).as("engine should be paused after DISAPPEARED").isTrue();
+            assertThat(engine.isActive()).as("engine must not appear active while paused").isFalse();
+
             var result = engine.apply(List.of(new TestCommand("test"))).await();
             assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause ->
+                assertThat(cause).isInstanceOf(ConsensusError.QuorumPaused.class)
+            );
         }
     }
 
