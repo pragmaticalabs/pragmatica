@@ -77,7 +77,7 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
               : envConfig.withCertificateSecretPrefix(prefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") private static GcpEnvironmentConfig withNetworkEndpointGroup(GcpEnvironmentConfig envConfig,
+    private static GcpEnvironmentConfig withNetworkEndpointGroup(GcpEnvironmentConfig envConfig,
                                                                                                  GcpEnvironmentConfig.GcpNegConfig negConfig) {
         return new GcpEnvironmentConfig(envConfig.gcpConfig(),
                                         envConfig.machineType(),

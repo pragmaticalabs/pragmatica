@@ -13,7 +13,7 @@ public sealed interface SplitRule {
     String resolveVariant(Map<String, String> headers, Map<String, String> cookies);
 
     record HeaderHashSplit(String headerName, int variantCount) implements SplitRule {
-        @SuppressWarnings("JBCT-VO-02") public static HeaderHashSplit headerHashSplit(String headerName,
+        public static HeaderHashSplit headerHashSplit(String headerName,
                                                                                       int variantCount) {
             return new HeaderHashSplit(headerName, variantCount);
         }
@@ -26,7 +26,7 @@ public sealed interface SplitRule {
     }
 
     record CookieHashSplit(String cookieName, int variantCount) implements SplitRule {
-        @SuppressWarnings("JBCT-VO-02") public static CookieHashSplit cookieHashSplit(String cookieName,
+        public static CookieHashSplit cookieHashSplit(String cookieName,
                                                                                       int variantCount) {
             return new CookieHashSplit(cookieName, variantCount);
         }
@@ -39,7 +39,7 @@ public sealed interface SplitRule {
     }
 
     record HeaderMatchSplit(String headerName, Map<String, String> valueToVariant, String defaultVariant) implements SplitRule {
-        @SuppressWarnings("JBCT-VO-02") public static HeaderMatchSplit headerMatchSplit(String headerName,
+        public static HeaderMatchSplit headerMatchSplit(String headerName,
                                                                                         Map<String, String> valueToVariant,
                                                                                         String defaultVariant) {
             return new HeaderMatchSplit(headerName, valueToVariant, defaultVariant);
@@ -52,12 +52,12 @@ public sealed interface SplitRule {
     }
 
     record PercentageSplit(List<VariantWeight> weights) implements SplitRule {
-        @SuppressWarnings("JBCT-VO-02") public static PercentageSplit percentageSplit(List<VariantWeight> weights) {
+        public static PercentageSplit percentageSplit(List<VariantWeight> weights) {
             return new PercentageSplit(weights);
         }
 
         public record VariantWeight(String variant, int weight) {
-            @SuppressWarnings("JBCT-VO-02") public static VariantWeight variantWeight(String variant, int weight) {
+            public static VariantWeight variantWeight(String variant, int weight) {
                 return new VariantWeight(variant, weight);
             }
         }

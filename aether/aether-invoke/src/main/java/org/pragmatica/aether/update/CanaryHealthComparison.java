@@ -33,7 +33,7 @@ public record CanaryHealthComparison(String canaryId,
             return requestCount >= MIN_REQUESTS;
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static VersionMetrics versionMetrics(Version version,
+        public static VersionMetrics versionMetrics(Version version,
                                                                                     long requestCount,
                                                                                     long errorCount,
                                                                                     double errorRate,

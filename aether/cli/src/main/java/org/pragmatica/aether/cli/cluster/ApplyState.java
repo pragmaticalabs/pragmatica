@@ -35,7 +35,7 @@ import static org.pragmatica.lang.Result.success;
         destroyedNodeIds = List.copyOf(destroyedNodeIds);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static ApplyState applyState(String clusterName,
+    public static ApplyState applyState(String clusterName,
                                                                         String configHash,
                                                                         String startedAt,
                                                                         int currentWaveIndex,

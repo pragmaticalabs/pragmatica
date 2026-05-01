@@ -120,7 +120,6 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Factory creating a SWIM protocol instance.
     /// Result wrapper retained for flatMap(SwimProtocol::start) composition.
-    @SuppressWarnings("JBCT-VO-02")
     public static Result<SwimProtocol> swimProtocol(SwimConfig config,
                                                     SwimTransport transport,
                                                     SwimMembershipListener listener,

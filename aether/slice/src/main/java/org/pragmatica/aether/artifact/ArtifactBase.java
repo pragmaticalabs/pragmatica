@@ -20,11 +20,11 @@ import org.pragmatica.serialization.Codec;
         return Result.all(GroupId.groupId(parts[0]), ArtifactId.artifactId(parts[1])).map(ArtifactBase::new);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static ArtifactBase artifactBase(GroupId groupId, ArtifactId artifactId) {
+    public static ArtifactBase artifactBase(GroupId groupId, ArtifactId artifactId) {
         return new ArtifactBase(groupId, artifactId);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static ArtifactBase artifactBase(Artifact artifact) {
+    public static ArtifactBase artifactBase(Artifact artifact) {
         return new ArtifactBase(artifact.groupId(), artifact.artifactId());
     }
 

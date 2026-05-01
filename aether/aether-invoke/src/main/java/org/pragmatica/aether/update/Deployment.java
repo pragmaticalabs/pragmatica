@@ -30,7 +30,7 @@ public record Deployment(String deploymentId,
                          long updatedAt) {
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid deployment state transition: %s");
 
-    @SuppressWarnings("JBCT-VO-02") public static Deployment deployment(String deploymentId,
+    public static Deployment deployment(String deploymentId,
                                                                         String blueprintId,
                                                                         Version oldVersion,
                                                                         Version newVersion,
@@ -101,7 +101,7 @@ public record Deployment(String deploymentId,
         return System.currentTimeMillis() - updatedAt;
     }
 
-    @SuppressWarnings("JBCT-VO-02") private Result<Deployment> transitionTo(DeploymentState newState) {
+    private Result<Deployment> transitionTo(DeploymentState newState) {
         if (!state.validTransitions().contains(newState)) {return INVALID_TRANSITION.apply(state + " -> " + newState)
                                                                                           .result();}
         return Result.success(new Deployment(deploymentId,
@@ -120,7 +120,7 @@ public record Deployment(String deploymentId,
                                              System.currentTimeMillis()));
     }
 
-    @SuppressWarnings("JBCT-VO-02") private Deployment withRouting(VersionRouting newRouting) {
+    private Deployment withRouting(VersionRouting newRouting) {
         return new Deployment(deploymentId,
                               blueprintId,
                               oldVersion,

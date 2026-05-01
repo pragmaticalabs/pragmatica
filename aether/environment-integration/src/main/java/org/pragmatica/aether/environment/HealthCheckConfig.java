@@ -18,7 +18,7 @@ public record HealthCheckConfig(String protocol,
                                 TimeSpan timeout,
                                 int healthyThreshold,
                                 int unhealthyThreshold) {
-    @SuppressWarnings("JBCT-VO-02") public static final HealthCheckConfig DEFAULT = new HealthCheckConfig("http",
+    public static final HealthCheckConfig DEFAULT = new HealthCheckConfig("http",
                                                                                                           8080,
                                                                                                           "/health/ready",
                                                                                                           timeSpan(10).seconds(),

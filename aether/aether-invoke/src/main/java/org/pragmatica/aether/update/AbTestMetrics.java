@@ -17,7 +17,7 @@ public record AbTestMetrics(String testId, Map<String, VariantMetrics> variantMe
                                  double errorRate,
                                  long p99LatencyMs,
                                  long avgLatencyMs) {
-        @SuppressWarnings("JBCT-VO-02") public static VariantMetrics variantMetrics(String variant,
+        public static VariantMetrics variantMetrics(String variant,
                                                                                     Version version,
                                                                                     long requestCount,
                                                                                     long errorCount,

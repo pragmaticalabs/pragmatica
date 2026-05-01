@@ -37,7 +37,7 @@ public record TransactionContext(String id,
                                               none()));
     }
 
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) public static TransactionContext nestedContext(TransactionConfig config,
+    @SuppressWarnings("JBCT-NAM-01") public static TransactionContext nestedContext(TransactionConfig config,
                                                                                                     TransactionContext parent) {
         return new TransactionContext(UUID.randomUUID().toString(),
                                       config,
@@ -46,19 +46,19 @@ public record TransactionContext(String id,
                                       option(parent));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public TransactionContext commit() {
+    public TransactionContext commit() {
         return new TransactionContext(id, config, TransactionStatus.COMMITTED, startTime, parentContext);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public TransactionContext rollback() {
+    public TransactionContext rollback() {
         return new TransactionContext(id, config, TransactionStatus.ROLLED_BACK, startTime, parentContext);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public TransactionContext suspend() {
+    public TransactionContext suspend() {
         return new TransactionContext(id, config, TransactionStatus.SUSPENDED, startTime, parentContext);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public TransactionContext resume() {
+    public TransactionContext resume() {
         return new TransactionContext(id, config, TransactionStatus.ACTIVE, startTime, parentContext);
     }
 

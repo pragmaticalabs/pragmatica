@@ -73,7 +73,7 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
               : result.withDiscoveryPollInterval(Long.parseLong(pollInterval));
     }
 
-    @SuppressWarnings("JBCT-VO-02") private static HetznerEnvironmentConfig withLoadBalancer(HetznerEnvironmentConfig envConfig,
+    private static HetznerEnvironmentConfig withLoadBalancer(HetznerEnvironmentConfig envConfig,
                                                                                              HetznerEnvironmentConfig.HetznerLbConfig lbConfig) {
         return new HetznerEnvironmentConfig(envConfig.hetznerConfig(),
                                             envConfig.serverType(),

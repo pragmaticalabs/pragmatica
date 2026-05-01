@@ -35,7 +35,7 @@ public record MetricsConfig(String name,
         return all(validName, validRegistry).map((n, r) -> new MetricsConfig(n, r, recordTiming, recordCounts, List.of()));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public MetricsConfig withTags(String... tags) {
+    public MetricsConfig withTags(String... tags) {
         return new MetricsConfig(name, registry, recordTiming, recordCounts, List.of(tags));
     }
 }

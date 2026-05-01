@@ -29,7 +29,7 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
         return all(validAttempts, validStrategy).map(RetryConfig::new);
     }
 
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) private static RetryConfig withExponentialBackoff(int attempts) {
+    @SuppressWarnings("JBCT-NAM-01") private static RetryConfig withExponentialBackoff(int attempts) {
         var strategy = BackoffStrategy.exponential().initialDelay(timeSpan(100).millis())
                                                   .maxDelay(timeSpan(10).seconds())
                                                   .factor(2.0)
@@ -37,7 +37,7 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
         return new RetryConfig(attempts, strategy);
     }
 
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) private static RetryConfig withFixedBackoff(int attempts,
+    @SuppressWarnings("JBCT-NAM-01") private static RetryConfig withFixedBackoff(int attempts,
                                                                                                  TimeSpan interval) {
         return new RetryConfig(attempts,
                                BackoffStrategy.fixed().interval(interval));

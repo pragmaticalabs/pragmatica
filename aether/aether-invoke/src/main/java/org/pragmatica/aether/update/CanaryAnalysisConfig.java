@@ -11,7 +11,7 @@ public record CanaryAnalysisConfig(ComparisonMode mode, int relativeThresholdPer
         RELATIVE_AND_ABSOLUTE
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static final CanaryAnalysisConfig DEFAULT = new CanaryAnalysisConfig(ComparisonMode.ABSOLUTE_ONLY,
+    public static final CanaryAnalysisConfig DEFAULT = new CanaryAnalysisConfig(ComparisonMode.ABSOLUTE_ONLY,
                                                                                                                 0);
 
     public static CanaryAnalysisConfig canaryAnalysisConfig(ComparisonMode mode, int relativeThresholdPercent) {

@@ -70,7 +70,7 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
                                                 Option.empty()));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public GcpEnvironmentConfig withDiscovery(String clusterLabel) {
+    public GcpEnvironmentConfig withDiscovery(String clusterLabel) {
         return new GcpEnvironmentConfig(gcpConfig,
                                         machineType,
                                         sourceImage,
@@ -84,7 +84,7 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
                                         certificateSecretPrefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public GcpEnvironmentConfig withSelfInstanceName(String instanceName) {
+    public GcpEnvironmentConfig withSelfInstanceName(String instanceName) {
         return new GcpEnvironmentConfig(gcpConfig,
                                         machineType,
                                         sourceImage,
@@ -98,7 +98,7 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
                                         certificateSecretPrefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public GcpEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+    public GcpEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
         return new GcpEnvironmentConfig(gcpConfig,
                                         machineType,
                                         sourceImage,
@@ -112,7 +112,7 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
                                         certificateSecretPrefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public GcpEnvironmentConfig withCertificateSecretPrefix(String prefix) {
+    public GcpEnvironmentConfig withCertificateSecretPrefix(String prefix) {
         return new GcpEnvironmentConfig(gcpConfig,
                                         machineType,
                                         sourceImage,

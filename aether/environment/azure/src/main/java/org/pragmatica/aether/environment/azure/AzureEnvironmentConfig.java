@@ -77,7 +77,7 @@ public record AzureEnvironmentConfig(AzureConfig azureConfig,
                                                   Option.empty()));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AzureEnvironmentConfig withDiscovery(String clusterLabel) {
+    public AzureEnvironmentConfig withDiscovery(String clusterLabel) {
         return new AzureEnvironmentConfig(azureConfig,
                                           vmSize,
                                           image,
@@ -92,7 +92,7 @@ public record AzureEnvironmentConfig(AzureConfig azureConfig,
                                           certificateSecretPrefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AzureEnvironmentConfig withSelfVmName(String vmName) {
+    public AzureEnvironmentConfig withSelfVmName(String vmName) {
         return new AzureEnvironmentConfig(azureConfig,
                                           vmSize,
                                           image,
@@ -107,7 +107,7 @@ public record AzureEnvironmentConfig(AzureConfig azureConfig,
                                           certificateSecretPrefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AzureEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+    public AzureEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
         return new AzureEnvironmentConfig(azureConfig,
                                           vmSize,
                                           image,
@@ -122,7 +122,7 @@ public record AzureEnvironmentConfig(AzureConfig azureConfig,
                                           certificateSecretPrefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AzureEnvironmentConfig withCertificateSecretPrefix(String prefix) {
+    public AzureEnvironmentConfig withCertificateSecretPrefix(String prefix) {
         return new AzureEnvironmentConfig(azureConfig,
                                           vmSize,
                                           image,

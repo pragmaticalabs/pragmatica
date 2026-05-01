@@ -393,7 +393,7 @@ final class DeploymentManagerImpl implements DeploymentManager {
         if (restoredCount > 0) {log.info("Restored {} deployments from KV-Store", restoredCount);}
     }
 
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) private void restoreDeployment(DeploymentValue dv) {
+    @SuppressWarnings("JBCT-RET-01") private void restoreDeployment(DeploymentValue dv) {
         var state = DeploymentState.valueOf(dv.state());
         if (state.isTerminal()) {return;}
         var strategy = DeploymentStrategy.valueOf(dv.strategy());

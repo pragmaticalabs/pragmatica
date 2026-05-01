@@ -36,7 +36,7 @@ public record EmberConfig(int nodes,
 
     public static final int DEFAULT_CORE_MAX = 0;
 
-    @SuppressWarnings("JBCT-VO-02") public static final EmberConfig DEFAULT = new EmberConfig(DEFAULT_NODES,
+    public static final EmberConfig DEFAULT = new EmberConfig(DEFAULT_NODES,
                                                                                               DEFAULT_MANAGEMENT_PORT,
                                                                                               DEFAULT_DASHBOARD_PORT,
                                                                                               DEFAULT_APP_HTTP_PORT,

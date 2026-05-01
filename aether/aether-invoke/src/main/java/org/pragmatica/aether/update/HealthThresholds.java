@@ -14,11 +14,11 @@ public record HealthThresholds(double maxErrorRate, long maxLatencyMs, boolean r
 
     private static final Cause NEGATIVE_LATENCY = Causes.cause("Latency must be non-negative");
 
-    @SuppressWarnings("JBCT-VO-02") public static final HealthThresholds DEFAULT = new HealthThresholds(0.01, 500, false);
+    public static final HealthThresholds DEFAULT = new HealthThresholds(0.01, 500, false);
 
-    @SuppressWarnings("JBCT-VO-02") public static final HealthThresholds STRICT = new HealthThresholds(0.001, 200, false);
+    public static final HealthThresholds STRICT = new HealthThresholds(0.001, 200, false);
 
-    @SuppressWarnings("JBCT-VO-02") public static final HealthThresholds MANUAL_ONLY = new HealthThresholds(0.0, 0, true);
+    public static final HealthThresholds MANUAL_ONLY = new HealthThresholds(0.0, 0, true);
 
     public static Result<HealthThresholds> healthThresholds(double maxErrorRate,
                                                             long maxLatencyMs,
@@ -41,11 +41,11 @@ public record HealthThresholds(double maxErrorRate, long maxLatencyMs, boolean r
         return errorRate <= maxErrorRate && latencyMs <= maxLatencyMs;
     }
 
-    @SuppressWarnings("JBCT-VO-02") public HealthThresholds withManualApproval() {
+    public HealthThresholds withManualApproval() {
         return new HealthThresholds(maxErrorRate, maxLatencyMs, true);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public HealthThresholds withAutoApproval() {
+    public HealthThresholds withAutoApproval() {
         return new HealthThresholds(maxErrorRate, maxLatencyMs, false);
     }
 }

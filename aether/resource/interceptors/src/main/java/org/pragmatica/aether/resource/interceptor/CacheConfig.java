@@ -11,7 +11,7 @@ import static org.pragmatica.lang.Verify.ensure;
 
 
 public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSeconds, int maxEntries, CacheMode mode) {
-    @SuppressWarnings("JBCT-VO-02") private static final CacheConfig DEFAULTS = new CacheConfig("default",
+    private static final CacheConfig DEFAULTS = new CacheConfig("default",
                                                                                                 CacheStrategy.CACHE_ASIDE,
                                                                                                 300,
                                                                                                 10_000,

@@ -75,7 +75,7 @@ public record DeploymentMetrics(Artifact artifact,
                                 .option();
     }
 
-    @SuppressWarnings("JBCT-VO-02") private static Result<DeploymentMetrics> buildFromEntry(Artifact artifact,
+    private static Result<DeploymentMetrics> buildFromEntry(Artifact artifact,
                                                                                             DeploymentMetricsEntry entry) {
         return NodeId.nodeId(entry.nodeId())
                             .map(nodeId -> new DeploymentMetrics(artifact,
@@ -88,13 +88,13 @@ public record DeploymentMetrics(Artifact artifact,
                                                                  DeploymentStatus.deploymentStatus(entry.status())));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static DeploymentMetrics deploymentMetrics(Artifact artifact,
+    public static DeploymentMetrics deploymentMetrics(Artifact artifact,
                                                                                       NodeId nodeId,
                                                                                       long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, timestamp, 0, 0, 0, 0, DeploymentStatus.IN_PROGRESS);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public DeploymentMetrics withLoadTime(long timestamp) {
+    public DeploymentMetrics withLoadTime(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
                                      startTime,
@@ -105,15 +105,15 @@ public record DeploymentMetrics(Artifact artifact,
                                      status);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public DeploymentMetrics withLoadedTime(long timestamp) {
+    public DeploymentMetrics withLoadedTime(long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, startTime, loadTime, timestamp, activateTime, activeTime, status);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public DeploymentMetrics withActivateTime(long timestamp) {
+    public DeploymentMetrics withActivateTime(long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, startTime, loadTime, loadedTime, timestamp, activeTime, status);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public DeploymentMetrics completed(long timestamp) {
+    public DeploymentMetrics completed(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
                                      startTime,
@@ -124,7 +124,7 @@ public record DeploymentMetrics(Artifact artifact,
                                      DeploymentStatus.SUCCESS);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public DeploymentMetrics failedLoading(long timestamp) {
+    public DeploymentMetrics failedLoading(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
                                      startTime,
@@ -135,7 +135,7 @@ public record DeploymentMetrics(Artifact artifact,
                                      DeploymentStatus.FAILED_LOADING);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public DeploymentMetrics failedActivating(long timestamp) {
+    public DeploymentMetrics failedActivating(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
                                      startTime,

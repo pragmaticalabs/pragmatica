@@ -72,7 +72,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                StreamingConfig streaming,
                                ClusterFormationConfig clusterFormation) {
     public record DeploymentDefaults(long canaryEvaluationIntervalMs, List<CanaryStageConfig> defaultCanaryStages) {
-        @SuppressWarnings("JBCT-VO-02") public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(30_000,
+        public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(30_000,
                                                                                                                 DeploymentConfig.defaultCanaryStages());
     }
 

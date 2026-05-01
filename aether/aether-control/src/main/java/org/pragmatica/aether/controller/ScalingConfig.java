@@ -32,7 +32,7 @@ public record ScalingConfig(int windowSize,
 
     @Deprecated static final double ERROR_RATE_BLOCK_THRESHOLD = DEFAULT_ERROR_RATE_BLOCK_THRESHOLD;
 
-    @SuppressWarnings("JBCT-VO-02") public static ScalingConfig productionDefaults() {
+    public static ScalingConfig productionDefaults() {
         var weights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
         weights.put(ScalingMetric.CPU, 0.4);
         weights.put(ScalingMetric.ACTIVE_INVOCATIONS, 0.4);
@@ -46,7 +46,7 @@ public record ScalingConfig(int windowSize,
                                  DEFAULT_ERROR_RATE_BLOCK_THRESHOLD);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static ScalingConfig forgeDefaults() {
+    public static ScalingConfig forgeDefaults() {
         var weights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
         weights.put(ScalingMetric.CPU, 0.0);
         weights.put(ScalingMetric.ACTIVE_INVOCATIONS, 0.6);

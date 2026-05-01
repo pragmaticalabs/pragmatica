@@ -85,7 +85,7 @@ public record AetherConfig(ClusterConfig cluster,
         return cluster.tls();
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AetherConfig withStorage(Map<String, StorageConfig> storage) {
+    public AetherConfig withStorage(Map<String, StorageConfig> storage) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,
@@ -103,7 +103,7 @@ public record AetherConfig(ClusterConfig cluster,
                                 streaming);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
+    public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,
@@ -121,7 +121,7 @@ public record AetherConfig(ClusterConfig cluster,
                                 streaming);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AetherConfig withCloud(CloudConfig cloud) {
+    public AetherConfig withCloud(CloudConfig cloud) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,
@@ -139,7 +139,7 @@ public record AetherConfig(ClusterConfig cluster,
                                 streaming);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AetherConfig withStreaming(StreamingConfig streaming) {
+    public AetherConfig withStreaming(StreamingConfig streaming) {
         return new AetherConfig(cluster,
                                 node,
                                 tls,

@@ -30,19 +30,19 @@ public record CloudConfig(String provider,
                                        Map.of()));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public CloudConfig withLoadBalancer(Map<String, String> loadBalancer) {
+    public CloudConfig withLoadBalancer(Map<String, String> loadBalancer) {
         return new CloudConfig(provider, credentials, compute, Map.copyOf(loadBalancer), discovery, secrets, security);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public CloudConfig withDiscovery(Map<String, String> discovery) {
+    public CloudConfig withDiscovery(Map<String, String> discovery) {
         return new CloudConfig(provider, credentials, compute, loadBalancer, Map.copyOf(discovery), secrets, security);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public CloudConfig withSecrets(Map<String, String> secrets) {
+    public CloudConfig withSecrets(Map<String, String> secrets) {
         return new CloudConfig(provider, credentials, compute, loadBalancer, discovery, Map.copyOf(secrets), security);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public CloudConfig withSecurity(Map<String, String> security) {
+    public CloudConfig withSecurity(Map<String, String> security) {
         return new CloudConfig(provider, credentials, compute, loadBalancer, discovery, secrets, Map.copyOf(security));
     }
 }
