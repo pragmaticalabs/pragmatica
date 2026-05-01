@@ -19,7 +19,7 @@ final class ArrayConversions {
     /// `BinaryCodecs.forOid(...)`.
     static <T> T toArray(Class<T> arrayType, PgValue value, BiFunction<Oid, String, Object> parse) {
         return switch (value) {
-            case PgValue.Text text -> toArray(arrayType, text.type(), text.asString(), parse);
+            case PgValue.Text text -> toTextArray(arrayType, text.type(), text.asString(), parse);
             case PgValue.Binary binary -> toBinaryArray(arrayType, binary.type(), binary.raw());
         };
     }
@@ -65,7 +65,7 @@ final class ArrayConversions {
         return b.append('"');
     }
 
-    static <T> T toArray(Class<T> arrayType, Oid oid, String value, BiFunction<Oid, String, Object> parse) {
+    private static <T> T toTextArray(Class<T> arrayType, Oid oid, String value, BiFunction<Oid, String, Object> parse) {
         Class elementType = arrayType.getComponentType();
 
         while (elementType.getComponentType() != null && elementType != byte[].class) {
@@ -223,7 +223,7 @@ final class ArrayConversions {
     }
 
     @SuppressWarnings("unchecked")
-    static <T> T toBinaryArray(Class<T> arrayType, Oid oid, byte[] value) {
+    private static <T> T toBinaryArray(Class<T> arrayType, Oid oid, byte[] value) {
         if (value == null) {
             return null;
         }
