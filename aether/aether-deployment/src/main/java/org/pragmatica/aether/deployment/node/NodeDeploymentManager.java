@@ -82,6 +82,7 @@ public interface NodeDeploymentManager {
     @Contract@MessageReceiver void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
     @Contract@MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
     @Contract void setShutdownCallback(Runnable callback);
+    @Contract void setSelfReadySignal(Runnable signal);
     boolean isActive();
 
     ConfigFacade NO_OP_CONFIG = new NoOpDeploymentConfigFacade();
@@ -408,9 +409,26 @@ public interface NodeDeploymentManager {
 
         private final NodeDeploymentContext ctx;
 
+        private final AtomicReference<Option<Runnable>> selfReadySignal = new AtomicReference<>(Option.none());
+
         DeploymentManagerAdapter(NodeDeploymentContext ctx) {
             this.ctx = ctx;
-            ctx.setActiveOnEntryCallback(this::registerLifecycleOnDuty);
+            ctx.setActiveOnEntryCallback(this::onActiveEntry);
+        }
+
+        @Contract@Override public void setSelfReadySignal(Runnable signal) {
+            selfReadySignal.set(Option.some(signal));
+        }
+
+        @Contract private void onActiveEntry() {
+            var signal = selfReadySignal.get();
+            if (signal.isPresent()) {
+                log.info("Node {} signalling self-ready to HealthReconciler",
+                         ctx.self().id());
+                signal.unwrap().run();
+                return;
+            }
+            registerLifecycleOnDuty();
         }
 
         @Contract@Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {

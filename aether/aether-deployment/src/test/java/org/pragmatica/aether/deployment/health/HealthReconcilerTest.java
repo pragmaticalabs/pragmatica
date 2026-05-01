@@ -156,6 +156,44 @@ class HealthReconcilerTest {
         }
     }
 
+    @Nested class SelfPromotion {
+        @Test
+        void healthReconciler_promotesSelfToOnDuty_onSelfReadySignal() {
+            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
+            reconciler.start();
+            // Self has no prior NodeLifecycleValue; signalSelfReady must trigger an ON_DUTY write.
+            reconciler.signalSelfReady();
+            assertThat(applier.commands.stream().anyMatch(HealthReconcilerTest::isSelfOnDutyWrite))
+                    .as("signalSelfReady writes ON_DUTY for self")
+                    .isTrue();
+        }
+
+        @Test
+        void healthReconciler_signalSelfReady_writesOnce_evenAfterRepeatedCalls() {
+            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
+            reconciler.start();
+            reconciler.signalSelfReady();
+            reconciler.signalSelfReady();
+            reconciler.signalSelfReady();
+            var onDutyWrites = applier.commands.stream().filter(HealthReconcilerTest::isSelfOnDutyWrite).count();
+            assertThat(onDutyWrites)
+                    .as("Idempotent: self ON_DUTY is proposed exactly once")
+                    .isEqualTo(1L);
+        }
+
+        @Test
+        void healthReconciler_signalSelfReady_skipsWrite_whenSelfAlreadyOnDuty() {
+            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
+            reconciler.start();
+            // Pre-seed self as already ON_DUTY
+            lifecycleStore.put(SELF, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, 0L));
+            reconciler.signalSelfReady();
+            assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isSelfOnDutyWrite))
+                    .as("No new ON_DUTY write when self is already ON_DUTY")
+                    .isTrue();
+        }
+    }
+
     @Nested class PhaseTransitions {
         @Test
         void reconciler_phaseTransitionsBootingToNormal_onStableLeaderAndOnDuty() {
@@ -237,6 +275,13 @@ class HealthReconcilerTest {
         if (!(cmd instanceof KVCommand.Put<?, ?> put)) {return false;}
         if (!(put.key() instanceof AetherKey.ClusterPhaseKey)) {return false;}
         return put.value() instanceof ClusterPhaseValue v && v.phase() == expected;
+    }
+
+    private static boolean isSelfOnDutyWrite(KVCommand<?> cmd) {
+        if (!(cmd instanceof KVCommand.Put<?, ?> put)) {return false;}
+        if (!(put.key() instanceof NodeLifecycleKey lifecycleKey)) {return false;}
+        if (!lifecycleKey.nodeId().equals(SELF)) {return false;}
+        return put.value() instanceof NodeLifecycleValue v && v.state() == NodeLifecycleState.ON_DUTY;
     }
 
     private static final class RecordingApplier implements Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> {

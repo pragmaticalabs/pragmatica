@@ -59,6 +59,10 @@ final class HealthReconcilerImpl implements HealthReconciler {
 
     private final AtomicLong stableSinceMs = new AtomicLong(0L);
 
+    private final AtomicBoolean selfReady = new AtomicBoolean(false);
+
+    private final AtomicBoolean selfPromoted = new AtomicBoolean(false);
+
     private final List<Consumer<ClusterPhaseChanged>> phaseListeners = new CopyOnWriteArrayList<>();
 
     private HealthReconcilerImpl(NodeId self,
@@ -120,6 +124,36 @@ final class HealthReconcilerImpl implements HealthReconciler {
         var edge = aggregateEdge(observation, nowMs);
         edge.onPresent(stateChanged -> handleAggregatedEdge(stateChanged, nowMs));
         evaluatePhaseTransition(nowMs);
+        evaluateSelfPromotion(nowMs);
+    }
+
+    @Override@Contract public void signalSelfReady() {
+        if (!started.get()) {return;}
+        if (selfReady.compareAndSet(false, true)) {
+            log.info("HealthReconciler: self-ready signal received for {}", self);
+            evaluateSelfPromotion(System.currentTimeMillis());
+        }
+    }
+
+    private void evaluateSelfPromotion(long nowMs) {
+        if (!selfReady.get()) {return;}
+        if (selfPromoted.get()) {return;}
+        if (selfAlreadyOnDuty()) {
+            selfPromoted.set(true);
+            return;
+        }
+        promoteSelfToOnDuty(nowMs);
+    }
+
+    private boolean selfAlreadyOnDuty() {
+        return lifecycleReader.apply(self).map(v -> v.state() == NodeLifecycleState.ON_DUTY)
+                                    .or(false);
+    }
+
+    private void promoteSelfToOnDuty(long nowMs) {
+        if (!selfPromoted.compareAndSet(false, true)) {return;}
+        log.info("HealthReconciler: promoting self {} to ON_DUTY (phase={})", self, currentPhase.get());
+        proposeLifecycleWrite(self, NodeLifecycleState.ON_DUTY, nowMs);
     }
 
     private Option<ObservationAggregator.StateChanged> aggregateEdge(SwimObservation observation, long nowMs) {

@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
@@ -81,6 +82,8 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      DrainCoordinator drainCoordinator,
+                                                                     LifecycleWriter lifecycleWriter,
+                                                                     Supplier<ClusterPhase> phaseSupplier,
                                                                      AtomicReference<NodeReconcilerState> stateRef,
                                                                      AtomicBoolean active,
                                                                      ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
@@ -88,6 +91,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      CancellableTask safetyNetTimer,
                                                                      AtomicLong realActualStableSinceMs,
                                                                      AtomicInteger lastObservedRealActual,
+                                                                     AtomicInteger lastObservedHealthyOnDutyCount,
                                                                      LongSupplier clock) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
 
@@ -132,6 +136,34 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      DrainCoordinator drainCoordinator,
                                                                      LongSupplier clock) {
+        return clusterTopologyManagerRecord(observer,
+                                            lifecycleManager,
+                                            config,
+                                            deploymentMap,
+                                            snapshotSource,
+                                            clusterConfigReader,
+                                            lifecycleReader,
+                                            slotReader,
+                                            commandApplier,
+                                            drainCoordinator,
+                                            legacyLifecycleWriter(commandApplier, lifecycleReader, clock),
+                                            () -> ClusterPhase.NORMAL,
+                                            clock);
+    }
+
+    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
+                                                                     NodeLifecycleManager lifecycleManager,
+                                                                     AutoHealConfig config,
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                                     Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     DrainCoordinator drainCoordinator,
+                                                                     LifecycleWriter lifecycleWriter,
+                                                                     Supplier<ClusterPhase> phaseSupplier,
+                                                                     LongSupplier clock) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
@@ -142,12 +174,15 @@ import static org.pragmatica.lang.Unit.unit;
                                                 slotReader,
                                                 commandApplier,
                                                 drainCoordinator,
+                                                lifecycleWriter,
+                                                phaseSupplier,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 CancellableTask.cancellableTask(),
                                                 new AtomicLong(clock.getAsLong()),
+                                                new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
                                                 new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
                                                 clock);
     }
@@ -169,6 +204,47 @@ import static org.pragmatica.lang.Unit.unit;
                                             lifecycleReader,
                                             commandApplier,
                                             new NoOpDrainCoordinator());
+    }
+
+    private static LifecycleWriter legacyLifecycleWriter(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                         LongSupplier clock) {
+        return new LifecycleWriter() {
+            @Override public Promise<Unit> requestDrain(NodeId target) {
+                return legacyWrite(target, NodeLifecycleState.DRAINING, commandApplier, lifecycleReader, clock);
+            }
+
+            @Override public Promise<Unit> requestDecommission(NodeId target) {
+                return legacyWrite(target, NodeLifecycleState.DECOMMISSIONED, commandApplier, lifecycleReader, clock);
+            }
+        };
+    }
+
+    private static NodeLifecycleValue legacyValueFor(NodeLifecycleState state,
+                                                     Option<NodeLifecycleValue> prior,
+                                                     long nowMs) {
+        if (prior.isEmpty()) {return state == NodeLifecycleState.DRAINING
+                                    ? NodeLifecycleValue.nodeLifecycleValue(state, "", 0, Epoch.ZERO)
+                                    : NodeLifecycleValue.nodeLifecycleValue(state, "", 0, ProvisioningSource.CTM);}
+        var p = prior.unwrap();
+        return NodeLifecycleValue.nodeLifecycleValue(state,
+                                                     nowMs,
+                                                     p.host(),
+                                                     p.port(),
+                                                     p.observedCoreEpoch(),
+                                                     p.transitionedAt(),
+                                                     p.provisioningSource());
+    }
+
+    @SuppressWarnings("unchecked") private static Promise<Unit> legacyWrite(NodeId nodeId,
+                                                                            NodeLifecycleState state,
+                                                                            Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                            Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                                            LongSupplier clock) {
+        var value = legacyValueFor(state, lifecycleReader.apply(nodeId), clock.getAsLong());
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
+                                                                                                     value);
+        return commandApplier.apply(List.of(command)).mapToUnit();
     }
 
     private long nowMs() {
@@ -283,30 +359,48 @@ import static org.pragmatica.lang.Unit.unit;
         }
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerJoined(NodeId peerId) {
-        if (!active.get()) {return;}
-    }
-
-    @Override@SuppressWarnings("JBCT-RET-01") public void onQuicPeerLeft(NodeId peerId) {
-        if (!active.get()) {return;}
+    @Override@SuppressWarnings("JBCT-RET-01") public void onClusterPhaseChanged(ClusterPhase newPhase) {
+        if (newPhase == ClusterPhase.NORMAL) {
+            cancelInFlightProvisions("phase transition to NORMAL — restart stability window");
+            bumpRealActualStability("phase transition to NORMAL");
+            log.info("CTM: cluster phase transitioned to NORMAL — provisioning resumed (stability window restarted from zero)");
+            if (active.get()) {reconcile();}
+            return;
+        }
+        cancelInFlightProvisions("phase transition to " + newPhase + " — auto-heal suspended");
+        log.info("CTM: cluster phase transitioned to {} — auto-heal suspended (no provisioning, no decommissioning)",
+                 newPhase);
     }
 
     private void handleNodeAdded(NodeAdded added) {
-        bumpRealActualStability("node-added " + added.nodeId());
         log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());
+        maybeBumpAnchorOnHealthyOnDutyEdge("node-added " + added.nodeId());
         reconcile();
     }
 
     private void handleNodeRemoved(NodeRemoved removed) {
-        bumpRealActualStability("node-removed " + removed.nodeId());
         log.info("CTM: Node {} removed, triggering reconciliation", removed.nodeId());
+        maybeBumpAnchorOnHealthyOnDutyEdge("node-removed " + removed.nodeId());
         reconcile();
     }
 
     private void handleNodeDown(NodeDown down) {
-        bumpRealActualStability("node-down " + down.nodeId());
         log.warn("CTM: Node {} is down, triggering immediate reconciliation", down.nodeId());
+        maybeBumpAnchorOnHealthyOnDutyEdge("node-down " + down.nodeId());
         reconcile();
+    }
+
+    private void maybeBumpAnchorOnHealthyOnDutyEdge(String reason) {
+        var current = snapshotHealthyOnDutyCount();
+        var previous = lastObservedHealthyOnDutyCount.getAndSet(current);
+        if (previous == current) {
+            log.debug("CTM: stability anchor unchanged ({}); count still {}", reason, current);
+            return;
+        }
+        var displayPrev = previous == UNINITIALIZED_REAL_ACTUAL
+                         ? "<unset>"
+                         : Integer.toString(previous);
+        bumpRealActualStability(reason + " (healthyOnDuty " + displayPrev + " -> " + current + ")");
     }
 
     private void bumpRealActualStability(String reason) {
@@ -514,6 +608,7 @@ import static org.pragmatica.lang.Unit.unit;
 
     private void reconcile() {
         if (!active.get()) {return;}
+        if (suspendedByPhase()) {return;}
         var currentState = stateRef.get();
         if (currentState instanceof NodeReconcilerState.Inactive) {return;}
         if (currentState instanceof NodeReconcilerState.Forming) {
@@ -521,6 +616,13 @@ import static org.pragmatica.lang.Unit.unit;
             return;
         }
         reconcileActive(currentState);
+    }
+
+    private boolean suspendedByPhase() {
+        var phase = phaseSupplier.get();
+        if (phase == ClusterPhase.NORMAL) {return false;}
+        log.debug("CTM: reconcile suspended — cluster phase is {}", phase);
+        return true;
     }
 
     private void reconcileForming() {
@@ -855,38 +957,11 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void writeDrainingAtom(NodeId nodeId) {
-        var prior = lifecycleReader.apply(nodeId);
-        var value = buildDrainingAtom(nodeId, prior);
-        @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                                                                                                                                    value);
-        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("CTM: failed to write DRAINING atom for {}: {}",
-                                                                           nodeId,
-                                                                           cause.message()))
-                            .onSuccess(_ -> log.info("CTM: wrote DRAINING atom for {} ({}:{}, epoch={}, source={})",
-                                                     nodeId,
-                                                     value.host(),
-                                                     value.port(),
-                                                     value.observedCoreEpoch(),
-                                                     value.provisioningSource()));
-    }
-
-    private NodeLifecycleValue buildDrainingAtom(NodeId nodeId, Option<NodeLifecycleValue> prior) {
-        if (prior.isEmpty()) {
-            log.warn("CTM: no prior NodeLifecycleValue for {} when writing DRAINING — falling back to topology observer for host/port",
-                     nodeId);
-            var info = observer.get(nodeId);
-            var host = info.map(i -> i.address().host()).or("");
-            var port = info.map(i -> i.address().port()).or(0);
-            return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, host, port, Epoch.ZERO);
-        }
-        var p = prior.unwrap();
-        return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING,
-                                                     nowMs(),
-                                                     p.host(),
-                                                     p.port(),
-                                                     p.observedCoreEpoch(),
-                                                     p.transitionedAt(),
-                                                     p.provisioningSource());
+        lifecycleWriter.requestDrain(nodeId).onFailure(cause -> log.warn("CTM: failed to request DRAINING for {}: {}",
+                                                                         nodeId,
+                                                                         cause.message()))
+                                    .onSuccess(_ -> log.info("CTM: requested DRAINING for {} via HealthReconciler",
+                                                             nodeId));
     }
 
     private void handleTerminationSuccess(NodeId nodeId) {
@@ -896,38 +971,11 @@ import static org.pragmatica.lang.Unit.unit;
     }
 
     private void writeDecommissionedAtom(NodeId nodeId) {
-        var prior = lifecycleReader.apply(nodeId);
-        var value = buildDecommissionedAtom(nodeId, prior);
-        @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                                                                                                                                    value);
-        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("CTM: failed to write DECOMMISSIONED atom for {}: {}",
-                                                                           nodeId,
-                                                                           cause.message()))
-                            .onSuccess(_ -> log.info("CTM: wrote DECOMMISSIONED atom for {} ({}:{}, epoch={}, source={})",
-                                                     nodeId,
-                                                     value.host(),
-                                                     value.port(),
-                                                     value.observedCoreEpoch(),
-                                                     value.provisioningSource()));
-    }
-
-    private NodeLifecycleValue buildDecommissionedAtom(NodeId nodeId, Option<NodeLifecycleValue> prior) {
-        if (prior.isEmpty()) {
-            log.warn("CTM: no prior NodeLifecycleValue for {} when writing DECOMMISSIONED — writing default empty metadata (defensive fallback)",
-                     nodeId);
-            return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
-                                                         "",
-                                                         0,
-                                                         ProvisioningSource.CTM);
-        }
-        var p = prior.unwrap();
-        return NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
-                                                     nowMs(),
-                                                     p.host(),
-                                                     p.port(),
-                                                     p.observedCoreEpoch(),
-                                                     p.transitionedAt(),
-                                                     p.provisioningSource());
+        lifecycleWriter.requestDecommission(nodeId).onFailure(cause -> log.warn("CTM: failed to request DECOMMISSIONED for {}: {}",
+                                                                                nodeId,
+                                                                                cause.message()))
+                                           .onSuccess(_ -> log.info("CTM: requested DECOMMISSIONED for {} via HealthReconciler",
+                                                                    nodeId));
     }
 
     private void provisionNodes(int count) {

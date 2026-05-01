@@ -28,6 +28,7 @@ public interface HealthReconciler {
     @Contract void onSwimObservation(SwimObservation observation);
     Promise<Unit> requestDrain(NodeId target);
     Promise<Unit> requestDecommission(NodeId target);
+    @Contract void signalSelfReady();
     ClusterPhase phase();
     @Contract void addPhaseListener(Consumer<ClusterPhaseChanged> listener);
     @Contract void onClusterPhasePut(ClusterPhaseValue value);

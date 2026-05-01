@@ -10,6 +10,7 @@ import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -37,11 +38,7 @@ import java.util.function.Supplier;
     void onNodeReady(NodeId nodeId);
     void onTopologyChange(TopologyChangeNotification topologyChange);
     void onClusterConfigChanged();
-
-    @org.pragmatica.lang.Contract default void onQuicPeerJoined(NodeId peerId) {}
-
-    @org.pragmatica.lang.Contract default void onQuicPeerLeft(NodeId peerId) {}
-
+    void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
     void deactivate();
     TopologyObserver observer();
@@ -104,6 +101,33 @@ import java.util.function.Supplier;
                                                                          slotReader,
                                                                          commandApplier,
                                                                          drainCoordinator,
+                                                                         System::currentTimeMillis);
+    }
+
+    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
+                                                         NodeLifecycleManager lifecycleManager,
+                                                         AutoHealConfig config,
+                                                         DeploymentMap deploymentMap,
+                                                         GenerationSnapshotSource snapshotSource,
+                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                         Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
+                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                         DrainCoordinator drainCoordinator,
+                                                         LifecycleWriter lifecycleWriter,
+                                                         Supplier<ClusterPhase> phaseSupplier) {
+        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
+                                                                         lifecycleManager,
+                                                                         config,
+                                                                         deploymentMap,
+                                                                         snapshotSource,
+                                                                         clusterConfigReader,
+                                                                         lifecycleReader,
+                                                                         slotReader,
+                                                                         commandApplier,
+                                                                         drainCoordinator,
+                                                                         lifecycleWriter,
+                                                                         phaseSupplier,
                                                                          System::currentTimeMillis);
     }
 }

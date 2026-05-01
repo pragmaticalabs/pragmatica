@@ -25,6 +25,7 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.health.ClusterPhaseChanged;
@@ -844,16 +845,6 @@ public interface AetherNode extends ManageableNode {
             kvStore.forEach(AetherKey.ProvisioningSlotKey.class, AetherValue.ProvisioningSlotValue.class, collected::put);
             return collected;
         };
-        var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
-                                                                                   lifecycleManager,
-                                                                                   config.autoHeal(),
-                                                                                   deploymentMap,
-                                                                                   leaderAwareSnapshotSource,
-                                                                                   clusterConfigReader,
-                                                                                   lifecycleReader,
-                                                                                   slotReader,
-                                                                                   clusterCommandApplier,
-                                                                                   drainCoordinator);
         Supplier<Option<AetherValue.ClusterPhase>> clusterPhaseReader = () -> kvStore.get(AetherKey.ClusterPhaseKey.SINGLETON).filter(v -> v instanceof AetherValue.ClusterPhaseValue)
                                                                                          .map(v -> ((AetherValue.ClusterPhaseValue) v).phase());
         Supplier<Integer> onDutyCountSupplier = () -> {
@@ -876,6 +867,30 @@ public interface AetherNode extends ManageableNode {
                                                                  clusterCommandApplier,
                                                                  HealthReconcilerConfig.DEFAULT);
         healthReconciler.start();
+        LifecycleWriter ctmLifecycleWriter = new LifecycleWriter() {
+            @Override public Promise<Unit> requestDrain(NodeId target) {
+                return healthReconciler.requestDrain(target);
+            }
+
+            @Override public Promise<Unit> requestDecommission(NodeId target) {
+                return healthReconciler.requestDecommission(target);
+            }
+        };
+        Supplier<AetherValue.ClusterPhase> ctmPhaseSupplier = () -> clusterPhaseReader.get()
+                                                                                          .or(AetherValue.ClusterPhase.BOOTING);
+        var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
+                                                                                   lifecycleManager,
+                                                                                   config.autoHeal(),
+                                                                                   deploymentMap,
+                                                                                   leaderAwareSnapshotSource,
+                                                                                   clusterConfigReader,
+                                                                                   lifecycleReader,
+                                                                                   slotReader,
+                                                                                   clusterCommandApplier,
+                                                                                   drainCoordinator,
+                                                                                   ctmLifecycleWriter,
+                                                                                   ctmPhaseSupplier);
+        healthReconciler.addPhaseListener(event -> clusterTopologyManager.onClusterPhaseChanged(event.current()));
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
@@ -1187,7 +1202,7 @@ public interface AetherNode extends ManageableNode {
                                                   java.util.concurrent.TimeUnit.SECONDS);
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
-        attachQuicPeerStateListener(clusterNode.network(), clusterTopologyManager, swimHealthDetector);
+        attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
                                                                                       leaderTerm,
@@ -1383,6 +1398,7 @@ public interface AetherNode extends ManageableNode {
                                   stableHealthSink,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
+        nodeDeploymentManager.setSelfReadySignal(healthReconciler::signalSelfReady);
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
                                            .map(_ -> {
                                                     if (config.managementPort() > 0) {
@@ -1506,9 +1522,7 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    private static void attachQuicPeerStateListener(ClusterNetwork network,
-                                                    ClusterTopologyManager ctm,
-                                                    CoreSwimHealthDetector swimDetector) {
+    private static void attachQuicPeerStateListener(ClusterNetwork network, CoreSwimHealthDetector swimDetector) {
         LOG.debug("attachQuicPeerStateListener: network class={}",
                   network == null
                   ? "null"
@@ -1520,19 +1534,16 @@ public interface AetherNode extends ManageableNode {
         var listener = new QuicPeerStateListener() {
             @Override@Contract public void onPeerJoined(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable)", nodeId);
-                ctm.onQuicPeerJoined(nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
             }
 
             @Override@Contract public void onPeerReconnected(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable)", nodeId);
-                ctm.onQuicPeerJoined(nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
             }
 
             @Override@Contract public void onPeerLeft(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
-                ctm.onQuicPeerLeft(nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
                                                                                           QuicTransportCause.PEER_LEFT));
             }
