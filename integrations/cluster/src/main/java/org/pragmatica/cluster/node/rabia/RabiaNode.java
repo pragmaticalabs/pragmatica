@@ -284,10 +284,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                        route(ConnectNode.class, network::connect),
                                                        route(DisconnectNode.class, network::disconnect),
                                                        route(ListConnectedNodes.class, network::listNodes),
-                                                       route(ConnectionFailed.class,
-                                                             topologyManager::handleConnectionFailed),
-                                                       route(ConnectionEstablished.class,
-                                                             topologyManager::handleConnectionEstablished),
+                                                       // R5: transport never mutates topology projection. ConnectionFailed/Established
+                                                       // are forwarded to SWIM via QuicClusterNetwork's peer-state listener
+                                                       // (AetherNode.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
+                                                       // The router routes are retained only to satisfy sealed-hierarchy coverage.
+                                                       route(ConnectionFailed.class, _ -> {}),
+                                                       route(ConnectionEstablished.class, _ -> {}),
                                                        route(Send.class, network::handleSend),
                                                        route(Broadcast.class, network::handleBroadcast));
         var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)

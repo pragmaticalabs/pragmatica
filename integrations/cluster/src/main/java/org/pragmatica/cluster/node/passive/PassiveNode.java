@@ -126,10 +126,14 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                                        route(ConnectNode.class, network::connect),
                                                        route(DisconnectNode.class, network::disconnect),
                                                        route(ListConnectedNodes.class, network::listNodes),
-                                                       route(ConnectionFailed.class, topologyManager::handleConnectionFailed),
+                                                       // R5: transport never mutates topology projection. ConnectionFailed is
+                                                       // forwarded to SWIM via QuicClusterNetwork's peer-state listener
+                                                       // (AetherNode.attachQuicPeerStateListener). The route is retained only
+                                                       // to satisfy sealed-hierarchy coverage.
+                                                       route(ConnectionFailed.class, _ -> {}),
                                                        route(ConnectionEstablished.class,
                                                              msg -> handleConnectionWithSnapshotRequest(
-                                                                 topologyManager, delegateRouter, selfId, snapshotRequested, msg)),
+                                                                 delegateRouter, selfId, snapshotRequested, msg)),
                                                        route(Send.class, network::handleSend),
                                                        route(Broadcast.class, network::handleBroadcast));
 
@@ -166,13 +170,13 @@ public interface PassiveNode<K extends StructuredKey, V> {
         return new passiveNode<>(delegateRouter, topologyManager, network, kvStore, List.copyOf(allEntries));
     }
 
-    private static void handleConnectionWithSnapshotRequest(TopologyObserver topologyManager,
-                                                               DelegateRouter delegateRouter,
+    /// R5: TopologyObserver no longer consumes ConnectionEstablished; transport hints
+    /// flow into SWIM via the QUIC peer-state listener wired by AetherNode. This handler
+    /// retains only the snapshot-request side effect on first connection.
+    private static void handleConnectionWithSnapshotRequest(DelegateRouter delegateRouter,
                                                                NodeId selfId,
                                                                AtomicBoolean snapshotRequested,
                                                                ConnectionEstablished msg) {
-        topologyManager.handleConnectionEstablished(msg);
-
         if (snapshotRequested.compareAndSet(false, true)) {
             log.info("Requesting KV-Store snapshot from {}", msg.nodeId());
             delegateRouter.route(new Send(msg.nodeId(), new KVSyncRequest(selfId)));
