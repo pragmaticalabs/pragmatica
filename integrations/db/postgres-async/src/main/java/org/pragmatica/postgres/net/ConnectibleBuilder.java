@@ -86,8 +86,16 @@ public abstract class ConnectibleBuilder {
         return this;
     }
 
+    public ConnectibleBuilder ssl(SslConfig sslConfig) {
+        properties.sslConfig = sslConfig;
+        return this;
+    }
+
+    /// Convenience: `ssl(true)` → `SslConfig.require()` (encrypts but no validation,
+    /// matching the legacy `useSsl=true` semantics). `ssl(false)` → `SslConfig.disabled()`.
+    /// For production use the explicit `ssl(SslConfig.verifyFull(rootCert))`.
     public ConnectibleBuilder ssl(boolean ssl) {
-        properties.useSsl = ssl;
+        properties.sslConfig = ssl ? SslConfig.require() : SslConfig.disabled();
         return this;
     }
 
@@ -124,7 +132,7 @@ public abstract class ConnectibleBuilder {
         private int maxStatements = 20;
         private DataConverter dataConverter;
         private final List<Converter<?>> converters = new ArrayList<>();
-        private boolean useSsl;
+        private SslConfig sslConfig = SslConfig.disabled();
         private String encoding = System.getProperty("pg.async.encoding", "utf-8");
         private String validationQuery;
         private int ioThreads = Math.max(Runtime.getRuntime().availableProcessors(), 8);
@@ -158,8 +166,8 @@ public abstract class ConnectibleBuilder {
             return maxStatements;
         }
 
-        public boolean useSsl() {
-            return useSsl;
+        public SslConfig sslConfig() {
+            return sslConfig;
         }
 
         public String encoding() {

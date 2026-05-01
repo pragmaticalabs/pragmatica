@@ -21,6 +21,7 @@ import org.pragmatica.postgres.message.backend.SslHandshake;
 import org.pragmatica.postgres.message.frontend.SSLRequest;
 import org.pragmatica.postgres.message.frontend.StartupMessage;
 import org.pragmatica.postgres.message.frontend.Terminate;
+import org.pragmatica.postgres.net.SslConfig;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -29,6 +30,7 @@ import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.concurrent.Future;
@@ -38,7 +40,9 @@ import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.SSLParameters;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.Charset;
 import java.util.List;
@@ -52,9 +56,10 @@ import static org.pragmatica.lang.Unit.unit;
  */
 public class NettyPgProtocolStream extends PgProtocolStream {
     private static final Logger log = LoggerFactory.getLogger(NettyPgProtocolStream.class);
-    private static final String INSECURE_TLS_PROPERTY = "pragmatica.pg.insecure-tls";
 
+    protected final SslConfig sslConfig;
     protected final boolean useSsl;
+    private final String hostname;
     private final SocketAddress address;
     private final Bootstrap channelPipeline;
     private StartupMessage startupWith;
@@ -66,10 +71,19 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         }
     };
 
-    public NettyPgProtocolStream(SocketAddress address, boolean useSsl, Charset encoding, EventLoopGroup eventLoopGroup) {
+    public NettyPgProtocolStream(SocketAddress address, String hostname, SslConfig sslConfig,
+                                  Charset encoding, EventLoopGroup eventLoopGroup) {
         super(encoding);
         this.address = address;
-        this.useSsl = useSsl; // TODO: refactor into SSLConfig with trust parameters
+        this.hostname = hostname;
+        this.sslConfig = sslConfig;
+        this.useSsl = sslConfig.mode() != SslConfig.SslMode.DISABLE;
+        if (sslConfig.mode() == SslConfig.SslMode.ALLOW || sslConfig.mode() == SslConfig.SslMode.PREFER) {
+            // PREFER/ALLOW require protocol-level fallback negotiation. Until that lands,
+            // these modes behave like REQUIRE (TLS mandatory). Tracked as follow-up.
+            log.warn("SslMode.{} requested but fallback negotiation is not yet implemented; behaving like REQUIRE",
+                     sslConfig.mode());
+        }
         this.channelPipeline = new Bootstrap()
             .group(eventLoopGroup)
             .channel(NioSocketChannel.class)
@@ -158,9 +172,18 @@ public class NettyPgProtocolStream extends PgProtocolStream {
                 if (in.readableBytes() >= 1) {
                     if ('S' == in.readByte()) { // SSL supported response
                         ctx.pipeline().remove(this);
-                        ctx.pipeline().addFirst(
-                            buildSslContext()
-                                .newHandler(ctx.alloc()));
+                        var port = address instanceof InetSocketAddress isa ? isa.getPort() : -1;
+                        var sslHandler = buildSslContext()
+                            .newHandler(ctx.alloc(), hostname, port);
+                        if (sslConfig.mode() == SslConfig.SslMode.VERIFY_FULL) {
+                            // Enable JDK hostname verification — without this, Netty's default
+                            // SslHandler does not verify the hostname even when given hostname/port.
+                            var sslEngine = sslHandler.engine();
+                            var params = sslEngine.getSSLParameters();
+                            params.setEndpointIdentificationAlgorithm("HTTPS");
+                            sslEngine.setSSLParameters(params);
+                        }
+                        ctx.pipeline().addFirst(sslHandler);
                     } else {
                         ctx.fireExceptionCaught(new IllegalStateException("SSL required but not supported by Postgres"));
                     }
@@ -169,13 +192,25 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         };
     }
 
-    private static SslContext buildSslContext() throws Exception {
+    private SslContext buildSslContext() throws Exception {
         var builder = SslContextBuilder.forClient();
 
-        if ("true".equalsIgnoreCase(System.getProperty(INSECURE_TLS_PROPERTY))) {
-            log.warn("*** INSECURE TLS: PostgreSQL client trusts ALL certificates (pragmatica.pg.insecure-tls=true) ***");
+        if (sslConfig.allowAllCertificates()) {
+            log.warn("*** INSECURE TLS: PostgreSQL client trusts ALL certificates (allowAllCertificates=true) ***");
             builder.trustManager(InsecureTrustManagerFactory.INSTANCE);
+        } else {
+            sslConfig.rootCertPem().onPresent(path -> builder.trustManager(path.toFile()));
         }
+
+        sslConfig.clientCertificate().onPresent(cc -> {
+            if (cc.password().isPresent()) {
+                builder.keyManager(cc.cert().toFile(), cc.key().toFile(), cc.password().or((String) null));
+            } else {
+                builder.keyManager(cc.cert().toFile(), cc.key().toFile());
+            }
+        });
+
+        sslConfig.sslContextCustomizer().onPresent(c -> c.accept(builder));
 
         return builder.build();
     }
