@@ -33,6 +33,7 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.NodeState;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -69,27 +70,27 @@ import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
 import static org.pragmatica.lang.Unit.unit;
 
 
-@SuppressWarnings("JBCT-RET-01") record ClusterTopologyManagerRecord(TopologyObserver observer,
-                                                                     NodeLifecycleManager lifecycleManager,
-                                                                     AutoHealConfig autoHealConfig,
-                                                                     DeploymentMap deploymentMap,
-                                                                     GenerationSnapshotSource snapshotSource,
-                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                                     Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
-                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                                     DrainCoordinator drainCoordinator,
-                                                                     LifecycleWriter lifecycleWriter,
-                                                                     Supplier<ClusterPhase> phaseSupplier,
-                                                                     AtomicReference<NodeReconcilerState> stateRef,
-                                                                     AtomicBoolean active,
-                                                                     ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
-                                                                     ConcurrentHashMap<NodeId, ProvisioningSlotKey> slotKeyByNodeId,
-                                                                     CancellableTask safetyNetTimer,
-                                                                     AtomicLong realActualStableSinceMs,
-                                                                     AtomicInteger lastObservedRealActual,
-                                                                     AtomicInteger lastObservedHealthyOnDutyCount,
-                                                                     LongSupplier clock) implements ClusterTopologyManager {
+record ClusterTopologyManagerRecord(TopologyObserver observer,
+                                    NodeLifecycleManager lifecycleManager,
+                                    AutoHealConfig autoHealConfig,
+                                    DeploymentMap deploymentMap,
+                                    GenerationSnapshotSource snapshotSource,
+                                    Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                    Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                    Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
+                                    Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                    DrainCoordinator drainCoordinator,
+                                    LifecycleWriter lifecycleWriter,
+                                    Supplier<ClusterPhase> phaseSupplier,
+                                    AtomicReference<NodeReconcilerState> stateRef,
+                                    AtomicBoolean active,
+                                    ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
+                                    ConcurrentHashMap<NodeId, ProvisioningSlotKey> slotKeyByNodeId,
+                                    CancellableTask safetyNetTimer,
+                                    AtomicLong realActualStableSinceMs,
+                                    AtomicInteger lastObservedRealActual,
+                                    AtomicInteger lastObservedHealthyOnDutyCount,
+                                    LongSupplier clock) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
 
     private static final int MINIMUM_CLUSTER_SIZE = 3;
@@ -200,7 +201,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                    .or(0);
     }
 
-    @Override public void onNodeReady(NodeId nodeId) {
+    @Contract@Override public void onNodeReady(NodeId nodeId) {
         deleteCompletedSlotAtomsForNode(nodeId);
         if (stateRef.get() instanceof NodeReconcilerState.Reconciling) {
             log.info("Node {} reached ON_DUTY, checking reconciliation progress", nodeId);
@@ -208,7 +209,7 @@ import static org.pragmatica.lang.Unit.unit;
         }
     }
 
-    private void deleteCompletedSlotAtomsForNode(NodeId nodeId) {
+    @Contract private void deleteCompletedSlotAtomsForNode(NodeId nodeId) {
         if (!active.get()) {return;}
         var allSlots = slotReader.get();
         if (allSlots.isEmpty()) {return;}
@@ -229,7 +230,7 @@ import static org.pragmatica.lang.Unit.unit;
         slotKeyByNodeId.remove(nodeId);
     }
 
-    @SuppressWarnings("JBCT-RET-01") @Override public void onClusterConfigChanged() {
+    @Contract@Override public void onClusterConfigChanged() {
         if (!active.get()) {return;}
         var nowMs = nowMs();
         var windowMs = autoHealConfig.provisionStabilityWindow().millis();
@@ -238,7 +239,7 @@ import static org.pragmatica.lang.Unit.unit;
         reconcile();
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onTopologyChange(TopologyChangeNotification topologyChange) {
+    @Contract@Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
         if (!active.get()) {return;}
         switch (topologyChange){
             case NodeAdded added -> handleNodeAdded(added);
@@ -248,7 +249,7 @@ import static org.pragmatica.lang.Unit.unit;
         }
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onClusterPhaseChanged(ClusterPhase newPhase) {
+    @Contract@Override public void onClusterPhaseChanged(ClusterPhase newPhase) {
         if (newPhase == ClusterPhase.NORMAL) {
             cancelInFlightProvisions("phase transition to NORMAL — restart stability window");
             bumpRealActualStability("phase transition to NORMAL");
@@ -261,25 +262,25 @@ import static org.pragmatica.lang.Unit.unit;
                  newPhase);
     }
 
-    private void handleNodeAdded(NodeAdded added) {
+    @Contract private void handleNodeAdded(NodeAdded added) {
         log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());
         maybeBumpAnchorOnHealthyOnDutyEdge("node-added " + added.nodeId());
         reconcile();
     }
 
-    private void handleNodeRemoved(NodeRemoved removed) {
+    @Contract private void handleNodeRemoved(NodeRemoved removed) {
         log.info("CTM: Node {} removed, triggering reconciliation", removed.nodeId());
         maybeBumpAnchorOnHealthyOnDutyEdge("node-removed " + removed.nodeId());
         reconcile();
     }
 
-    private void handleNodeDown(NodeDown down) {
+    @Contract private void handleNodeDown(NodeDown down) {
         log.warn("CTM: Node {} is down, triggering immediate reconciliation", down.nodeId());
         maybeBumpAnchorOnHealthyOnDutyEdge("node-down " + down.nodeId());
         reconcile();
     }
 
-    private void maybeBumpAnchorOnHealthyOnDutyEdge(String reason) {
+    @Contract private void maybeBumpAnchorOnHealthyOnDutyEdge(String reason) {
         var current = snapshotHealthyOnDutyCount();
         var previous = lastObservedHealthyOnDutyCount.getAndSet(current);
         if (previous == current) {
@@ -292,13 +293,13 @@ import static org.pragmatica.lang.Unit.unit;
         bumpRealActualStability(reason + " (healthyOnDuty " + displayPrev + " -> " + current + ")");
     }
 
-    private void bumpRealActualStability(String reason) {
+    @Contract private void bumpRealActualStability(String reason) {
         var nowMs = nowMs();
         realActualStableSinceMs.set(nowMs);
         log.debug("CTM: stability anchor reset ({}), nowMs={}", reason, nowMs);
     }
 
-    @Override public void activate() {
+    @Contract@Override public void activate() {
         if (!active.compareAndSet(false, true)) {return;}
         bumpRealActualStability("activate");
         var hadRehydratedSlots = rehydrateInFlightSlotsFromKV();
@@ -333,11 +334,11 @@ import static org.pragmatica.lang.Unit.unit;
         return true;
     }
 
-    private void classifySlotForRehydration(ProvisioningSlotKey key,
-                                            ProvisioningSlotValue value,
-                                            long nowMs,
-                                            List<KVCommand<AetherKey>> deletes,
-                                            List<NodeReconcilerState.ProvisioningSlot> alive) {
+    @Contract private void classifySlotForRehydration(ProvisioningSlotKey key,
+                                                      ProvisioningSlotValue value,
+                                                      long nowMs,
+                                                      List<KVCommand<AetherKey>> deletes,
+                                                      List<NodeReconcilerState.ProvisioningSlot> alive) {
         if (slotIsAssignedAndComplete(value)) {
             deletes.add(deleteSlotCommand(key));
             return;
@@ -368,7 +369,7 @@ import static org.pragmatica.lang.Unit.unit;
         return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(key, value);
     }
 
-    private void activateWithCurrentTopology() {
+    @Contract private void activateWithCurrentTopology() {
         var actual = observer.healthyActiveNodeCount();
         var desired = activationDesiredSize();
         var readyCount = observer.readyNodeCount();
@@ -389,7 +390,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                                                                    desired);} else {activateWithFormation();}
     }
 
-    private void anchorBootstrapGrace() {
+    @Contract private void anchorBootstrapGrace() {
         var nowMs = nowMs();
         var windowMs = autoHealConfig.provisionStabilityWindow().millis();
         realActualStableSinceMs.set(nowMs + BOOTSTRAP_GRACE_MS - windowMs);
@@ -403,18 +404,18 @@ import static org.pragmatica.lang.Unit.unit;
               : observer.healthyActiveNodeCount();
     }
 
-    private void activateWithLeaderFailover(int effectiveActual, int desired) {
+    @Contract private void activateWithLeaderFailover(int effectiveActual, int desired) {
         transitionTo(new NodeReconcilerState.Converged());
         log.info("CTM: Leader failover detected ({}/{}), enabling immediate reconciliation", effectiveActual, desired);
         handleDeficit(effectiveActual, desired);
     }
 
-    private void activateWithFormation() {
+    @Contract private void activateWithFormation() {
         transitionTo(new NodeReconcilerState.Forming(nowInstant()));
         SharedScheduler.schedule(this::checkFormationComplete, autoHealConfig.startupCooldown());
     }
 
-    @Override public void deactivate() {
+    @Contract@Override public void deactivate() {
         if (!active.compareAndSet(true, false)) {return;}
         cancelSafetyNetPoll();
         transitionTo(new NodeReconcilerState.Inactive("deactivated (not leader)"));
@@ -470,14 +471,14 @@ import static org.pragmatica.lang.Unit.unit;
         return observer.topology();
     }
 
-    private void transitionTo(NodeReconcilerState newState) {
+    @Contract private void transitionTo(NodeReconcilerState newState) {
         var previous = stateRef.getAndSet(newState);
         log.info("CTM state: {} -> {}",
                  stateName(previous),
                  stateName(newState));
     }
 
-    private void checkFormationComplete() {
+    @Contract private void checkFormationComplete() {
         if (!active.get()) {return;}
         if (! (stateRef.get() instanceof NodeReconcilerState.Forming)) {return;}
         var actual = observer.healthyActiveNodeCount();
@@ -489,13 +490,13 @@ import static org.pragmatica.lang.Unit.unit;
         } else {handleFormationCooldownExpired(actual, desired);}
     }
 
-    private void handleFormationCooldownExpired(int actual, int desired) {
+    @Contract private void handleFormationCooldownExpired(int actual, int desired) {
         log.info("CTM: Formation cooldown expired, cluster at {}/{}, enabling reconciliation", actual, desired);
         transitionTo(new NodeReconcilerState.Converged());
         handleDeficit(actual, desired);
     }
 
-    private void reconcile() {
+    @Contract private void reconcile() {
         if (!active.get()) {return;}
         if (suspendedByPhase()) {return;}
         var currentState = stateRef.get();
@@ -514,7 +515,7 @@ import static org.pragmatica.lang.Unit.unit;
         return true;
     }
 
-    private void reconcileForming() {
+    @Contract private void reconcileForming() {
         var actual = observer.healthyActiveNodeCount();
         var configured = snapshotDesiredCoreSize();
         if (configured == 0) {return;}
@@ -524,7 +525,7 @@ import static org.pragmatica.lang.Unit.unit;
         }
     }
 
-    private void reconcileActive(NodeReconcilerState currentState) {
+    @Contract private void reconcileActive(NodeReconcilerState currentState) {
         var snapshot = snapshotSource.currentMembershipView();
         if (snapshot.isEmpty()) {return;}
         var view = snapshot.unwrap();
@@ -566,7 +567,7 @@ import static org.pragmatica.lang.Unit.unit;
         if (actual <configured) {handleDeficit(actual, configured);} else {handleSurplus(actual, configured);}
     }
 
-    private void observeRealActualForStability(int actual) {
+    @Contract private void observeRealActualForStability(int actual) {
         var previous = lastObservedRealActual.getAndSet(actual);
         if (previous == UNINITIALIZED_REAL_ACTUAL) {return;}
         if (previous != actual) {bumpRealActualStability("realActual " + previous + " -> " + actual);}
@@ -610,7 +611,7 @@ import static org.pragmatica.lang.Unit.unit;
         return elapsed >= autoHealConfig.provisionStabilityWindow().millis();
     }
 
-    private void handleDeficit(int actual, int desired) {
+    @Contract private void handleDeficit(int actual, int desired) {
         var nowMs = nowMs();
         var quicLive = observer.healthyActiveNodeCount();
         if (quicLive >= desired) {
@@ -637,7 +638,9 @@ import static org.pragmatica.lang.Unit.unit;
         handleDeficitFromConverged(current, actual, desired);
     }
 
-    private void handleDeficitDuringReconciling(NodeReconcilerState.Reconciling reconciling, int actual, int desired) {
+    @Contract private void handleDeficitDuringReconciling(NodeReconcilerState.Reconciling reconciling,
+                                                          int actual,
+                                                          int desired) {
         var aliveSlots = expireSlots(reconciling);
         var inFlightCount = aliveSlots.size();
         var topupDeficit = desired - actual - inFlightCount;
@@ -681,7 +684,7 @@ import static org.pragmatica.lang.Unit.unit;
         provisionNodes(batchSize);
     }
 
-    private void handleDeficitFromConverged(NodeReconcilerState current, int actual, int desired) {
+    @Contract private void handleDeficitFromConverged(NodeReconcilerState current, int actual, int desired) {
         var deficit = desired - actual;
         if (!lifecycleManager.isCloudManaged()) {
             var next = new NodeReconcilerState.Reconciling(desired, actual, List.of(), List.of(), nowInstant());
@@ -714,7 +717,7 @@ import static org.pragmatica.lang.Unit.unit;
         provisionNodes(batchSize);
     }
 
-    private void handleSurplus(int actual, int configured) {
+    @Contract private void handleSurplus(int actual, int configured) {
         var current = stateRef.get();
         if (current instanceof NodeReconcilerState.Reconciling) {
             log.debug("CTM: Already reconciling, waiting for in-flight terminations to complete");
@@ -818,11 +821,11 @@ import static org.pragmatica.lang.Unit.unit;
                                     .or(Epoch.ZERO);
     }
 
-    private void terminateNodes(List<NodeId> nodes) {
+    @Contract private void terminateNodes(List<NodeId> nodes) {
         for (var nodeId : nodes) {terminateSingleNode(nodeId);}
     }
 
-    private void terminateSingleNode(NodeId nodeId) {
+    @Contract private void terminateSingleNode(NodeId nodeId) {
         writeDrainingAtom(nodeId);
         var timeout = autoHealConfig.provisioningTimeout();
         drainCoordinator.prepareDrain(nodeId, DrainReason.SCALE_DOWN).flatMap(_ -> drainCoordinator.awaitDrainAck(nodeId,
@@ -830,7 +833,7 @@ import static org.pragmatica.lang.Unit.unit;
                                      .onResult(result -> handleDrainResult(nodeId, result));
     }
 
-    private void handleDrainResult(NodeId nodeId, Result<Unit> result) {
+    @Contract private void handleDrainResult(NodeId nodeId, Result<Unit> result) {
         result.onFailure(cause -> log.warn("CTM: drain ack for {} failed/timed out ({}); proceeding to terminate",
                                            nodeId,
                                            cause.message()))
@@ -838,19 +841,19 @@ import static org.pragmatica.lang.Unit.unit;
         proceedToTerminate(nodeId);
     }
 
-    private void proceedToTerminate(NodeId nodeId) {
+    @Contract private void proceedToTerminate(NodeId nodeId) {
         lifecycleManager.terminateNode(nodeId).onSuccess(_ -> handleTerminateSuccessWithDrainComplete(nodeId))
                                       .onFailure(cause -> log.warn("CTM: Node {} termination failed: {}",
                                                                    nodeId,
                                                                    cause.message()));
     }
 
-    private void handleTerminateSuccessWithDrainComplete(NodeId nodeId) {
+    @Contract private void handleTerminateSuccessWithDrainComplete(NodeId nodeId) {
         drainCoordinator.markDrainComplete(nodeId);
         handleTerminationSuccess(nodeId);
     }
 
-    private void writeDrainingAtom(NodeId nodeId) {
+    @Contract private void writeDrainingAtom(NodeId nodeId) {
         lifecycleWriter.requestDrain(nodeId).onFailure(cause -> log.warn("CTM: failed to request DRAINING for {}: {}",
                                                                          nodeId,
                                                                          cause.message()))
@@ -858,13 +861,13 @@ import static org.pragmatica.lang.Unit.unit;
                                                              nodeId));
     }
 
-    private void handleTerminationSuccess(NodeId nodeId) {
+    @Contract private void handleTerminationSuccess(NodeId nodeId) {
         log.info("CTM: Node {} terminated successfully", nodeId);
         writeDecommissionedAtom(nodeId);
         reconcile();
     }
 
-    private void writeDecommissionedAtom(NodeId nodeId) {
+    @Contract private void writeDecommissionedAtom(NodeId nodeId) {
         lifecycleWriter.requestDecommission(nodeId).onFailure(cause -> log.warn("CTM: failed to request DECOMMISSIONED for {}: {}",
                                                                                 nodeId,
                                                                                 cause.message()))
@@ -872,11 +875,11 @@ import static org.pragmatica.lang.Unit.unit;
                                                                     nodeId));
     }
 
-    private void provisionNodes(int count) {
+    @Contract private void provisionNodes(int count) {
         for (var i = 0;i <count;i++) {provisionSingleNode();}
     }
 
-    private void provisionSingleNode() {
+    @Contract private void provisionSingleNode() {
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                    "default",
                                                    "core",
@@ -893,7 +896,7 @@ import static org.pragmatica.lang.Unit.unit;
         promise.onResult(_ -> inFlightProvisions.remove(localTag));
     }
 
-    private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey) {
+    @Contract private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey) {
         var nowMs = nowMs();
         var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
         var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs);
@@ -905,7 +908,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                       deadlineMs));
     }
 
-    private void deleteExpiredSlotAtoms(long nowMs) {
+    @Contract private void deleteExpiredSlotAtoms(long nowMs) {
         var snapshotSlots = slotReader.get();
         if (snapshotSlots.isEmpty()) {return;}
         var deletes = snapshotSlots.entrySet().stream()
@@ -920,7 +923,7 @@ import static org.pragmatica.lang.Unit.unit;
                                                       deletes.size()));
     }
 
-    private void cancelInFlightProvisions(String reason) {
+    @Contract private void cancelInFlightProvisions(String reason) {
         if (inFlightProvisions.isEmpty()) {return;}
         var size = inFlightProvisions.size();
         log.info("CTM: cancelling {} in-flight provision(s) ({})", size, reason);
@@ -929,7 +932,7 @@ import static org.pragmatica.lang.Unit.unit;
         deleteAllSlotAtoms("cancel: " + reason);
     }
 
-    private void deleteAllSlotAtoms(String reason) {
+    @Contract private void deleteAllSlotAtoms(String reason) {
         var allSlots = slotReader.get();
         if (allSlots.isEmpty()) {return;}
         var deletes = allSlots.keySet().stream()
@@ -998,11 +1001,11 @@ import static org.pragmatica.lang.Unit.unit;
                            .or("");
     }
 
-    private void scheduleSafetyNetPoll() {
+    @Contract private void scheduleSafetyNetPoll() {
         safetyNetTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcile, autoHealConfig.retryInterval()));
     }
 
-    private void cancelSafetyNetPoll() {
+    @Contract private void cancelSafetyNetPoll() {
         safetyNetTimer.cancel();
     }
 

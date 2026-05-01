@@ -72,32 +72,4 @@ public sealed interface ConsensusError extends Cause {
             return "Node " + nodeId.id() + " is paused: quorum unavailable";
         }
     }
-
-    static ConsensusError commandBatchIsEmpty() {
-        return new CommandBatchIsEmpty();
-    }
-
-    static ConsensusError nodeInactive(NodeId nodeId) {
-        return new NodeInactive(nodeId);
-    }
-
-    static ConsensusError nodeIsObserver(NodeId nodeId) {
-        return new NodeIsObserver(nodeId);
-    }
-
-    static ConsensusError snapshotFailed(String reason) {
-        return new SnapshotFailed(reason);
-    }
-
-    static ConsensusError restoreFailed(String reason) {
-        return new RestoreFailed(reason);
-    }
-
-    static ConsensusError backpressureExceeded(int pending, int limit) {
-        return new BackpressureExceeded(pending, limit);
-    }
-
-    static ConsensusError quorumPaused(NodeId nodeId) {
-        return new QuorumPaused(nodeId);
-    }
 }

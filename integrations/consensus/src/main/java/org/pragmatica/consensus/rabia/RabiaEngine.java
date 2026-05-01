@@ -438,7 +438,7 @@ public class RabiaEngine<C extends Command> {
         pendingBatches.clear();
         bufferedDecisions.clear();
         bufferedDecisionCount.set(0);
-        correlationMap.forEach((_, p) -> p.fail(ConsensusError.nodeInactive(self)));
+        correlationMap.forEach((_, p) -> p.fail(new ConsensusError.NodeInactive(self)));
         correlationMap.clear();
         currentConfig.set(Option.some(newConfig));
         log.info("Node {}: reconfigure complete; awaiting quorum to start sync against new membership", self);
@@ -466,7 +466,7 @@ public class RabiaEngine<C extends Command> {
         pendingBatches.clear();
         bufferedDecisions.clear();
         bufferedDecisionCount.set(0);
-        correlationMap.forEach((_, promise) -> promise.fail(ConsensusError.nodeInactive(self)));
+        correlationMap.forEach((_, promise) -> promise.fail(new ConsensusError.NodeInactive(self)));
         correlationMap.clear();
     }
 
@@ -529,22 +529,18 @@ public class RabiaEngine<C extends Command> {
 
     private Result<List<C>> validateSubmission(List<C> commands) {
         if (commands.isEmpty()) {
-            return ConsensusError.commandBatchIsEmpty()
-                                 .result();
+            return new ConsensusError.CommandBatchIsEmpty().result();
         }
         var state = engineState.get();
         if (state.isPaused()) {
-            return ConsensusError.quorumPaused(self)
-                                 .result();
+            return new ConsensusError.QuorumPaused(self).result();
         }
         if (!state.isActive()) {
-            return ConsensusError.nodeInactive(self)
-                                 .result();
+            return new ConsensusError.NodeInactive(self).result();
         }
         var pending = pendingBatches.size();
         if (pending >= config.maxPendingBatches()) {
-            return ConsensusError.backpressureExceeded(pending, config.maxPendingBatches())
-                                 .result();
+            return new ConsensusError.BackpressureExceeded(pending, config.maxPendingBatches()).result();
         }
         return Result.success(commands);
     }
@@ -587,7 +583,7 @@ public class RabiaEngine<C extends Command> {
         // Synchronously fail in-flight promises BEFORE executor.shutdown(); otherwise
         // shutdownAndReset() may execute concurrently with the DiscardPolicy and leave
         // callers (e.g. publisher.runApply) waiting on cluster.apply(...) Promises forever.
-        correlationMap.forEach((_, p) -> p.fail(ConsensusError.nodeInactive(self)));
+        correlationMap.forEach((_, p) -> p.fail(new ConsensusError.NodeInactive(self)));
         correlationMap.clear();
         shutdownAndReset();
         executor.shutdown();
@@ -626,27 +622,29 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doHandleNewBatch(Batch<C> incoming) {
-        // Use compute() for atomic merge to avoid race conditions
+        // Use compute() for atomic merge to avoid race conditions. The compute
+        // lambda routes through `Option.option(existing)` so the absent case is
+        // expressed via `fold` rather than a raw `existing == null` sentinel.
         pendingBatches.compute(incoming.id(),
-                               (_, existing) -> {
-                                   if (existing == null) {
-                                       return incoming;
-                                   }
-                                   if (existing.commands()
-                                               .equals(incoming.commands())) {
-                                       // Same content - merge correlationIds
-        return existing.mergeWith(incoming);
-                                   }
-                                   // Hash collision (should never happen) - log and keep existing
-        log.error("BatchId collision: {} has different content", incoming.id());
-                                   return existing;
-                               });
+                               (_, existing) -> Option.option(existing)
+                                                      .fold(() -> incoming,
+                                                            current -> mergeOrKeep(current, incoming)));
         if (engineState.get().isInPhase()) {
             // Already in phase - broadcast our proposal for this batch if not already proposed
             broadcastOwnProposalIfNeeded();
         } else {
             triggerPhaseIfNeeded();
         }
+    }
+
+    private Batch<C> mergeOrKeep(Batch<C> existing, Batch<C> incoming) {
+        if (existing.commands().equals(incoming.commands())) {
+            // Same content — merge correlationIds.
+            return existing.mergeWith(incoming);
+        }
+        // Hash collision (should never happen) — log and keep existing.
+        log.error("BatchId collision: {} has different content", incoming.id());
+        return existing;
     }
 
     /// Broadcasts own proposal for pending batch if not already proposed in current phase.

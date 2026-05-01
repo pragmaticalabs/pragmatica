@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -38,7 +39,7 @@ public final class ObservationAggregator {
     private final Set<NodeId> everSeenHealthy = ConcurrentHashMap.newKeySet();
 
     private ObservationAggregator(long aggregationWindowMs) {
-        this.aggregationWindowMs = aggregationWindowMs;
+        this.aggregationWindowMs = Math.max(1L, aggregationWindowMs);
     }
 
     public static ObservationAggregator observationAggregator() {
@@ -138,10 +139,16 @@ public final class ObservationAggregator {
     }
 
     private Option<StateChanged> emitIfChanged(NodeId target, NodeLifecycleState newState) {
-        if (Option.option(lastAggregated.get(target)).map(prior -> prior == newState)
-                         .or(false)) {return none();}
-        lastAggregated.put(target, newState);
-        return some(new StateChanged(target, newState));
+        var emitted = new AtomicBoolean(false);
+        lastAggregated.compute(target,
+                               (_, prior) -> {
+                                   if (prior == newState) {return prior;}
+                                   emitted.set(true);
+                                   return newState;
+                               });
+        return emitted.get()
+              ? some(new StateChanged(target, newState))
+              : none();
     }
 
     private static int countDistinctObservers(Deque<Entry> window) {

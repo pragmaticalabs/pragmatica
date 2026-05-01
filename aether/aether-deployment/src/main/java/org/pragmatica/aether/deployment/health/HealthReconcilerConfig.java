@@ -8,6 +8,13 @@ public record HealthReconcilerConfig(long aggregationWindowMs,
                                      long cooldownMs,
                                      long stableWindowMs,
                                      long recoveryStableWindowMs) {
+    public HealthReconcilerConfig {
+        aggregationWindowMs = Math.max(1L, aggregationWindowMs);
+        cooldownMs = Math.max(1L, cooldownMs);
+        stableWindowMs = Math.max(1L, stableWindowMs);
+        recoveryStableWindowMs = Math.max(1L, recoveryStableWindowMs);
+    }
+
     public static final HealthReconcilerConfig DEFAULT = new HealthReconcilerConfig(5_000L, 10_000L, 5_000L, 30_000L);
 
     public static HealthReconcilerConfig healthReconcilerConfig() {

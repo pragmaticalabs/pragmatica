@@ -275,7 +275,7 @@ public interface AetherNode extends ManageableNode {
     long uptimeSeconds();
     List<NodeId> initialTopology();
     TopologyConfig topologyConfig();
-    @SuppressWarnings("JBCT-RET-01") void route(Message message);
+    @Contract void route(Message message);
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();

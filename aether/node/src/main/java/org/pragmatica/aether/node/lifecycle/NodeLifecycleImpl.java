@@ -6,6 +6,7 @@ package org.pragmatica.aether.node.lifecycle;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
@@ -23,6 +24,8 @@ final class NodeLifecycleImpl implements NodeLifecycle {
     private final AtomicReference<NodeState> state = new AtomicReference<>(NodeState.STARTING);
 
     private final CopyOnWriteArrayList<Consumer<NodeStateChanged>> listeners = new CopyOnWriteArrayList<>();
+
+    private final Object transitionLock = new Object();
 
     private NodeLifecycleImpl() {}
 
@@ -63,21 +66,26 @@ final class NodeLifecycleImpl implements NodeLifecycle {
     }
 
     private boolean transition(NodeState from, NodeState to) {
-        if (!state.compareAndSet(from, to)) {return false;}
-        log.info("NodeLifecycle: {} -> {}",
-                 from,
-                 to);
-        var event = NodeStateChanged.nodeStateChanged(from, to);
-        listeners.forEach(listener -> notifyListener(listener, event));
-        return true;
+        synchronized (transitionLock) {
+            if (!state.compareAndSet(from, to)) {return false;}
+            log.info("NodeLifecycle: {} -> {}",
+                     from,
+                     to);
+            var event = NodeStateChanged.nodeStateChanged(from, to);
+            listeners.forEach(listener -> notifyListener(listener, event));
+            return true;
+        }
     }
 
     private static void notifyListener(Consumer<NodeStateChanged> listener, NodeStateChanged event) {
-        try {
-            listener.accept(event);
-        } catch (RuntimeException ex) {
-            log.warn("NodeLifecycle: state listener failed: {}",
-                     Causes.fromThrowable(ex).message());
-        }
+        Result.lift(Causes::fromThrowable,
+                    () -> deliverEvent(listener, event))
+        .onFailure(cause -> log.warn("NodeLifecycle: state listener failed: {}",
+                                     cause.message()));
+    }
+
+    private static Unit deliverEvent(Consumer<NodeStateChanged> listener, NodeStateChanged event) {
+        listener.accept(event);
+        return Unit.unit();
     }
 }

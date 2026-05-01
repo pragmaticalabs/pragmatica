@@ -36,7 +36,9 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimMember.MemberState;
@@ -94,6 +96,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// PeerReachable removes the bias.
     private final Map<NodeId, TransportHintState> transportHints = new ConcurrentHashMap<>();
     private final List<Consumer<SwimObservation>> observationListeners = new CopyOnWriteArrayList<>();
+    /// Serializes `start()` / `stop()` against each other so a `start()` racing
+    /// concurrent `start()` cannot double-schedule, and a `start()` racing a
+    /// `stop()` cannot leave the protocol running after `stop()` returns.
+    /// The internal `getAndSet` / `compareAndSet` pattern remains inside the lock.
+    private final Object lifecycleLock = new Object();
 
     /// Tracks a relayed PingReq: maps the relay's own sequence to the original requester info.
     private record RelayInfo(long originalSequence, InetSocketAddress requesterAddress, long createdAt) {}
@@ -125,32 +132,36 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Start the protocol: begin periodic probing via SharedScheduler.
     /// First tick delayed by startupDelay to allow all TCP connections to establish after quorum.
     public Result<SwimProtocol> start() {
-        if (tickFuture.get().isPresent()) {
-            return SwimError.General.PROTOCOL_ALREADY_RUNNING.result();
-        }
+        synchronized (lifecycleLock) {
+            if (tickFuture.get().isPresent()) {
+                return SwimError.General.PROTOCOL_ALREADY_RUNNING.result();
+            }
 
-        // Light jitter (±20%) on the startup offset only — period is intentionally fixed to keep
-        // failure-detection latency predictable. The jitter de-syncs simultaneous starts after a
-        // shared quorum-formation event so probe traffic is not thundering-herd.
-        var jitteredStartupMs = JitterUtil.applyJitter(config.startupDelay().millis(),
-                                                       JitterUtil.LIGHT_MIN_FACTOR,
-                                                       JitterUtil.LIGHT_MAX_FACTOR);
-        var startup = TimeSpan.timeSpan(jitteredStartupMs).millis();
-        tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::tick, startup, config.period())));
-        LOG.info("SWIM protocol started for node {} (first probe in {}ms; jittered from base {}ms)",
-                 selfId.id(), jitteredStartupMs, config.startupDelay().millis());
-        return Result.success(this);
+            // Light jitter (±20%) on the startup offset only — period is intentionally fixed to keep
+            // failure-detection latency predictable. The jitter de-syncs simultaneous starts after a
+            // shared quorum-formation event so probe traffic is not thundering-herd.
+            var jitteredStartupMs = JitterUtil.applyJitter(config.startupDelay().millis(),
+                                                           JitterUtil.LIGHT_MIN_FACTOR,
+                                                           JitterUtil.LIGHT_MAX_FACTOR);
+            var startup = TimeSpan.timeSpan(jitteredStartupMs).millis();
+            tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::tick, startup, config.period())));
+            LOG.info("SWIM protocol started for node {} (first probe in {}ms; jittered from base {}ms)",
+                     selfId.id(), jitteredStartupMs, config.startupDelay().millis());
+            return Result.success(this);
+        }
     }
 
     /// Stop the protocol.
     public Result<SwimProtocol> stop() {
-        if (!tickFuture.get().isPresent()) {
-            return SwimError.General.PROTOCOL_NOT_RUNNING.result();
-        }
+        synchronized (lifecycleLock) {
+            if (!tickFuture.get().isPresent()) {
+                return SwimError.General.PROTOCOL_NOT_RUNNING.result();
+            }
 
-        tickFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
-        LOG.info("SWIM protocol stopped for node {}", selfId.id());
-        return Result.success(this);
+            tickFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
+            LOG.info("SWIM protocol stopped for node {}", selfId.id());
+            return Result.success(this);
+        }
     }
 
     /// Add a seed member to the membership list.
@@ -353,11 +364,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// floor (or the configured default if it is shorter than the floor).
     /// Otherwise keep the configured default. Spec §4.1, §11.
     private long effectiveSuspectTimeoutMs(NodeId nodeId, long defaultMs) {
-        var hint = transportHints.get(nodeId);
-        if (hint == null || !hint.unreachable()) {
-            return defaultMs;
-        }
-        return Math.min(defaultMs, TRANSPORT_HINT_SUSPECT_FLOOR_MS);
+        return option(transportHints.get(nodeId))
+            .filter(TransportHintState::unreachable)
+            .map(_ -> Math.min(defaultMs, TRANSPORT_HINT_SUSPECT_FLOOR_MS))
+            .or(defaultMs);
     }
 
     private void transitionToFaulty(SwimMember member) {
@@ -746,12 +756,14 @@ public final class SwimProtocol implements SwimMessageHandler {
         observationListeners.forEach(l -> safeDeliver(l, observation));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private void safeDeliver(Consumer<SwimObservation> consumer, SwimObservation observation) {
-        try {
-            consumer.accept(observation);
-        } catch (Exception e) {
-            LOG.warn("SWIM observation listener threw {}: {}", e.getClass().getSimpleName(), e.getMessage());
-        }
+    private void safeDeliver(Consumer<SwimObservation> consumer, SwimObservation observation) {
+        Result.lift(Causes::fromThrowable, () -> deliverOne(consumer, observation))
+              .onFailure(cause -> LOG.warn("SWIM observation listener threw: {}", cause.message()));
+    }
+
+    private static Unit deliverOne(Consumer<SwimObservation> consumer, SwimObservation observation) {
+        consumer.accept(observation);
+        return Unit.unit();
     }
 
     /// Test-only accessor for the per-peer ever-seen-healthy flag. Use to

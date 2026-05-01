@@ -27,8 +27,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
 import org.slf4j.Logger;
@@ -140,7 +142,8 @@ public interface TopologyObserver extends TopologyManager {
                        Predicate<NodeId> isDecommissioned,
                        AtomicBoolean quorumEstablished,
                        AtomicBoolean started,
-                       Object lifecycleLock) implements TopologyObserver {
+                       Object lifecycleLock,
+                       AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -156,7 +159,8 @@ public interface TopologyObserver extends TopologyManager {
                     Predicate<NodeId> isDecommissioned,
                     AtomicBoolean quorumEstablished,
                     AtomicBoolean started,
-                    Object lifecycleLock) {
+                    Object lifecycleLock,
+                    AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -171,6 +175,7 @@ public interface TopologyObserver extends TopologyManager {
                 this.quorumEstablished = quorumEstablished;
                 this.started = started;
                 this.lifecycleLock = lifecycleLock;
+                this.reconcileFuture = reconcileFuture;
                 this.effectiveClusterSize.set(config.clusterSize());
                 // Mirror the `initReconcile` filter: a peer the cluster has durably retired
                 // (KV NodeLifecycleValue.DECOMMISSIONED) must not be reconstructed from
@@ -185,7 +190,11 @@ public interface TopologyObserver extends TopologyManager {
                           config.self(),
                           config.coreNodes(),
                           config.clusterSize());
-                SharedScheduler.scheduleAtFixedRate(this::initReconcile, config.reconciliationInterval());
+                // The periodic reconciliation timer is scheduled by `start()`, NOT the
+                // constructor. Constructor-time scheduling would (a) run before `started`
+                // is flipped, so the first ticks observed `started=false` and silently
+                // no-op'd, and (b) was never cancelled by `stop()`, so the timer kept
+                // firing for the lifetime of the JVM after the observer was stopped.
             }
 
             private Instant now() {
@@ -506,23 +515,31 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public Promise<Unit> start() {
+                // Hold `lifecycleLock` only for the state-mutation phase (CAS on
+                // `active`, flip `started`, schedule + store the reconcile future).
+                // The synchronous edge-publication side-effects (`evaluateQuorumState`
+                // → `router.route(...)`) and the initial `initReconcile()` invocation
+                // run AFTER releasing the lock so a re-entrant `MessageRouter`
+                // recipient cannot deadlock with the lifecycle lock.
+                var shouldPublish = false;
                 synchronized (lifecycleLock) {
                     if (active().compareAndSet(false, true)) {
                         log.trace("Starting topology observer at {}", config.self());
-                        // Flip the startup gate before publishing so the first
-                        // `evaluateQuorumState` call below — and any racing mutation
-                        // that lands while `start()` is in flight — observes a fully
-                        // wired router. Constructor-time `addNode` fires for self and
-                        // any non-decommissioned core nodes ran with `started=false`
-                        // and were no-ops; this single explicit call publishes the
-                        // initial edge (established or disappeared) exactly once.
-                        // The lifecycle lock ensures concurrent KV-driven addNode/
-                        // removeNode mutations cannot land between flipping `started`
-                        // and the synchronous initial-edge publication.
+                        // Flip the startup gate before publishing so racing mutations
+                        // observe a fully wired router. Constructor-time `addNode`
+                        // fires for self and any non-decommissioned core nodes ran
+                        // with `started=false` and were no-ops; the explicit call
+                        // below publishes the initial edge exactly once.
                         started.set(true);
-                        evaluateQuorumState();
-                        initReconcile();
+                        var future = SharedScheduler.scheduleAtFixedRate(this::initReconcile,
+                                                                          config.reconciliationInterval());
+                        reconcileFuture.set(Option.some(future));
+                        shouldPublish = true;
                     }
+                }
+                if (shouldPublish) {
+                    evaluateQuorumState();
+                    initReconcile();
                 }
                 return Promise.success(Unit.unit());
             }
@@ -535,6 +552,12 @@ public interface TopologyObserver extends TopologyManager {
                     // `initReconcile` could re-seed tombstoned nodes — see review item #10).
                     started.set(false);
                     active().set(false);
+                    // Cancel the periodic reconcile timer scheduled by `start()`.
+                    // Without this, `initReconcile` would continue firing forever
+                    // after the observer is stopped (keeps re-seeding nodes from
+                    // config and routing `ListConnectedNodes`).
+                    reconcileFuture.getAndSet(Option.none())
+                                   .onPresent(f -> f.cancel(false));
                 }
                 return Promise.success(Unit.unit());
             }
@@ -575,6 +598,7 @@ public interface TopologyObserver extends TopologyManager {
                                           isDecommissioned,
                                           new AtomicBoolean(false),
                                           new AtomicBoolean(false),
-                                          new Object()));
+                                          new Object(),
+                                          new AtomicReference<>(Option.none())));
     }
 }
