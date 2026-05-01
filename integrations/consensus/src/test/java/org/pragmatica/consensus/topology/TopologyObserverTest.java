@@ -411,30 +411,103 @@ class TopologyObserverTest {
         }
 
         @Test
-        void connectionFailed_dropsPeerHealth_routesDisappearedOnQuorumLoss() {
-            // End-to-end smoke for the failure path: when health-state mutations cause
-            // `healthyOnDutyCount + 1` to cross `quorumSize()`, the observer routes
-            // disappeared. Models the "SWIM identifies a peer as faulty and HealthReconciler
-            // removes it from on-duty" scenario at the observer level.
+        void connectionFailed_isTransportOnly_doesNotRouteQuorumTransition() {
+            // POST-FIX INVARIANT (2026-05-01): transport-level `ConnectionFailed` events
+            // are local peer-link bookkeeping only. They MUST NOT fire
+            // `QuorumStateNotification` edges — the canonical publisher is driven by
+            // authoritative membership signals (SWIM → HealthReconciler → KV
+            // `NodeLifecycleKey` atom → `addNode`/`removeNode` / snapshot source).
+            //
+            // Pre-fix, a QUIC-handshake storm during cold-boot cascaded transport flaps
+            // through `handleConnectionFailed → evaluateQuorumState`, fired spurious
+            // `QuorumStateNotification.disappeared`, and reset RabiaEngine. This test
+            // pins the new behaviour: even when both peers' QUIC links fail, no
+            // disappeared notification is routed because peer membership is unchanged.
             var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
             var router = routerCapturing(notifications);
             var observer = TopologyObserver.topologyObserver(selfOnlyConfig(), router).unwrap();
             observer.start().await();
 
-            // Establish quorum first.
+            // Establish quorum via authoritative `registerPeer`.
             observer.registerPeer(INFO_A);
             observer.registerPeer(INFO_B);
             assertThat(notifications).hasSize(1);
+            assertThat(notifications.getFirst().state())
+                .isEqualTo(QuorumStateNotification.State.ESTABLISHED);
 
-            // Both peers fail their connections — health flips to SUSPECTED → healthy peers=0.
+            // Sink other transport-level routes.
             router.addRoute(NetworkServiceMessage.ConnectNode.class, _ -> {});
             router.addRoute(NetworkServiceMessage.DisconnectNode.class, _ -> {});
             router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
+
+            // Both peers' QUIC links fail (transport-only event).
             observer.handleConnectionFailed(new NetworkServiceMessage.ConnectionFailed(PEER_A, Causes.cause("link reset")));
             observer.handleConnectionFailed(new NetworkServiceMessage.ConnectionFailed(PEER_B, Causes.cause("link reset")));
 
             assertThat(notifications)
-                .as("health drop crossing quorum threshold fires disappeared")
+                .as("transport-level ConnectionFailed must not fire QuorumStateNotification")
+                .hasSize(1);
+        }
+
+        @Test
+        void quicHandshakeFlap_onAuthoritativeOnDutyPeer_doesNotChangeQuorumState() {
+            // Cold-boot QUIC handshake storm: a peer that is authoritatively registered
+            // (registerPeer) cycles connect → disconnect → connect repeatedly while its
+            // membership remains unchanged. The canonical publisher must remain at its
+            // current latch state; no edge transitions may be routed.
+            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
+            var router = routerCapturing(notifications);
+            router.addRoute(NetworkServiceMessage.ConnectNode.class, _ -> {});
+            router.addRoute(NetworkServiceMessage.DisconnectNode.class, _ -> {});
+            router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
+            var observer = TopologyObserver.topologyObserver(selfOnlyConfig(), router).unwrap();
+            observer.start().await();
+
+            // Establish quorum: peers=2, +1=3 >= quorum=2 → established once.
+            observer.registerPeer(INFO_A);
+            observer.registerPeer(INFO_B);
+            assertThat(notifications).hasSize(1);
+            assertThat(notifications.getFirst().state())
+                .isEqualTo(QuorumStateNotification.State.ESTABLISHED);
+
+            // Simulate the handshake storm: each peer flaps connect/fail/connect 5 times.
+            for (var i = 0; i < 5; i++) {
+                observer.handleConnectionFailed(new NetworkServiceMessage.ConnectionFailed(PEER_A, Causes.cause("flap " + i)));
+                observer.handleConnectionEstablished(new NetworkServiceMessage.ConnectionEstablished(PEER_A));
+                observer.handleConnectionFailed(new NetworkServiceMessage.ConnectionFailed(PEER_B, Causes.cause("flap " + i)));
+                observer.handleConnectionEstablished(new NetworkServiceMessage.ConnectionEstablished(PEER_B));
+            }
+
+            assertThat(notifications)
+                .as("QUIC handshake storm on authoritative on-duty peers must not change quorum state")
+                .hasSize(1);
+        }
+
+        @Test
+        void authoritativeRemoval_viaUnregisterPeer_stillRoutesDisappeared() {
+            // Counterpart to the transport-flap test: authoritative membership signals
+            // (SWIM-confirmed `DisconnectNode` → QUIC fires `unregisterPeer`) MUST still
+            // propagate to `QuorumStateNotification`. This pins that the surgical fix
+            // didn't accidentally mute the authoritative path.
+            var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
+            var router = routerCapturing(notifications);
+            router.addRoute(NetworkServiceMessage.ConnectNode.class, _ -> {});
+            router.addRoute(NetworkServiceMessage.DisconnectNode.class, _ -> {});
+            router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, _ -> {});
+            var observer = TopologyObserver.topologyObserver(selfOnlyConfig(), router).unwrap();
+            observer.start().await();
+
+            // Establish quorum.
+            observer.registerPeer(INFO_A);
+            observer.registerPeer(INFO_B);
+            assertThat(notifications).hasSize(1);
+
+            // Authoritative removal of both peers — peers=0, +1=1 < quorum=2 → disappeared.
+            observer.unregisterPeer(PEER_A);
+            observer.unregisterPeer(PEER_B);
+
+            assertThat(notifications)
+                .as("authoritative unregisterPeer crossing quorum threshold fires disappeared")
                 .hasSize(2);
             assertThat(notifications.get(1).state())
                 .isEqualTo(QuorumStateNotification.State.DISAPPEARED);

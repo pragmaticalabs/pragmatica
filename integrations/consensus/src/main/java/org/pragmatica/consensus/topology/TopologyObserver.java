@@ -303,10 +303,17 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {
+                // Transport-level event only: mutate per-peer NodeState (HEALTHY → SUSPECTED) so
+                // `requestConnectionIfEligible` honours the reconnect backoff, but DO NOT trigger
+                // `evaluateQuorumState`. Quorum-state edge transitions are owned by authoritative
+                // membership signals (SWIM → HealthReconciler → KV NodeLifecycle atom →
+                // `addNode`/`removeNode` / snapshot source). Routing transport flaps through the
+                // canonical publisher would re-introduce the QUIC-handshake-storm cascade that
+                // Phase A (commit `5c29a104f`) and Option C (commit `3c66e9e65`) demoted from the
+                // health-observation pipeline.
                 var nodeId = connectionFailed.nodeId();
                 nodeStatesById.computeIfPresent(nodeId, (_, state) ->
                     processConnectionFailure(state, connectionFailed.cause()));
-                evaluateQuorumState();
             }
 
             private NodeState processConnectionFailure(NodeState state, Cause cause) {
@@ -333,10 +340,15 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {
+                // Transport-level event only: clear the SUSPECTED reconnect-backoff so the next
+                // reconcile pass treats this peer as eligible. Quorum-state transitions are owned
+                // by authoritative membership signals — see `handleConnectionFailed` for the full
+                // architectural rationale. A QUIC handshake landing must not, on its own, fire
+                // `QuorumStateNotification.established` because the peer's authoritative ON_DUTY
+                // status is determined by SWIM/HealthReconciler, not by transport readiness.
                 var nodeId = connectionEstablished.nodeId();
                 nodeStatesById.computeIfPresent(nodeId, (_, state) ->
                     processConnectionEstablished(state));
-                evaluateQuorumState();
             }
 
             private NodeState processConnectionEstablished(NodeState state) {
