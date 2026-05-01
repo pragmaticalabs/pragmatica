@@ -31,6 +31,11 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
 
     @Option(names = "--grace-period", description = "Grace period for old key (e.g., 5m, 1h)", defaultValue = "5m") private String gracePeriod;
 
+    @Option(names = "--role",
+            description = "Authorization role for the new key: ADMIN, OPERATOR, or VIEWER (default: VIEWER)",
+            defaultValue = "VIEWER")
+    private String role;
+
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
@@ -42,7 +47,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
         var newKeyHash = KvStoreApiKeyHasher.hashKey(newKey);
         var newKeyId = "ak_" + newKeyHash.substring(0, 8);
         var gracePeriodMs = parseDurationMs(gracePeriod);
-        return findCurrentActiveKeyId().flatMap(oldKeyId -> createNewKey(newKeyId, newKeyHash, gracePeriodMs).flatMap(_ -> revokeOldKey(oldKeyId,
+        var normalizedRole = role == null ? "VIEWER" : role.trim().toUpperCase();
+        return findCurrentActiveKeyId().flatMap(oldKeyId -> createNewKey(newKeyId, newKeyHash, gracePeriodMs, normalizedRole).flatMap(_ -> revokeOldKey(oldKeyId,
                                                                                                                                         gracePeriodMs))
                                                                         .flatMap(_ -> persistLocalKey(newKey))
                                                                         .map(_ -> buildSuccessJson(newKeyId,
@@ -66,8 +72,13 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
         return new RotateKeyError.NoActiveKey().result();
     }
 
-    private static Result<String> createNewKey(String keyId, String keyHash, long gracePeriodMs) {
-        var json = "{\"keyId\":\"" + keyId + "\",\"keyHash\":\"" + keyHash + "\",\"gracePeriodMs\":" + gracePeriodMs + ",\"auditAction\":\"ROTATED\",\"operatorHint\":\"cli-rotate-key\"}";
+    private static Result<String> createNewKey(String keyId, String keyHash, long gracePeriodMs, String authorizationRole) {
+        var json = "{\"keyId\":\"" + keyId
+                   + "\",\"keyHash\":\"" + keyHash
+                   + "\",\"gracePeriodMs\":" + gracePeriodMs
+                   + ",\"auditAction\":\"ROTATED\""
+                   + ",\"operatorHint\":\"cli-rotate-key\""
+                   + ",\"authorizationRole\":\"" + authorizationRole + "\"}";
         return ClusterHttpClient.post(CLUSTER_KEYS_CREATE, json);
     }
 
