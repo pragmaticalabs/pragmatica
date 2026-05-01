@@ -1,6 +1,7 @@
 package org.pragmatica.postgres.conversion;
 
 import org.pragmatica.postgres.Oid;
+import org.pragmatica.postgres.net.PgValue;
 
 import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
@@ -9,10 +10,19 @@ import java.util.List;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
-// TODO: change internal value format from byte[] to PgValue(TEXT|BINARY)
 @SuppressWarnings({"unchecked", "rawtypes"})
 final class ArrayConversions {
     private ArrayConversions() {}
+
+    /// Unified entrypoint — dispatches on the wire format carried by `PgValue`.
+    /// Text-path uses the supplied per-element `parse` function; binary-path uses
+    /// `BinaryCodecs.forOid(...)`.
+    static <T> T toArray(Class<T> arrayType, PgValue value, BiFunction<Oid, String, Object> parse) {
+        return switch (value) {
+            case PgValue.Text text -> toArray(arrayType, text.type(), text.asString(), parse);
+            case PgValue.Binary binary -> toBinaryArray(arrayType, binary.type(), binary.raw());
+        };
+    }
     static String fromArray(final Object elements, final Function<Object, String> printFn) {
         return appendArray(new StringBuilder(), elements, printFn).toString();
     }

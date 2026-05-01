@@ -3,6 +3,7 @@ package org.pragmatica.postgres.conversion;
 import org.pragmatica.postgres.Oid;
 import org.pragmatica.postgres.PgColumn;
 import org.pragmatica.postgres.net.Converter;
+import org.pragmatica.postgres.net.PgValue;
 import org.pragmatica.lang.Functions.Fn2;
 
 import java.math.BigDecimal;
@@ -547,20 +548,15 @@ public class DataConverter {
         if (value == null) {
             return null;
         }
-
-        return ArrayConversions.toArray(arrayType, oid, new String(value, encoding), lookupParser(oid));
+        return ArrayConversions.toArray(arrayType, new PgValue.Text(oid, value, encoding), lookupParser(oid));
     }
 
     public <T> T toArray(Class<T> arrayType, Oid oid, byte[] value, boolean binary) {
         if (value == null) {
             return null;
         }
-
-        if (binary) {
-            return ArrayConversions.toBinaryArray(arrayType, oid, value);
-        }
-
-        return ArrayConversions.toArray(arrayType, oid, new String(value, encoding), lookupParser(oid));
+        var pgValue = binary ? new PgValue.Binary(oid, value) : new PgValue.Text(oid, value, encoding);
+        return ArrayConversions.toArray(arrayType, pgValue, lookupParser(oid));
     }
 
     private BiFunction<Oid, String, Object> lookupParser(Oid oid) {
