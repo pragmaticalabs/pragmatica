@@ -706,6 +706,11 @@ public class DataConverter {
         KNOWN_TYPES.put(double.class, NumericConversions::toDouble);
         KNOWN_TYPES.put(Double.class, NumericConversions::toDouble);
         KNOWN_TYPES.put(String.class, StringConversions::asString);
+        KNOWN_TYPES.put(boolean.class, BooleanConversions::toBoolean);
+        KNOWN_TYPES.put(Boolean.class, BooleanConversions::toBoolean);
+        KNOWN_TYPES.put(UUID.class, (oid, value) -> UUID.fromString(value));
+        // BYTEA in text format ("\x..."): strip the leading "\x" prefix before parsing hex.
+        KNOWN_TYPES.put(byte[].class, (oid, value) -> BlobConversions.toBytes(oid, value.substring(2)));
         KNOWN_TYPES.put(LocalDate.class, TemporalConversions::toLocalDate);
         KNOWN_TYPES.put(LocalTime.class, TemporalConversions::toLocalTime);
         KNOWN_TYPES.put(LocalDateTime.class, TemporalConversions::toLocalDateTime);
