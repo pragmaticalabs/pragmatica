@@ -44,7 +44,7 @@ Running concurrent tests is the cheapest direct probe of these multi-tenant guar
 - Non-destructive integration suites: 00-smoke, 04-streaming, 06-deployment, 07-cluster-mgmt, 08-resources, 09-artifacts, 10-database, 11-observability, 14-storage, 15-delegation.
 - All example apps referenced by these suites (url-shortener, url-shortener-v2, comprehensive-persistence, jooq-xml-showcase, pg-showcase, and others in `examples/`).
 - `run-tests.sh` and helper library under `aether/tests/integration/lib/`.
-- `slice-processor` — optional lint rule enforcing path prefix discipline.
+- `aether/tests/integration/lib/` — collision check at deploy time enforcing the prefix conventions across the parallel batch.
 
 ### 2.2 Out of scope
 
@@ -93,7 +93,7 @@ All tenants are independent in:
 - Before: `GET /shorten` (conflicts with anyone else's `/shorten`)
 - After: `GET /url-shortener/api/v1/shorten`
 
-**Enforcement**: a `slice-processor` lint rule (new) validates that every `@Http` path declared on a slice starts with that slice's declared base. Severity: `WARNING` initially, `ERROR` once all examples are migrated.
+**Enforcement**: this is a convention for example/test slices, **not** a global slice-processor rule — production slices may legitimately use bare paths. The parallel batch runner inspects the set of blueprints about to deploy and rejects the batch if any two share a path prefix. See §7 Phase 1.
 
 **Migration impact**: every example blueprint's routes table + any test script hitting those routes.
 
@@ -109,9 +109,9 @@ All tenants are independent in:
 
 **Rule**: task-group IDs carry slice prefix. `METRICS` becomes `url-shortener:METRICS`, etc.
 
-**Mechanism**: existing `@TaskGroup` annotation accepts the prefix literally, OR the slice-processor prefixes at code-generation time using the slice-id.
+**Mechanism**: existing `@TaskGroup` annotation accepts the prefix literally. Example slices spell the prefix in source.
 
-**Enforcement**: `slice-processor` lint rule (new), same severity escalation as §4.1.
+**Enforcement**: same as §4.1 — runner-side collision check at batch deploy time, no slice-processor changes.
 
 ### 4.4 Blueprint / artifact uniqueness
 
@@ -119,9 +119,9 @@ All tenants are independent in:
 
 ### 4.5 Resource ID namespacing
 
-**Rule**: `@Sql`, `@PgSql`, `@Storage`, `@Stream` resource qualifiers must be unique per slice. Suggestion: default to `<slice-id>:<resource-name>` at code-generation time.
+**Rule**: `@Sql`, `@PgSql`, `@Storage`, `@Stream` resource qualifier `config = "..."` strings used in example/test slices must carry the slice-id prefix (e.g., `url-shortener:database`).
 
-**Enforcement**: slice-processor lint rule (new).
+**Enforcement**: runner-side collision check at batch deploy time, no slice-processor changes.
 
 ## 5. Execution Model
 
@@ -191,15 +191,13 @@ These are expected values to be validated and updated once the spec is implement
 
 ## 7. Implementation Phases
 
-### Phase 1 — Naming hygiene (2–3 days)
+### Phase 1 — Naming hygiene (1–2 days)
 
-- Add `slice-processor` lint rule `PARALLEL-01`: `@Http` path must start with `/<slice-base>/`.
-- Add `PARALLEL-02`: `@TaskGroup` id must be prefixed with slice-id.
-- Add `PARALLEL-03`: resource qualifiers must be prefixed.
-- Rule severity: `WARNING` initially.
-- Migrate all example blueprints in `examples/`.
-- Migrate all integration test scripts that hit example endpoints.
-- Bump lint rule severity to `ERROR`.
+The prefix discipline is a convention for example/test slices, **not** a global slice-processor rule. Enforced at the runner layer where it actually matters; production slices unaffected.
+
+- Migrate all example blueprints in `examples/` to the prefix convention: routes (§4.1), task-group ids (§4.3), resource qualifier config strings (§4.5).
+- Migrate all integration test scripts that hit those endpoints (`aether/tests/integration/suites/`).
+- Add a `--check-isolation` step to `run-tests.sh` parallel mode: scan the set of blueprints about to deploy and reject the batch if any two collide on `(host, port, path-prefix)`, task-group id, or resource id. Runs before `aether deploy`.
 
 ### Phase 2 — Batch runner (1–2 days)
 
@@ -303,10 +301,9 @@ A k6 script simulates "100 users hitting /api/users/list". The parallel batch si
 |------|-----------|
 | Flaky tests amplified by concurrent load | Phase 1 preflight identifies flaky suites; they are pinned serial until fixed |
 | Diagnostic difficulty on failure | Per-test log files + epoch markers at start/end of each test |
-| Accidental coupling via shared task-group state | Lint rule PARALLEL-02 is the gate |
+| Accidental coupling via shared task-group state | Runner `--check-isolation` step rejects the batch before deploy (§7 Phase 1) |
 | Remote host OOM | Batch size discovery + capacity baseline |
-| Regression in slice-processor / codegen | Standard release regression suite covers it |
-| Some example blueprints hard to migrate | Phased migration; `slice-processor` warnings allow mixed state during transition |
+| Some example blueprints hard to migrate | Migration is per-blueprint and reversible; runner `--check-isolation` only fires when `--parallel` is used, so serial CI keeps working through the transition |
 
 ## 9. Testing the Spec's Implementation
 
