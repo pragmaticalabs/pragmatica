@@ -113,6 +113,24 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void onEntry() {
+            // R6 always-listen: pull KV for a committed leader on every entry. If a peer has
+            // already committed a leader visible in the local KV (e.g. a re-joining node whose
+            // snapshot included `LeaderKey`), we must observe it here — without this pull, the
+            // FSM would advance to AwaitingKvSync and re-discover it, but the direct path is
+            // both shorter and matches the spec's "always-listening KV poll across all states"
+            // contract. `adoptLeaderFromKvIfPresent` synthesizes `LeaderCommitted`; this state's
+            // handler arm transitions to `Led(thatLeader)` synchronously.
+            adoptLeaderFromKvIfPresent(ctx);
+            // If the synchronous dispatch already advanced us out of QuorumWaiting (i.e. we're
+            // now in Led), skip scheduling the poll — the new state owns its own timers.
+            // We compare to `this` rather than asserting `instanceof QuorumWaiting` to keep
+            // the `fresh` + manual-`onEntry` test pattern (used elsewhere for `onCasLost`
+            // coverage) working without changes — when invoked outside the FSM the current
+            // state is whatever the harness left in place, and the "did we transition out"
+            // semantics is "is the FSM still pointing at this exact record?".
+            if (ctx.fsm().current() != this && ctx.currentLeader().isPresent()) {
+                return;
+            }
             // Query the consensus engine's readiness state directly (SSOT). If consensus is
             // already active we synthesize a ConsensusReady event so the existing handler arm
             // below advances the FSM. Synchronous dispatch — the FSM is single-threaded on the
@@ -124,10 +142,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             }
             // Otherwise schedule a periodic re-check. The supplier wraps a level signal that may
             // become true asynchronously after entry; without this poll the FSM would sit
-            // leaderless until an incidental topology event nudges it.
+            // leaderless until an incidental topology event nudges it. R6: the same poll ALSO
+            // pulls KV for a committed leader, so a peer-committed leader observed during this
+            // window short-circuits straight to `Led` (via `adoptLeaderFromKvIfPresent`'s
+            // synthetic `LeaderCommitted` → handler arm) without waiting for consensus-readiness
+            // to flip.
             log.debug("Consensus engine not ready on entry — scheduling periodic re-check at {}ms",
                       POLL_INTERVAL.millis());
-            var future = SharedScheduler.scheduleAtFixedRate(() -> pollConsensusReady(ctx),
+            var future = SharedScheduler.scheduleAtFixedRate(() -> pollConsensusAndKv(ctx),
                                                               POLL_INTERVAL);
             pollFuture.set(future);
         }
@@ -240,13 +262,19 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
     }
 
-    /// Periodic re-check of consensus readiness. Re-queries the supplier; on `true` it
-    /// dispatches `ConsensusReady` into the FSM so the handler can advance to
-    /// `Electing` / `ReElecting`. The dispatch path is idempotent in non-`QuorumWaiting`
-    /// states (Dormant absorbs as `NO_ACTION_DORMANT`; QuorumLost absorbs the same way;
-    /// Electing/ReElecting/Led/Stopped fall through to `tx.ignore()`), so a tick that races
-    /// the FSM's own state transition is harmless.
-    private static void pollConsensusReady(LeaderElectionContext ctx) {
+    /// Periodic re-check of (a) consensus readiness AND (b) KV-committed leader. R6: pulls
+    /// both signals on every tick so a peer-committed leader observed during the QuorumWaiting
+    /// window short-circuits to `Led` without waiting for the consensus-readiness flip.
+    /// On a true consensus-readiness flag this dispatches `ConsensusReady` into the FSM so the
+    /// handler can advance to `AwaitingKvSync`. The dispatch path is idempotent in non-
+    /// `QuorumWaiting` states (Dormant absorbs as `NO_ACTION_DORMANT`; QuorumLost absorbs the
+    /// same way; AwaitingKvSync/Electing/ReElecting/Led/Stopped fall through to `tx.ignore()`),
+    /// so a tick that races the FSM's own state transition is harmless. The KV pull goes
+    /// through `adoptLeaderFromKvIfPresent` which synthesizes a `LeaderCommitted`; if the FSM
+    /// is no longer in QuorumWaiting the synthetic event is consumed by whatever state owns
+    /// the FSM at dispatch time (or harmlessly ignored).
+    private static void pollConsensusAndKv(LeaderElectionContext ctx) {
+        adoptLeaderFromKvIfPresent(ctx);
         if (ctx.consensusReadySupplier().get()) {
             log.info("Consensus engine became ready during QuorumWaiting poll — advancing");
             dispatchSelf(ctx, new ConsensusReady());
@@ -269,12 +297,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                     AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
 
         public static Electing fresh(LeaderElectionContext ctx) {
-            var rank = ctx.rankOfSelf();
-            var delay = ctx.baseElectionDelay().millis() + rank * ctx.perRankDelay().millis();
-            log.info("Entering Electing: rank={}, first-tick delay={}ms, peer-observation interval={}ms",
-                     rank, delay, ctx.peerObservationInterval().millis());
-            var tickFuture = SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
-                                                      TimeSpan.timeSpan(delay).millis());
+            var tickFuture = scheduleStaircaseFirstTick(ctx, "Electing");
             var observationFuture = SharedScheduler.scheduleAtFixedRate(
                     () -> adoptLeaderFromKvIfPresent(ctx),
                     ctx.peerObservationInterval());
@@ -386,10 +409,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                       AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
 
         public static ReElecting fresh(LeaderElectionContext ctx) {
-            log.info("Entering ReElecting: scheduling tick in {}ms, peer-observation interval={}ms",
-                     ctx.proposalRetryDelay().millis(), ctx.peerObservationInterval().millis());
-            var holder = new AtomicReference<ScheduledFuture<?>>();
-            scheduleElectionTickInto(ctx, holder);
+            // R6: ReElecting uses the same rank-staircase first-tick delay as Electing. Without
+            // this the prior path scheduled the first tick at `proposalRetryDelay` (~500ms) on
+            // every node — i.e. classic thundering herd on leader loss, every surviving peer
+            // proposing in parallel. Staircase pacing means the lowest-rank survivor proposes
+            // first; higher ranks observe its commit via the independent peer-observation timer
+            // (or the KV pull on entry) and abandon their pending tick before it fires. Retries
+            // after a failed proposal continue to use `proposalRetryDelay` via the existing
+            // `rescheduleCurrentTick` path — the staircase only governs the FIRST tick after
+            // entry to the state, which is exactly when herding would otherwise occur.
+            var holder = new AtomicReference<ScheduledFuture<?>>(scheduleStaircaseFirstTick(ctx, "ReElecting"));
             var observationFuture = SharedScheduler.scheduleAtFixedRate(
                     () -> adoptLeaderFromKvIfPresent(ctx),
                     ctx.peerObservationInterval());
@@ -552,9 +581,35 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
     }
 
+    /// Schedules the FIRST election tick on entry to [`Electing`] / [`ReElecting`] using the
+    /// rank-staircase formula `baseElectionDelay + rank * perRankDelay`. Lowest-rank node
+    /// (`rank=0`) proposes first; higher ranks delay one `perRankDelay` per position so they
+    /// can observe the lowest-rank proposal commit before their own tick fires. Defeats the
+    /// thundering-herd election storm structurally: in a 5-node cold boot only `node-1`
+    /// (rank 0) ever submits a proposal — peers 2..5 see `LeaderKey=node-1` in KV (push
+    /// notification or 500ms peer-observation pull) and short-circuit. If `node-1` is dead,
+    /// `node-2` (rank 1) proposes one `perRankDelay` later (default 1s); and so on. Subsequent
+    /// retries after a failed proposal use [`#scheduleElectionTickInto`] (with `proposalRetryDelay`
+    /// + jitter) — the staircase ONLY governs the first tick on each entry, which is exactly
+    /// the window where parallel proposals would otherwise collide.
+    private static ScheduledFuture<?> scheduleStaircaseFirstTick(LeaderElectionContext ctx,
+                                                                  String stateLabel) {
+        var rank = ctx.rankOfSelf();
+        var delayMs = ctx.baseElectionDelay().millis() + rank * ctx.perRankDelay().millis();
+        log.info("Entering {}: rank={}, first-tick delay={}ms (rank-staircase: base={}ms + rank*{}ms), "
+                 + "peer-observation interval={}ms",
+                 stateLabel, rank, delayMs,
+                 ctx.baseElectionDelay().millis(), ctx.perRankDelay().millis(),
+                 ctx.peerObservationInterval().millis());
+        return SharedScheduler.schedule(() -> dispatchSelf(ctx, new ElectionTick()),
+                                        TimeSpan.timeSpan(delayMs).millis());
+    }
+
     /// Schedules a fresh election tick and stores its `ScheduledFuture` into the supplied holder,
-    /// cancelling any prior future the holder owned. Called from both [`Electing.fresh`] /
-    /// [`ReElecting.fresh`] entry paths AND from [`#rescheduleCurrentTick`] during retries.
+    /// cancelling any prior future the holder owned. Called from [`#rescheduleCurrentTick`]
+    /// during retries (after a failed proposal). The first tick on each entry to
+    /// [`Electing`] / [`ReElecting`] uses the rank-staircase delay via
+    /// [`#scheduleStaircaseFirstTick`].
     private static void scheduleElectionTickInto(LeaderElectionContext ctx,
                                                   AtomicReference<ScheduledFuture<?>> holder) {
         var retry = ctx.incrementElectionRetryCount();
