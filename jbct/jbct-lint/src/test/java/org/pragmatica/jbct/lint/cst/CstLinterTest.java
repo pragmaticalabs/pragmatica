@@ -2176,6 +2176,64 @@ class CstLinterTest {
         }
     }
 
+    // ========== @NullReturn Annotation Support ==========
+    @Nested
+    @DisplayName("@NullReturn annotation suppresses JBCT-RET-03")
+    class NullReturnAnnotationTests {
+        @Test
+        void nullReturnOnMethod_suppressesNullWarning() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @NullReturn
+                    public <R> R toNull() {
+                        return null;
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-03");
+        }
+
+        @Test
+        void nullReturnOnClass_suppressesAllNullWarnings() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                @NullReturn
+                public class Test {
+                    public String findOne() { return null; }
+                    public String findTwo() { return null; }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-03");
+        }
+
+        @Test
+        void nullReturnScopeIsLimited_otherMethodsStillFlagged() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @NullReturn
+                    public String allowed() { return null; }
+
+                    public String notAllowed() { return null; }
+                }
+                """);
+            assertHasRule(diagnostics, "JBCT-RET-03");
+        }
+
+        @Test
+        void fullyQualifiedNullReturn_alsoWorks() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @org.pragmatica.lang.NullReturn
+                    public String allowed() { return null; }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-03");
+        }
+    }
+
     // ========== @Contract Annotation Support ==========
     @Nested
     @DisplayName("@Contract annotation suppresses JBCT-RET-01")
