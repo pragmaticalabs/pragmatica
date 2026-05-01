@@ -91,14 +91,6 @@ public abstract class ConnectibleBuilder {
         return this;
     }
 
-    /// Convenience: `ssl(true)` → `SslConfig.require()` (encrypts but no validation,
-    /// matching the legacy `useSsl=true` semantics). `ssl(false)` → `SslConfig.disabled()`.
-    /// For production use the explicit `ssl(SslConfig.verifyFull(rootCert))`.
-    public ConnectibleBuilder ssl(boolean ssl) {
-        properties.sslConfig = ssl ? SslConfig.require() : SslConfig.disabled();
-        return this;
-    }
-
     public ConnectibleBuilder validationQuery(String validationQuery) {
         properties.validationQuery = validationQuery;
         return this;
