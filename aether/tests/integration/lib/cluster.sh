@@ -20,6 +20,29 @@ cluster_leader() {
     aether_field status cluster.leaderId
 }
 
+# Spec §4.4 / §10 P7: tests must consume the same operator-visible signals.
+# `clusterPhase` is published by HealthReconciler via consensus on ClusterPhaseKey
+# and projected to every node. Empty/default → "BOOTING".
+cluster_phase() {
+    aether_field status clusterPhase
+}
+
+# Whether the cluster currently has quorum (leader committed AND ≥ ⌈N/2⌉+1 ON_DUTY nodes).
+# Returns "true" or "false" (cluster.quorate field on StatusResponse).
+cluster_quorate() {
+    aether_field status cluster.quorate
+}
+
+# Per-node lifecycle state from the per-node NodeLifecycleKey atom in KV-Store
+# (HealthReconciler is sole writer — see spec §4.3 P4). One of:
+# JOINING, ON_DUTY, DRAINING, DECOMMISSIONED, SHUTTING_DOWN — or UNKNOWN if no atom yet.
+node_lifecycle_state() {
+    local target_node="$1"
+    aether_json status 2>/dev/null \
+        | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"'"$target_node"'"[^}]*"lifecycleState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -1
+}
+
 cluster_status() {
     aether_json status
 }
@@ -256,6 +279,46 @@ wait_for_leader() {
         timeout=120
     fi
     wait_for "leader elected" "[ -n \"\$(cluster_leader)\" ] && [ \"\$(cluster_leader)\" != 'none' ]" "$timeout"
+}
+
+# Spec §4.5 / §10: a leader is "committed" once `LeaderKey` is observable in KV
+# (i.e. `aether status` reports a non-empty leaderId). Operationally indistinguishable
+# from `wait_for_leader` for the moment — kept as a separate helper so call sites
+# document intent ("we need consensus-committed leader, not just a candidate").
+wait_for_leader_committed() {
+    local timeout="${1:-60}"
+    wait_for "leader committed" \
+        "[ -n \"\$(cluster_leader)\" ] && [ \"\$(cluster_leader)\" != 'none' ]" \
+        "$timeout"
+}
+
+# Spec §4.4 P7: wait for cluster.quorate=true on the StatusResponse JSON.
+# `quorate` requires both a committed leader AND ≥ ⌈N/2⌉+1 ON_DUTY nodes — the
+# operator-visible signal published by TopologyObserver, not a derived predicate.
+wait_for_quorum() {
+    local timeout="${1:-60}"
+    wait_for "cluster quorate" "[ \"\$(cluster_quorate)\" = 'true' ]" "$timeout"
+}
+
+# Spec §5 / §10: wait for ClusterPhaseKey to converge to the expected phase
+# (BOOTING / NORMAL / RECOVERING). Use this in place of ad-hoc sleeps after
+# cluster bring-up — `wait_for_phase 'NORMAL' 60` proves the cluster left
+# cold-boot mode and CTM is allowed to operate.
+wait_for_phase() {
+    local expected="$1" timeout="${2:-60}"
+    wait_for "cluster phase=${expected}" \
+        "[ \"\$(cluster_phase)\" = '${expected}' ]" \
+        "$timeout"
+}
+
+# Spec §4.3 P4: wait for a specific node's NodeLifecycleKey atom to converge
+# to the expected state. Use after `drain_node node-X` to confirm the FSM
+# advanced (DRAINING / DECOMMISSIONED) without sleeping for a guessed window.
+wait_for_node_lifecycle() {
+    local target_node="$1" expected="$2" timeout="${3:-60}"
+    wait_for "node ${target_node} lifecycle=${expected}" \
+        "[ \"\$(node_lifecycle_state ${target_node})\" = '${expected}' ]" \
+        "$timeout"
 }
 
 wait_for_slices_active() {

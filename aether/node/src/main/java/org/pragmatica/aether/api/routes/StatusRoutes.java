@@ -21,10 +21,15 @@ import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterPhaseKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhaseValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.QueryParameter;
@@ -91,10 +96,10 @@ public final class StatusRoutes implements RouteSource {
         var leader = node.leader();
         var leaderId = leader.map(NodeId::id).or("none");
         var topologyNodes = node.topologyManager().topology();
-        var nodeInfos = topologyNodes.stream().map(nodeId -> new NodeInfo(nodeId.id(),
-                                                                          leader.map(l -> l.equals(nodeId)).or(false)))
+        var nodeInfos = topologyNodes.stream().map(nodeId -> toNodeInfo(node, nodeId, leader))
                                             .toList();
-        var cluster = new ClusterInfo(nodeInfos.size(), leaderId, nodeInfos);
+        var quorate = leader.isPresent() && nodeInfos.size() >= quorumOf(nodeInfos.size());
+        var cluster = new ClusterInfo(nodeInfos.size(), leaderId, quorate, nodeInfos);
         var derived = node.snapshotCollector().derivedMetrics();
         var metrics = new MetricsSummary(derived.requestRate(),
                                          100.0 - derived.errorRate() * 100.0,
@@ -106,10 +111,35 @@ public final class StatusRoutes implements RouteSource {
                                   metrics,
                                   node.self().id(),
                                   "running",
+                                  node.nodeLifecycle().currentState()
+                                                    .name(),
+                                  readClusterPhase(node),
                                   node.isLeader(),
                                   leaderId,
                                   BuildInfo.buildInfo().buildTimestamp(),
                                   BuildInfo.buildInfo().buildVersion());
+    }
+
+    private static NodeInfo toNodeInfo(ManageableNode node, NodeId nodeId, Option<NodeId> leader) {
+        var isLeader = leader.map(l -> l.equals(nodeId)).or(false);
+        var lifecycleState = node.kvStore().get(NodeLifecycleKey.nodeLifecycleKey(nodeId))
+                                         .filter(NodeLifecycleValue.class::isInstance)
+                                         .map(NodeLifecycleValue.class::cast)
+                                         .map(v -> v.state().name())
+                                         .or("UNKNOWN");
+        return new NodeInfo(nodeId.id(), isLeader, lifecycleState);
+    }
+
+    private static String readClusterPhase(ManageableNode node) {
+        return node.kvStore().get(ClusterPhaseKey.SINGLETON)
+                           .filter(ClusterPhaseValue.class::isInstance)
+                           .map(ClusterPhaseValue.class::cast)
+                           .map(v -> v.phase().name())
+                           .or(ClusterPhase.BOOTING.name());
+    }
+
+    private static int quorumOf(int n) {
+        return n / 2 + 1;
     }
 
     private NodesResponse buildNodesResponse() {
@@ -195,7 +225,7 @@ public final class StatusRoutes implements RouteSource {
         return new ReadinessResponse(status, nodeId, state.name(), state.isReady(), List.copyOf(components));
     }
 
-    private static ComponentHealth buildLifecycleHealth(org.pragmatica.aether.node.lifecycle.NodeState state) {
+    private static ComponentHealth buildLifecycleHealth(NodeState state) {
         return new ComponentHealth("lifecycle", state.isReady()
                                                ? "UP"
                                                : "DOWN", "NodeLifecycle state: " + state.name());

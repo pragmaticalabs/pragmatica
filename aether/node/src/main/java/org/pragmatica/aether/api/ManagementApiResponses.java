@@ -23,14 +23,16 @@ public sealed interface ManagementApiResponses {
                           MetricsSummary metrics,
                           String nodeId,
                           String status,
+                          String lifecycleState,
+                          String clusterPhase,
                           boolean isLeader,
                           String leader,
                           String buildTimestamp,
                           String buildVersion){}
 
-    record ClusterInfo(int nodeCount, String leaderId, List<NodeInfo> nodes){}
+    record ClusterInfo(int nodeCount, String leaderId, boolean quorate, List<NodeInfo> nodes){}
 
-    record NodeInfo(String id, boolean isLeader){}
+    record NodeInfo(String id, boolean isLeader, String lifecycleState){}
 
     record MetricsSummary(double requestsPerSecond, double successRate, double avgLatencyMs){}
 
