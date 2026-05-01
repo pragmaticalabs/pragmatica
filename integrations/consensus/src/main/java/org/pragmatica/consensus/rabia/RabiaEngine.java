@@ -407,18 +407,18 @@ public class RabiaEngine<C extends Command> {
     ///
     /// Replaying the same membership is a no-op — no state is wiped if `newConfig` already
     /// matches the engine's current view. Returns success on no-op too.
-    public Promise<Result<Unit>> reconfigure(ClusterConfig newConfig) {
-        var promise = Promise.<Result<Unit>>promise();
+    public Promise<Unit> reconfigure(ClusterConfig newConfig) {
+        var promise = Promise.<Unit>promise();
         executor.execute(() -> doReconfigure(newConfig, promise));
         return promise;
     }
 
-    private void doReconfigure(ClusterConfig newConfig, Promise<Result<Unit>> promise) {
+    private void doReconfigure(ClusterConfig newConfig, Promise<Unit> promise) {
         var existing = currentConfig.get();
         if (existing.map(c -> c.sameMembership(newConfig)).or(false)) {
             log.info("Node {}: reconfigure called with identical membership, no-op", self);
             currentConfig.set(Option.some(newConfig));
-            promise.succeed(Result.unitResult());
+            promise.succeed(Unit.unit());
             return;
         }
         log.info("Node {}: reconfigure to new membership {} (was {})",
@@ -439,7 +439,7 @@ public class RabiaEngine<C extends Command> {
         correlationMap.clear();
         currentConfig.set(Option.some(newConfig));
         log.info("Node {}: reconfigure complete; awaiting quorum to start sync against new membership", self);
-        promise.succeed(Result.unitResult());
+        promise.succeed(Unit.unit());
     }
 
     /// Hard-shutdown path used only by [#stop]. Performs the full state-clearing reset that
