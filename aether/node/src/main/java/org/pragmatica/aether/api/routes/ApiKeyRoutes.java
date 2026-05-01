@@ -66,7 +66,10 @@ import static org.pragmatica.http.routing.PathParameter.aString;
     }
 
     @SuppressWarnings("unchecked") private Promise<Object> handleCreateKey(CreateKeyRequest request) {
-        var keyValue = ApiKeyValue.apiKeyValue(request.keyId(), request.keyHash(), request.gracePeriodMs());
+        var role = request.authorizationRole() == null || request.authorizationRole().isBlank()
+                  ? ApiKeyValue.DEFAULT_ROLE
+                  : request.authorizationRole().toUpperCase();
+        var keyValue = ApiKeyValue.apiKeyValue(request.keyId(), request.keyHash(), request.gracePeriodMs(), role);
         var keyCommand = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ApiKeyKey.apiKeyKey(request.keyId()),
                                                                                   keyValue);
         var auditValue = ApiKeyAuditValue.apiKeyAuditValue(request.keyId(),
@@ -92,7 +95,8 @@ import static org.pragmatica.http.routing.PathParameter.aString;
                                                             v.createdAt(),
                                                             v.expiresAt(),
                                                             v.revokedAt(),
-                                                            v.gracePeriodMs())));
+                                                            v.gracePeriodMs(),
+                                                            v.authorizationRole())));
         return Promise.success(List.copyOf(keys));
     }
 
@@ -161,7 +165,7 @@ import static org.pragmatica.http.routing.PathParameter.aString;
         }
     }
 
-    record CreateKeyRequest(String keyId, String keyHash, long gracePeriodMs, String auditAction, String operatorHint){}
+    record CreateKeyRequest(String keyId, String keyHash, long gracePeriodMs, String auditAction, String operatorHint, String authorizationRole){}
 
     record CreateKeyResponse(String keyId, String status){}
 
@@ -169,7 +173,7 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 
     record RevokeKeyResponse(String keyId, String status, long gracePeriodMs){}
 
-    record KeyInfo(String keyId, String status, long createdAt, long expiresAt, long revokedAt, long gracePeriodMs){}
+    record KeyInfo(String keyId, String status, long createdAt, long expiresAt, long revokedAt, long gracePeriodMs, String authorizationRole){}
 
     record AuditEntry(String keyId, String action, long timestamp, String operatorHint){}
 

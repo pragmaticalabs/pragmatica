@@ -93,11 +93,27 @@ import org.slf4j.LoggerFactory;
         var matched = match.get();
         return matched == null
               ? SecurityError.INVALID_API_KEY.result()
-              : buildAdminContext(matched.keyId());
+              : buildContext(matched);
     }
 
-    private static Result<SecurityContext> buildAdminContext(String keyId) {
-        return SecurityContext.securityContext("api-key:" + keyId, Set.of(Role.ADMIN), AuthorizationRole.ADMIN);
+    private static Result<SecurityContext> buildContext(ApiKeyValue keyValue) {
+        var role = parseAuthorizationRole(keyValue.authorizationRole());
+        return SecurityContext.securityContext("api-key:" + keyValue.keyId(), Set.of(Role.ADMIN), role);
+    }
+
+    private static AuthorizationRole parseAuthorizationRole(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return AuthorizationRole.VIEWER;
+        }
+        return switch (raw.toUpperCase()) {
+            case "ADMIN" -> AuthorizationRole.ADMIN;
+            case "OPERATOR" -> AuthorizationRole.OPERATOR;
+            case "VIEWER" -> AuthorizationRole.VIEWER;
+            default -> {
+                log.warn("Unknown authorization role '{}' on stored API key; defaulting to VIEWER", raw);
+                yield AuthorizationRole.VIEWER;
+            }
+        };
     }
 
     private Option<String> extractApiKey(Map<String, List<String>> headers) {
