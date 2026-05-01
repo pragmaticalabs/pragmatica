@@ -681,7 +681,7 @@ public final class ConfigLoader {
                            : Set.of("service");
                 var authRole = parts.length >= 4
                               ? parts[3].trim()
-                              : "ADMIN";
+                              : ApiKeyEntry.DEFAULT_ROLE;
                 result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles, authRole));
             }
         }
@@ -696,7 +696,7 @@ public final class ConfigLoader {
             var name = doc.getString(sectionName, "name").or(ApiKeyEntry.defaultEntry(keyValue).name());
             var roles = doc.getStringList(sectionName, "roles").map(Set::copyOf)
                                          .or(Set.of("service"));
-            var authRole = doc.getString(sectionName, "authorization_role").or("ADMIN");
+            var authRole = doc.getString(sectionName, "authorization_role").or(ApiKeyEntry.DEFAULT_ROLE);
             result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles, authRole));
         }}
         return Map.copyOf(result);
