@@ -6,7 +6,6 @@ package org.pragmatica.aether.worker.governor;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
-import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
@@ -31,10 +30,6 @@ import org.slf4j.LoggerFactory;
     }
 
     GovernorMeshInstance(DelegateRouter delegateRouter) {
-        this.delegateRouter = Option.option(delegateRouter);
-    }
-
-    GovernorMeshInstance(DelegateRouter delegateRouter, @SuppressWarnings("unused") TopologyObserver topologyObserver) {
         this.delegateRouter = Option.option(delegateRouter);
     }
 

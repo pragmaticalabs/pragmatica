@@ -50,67 +50,6 @@ import java.util.function.Supplier;
                                                          GenerationSnapshotSource snapshotSource,
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                          Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
-        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
-                                                                         lifecycleManager,
-                                                                         config,
-                                                                         deploymentMap,
-                                                                         snapshotSource,
-                                                                         clusterConfigReader,
-                                                                         lifecycleReader,
-                                                                         commandApplier);
-    }
-
-    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
-                                                         NodeLifecycleManager lifecycleManager,
-                                                         AutoHealConfig config,
-                                                         DeploymentMap deploymentMap,
-                                                         GenerationSnapshotSource snapshotSource,
-                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                         DrainCoordinator drainCoordinator) {
-        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
-                                                                         lifecycleManager,
-                                                                         config,
-                                                                         deploymentMap,
-                                                                         snapshotSource,
-                                                                         clusterConfigReader,
-                                                                         lifecycleReader,
-                                                                         commandApplier,
-                                                                         drainCoordinator);
-    }
-
-    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
-                                                         NodeLifecycleManager lifecycleManager,
-                                                         AutoHealConfig config,
-                                                         DeploymentMap deploymentMap,
-                                                         GenerationSnapshotSource snapshotSource,
-                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                         Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
-                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                         DrainCoordinator drainCoordinator) {
-        return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
-                                                                         lifecycleManager,
-                                                                         config,
-                                                                         deploymentMap,
-                                                                         snapshotSource,
-                                                                         clusterConfigReader,
-                                                                         lifecycleReader,
-                                                                         slotReader,
-                                                                         commandApplier,
-                                                                         drainCoordinator,
-                                                                         System::currentTimeMillis);
-    }
-
-    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
-                                                         NodeLifecycleManager lifecycleManager,
-                                                         AutoHealConfig config,
-                                                         DeploymentMap deploymentMap,
-                                                         GenerationSnapshotSource snapshotSource,
-                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                                          Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          DrainCoordinator drainCoordinator,

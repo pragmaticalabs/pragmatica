@@ -106,8 +106,13 @@ class ClusterTopologyManagerDecommissionMetadataPreservationTest {
                                                               snapshotSource,
                                                               store::currentConfig,
                                                               store::priorLifecycle,
+                                                              java.util.Map::of,
                                                               store::apply,
-                                                              drain);
+                                                              drain,
+                                                              LegacyLifecycleWriterFixture.create(store::apply,
+                                                                                                   store::priorLifecycle,
+                                                                                                   System::currentTimeMillis),
+                                                              () -> AetherValue.ClusterPhase.NORMAL);
     }
 
     private void publishSurplus(int onDuty) {

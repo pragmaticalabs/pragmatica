@@ -1730,7 +1730,7 @@ public interface AetherNode extends ManageableNode {
         var decisionRelay = DecisionRelay.decisionRelay(selfId, delegateRouter);
         var mutationForwarder = MutationForwarder.mutationForwarder(selfId, delegateRouter);
         var workerBootstrap = WorkerBootstrap.workerBootstrap(selfId, delegateRouter, kvStore);
-        var governorMesh = GovernorMesh.governorMesh(delegateRouter, (TopologyObserver) clusterNode.topologyManager());
+        var governorMesh = GovernorMesh.governorMesh(delegateRouter);
         var groupMembershipTracker = GroupMembershipTracker.groupMembershipTracker(selfId,
                                                                                    config.workerConfig().map(WorkerConfig::groupName)
                                                                                                       .or(WorkerConfig.DEFAULT_GROUP_NAME),

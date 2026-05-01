@@ -96,7 +96,13 @@ class ClusterTopologyManagerConfigChangeReconcileTest {
                                                               snapshotSource,
                                                               configStore::current,
                                                               nodeId -> Option.none(),
-                                                              configStore::apply);
+                                                              java.util.Map::of,
+                                                              configStore::apply,
+                                                              new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
+                                                              LegacyLifecycleWriterFixture.create(configStore::apply,
+                                                                                                   nodeId -> Option.none(),
+                                                                                                   System::currentTimeMillis),
+                                                              () -> org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase.NORMAL);
     }
 
     /// Cluster is converged at 3 nodes / desired=3. Operator scales to desired=5 by writing

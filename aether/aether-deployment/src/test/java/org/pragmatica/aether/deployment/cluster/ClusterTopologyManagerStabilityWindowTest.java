@@ -101,7 +101,13 @@ class ClusterTopologyManagerStabilityWindowTest {
                                                               snapshotSource,
                                                               configStore::current,
                                                               nodeId -> Option.none(),
-                                                              configStore::apply);
+                                                              java.util.Map::of,
+                                                              configStore::apply,
+                                                              new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
+                                                              LegacyLifecycleWriterFixture.create(configStore::apply,
+                                                                                                   nodeId -> Option.none(),
+                                                                                                   System::currentTimeMillis),
+                                                              () -> org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase.NORMAL);
     }
 
     /// Long retry interval — safety-net poll never fires during the test.

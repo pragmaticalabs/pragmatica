@@ -104,7 +104,13 @@ class ClusterTopologyManagerProvisioningSlotTimeoutTest {
                                                               snapshotSource,
                                                               configStore::current,
                                                               nodeId -> Option.none(),
-                                                              configStore::apply);
+                                                              java.util.Map::of,
+                                                              configStore::apply,
+                                                              new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
+                                                              LegacyLifecycleWriterFixture.create(configStore::apply,
+                                                                                                   nodeId -> Option.none(),
+                                                                                                   System::currentTimeMillis),
+                                                              () -> org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase.NORMAL);
     }
 
     /// Reconciling holds `ProvisioningSlot` records whose `deadlineMs` is `spawnedAtMs +

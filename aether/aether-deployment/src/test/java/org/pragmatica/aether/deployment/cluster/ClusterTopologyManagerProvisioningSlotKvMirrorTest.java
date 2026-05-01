@@ -122,7 +122,11 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
                                                               clusterStore::lifecycle,
                                                               clusterStore::slots,
                                                               clusterStore::apply,
-                                                              new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator());
+                                                              new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
+                                                              LegacyLifecycleWriterFixture.create(clusterStore::apply,
+                                                                                                   clusterStore::lifecycle,
+                                                                                                   System::currentTimeMillis),
+                                                              () -> AetherValue.ClusterPhase.NORMAL);
     }
 
     private ClusterTopologyManager createCtm() {

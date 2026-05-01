@@ -134,7 +134,6 @@ public interface TopologyObserver extends TopologyManager {
                        TimeSource timeSource,
                        AtomicBoolean active,
                        AtomicInteger effectiveClusterSize,
-                       java.util.Set<NodeId> readyNodes,
                        Set<NodeId> coreNodeIds,
                        Set<NodeId> tombstonedNodes,
                        GenerationSnapshotSource snapshotSource,
@@ -150,7 +149,6 @@ public interface TopologyObserver extends TopologyManager {
                     TimeSource timeSource,
                     AtomicBoolean active,
                     AtomicInteger effectiveClusterSize,
-                    java.util.Set<NodeId> readyNodes,
                     Set<NodeId> coreNodeIds,
                     Set<NodeId> tombstonedNodes,
                     GenerationSnapshotSource snapshotSource,
@@ -164,7 +162,6 @@ public interface TopologyObserver extends TopologyManager {
                 this.timeSource = timeSource;
                 this.active = active;
                 this.effectiveClusterSize = effectiveClusterSize;
-                this.readyNodes = readyNodes;
                 this.coreNodeIds = coreNodeIds;
                 this.tombstonedNodes = tombstonedNodes;
                 this.snapshotSource = snapshotSource;
@@ -298,8 +295,7 @@ public interface TopologyObserver extends TopologyManager {
                     log.warn("Ignoring removal of self node {}", nodeId);
                     return;
                 }
-                // Remove from ready set and core node set — node is no longer operational
-                readyNodes.remove(nodeId);
+                // Remove from core node set — node is no longer operational
                 coreNodeIds.remove(nodeId);
                 // To avoid reliance on the networking layer behavior, removing is done
                 // atomically and command to drop the connection is sent only once.
@@ -354,16 +350,14 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public int readyNodeCount() {
-                // Prefer snapshot-projected ON_DUTY set: dynamically provisioned nodes may be
-                // ON_DUTY in the leader-projected view before appearing in local nodeStatesById.
-                // Fall back to the (now-empty post-R5) legacy readyNodes set when the snapshot
-                // source is absent or no snapshot has arrived yet — KV NodeLifecycleKey writes
-                // (HealthReconciler) are the sole source of ON_DUTY truth.
+                // Snapshot-projected ON_DUTY set is the sole source of truth: dynamically
+                // provisioned nodes may be ON_DUTY in the leader-projected view before
+                // appearing in local nodeStatesById. KV NodeLifecycleKey writes
+                // (HealthReconciler) are authoritative; if the snapshot is absent (pre-sync),
+                // we report 0 ready nodes rather than fall back to a transport-derived view.
                 return snapshotSource.currentMembershipView()
                                      .map(view -> view.onDutyMemberIds().size())
-                                     .or(() -> (int) readyNodes.stream()
-                                                               .filter(id -> !isPassive(id))
-                                                               .count());
+                                     .or(0);
             }
 
             @Override
@@ -558,7 +552,6 @@ public interface TopologyObserver extends TopologyManager {
                                           timeSource,
                                           new AtomicBoolean(false),
                                           new AtomicInteger(config.clusterSize()),
-                                          ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet(),
                                           ConcurrentHashMap.newKeySet(),
                                           snapshotSource,

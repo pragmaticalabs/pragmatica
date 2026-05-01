@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.cluster;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
-import org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
@@ -15,7 +14,6 @@ import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
@@ -23,7 +21,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -110,54 +107,6 @@ import static org.pragmatica.lang.Unit.unit;
                                                                      GenerationSnapshotSource snapshotSource,
                                                                      Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                                      Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                                     DrainCoordinator drainCoordinator) {
-        return clusterTopologyManagerRecord(observer,
-                                            lifecycleManager,
-                                            config,
-                                            deploymentMap,
-                                            snapshotSource,
-                                            clusterConfigReader,
-                                            lifecycleReader,
-                                            Map::of,
-                                            commandApplier,
-                                            drainCoordinator,
-                                            System::currentTimeMillis);
-    }
-
-    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
-                                                                     NodeLifecycleManager lifecycleManager,
-                                                                     AutoHealConfig config,
-                                                                     DeploymentMap deploymentMap,
-                                                                     GenerationSnapshotSource snapshotSource,
-                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                                     Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
-                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                                     DrainCoordinator drainCoordinator,
-                                                                     LongSupplier clock) {
-        return clusterTopologyManagerRecord(observer,
-                                            lifecycleManager,
-                                            config,
-                                            deploymentMap,
-                                            snapshotSource,
-                                            clusterConfigReader,
-                                            lifecycleReader,
-                                            slotReader,
-                                            commandApplier,
-                                            drainCoordinator,
-                                            legacyLifecycleWriter(commandApplier, lifecycleReader, clock),
-                                            () -> ClusterPhase.NORMAL,
-                                            clock);
-    }
-
-    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
-                                                                     NodeLifecycleManager lifecycleManager,
-                                                                     AutoHealConfig config,
-                                                                     DeploymentMap deploymentMap,
-                                                                     GenerationSnapshotSource snapshotSource,
-                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                                                      Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                                      DrainCoordinator drainCoordinator,
@@ -185,70 +134,6 @@ import static org.pragmatica.lang.Unit.unit;
                                                 new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
                                                 new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
                                                 clock);
-    }
-
-    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
-                                                                     NodeLifecycleManager lifecycleManager,
-                                                                     AutoHealConfig config,
-                                                                     DeploymentMap deploymentMap,
-                                                                     GenerationSnapshotSource snapshotSource,
-                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier) {
-        return clusterTopologyManagerRecord(observer,
-                                            lifecycleManager,
-                                            config,
-                                            deploymentMap,
-                                            snapshotSource,
-                                            clusterConfigReader,
-                                            lifecycleReader,
-                                            commandApplier,
-                                            new NoOpDrainCoordinator());
-    }
-
-    private static LifecycleWriter legacyLifecycleWriter(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                         LongSupplier clock) {
-        return new LifecycleWriter() {
-            @Override public Promise<Unit> requestDrain(NodeId target) {
-                return legacyWrite(target, NodeLifecycleState.DRAINING, commandApplier, lifecycleReader, clock);
-            }
-
-            @Override public Promise<Unit> requestDecommission(NodeId target) {
-                return legacyWrite(target, NodeLifecycleState.DECOMMISSIONED, commandApplier, lifecycleReader, clock);
-            }
-
-            @Override public Promise<Unit> requestActivate(NodeId target) {
-                return legacyWrite(target, NodeLifecycleState.ON_DUTY, commandApplier, lifecycleReader, clock);
-            }
-        };
-    }
-
-    private static NodeLifecycleValue legacyValueFor(NodeLifecycleState state,
-                                                     Option<NodeLifecycleValue> prior,
-                                                     long nowMs) {
-        if (prior.isEmpty()) {return state == NodeLifecycleState.DRAINING
-                                    ? NodeLifecycleValue.nodeLifecycleValue(state, "", 0, Epoch.ZERO)
-                                    : NodeLifecycleValue.nodeLifecycleValue(state, "", 0, ProvisioningSource.CTM);}
-        var p = prior.unwrap();
-        return NodeLifecycleValue.nodeLifecycleValue(state,
-                                                     nowMs,
-                                                     p.host(),
-                                                     p.port(),
-                                                     p.observedCoreEpoch(),
-                                                     p.transitionedAt(),
-                                                     p.provisioningSource());
-    }
-
-    @SuppressWarnings("unchecked") private static Promise<Unit> legacyWrite(NodeId nodeId,
-                                                                            NodeLifecycleState state,
-                                                                            Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                                            Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                                            LongSupplier clock) {
-        var value = legacyValueFor(state, lifecycleReader.apply(nodeId), clock.getAsLong());
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                                                                                                     value);
-        return commandApplier.apply(List.of(command)).mapToUnit();
     }
 
     private long nowMs() {

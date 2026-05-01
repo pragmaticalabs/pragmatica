@@ -15,12 +15,14 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.consensus.leader.LeaderNotification.leaderChange;
 import static org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded;
@@ -303,7 +305,7 @@ class LeaderManagerTest {
         }
 
         @Test
-        void onLeaderCommitted_resetsRetryCount_afterElection() throws InterruptedException {
+        void onLeaderCommitted_resetsRetryCount_afterElection() {
             // Use min node (node-a) so proposals are actually submitted
             var minNode = nodes.getFirst();
             var localRouter = MessageRouter.mutable();
@@ -326,23 +328,26 @@ class LeaderManagerTest {
             // Establish quorum and trigger election (simulating AetherNode)
             localRouter.route(QuorumStateNotification.established());
             localManager.triggerElection();
-            Thread.sleep(500);
 
             // Commit leader — resets retry count and sets hasEverHadLeader=true. We can commit
             // before the AwaitingKvSync grace window expires; LeaderCommitted is handled in
             // AwaitingKvSync (transitioning straight to Led without entering Electing).
             localManager.onLeaderCommitted(minNode);
+            await().atMost(Duration.ofSeconds(2))
+                   .until(() -> localManager.leader().equals(Option.some(minNode)));
 
-            // Record proposal count after initial election
+            // Record proposal count after initial election (after the leader-commit takes hold)
             var proposalsAfterInitial = localProposals.size();
 
             // Simulate leader loss and re-election
             localRouter.route(QuorumStateNotification.disappeared());
-            Thread.sleep(50);
             localRouter.route(QuorumStateNotification.established());
 
-            // Wait for re-election proposal (KvSync grace 3s + retry tick 0.5s + margin).
-            Thread.sleep(5_000);
+            // Wait for re-election proposal. Path: QuorumLost → AwaitingKvSync (grace 3s) →
+            // Electing → propose (base 2s + rank 0 + jitter). Cap generously to absorb staircase
+            // + KvSync grace + retry tick under CI load.
+            await().atMost(Duration.ofSeconds(10))
+                   .until(() -> localProposals.size() > proposalsAfterInitial);
 
             // Min node should submit a new proposal for re-election
             assertThat(localProposals.size()).isGreaterThan(proposalsAfterInitial);
@@ -431,7 +436,7 @@ class LeaderManagerTest {
         }
 
         @Test
-        void nodeRemoved_whenLeaderGone_followerReElects() throws InterruptedException {
+        void nodeRemoved_whenLeaderGone_followerReElects() {
             // Leader dies → follower must clear leader, emit no-leader notification, and start
             // submitting proposals (re-election, any node can propose).
             var follower = self; // node-b
@@ -457,8 +462,8 @@ class LeaderManagerTest {
             localRouter.route(QuorumStateNotification.established());
 
             localManager.onLeaderCommitted(leaderNode);
-            Thread.sleep(50);
-            assertThat(localManager.leader()).isEqualTo(Option.some(leaderNode));
+            await().atMost(Duration.ofSeconds(2))
+                   .until(() -> localManager.leader().equals(Option.some(leaderNode)));
             localWatcher.collected().clear();
             localProposals.clear();
 
@@ -466,12 +471,16 @@ class LeaderManagerTest {
             var survivors = List.of(follower, nodes.getLast());
             localRouter.route(nodeRemoved(leaderNode, survivors));
 
-            // Wait for re-election tick (KvSync grace 3s + proposalRetryDelay ~500ms + jitter).
-            // ReElecting is reached via Led → ReElecting (NodeGone of leader); ReElecting itself
-            // does NOT pass through AwaitingKvSync, but the FSM's prior Led state was reached
-            // through AwaitingKvSync — once in Led, the subsequent Led → ReElecting transition
-            // skips the gate entirely. Sleep tuned for the proposal-retry delay only.
-            Thread.sleep(2_000);
+            // Wait for re-election: leader cleared, no-leader notification emitted, follower
+            // submits a proposal. Path: Led → ReElecting (NodeGone of leader) → propose. The
+            // ReElecting state passes through AwaitingKvSync only on the cold-boot path; here
+            // we reach it from Led, which short-circuits the grace and uses the proposal-retry
+            // tick (~500ms + jitter). Cap at 10s to absorb staircase + jitter under CI load.
+            await().atMost(Duration.ofSeconds(10))
+                   .until(() -> localManager.leader().isEmpty()
+                                && localWatcher.collected().stream()
+                                               .anyMatch(n -> n instanceof LeaderChange lc && lc.leaderId().isEmpty())
+                                && !localProposals.isEmpty());
 
             assertThat(localManager.leader()).isEqualTo(Option.none());
             assertThat(localWatcher.collected())

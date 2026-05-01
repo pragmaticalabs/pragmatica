@@ -101,7 +101,13 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                                             snapshotSource,
                                                             configStore::current,
                                                             nodeId -> Option.none(),
-                                                            configStore::apply);
+                                                            java.util.Map::of,
+                                                            configStore::apply,
+                                                            new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
+                                                            LegacyLifecycleWriterFixture.create(configStore::apply,
+                                                                                                 nodeId -> Option.none(),
+                                                                                                 System::currentTimeMillis),
+                                                            () -> AetherValue.ClusterPhase.NORMAL);
     }
 
     @Test

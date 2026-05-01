@@ -102,8 +102,13 @@ class ClusterTopologyManagerScaleDownDrainTest {
                                                               snapshotSource,
                                                               configStore::current,
                                                               nodeId -> Option.none(),
+                                                              java.util.Map::of,
                                                               configStore::apply,
-                                                              drainCoordinator);
+                                                              drainCoordinator,
+                                                              LegacyLifecycleWriterFixture.create(configStore::apply,
+                                                                                                  nodeId -> Option.none(),
+                                                                                                  System::currentTimeMillis),
+                                                              () -> AetherValue.ClusterPhase.NORMAL);
     }
 
     private void publishSurplus(int onDuty) {
@@ -169,8 +174,13 @@ class ClusterTopologyManagerScaleDownDrainTest {
                                                                   snapshotSource,
                                                                   configStore::current,
                                                                   nodeId -> Option.none(),
+                                                                  java.util.Map::of,
                                                                   configStore::apply,
-                                                                  coordinator);
+                                                                  coordinator,
+                                                                  LegacyLifecycleWriterFixture.create(configStore::apply,
+                                                                                                       nodeId -> Option.none(),
+                                                                                                       System::currentTimeMillis),
+                                                                  () -> AetherValue.ClusterPhase.NORMAL);
         publishSurplus(5);
         ctm.activate();
         ctm.onClusterConfigChanged();

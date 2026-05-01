@@ -183,8 +183,13 @@ class ClusterTopologyManagerJoinEpochOrderingTest {
                                                               snapshotSource,
                                                               configStore::current,
                                                               lifecycleReader,
+                                                              java.util.Map::of,
                                                               configStore::apply,
-                                                              coordinator);
+                                                              coordinator,
+                                                              LegacyLifecycleWriterFixture.create(configStore::apply,
+                                                                                                   lifecycleReader,
+                                                                                                   System::currentTimeMillis),
+                                                              () -> org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase.NORMAL);
     }
 
     private void publishSurplus(int onDuty) {
