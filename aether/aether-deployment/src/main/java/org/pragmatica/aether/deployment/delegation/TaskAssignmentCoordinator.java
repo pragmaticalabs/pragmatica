@@ -269,7 +269,8 @@ public sealed interface TaskAssignmentCoordinator {
 
         private boolean isOrphanedOrFailed(TaskGroup group, TaskAssignmentValue assignment, Set<NodeId> healthySet) {
             if (!healthySet.contains(assignment.assignedTo())) {
-                log.info("Task group {} orphaned (node {} not in topology), will reassign",
+                trackFailedNode(group, assignment.assignedTo());
+                log.info("Task group {} orphaned (node {} not in topology), arming cooldown and will reassign",
                          group,
                          assignment.assignedTo());
                 return true;
@@ -326,7 +327,11 @@ public sealed interface TaskAssignmentCoordinator {
                                                                                       recentlyFailed,
                                                                                       cooldownExpiry))
                                                   .min(Comparator.<NodeId, Long>comparing(this::countActiveAssignments)
-                                                                 .thenComparing(Comparator.naturalOrder())));
+                                                                 .thenComparingInt(node -> stableTieBreaker(group, node))));
+        }
+
+        private static int stableTieBreaker(TaskGroup group, NodeId node) {
+            return (group.hashCode() * 31 + node.hashCode()) & 0x7fffffff;
         }
 
         private boolean isRecentlyFailed(NodeId node, Set<NodeId> recentlyFailed, long cooldownExpiry) {
@@ -358,6 +363,7 @@ public sealed interface TaskAssignmentCoordinator {
         }
 
         private Promise<Unit> writeAssignment(TaskGroup group, NodeId target) {
+            clearFailedNodeCooldown(group, target);
             var key = TaskAssignmentKey.taskAssignmentKey(group);
             var value = TaskAssignmentValue.taskAssignmentValue(target);
             assignmentMap.put(group, value);
@@ -369,6 +375,10 @@ public sealed interface TaskAssignmentCoordinator {
                                                                      group,
                                                                      cause.message()))
                                         .mapToUnit();
+        }
+
+        @Contract private void clearFailedNodeCooldown(TaskGroup group, NodeId target) {
+            Option.option(failedNodes.get(group)).onPresent(set -> set.remove(target));
         }
     }
 
