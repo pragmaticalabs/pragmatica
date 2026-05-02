@@ -19,6 +19,20 @@ test_kill_leader_and_reelect() {
     old_leader=$(cluster_leader)
     assert_ne "$old_leader" "" "Leader identified: ${old_leader}"
 
+    # Cluster-B test design assumes leader != pinned MGMT entry point. The
+    # entry-point node carries the host-mapped management port that
+    # run-tests.sh pins for every cluster-B suite, and cluster B's compose
+    # file uses `restart: "no"` so a killed entry point does not come back.
+    # If the leader currently sits on the pinned node, kill_node will refuse
+    # (correctly) — fail fast here with a clear message rather than letting
+    # the harness propagate confusing downstream failures.
+    local pinned
+    pinned=$(mgmt_entry_point_node)
+    if [ -n "$pinned" ] && [ "$old_leader" = "$pinned" ]; then
+        log_fail "test-kill-leader: leader '${old_leader}' is the pinned MGMT entry-point node on cluster ${CLUSTER_ID:-<none>}; this test requires leader != entry point. Re-run after the cluster re-elects to a different node, or override MGMT_ENTRY_POINT_NODE."
+        return 1
+    fi
+
     log_info "Killing leader: ${old_leader}"
     kill_node "$old_leader"
     # Legitimate chaos window: give SWIM/Rabia failure detection a window to fire.

@@ -59,21 +59,60 @@ cluster_node_list() {
     aether_json status 2>/dev/null
 }
 
-# Pick a non-leader node ID from the known set (integration-test-1..5)
+# Resolve the pinned MGMT entry-point node ID for the active cluster.
+# On cluster B (destructive, `restart: "no"` policy) node-1 is the stable CLI
+# entry point — its host-mapped management port is what `run-tests.sh` re-pins
+# `MGMT_ENTRY_POINT` to in every fresh suite subshell. If we kill node-1 and
+# the container doesn't restart, every subsequent cluster-B suite times out
+# its `wait_for_cluster` gate because there is no live mgmt endpoint at the
+# pinned port.
+#
+# Selection order:
+#   1. Explicit env override `MGMT_ENTRY_POINT_NODE` (per-suite escape hatch).
+#   2. Cluster B default: node-1.
+#   3. Cluster A or unspecified: empty (no pinning constraint).
+mgmt_entry_point_node() {
+    if [ -n "${MGMT_ENTRY_POINT_NODE:-}" ]; then
+        printf '%s' "$MGMT_ENTRY_POINT_NODE"
+        return 0
+    fi
+    if [ "${CLUSTER_ID:-}" = "b" ]; then
+        printf 'node-1'
+        return 0
+    fi
+    printf ''
+}
+
+# Pick a non-leader node ID from the known set (integration-test-1..5).
+# Excludes BOTH the leader AND the pinned MGMT entry-point node (cluster B
+# only — cluster A has no pinning constraint). Fails loudly if no candidate
+# remains rather than silently returning the entry point — a kill of the
+# entry point on cluster B's `restart: "no"` policy turns one suite failure
+# into five (every subsequent cluster-B suite times out its mgmt gate).
 pick_non_leader() {
     local leader="$1"
     local count="${2:-1}"
+    local pinned
+    pinned=$(mgmt_entry_point_node)
     local found=0
     for i in 1 2 3 4 5; do
         local candidate="node-$i"
-        if [ "$candidate" != "$leader" ]; then
-            echo "$candidate"
-            found=$((found + 1))
-            if [ "$found" -ge "$count" ]; then
-                return 0
-            fi
+        if [ "$candidate" = "$leader" ]; then
+            continue
+        fi
+        if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then
+            continue
+        fi
+        echo "$candidate"
+        found=$((found + 1))
+        if [ "$found" -ge "$count" ]; then
+            return 0
         fi
     done
+    if [ "$found" -lt "$count" ]; then
+        log_fail "pick_non_leader: only ${found}/${count} candidates available (leader=${leader}, pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})"
+        return 1
+    fi
 }
 
 # Wait for every node (ports MGMT_PORT..MGMT_PORT+NODE_COUNT-1) to report
@@ -512,6 +551,18 @@ restart_all_nodes() {
 
 kill_node() {
     local node_id="$1"
+    # Pinned-entry-point guard: cluster B's compose file uses `restart: "no"` so
+    # a killed container does not come back; killing the node bound to the
+    # pinned MGMT host port permanently strands every subsequent suite (each
+    # opens a fresh subshell and re-pins MGMT_ENTRY_POINT to the same dead
+    # port). Refuse the kill — the caller should pick a different victim or
+    # rotate the entry point first.
+    local pinned
+    pinned=$(mgmt_entry_point_node)
+    if [ -n "$pinned" ] && [ "$node_id" = "$pinned" ]; then
+        log_fail "kill_node: refusing to kill pinned MGMT entry-point node '${node_id}' on cluster ${CLUSTER_ID:-<none>} (restart policy 'no' would leave subsequent suites without a mgmt endpoint). Rotate MGMT_ENTRY_POINT_NODE or pick a different victim."
+        return 1
+    fi
     log_info "Killing node: ${node_id}"
     if [ "$CLOUD_MODE" = "true" ]; then
         # Cloud: each VM runs a single container named "aether-node"
