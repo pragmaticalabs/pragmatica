@@ -653,7 +653,18 @@ class ManagementServerImpl implements ManagementServer {
                                                                                 methodName,
                                                                                 startTime,
                                                                                 group);
+            case RouteTarget.LeaderNode __ -> tryForwardIfNotLeader(ctx, response, methodName, startTime);
         };
+    }
+
+    private boolean tryForwardIfNotLeader(RequestContext ctx,
+                                          InstrumentedResponseWriter response,
+                                          String methodName,
+                                          long startTime) {
+        var node = nodeSupplier.get();
+        if (node.isLeader()) {return false;}
+        forwardManagementRequest(ctx, response, methodName, startTime);
+        return true;
     }
 
     private boolean tryForwardIfNotCore(RequestContext ctx,
@@ -719,7 +730,8 @@ class ManagementServerImpl implements ManagementServer {
                                               forwardingTimeouts.retryDelay().millis(),
                                               forwardingTimeouts.maxRetries(),
                                               () -> coreNodeIds(node),
-                                              node.taskGroupAssignmentRegistry()::ownerFor);
+                                              node.taskGroupAssignmentRegistry()::ownerFor,
+                                              () -> nodeSupplier.get().leader());
         var wrapped = Option.<HttpForwarder>some(fwd);
         return mgmtForwarderRef.compareAndSet(existing, wrapped)
               ? wrapped

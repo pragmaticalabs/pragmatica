@@ -12,6 +12,8 @@ public sealed interface RouteTarget {
 
     RouteTarget LOCAL = new LocalNode();
 
+    RouteTarget LEADER = new LeaderNode();
+
     static RouteTarget taskGroup(TaskGroup group) {
         return new TaskGroupTarget(group);
     }
@@ -21,4 +23,6 @@ public sealed interface RouteTarget {
     record AnyCoreNode() implements RouteTarget{}
 
     record LocalNode() implements RouteTarget{}
+
+    record LeaderNode() implements RouteTarget{}
 }

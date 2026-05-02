@@ -61,6 +61,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     Fn1<Result<NodeId>, TaskGroup> UNASSIGNED_RESOLVER = group -> org.pragmatica.aether.slice.delegation.TaskAssignmentError.notAssigned(group)
                                                                                                                                         .result();
 
+    Supplier<Option<NodeId>> NO_LEADER_RESOLVER = Option::none;
+
     static HttpForwarder httpForwarder(NodeId selfNodeId,
                                        HttpRouteRegistry routeRegistry,
                                        ClusterNetwork clusterNetwork,
@@ -76,7 +78,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                              DEFAULT_RETRY_DELAY_MS,
                              DEFAULT_MAX_FORWARD_RETRIES,
                              Set::of,
-                             UNASSIGNED_RESOLVER);
+                             UNASSIGNED_RESOLVER,
+                             NO_LEADER_RESOLVER);
     }
 
     static HttpForwarder httpForwarder(NodeId selfNodeId,
@@ -95,7 +98,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                              DEFAULT_RETRY_DELAY_MS,
                              DEFAULT_MAX_FORWARD_RETRIES,
                              coreNodeSupplier,
-                             UNASSIGNED_RESOLVER);
+                             UNASSIGNED_RESOLVER,
+                             NO_LEADER_RESOLVER);
     }
 
     static HttpForwarder httpForwarder(NodeId selfNodeId,
@@ -115,7 +119,30 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                              DEFAULT_RETRY_DELAY_MS,
                              DEFAULT_MAX_FORWARD_RETRIES,
                              coreNodeSupplier,
-                             taskGroupOwnerResolver);
+                             taskGroupOwnerResolver,
+                             NO_LEADER_RESOLVER);
+    }
+
+    static HttpForwarder httpForwarder(NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       ClusterNetwork clusterNetwork,
+                                       Serializer serializer,
+                                       Deserializer deserializer,
+                                       TimeSpan forwardTimeout,
+                                       Supplier<Set<NodeId>> coreNodeSupplier,
+                                       Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
+                                       Supplier<Option<NodeId>> leaderResolver) {
+        return httpForwarder(selfNodeId,
+                             routeRegistry,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             forwardTimeout,
+                             DEFAULT_RETRY_DELAY_MS,
+                             DEFAULT_MAX_FORWARD_RETRIES,
+                             coreNodeSupplier,
+                             taskGroupOwnerResolver,
+                             leaderResolver);
     }
 
     long DEFAULT_RETRY_DELAY_MS = 200;
@@ -132,6 +159,30 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                        int maxForwardRetries,
                                        Supplier<Set<NodeId>> coreNodeSupplier,
                                        Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver) {
+        return httpForwarder(selfNodeId,
+                             routeRegistry,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             forwardTimeout,
+                             retryDelayMs,
+                             maxForwardRetries,
+                             coreNodeSupplier,
+                             taskGroupOwnerResolver,
+                             NO_LEADER_RESOLVER);
+    }
+
+    static HttpForwarder httpForwarder(NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       ClusterNetwork clusterNetwork,
+                                       Serializer serializer,
+                                       Deserializer deserializer,
+                                       TimeSpan forwardTimeout,
+                                       long retryDelayMs,
+                                       int maxForwardRetries,
+                                       Supplier<Set<NodeId>> coreNodeSupplier,
+                                       Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
+                                       Supplier<Option<NodeId>> leaderResolver) {
         @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) record httpForwarder(NodeId selfNodeId,
                                                                                HttpRouteRegistry routeRegistry,
                                                                                ClusterNetwork clusterNetwork,
@@ -144,7 +195,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                                                Map<NodeId, Set<String>> pendingForwardsByNode,
                                                                                Map<String, AtomicInteger> roundRobinCounters,
                                                                                Supplier<Set<NodeId>> coreNodeSupplier,
-                                                                               Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver) implements HttpForwarder {
+                                                                               Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
+                                                                               Supplier<Option<NodeId>> leaderResolver) implements HttpForwarder {
             private static final Logger log = LoggerFactory.getLogger(HttpForwarder.class);
 
             private static final int MAX_PENDING_FORWARDS = 10_000;
@@ -233,7 +285,26 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                     case RouteTarget.TaskGroupTarget(var group) -> forwardToTaskGroupOwner(group,
                                                                                            requestContext,
                                                                                            requestId);
+                    case RouteTarget.LeaderNode __ -> forwardToLeader(requestContext, requestId);
                 };
+            }
+
+            private Promise<HttpResponseData> forwardToLeader(HttpRequestContext requestContext, String requestId) {
+                var leaderOpt = leaderResolver.get();
+                if (leaderOpt.isEmpty()) {
+                    log.warn("No leader elected for management forward [{}]", requestId);
+                    return ManagementRouteError.noLeaderElected().<HttpResponseData>promise();
+                }
+                var leader = leaderOpt.unwrap();
+                if (leader.equals(selfNodeId)) {
+                    log.debug("Local node {} is leader; signalling local handling [{}]", selfNodeId, requestId);
+                    return ManagementRouteError.notLeader().<HttpResponseData>promise();
+                }
+                if (!clusterNetwork.connectedPeers().contains(leader)) {
+                    log.warn("Leader {} is not connected for management forward [{}]", leader, requestId);
+                    return ManagementRouteError.leaderDisconnected(leader.id()).<HttpResponseData>promise();
+                }
+                return forwardToSpecificNode(requestContext, leader, requestId);
             }
 
             private Promise<HttpResponseData> forwardToAnyCoreNode(HttpRequestContext requestContext,
@@ -593,6 +664,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  new ConcurrentHashMap<>(),
                                  new ConcurrentHashMap<>(),
                                  coreNodeSupplier,
-                                 taskGroupOwnerResolver);
+                                 taskGroupOwnerResolver,
+                                 leaderResolver);
     }
 }

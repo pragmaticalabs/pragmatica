@@ -34,6 +34,18 @@ public sealed interface ManagementRouteError extends Cause {
         return new OwnerDisconnected(group, ownerNodeId);
     }
 
+    static NoLeaderElected noLeaderElected() {
+        return new NoLeaderElected();
+    }
+
+    static LeaderDisconnected leaderDisconnected(String leaderNodeId) {
+        return new LeaderDisconnected(leaderNodeId);
+    }
+
+    static NotLeader notLeader() {
+        return new NotLeader();
+    }
+
     record NoMatch(HttpMethod method, String path) implements ManagementRouteError {
         @Override public String message() {
             return "No management route matches " + method + " " + path;
@@ -67,6 +79,24 @@ public sealed interface ManagementRouteError extends Cause {
     record OwnerDisconnected(TaskGroup group, String ownerNodeId) implements ManagementRouteError {
         @Override public String message() {
             return "Task group " + group + " owner " + ownerNodeId + " is not connected";
+        }
+    }
+
+    record NoLeaderElected() implements ManagementRouteError {
+        @Override public String message() {
+            return "No leader elected for leader-bound management route";
+        }
+    }
+
+    record LeaderDisconnected(String leaderNodeId) implements ManagementRouteError {
+        @Override public String message() {
+            return "Cluster leader " + leaderNodeId + " is not connected";
+        }
+    }
+
+    record NotLeader() implements ManagementRouteError {
+        @Override public String message() {
+            return "Target handler requires the cluster leader";
         }
     }
 }

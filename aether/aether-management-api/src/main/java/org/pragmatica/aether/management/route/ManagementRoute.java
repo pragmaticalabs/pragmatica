@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.pragmatica.aether.management.route.RouteTarget.ANY;
+import static org.pragmatica.aether.management.route.RouteTarget.LEADER;
 import static org.pragmatica.aether.management.route.RouteTarget.LOCAL;
 import static org.pragmatica.aether.management.route.RouteTarget.taskGroup;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.DEPLOYMENT;
@@ -43,7 +44,7 @@ public enum ManagementRoute {
     CLUSTER_CONFIG_APPLY(POST, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_SCALE(POST, "/api/cluster/scale", List.of(), taskGroup(SCALING)),
     CLUSTER_UPGRADE(POST, "/api/cluster/upgrade", List.of(), taskGroup(DEPLOYMENT)),
-    CLUSTER_TASK_REASSIGN(PUT, "/api/cluster/tasks/reassign", List.of("group"), taskGroup(DEPLOYMENT)),
+    CLUSTER_TASK_REASSIGN(PUT, "/api/cluster/tasks/reassign", List.of("group"), LEADER),
     DEPLOY_START(POST, "/api/deploy", List.of(), taskGroup(STRATEGIES)),
     DEPLOY_LIST(GET, "/api/deploy", List.of(), taskGroup(STRATEGIES)),
     DEPLOY_STATUS(GET, "/api/deploy", List.of("deploymentId"), taskGroup(STRATEGIES)),

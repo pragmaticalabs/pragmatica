@@ -5,12 +5,14 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
+import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator.CoordinatorError;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TaskAssignmentValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -83,7 +85,14 @@ public final class TaskRoutes implements RouteSource {
     private Promise<ReassignResponse> reassignToNode(TaskGroup taskGroup, String targetNodeId) {
         return NodeId.nodeId(targetNodeId).async()
                             .flatMap(nodeId -> coordinator().reassign(taskGroup, nodeId))
-                            .map(_ -> new ReassignResponse("reassigned"));
+                            .map(_ -> new ReassignResponse("reassigned"))
+                            .mapError(TaskRoutes::mapReassignFailure);
+    }
+
+    private static Cause mapReassignFailure(Cause cause) {
+        return cause == CoordinatorError.NOT_LEADER
+              ? HttpStatus.CONFLICT.with(cause)
+              : cause;
     }
 
     private static Result<TaskGroup> parseTaskGroup(String group) {
