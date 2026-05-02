@@ -45,6 +45,59 @@ class HttpForwarderLeaderTargetTest {
 
     private static final String REASSIGN_PATH = "/api/cluster/tasks/reassign/METRICS";
 
+    private static final String SCALE_PATH = "/api/cluster/scale";
+
+    @Test
+    void clusterScale_followerReceiver_returnsConflict() {
+        // Defense-in-depth: when a follower receives /api/cluster/scale (which now routes
+        // to LEADER), the forwarder must signal NotLeader so the local handler is bypassed.
+        // The local handler running on a follower would observe `CTM.active=false` and
+        // silently drop the request — the original bug. Surfacing NotLeader (mapped to 409
+        // upstream) lets clients retry against the actual leader.
+        var network = new RecordingClusterNetwork(Set.of(OTHER));
+        var routeRegistry = HttpRouteRegistry.httpRouteRegistry();
+        var forwarder = HttpForwarder.httpForwarder(SELF,
+                                                    routeRegistry,
+                                                    network,
+                                                    new NoopSerializer(),
+                                                    new NoopDeserializer(),
+                                                    timeSpan(1).seconds(),
+                                                    () -> Set.of(SELF, OTHER),
+                                                    group -> org.pragmatica.aether.slice.delegation.TaskAssignmentError.notAssigned(group).result(),
+                                                    () -> Option.some(SELF));
+
+        var ctx = HttpRequestContext.httpRequestContext(SCALE_PATH, "POST", Map.of(), Map.of(), "req-scale-self");
+        var result = forwarder.forwardManagement(ctx, "req-scale-self").await();
+
+        assertThat(result.isFailure())
+                .as("CLUSTER_SCALE on the leader must signal local handling via NotLeader")
+                .isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(ManagementRouteError.NotLeader.class));
+        assertThat(network.sendTargets()).isEmpty();
+    }
+
+    @Test
+    void clusterScale_routesToLeaderNode_whenSelfIsNotLeader() {
+        var network = new RecordingClusterNetwork(Set.of(LEADER, OTHER));
+        var routeRegistry = HttpRouteRegistry.httpRouteRegistry();
+        var forwarder = HttpForwarder.httpForwarder(SELF,
+                                                    routeRegistry,
+                                                    network,
+                                                    new NoopSerializer(),
+                                                    new NoopDeserializer(),
+                                                    timeSpan(1).seconds(),
+                                                    () -> Set.of(SELF, LEADER, OTHER),
+                                                    group -> org.pragmatica.aether.slice.delegation.TaskAssignmentError.notAssigned(group).result(),
+                                                    () -> Option.some(LEADER));
+
+        var ctx = HttpRequestContext.httpRequestContext(SCALE_PATH, "POST", Map.of(), Map.of(), "req-scale-fwd");
+        forwarder.forwardManagement(ctx, "req-scale-fwd");
+
+        assertThat(network.sendTargets())
+                .as("CLUSTER_SCALE must dispatch to leader, not the SCALING task-group owner")
+                .containsExactly(LEADER);
+    }
+
     @Test
     void forwardLeaderTarget_routesToLeaderNode_whenSelfIsNotLeader() {
         var network = new RecordingClusterNetwork(Set.of(LEADER, OTHER));

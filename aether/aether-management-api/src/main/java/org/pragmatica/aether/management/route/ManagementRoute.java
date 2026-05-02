@@ -42,7 +42,7 @@ public enum ManagementRoute {
     CLUSTER_CONFIG_GET(GET, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_CONFIG_STATUS(GET, "/api/cluster/status", List.of(), ANY),
     CLUSTER_CONFIG_APPLY(POST, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
-    CLUSTER_SCALE(POST, "/api/cluster/scale", List.of(), taskGroup(SCALING)),
+    CLUSTER_SCALE(POST, "/api/cluster/scale", List.of(), LEADER),
     CLUSTER_UPGRADE(POST, "/api/cluster/upgrade", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_TASK_REASSIGN(PUT, "/api/cluster/tasks/reassign", List.of("group"), LEADER),
     DEPLOY_START(POST, "/api/deploy", List.of(), taskGroup(STRATEGIES)),

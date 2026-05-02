@@ -341,18 +341,11 @@ import org.slf4j.LoggerFactory;
     private Promise<ScaleClusterResponse> executeScale(ClusterConfigValue stored, ScaleRequest request) {
         var previousCount = stored.coreCount();
         var newVersion = stored.configVersion() + 1;
-        var scaleAction = new DiffAction.ScaleUp("cluster",
-                                                 org.pragmatica.aether.config.cluster.NodeRole.CORE,
-                                                 previousCount,
-                                                 request.coreCount());
         emitSetDesiredSizeSignal(request.coreCount());
-        return applier.apply(List.of(scaleAction)).flatMap(_ -> storeScaledConfig(stored,
-                                                                                  request.coreCount(),
-                                                                                  newVersion))
-                            .map(_ -> new ScaleClusterResponse(true,
-                                                               previousCount,
-                                                               request.coreCount(),
-                                                               newVersion));
+        return storeScaledConfig(stored, request.coreCount(), newVersion).map(_ -> new ScaleClusterResponse(true,
+                                                                                                            previousCount,
+                                                                                                            request.coreCount(),
+                                                                                                            newVersion));
     }
 
     private void emitSetDesiredSizeSignal(int newSize) {

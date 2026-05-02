@@ -48,16 +48,14 @@ public sealed interface ClusterConfigApplier {
     }
 
     private Promise<Unit> applyScaleUp(ScaleUp scale) {
-        return topologyManager.setDesiredSize(scale.to()).async()
-                                             .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-up: {}",
-                                                                                           scale.description()))
+        return topologyManager.setDesiredSize(scale.to()).onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-up: {}",
+                                                                                                       scale.description()))
                                              .mapToUnit();
     }
 
     private Promise<Unit> applyScaleDown(ScaleDown scale) {
-        return topologyManager.setDesiredSize(scale.to()).async()
-                                             .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-down: {}",
-                                                                                           scale.description()))
+        return topologyManager.setDesiredSize(scale.to()).onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-down: {}",
+                                                                                                       scale.description()))
                                              .mapToUnit();
     }
 

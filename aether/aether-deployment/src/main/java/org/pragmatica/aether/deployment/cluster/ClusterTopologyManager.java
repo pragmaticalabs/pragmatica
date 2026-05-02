@@ -21,7 +21,6 @@ import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.List;
@@ -32,7 +31,7 @@ import java.util.function.Supplier;
 
 @SuppressWarnings("JBCT-RET-01") public interface ClusterTopologyManager extends TopologyManager {
     NodeReconcilerState reconcilerState();
-    Result<Unit> setDesiredSize(int size);
+    Promise<Unit> setDesiredSize(int size);
     int desiredSize();
     int configuredSize();
     void onNodeReady(NodeId nodeId);

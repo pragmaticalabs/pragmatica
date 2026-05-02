@@ -67,7 +67,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_HOSTNAME;
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_INSTANCE_TYPE;
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
-import static org.pragmatica.lang.Unit.unit;
 
 
 record ClusterTopologyManagerRecord(TopologyObserver observer,
@@ -149,26 +148,26 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return stateRef.get();
     }
 
-    @Override public Result<Unit> setDesiredSize(int size) {
+    @Override public Promise<Unit> setDesiredSize(int size) {
         if (size <MINIMUM_CLUSTER_SIZE) {return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)")
-                                                            .result();}
+                                                            .promise();}
         return writeDesiredCoreCount(size);
     }
 
-    private Result<Unit> writeDesiredCoreCount(int size) {
+    private Promise<Unit> writeDesiredCoreCount(int size) {
         var existing = clusterConfigReader.get();
         if (existing.isEmpty()) {return Causes.cause("ClusterConfigValue atom missing — bootstrap must seed it before scale operations are accepted")
-                                                    .result();}
+                                                    .promise();}
         var updated = withCoreCount(existing.unwrap(), size);
         @SuppressWarnings("unchecked") var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
                                                                                                                                     updated);
-        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue coreCount={}: {}",
-                                                                           size,
-                                                                           cause.message()))
-                            .onSuccess(_ -> log.info("CTM: wrote ClusterConfigValue coreCount={} (configVersion={})",
-                                                     size,
-                                                     updated.configVersion()));
-        return Result.success(unit());
+        return commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue coreCount={}: {}",
+                                                                                  size,
+                                                                                  cause.message()))
+                                   .onSuccess(_ -> log.info("CTM: wrote ClusterConfigValue coreCount={} (configVersion={})",
+                                                            size,
+                                                            updated.configVersion()))
+                                   .mapToUnit();
     }
 
     private ClusterConfigValue withCoreCount(ClusterConfigValue existing, int newCoreCount) {

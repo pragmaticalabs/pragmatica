@@ -162,7 +162,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                1L);
         ctm.activate();
         var before = configStore.currentVersion();
-        var result = ctm.setDesiredSize(7);
+        var result = ctm.setDesiredSize(7).await();
         assertThat(result.isSuccess()).isTrue();
         var after = configStore.current().unwrap();
         assertThat(after.coreCount()).isEqualTo(7);
@@ -178,7 +178,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             5),
                                1L);
         ctm.activate();
-        var result = ctm.setDesiredSize(2);
+        var result = ctm.setDesiredSize(2).await();
         assertThat(result.isFailure()).isTrue();
         assertThat(configStore.applyCount.get()).isZero();
     }
