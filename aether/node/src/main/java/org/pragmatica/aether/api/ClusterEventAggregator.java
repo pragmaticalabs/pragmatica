@@ -96,16 +96,28 @@ import java.util.function.IntSupplier;
         var prior = lastLifecycleState.put(nodeId, newState);
         if (prior == newState) {return;}
         switch (newState){
-            case DECOMMISSIONED -> bufferNodeLeftEvent(nodeId.id(), clusterSizeSupplier.getAsInt());
+            case DECOMMISSIONED -> emitDecommissionEvent(nodeId.id(), prior);
             case DRAINING -> bufferNodeLifecycleChangedEvent(nodeId.id(), prior, newState);
             default -> {}
         }
+    }
+
+    @Contract private void emitDecommissionEvent(String nodeId, NodeLifecycleState prior) {
+        if (prior == NodeLifecycleState.DRAINING) {bufferNodeLeftEvent(nodeId, clusterSizeSupplier.getAsInt());} else {bufferNodeFailedEvent(nodeId,
+                                                                                                                                             clusterSizeSupplier.getAsInt());}
     }
 
     @Contract private void bufferNodeLeftEvent(String nodeId, int clusterSize) {
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LEFT,
                                              Severity.INFO,
                                              "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
+                                             Map.of("nodeId", nodeId, "clusterSize", String.valueOf(clusterSize))));
+    }
+
+    @Contract private void bufferNodeFailedEvent(String nodeId, int clusterSize) {
+        buffer.add(ClusterEvent.clusterEvent(EventType.NODE_FAILED,
+                                             Severity.CRITICAL,
+                                             "Node " + nodeId + " failed (cluster size " + clusterSize + ")",
                                              Map.of("nodeId", nodeId, "clusterSize", String.valueOf(clusterSize))));
     }
 

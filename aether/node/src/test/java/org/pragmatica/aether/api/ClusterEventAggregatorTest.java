@@ -17,10 +17,12 @@ import org.pragmatica.lang.Option;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies the post-R3 KV bridge in [`ClusterEventAggregator.onNodeLifecyclePut`]:
-///   - `DECOMMISSIONED` writes surface as `NODE_LEFT` events on every node (not just the leader)
+///   - `DRAINING -> DECOMMISSIONED` (graceful drain) emits `NODE_LEFT`
+///   - `ON_DUTY -> DECOMMISSIONED` (abrupt SWIM-detected loss) emits `NODE_FAILED`
+///   - `unknown -> DECOMMISSIONED` (cold replay / never-observed-prior) emits `NODE_FAILED`
 ///   - `DRAINING` writes surface as `NODE_LIFECYCLE_CHANGED` events
 ///   - state cache provides idempotency on snapshot replay
-///   - `ON_DUTY` writes do not emit `NODE_LEFT` (only `NODE_JOINED` via membership path handles join)
+///   - `ON_DUTY` writes do not emit `NODE_LEFT`/`NODE_FAILED`
 class ClusterEventAggregatorTest {
 
     private static final NodeId NODE_A = new NodeId("node-a");
@@ -39,7 +41,7 @@ class ClusterEventAggregatorTest {
     }
 
     @Test
-    void onNodeLifecyclePut_decommissioned_emitsNodeLeft() {
+    void onNodeLifecyclePut_decommissionedFromUnknown_emitsNodeFailed() {
         var aggregator = newAggregator();
 
         aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
@@ -47,9 +49,40 @@ class ClusterEventAggregatorTest {
         var events = aggregator.events();
         assertThat(events).hasSize(1);
         var event = events.getFirst();
-        assertThat(event.type()).isEqualTo(EventType.NODE_LEFT);
+        assertThat(event.type()).isEqualTo(EventType.NODE_FAILED);
         assertThat(event.details()).containsEntry("nodeId", NODE_A.id())
                                    .containsEntry("clusterSize", String.valueOf(CLUSTER_SIZE));
+    }
+
+    @Test
+    void onNodeLifecyclePut_decommissionedAfterOnDuty_emitsNodeFailed() {
+        var aggregator = newAggregator();
+
+        aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.ON_DUTY));
+        aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
+
+        var events = aggregator.events();
+        assertThat(events).hasSize(1);
+        var event = events.getFirst();
+        assertThat(event.type()).isEqualTo(EventType.NODE_FAILED);
+        assertThat(event.details()).containsEntry("nodeId", NODE_A.id())
+                                   .containsEntry("clusterSize", String.valueOf(CLUSTER_SIZE));
+    }
+
+    @Test
+    void onNodeLifecyclePut_decommissionedAfterDraining_emitsNodeLeft() {
+        var aggregator = newAggregator();
+
+        aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DRAINING));
+        aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
+
+        var events = aggregator.events();
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0).type()).isEqualTo(EventType.NODE_LIFECYCLE_CHANGED);
+        assertThat(events.get(0).details()).containsEntry("transition", "NONE->DRAINING");
+        assertThat(events.get(1).type()).isEqualTo(EventType.NODE_LEFT);
+        assertThat(events.get(1).details()).containsEntry("nodeId", NODE_A.id())
+                                           .containsEntry("clusterSize", String.valueOf(CLUSTER_SIZE));
     }
 
     @Test
@@ -76,7 +109,7 @@ class ClusterEventAggregatorTest {
 
         var events = aggregator.events();
         assertThat(events).hasSize(1);
-        assertThat(events.getFirst().type()).isEqualTo(EventType.NODE_LEFT);
+        assertThat(events.getFirst().type()).isEqualTo(EventType.NODE_FAILED);
     }
 
     @Test
@@ -86,19 +119,5 @@ class ClusterEventAggregatorTest {
         aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.ON_DUTY));
 
         assertThat(aggregator.events()).isEmpty();
-    }
-
-    @Test
-    void onNodeLifecyclePut_drainingThenDecommissioned_emitsBothEvents() {
-        var aggregator = newAggregator();
-
-        aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DRAINING));
-        aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
-
-        var events = aggregator.events();
-        assertThat(events).hasSize(2);
-        assertThat(events.get(0).type()).isEqualTo(EventType.NODE_LIFECYCLE_CHANGED);
-        assertThat(events.get(0).details()).containsEntry("transition", "NONE->DRAINING");
-        assertThat(events.get(1).type()).isEqualTo(EventType.NODE_LEFT);
     }
 }
