@@ -57,7 +57,7 @@ public final class ObservationAggregator {
         var target = observation.peer();
         var translated = translate(observation);
         recordCleanup(target, observerNodeId, translated, nowMs);
-        rememberHealthy(observation, target);
+        rememberSeen(observation, target);
         return computeEdge(target, onDutyCount, nowMs);
     }
 
@@ -89,8 +89,8 @@ public final class ObservationAggregator {
         while (!window.isEmpty() && nowMs - window.peekFirst().timestampMs() > aggregationWindowMs) {window.pollFirst();}
     }
 
-    private void rememberHealthy(SwimObservation observation, NodeId target) {
-        if (observation instanceof SwimObservation.HealthyObserved) {everSeenHealthy.add(target);}
+    private void rememberSeen(SwimObservation observation, NodeId target) {
+        if (! (observation instanceof SwimObservation.UnknownObserved)) {everSeenHealthy.add(target);}
     }
 
     private static Option<NodeLifecycleState> translate(SwimObservation observation) {

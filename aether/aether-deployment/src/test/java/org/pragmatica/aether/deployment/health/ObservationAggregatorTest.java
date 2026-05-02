@@ -33,6 +33,10 @@ class ObservationAggregatorTest {
         return new SwimObservation.DepartedObserved(target, 1L);
     }
 
+    private static SwimObservation suspect(NodeId target) {
+        return new SwimObservation.SuspectObserved(target, 1L);
+    }
+
     private static SwimObservation unknown(NodeId target) {
         return new SwimObservation.UnknownObserved(target, 1L);
     }
@@ -95,16 +99,57 @@ class ObservationAggregatorTest {
     void aggregator_unknownOnly_neverEmitsFaulty() {
         var aggregator = ObservationAggregator.observationAggregator();
         var t0 = 0L;
-        // Only UnknownObserved + FaultyObserved — never HEALTHY.
-        // Cold-boot: FAULTY must NOT promote because target was never HEALTHY,
-        // even though single-observer threshold would otherwise be reached.
-        aggregator.onObservation(SELF, unknown(TARGET), 5, t0);
-        var first = aggregator.onObservation(OBS_A, faulty(TARGET), 5, t0);
+        // Only UnknownObserved — never any concrete signal for the peer.
+        // UnknownObserved alone must not unlock cold-boot, and it doesn't translate to a
+        // window entry either, so no edge can ever fire.
+        var first = aggregator.onObservation(SELF, unknown(TARGET), 5, t0);
         assertThat(first.isEmpty()).isTrue();
-        var second = aggregator.onObservation(OBS_B, faulty(TARGET), 5, t0);
+        var second = aggregator.onObservation(OBS_A, unknown(TARGET), 5, t0);
         assertThat(second.isEmpty()).isTrue();
-        var third = aggregator.onObservation(OBS_C, faulty(TARGET), 5, t0);
+        var third = aggregator.onObservation(OBS_B, unknown(TARGET), 5, t0);
         assertThat(third.isEmpty()).isTrue();
+        assertThat(aggregator.everSeenHealthy(TARGET)).isFalse();
+    }
+
+    @Test
+    void aggregator_firstFaultyObservation_emitsDecommissioned() {
+        // Regression: peer joined cluster already HEALTHY (no HealthyObserved edge ever
+        // produced by SwimProtocol), then was killed. The very first FaultyObserved must
+        // emit DECOMMISSIONED — cold-boot suppression must not swallow it, because a
+        // FaultyObserved is itself proof that the peer exists in the membership.
+        var aggregator = ObservationAggregator.observationAggregator();
+        var emitted = aggregator.onObservation(SELF, faulty(TARGET), 5, 0L);
+        assertThat(emitted.isPresent()).isTrue();
+        assertThat(emitted.unwrap().target()).isEqualTo(TARGET);
+        assertThat(emitted.unwrap().newState()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+    }
+
+    @Test
+    void aggregator_firstSuspectObservation_marksAsSeen() {
+        // SuspectObserved alone doesn't translate to a window entry (translate() returns
+        // none()), so it can't directly drive an edge. But it IS proof the peer is real,
+        // so a SUBSEQUENT FaultyObserved must no longer be cold-boot suppressed.
+        var aggregator = ObservationAggregator.observationAggregator();
+        var t0 = 0L;
+        var fromSuspect = aggregator.onObservation(SELF, suspect(TARGET), 5, t0);
+        assertThat(fromSuspect.isEmpty()).isTrue();
+        assertThat(aggregator.everSeenHealthy(TARGET)).isTrue();
+        var emitted = aggregator.onObservation(SELF, faulty(TARGET), 5, t0 + 100);
+        assertThat(emitted.isPresent()).isTrue();
+        assertThat(emitted.unwrap().newState()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+    }
+
+    @Test
+    void aggregator_unknownObservedOnly_remainsColdBoot() {
+        // UnknownObserved is the only observation that does NOT prove peer reality.
+        // Cold-boot suppression must still apply — a subsequent FaultyObserved would
+        // unlock the guard itself (FAULTY is concrete evidence), so the regression case
+        // is "Unknown then Unknown then ...": the peer must remain cold-boot-suppressed.
+        var aggregator = ObservationAggregator.observationAggregator();
+        var t0 = 0L;
+        aggregator.onObservation(SELF, unknown(TARGET), 5, t0);
+        aggregator.onObservation(OBS_A, unknown(TARGET), 5, t0);
+        assertThat(aggregator.everSeenHealthy(TARGET)).isFalse();
     }
 
     @Test
