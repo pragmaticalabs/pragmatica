@@ -13,10 +13,13 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -26,9 +29,14 @@ public sealed interface ClusterHttpClient {
 
     HttpOperations HTTP_OPS = JdkHttpOperations.jdkHttpOperations();
 
-    java.util.concurrent.atomic.AtomicReference<String> ENDPOINT_OVERRIDE = new java.util.concurrent.atomic.AtomicReference<>();
+    Duration DEFAULT_REQUEST_TIMEOUT = TimeSpan.timeSpan(130).seconds()
+                                                        .duration();
 
-    java.util.concurrent.atomic.AtomicReference<String> API_KEY_OVERRIDE = new java.util.concurrent.atomic.AtomicReference<>();
+    AtomicReference<String> ENDPOINT_OVERRIDE = new AtomicReference<>();
+
+    AtomicReference<String> API_KEY_OVERRIDE = new AtomicReference<>();
+
+    AtomicReference<Duration> REQUEST_TIMEOUT = new AtomicReference<>(DEFAULT_REQUEST_TIMEOUT);
 
     @Contract static void setEndpointOverride(String endpointUrl) {
         ENDPOINT_OVERRIDE.set(endpointUrl);
@@ -36,6 +44,15 @@ public sealed interface ClusterHttpClient {
 
     @Contract static void setApiKeyOverride(String apiKey) {
         API_KEY_OVERRIDE.set(apiKey);
+    }
+
+    @Contract static void setRequestTimeout(Duration timeout) {
+        REQUEST_TIMEOUT.set(timeout);
+    }
+
+    @Contract static void applyTimeout(HttpRequest.Builder builder) {
+        var timeout = REQUEST_TIMEOUT.get();
+        if (timeout != null && !timeout.isZero() && !timeout.isNegative()) {builder.timeout(timeout);}
     }
 
     static Result<String> fetch(ManagementRoute route, List<String> params) {
@@ -104,6 +121,7 @@ public sealed interface ClusterHttpClient {
         var builder = HttpRequest.newBuilder().uri(uri)
                                             .GET();
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
+        applyTimeout(builder);
         return HTTP_OPS.sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }
@@ -117,6 +135,7 @@ public sealed interface ClusterHttpClient {
                                             .header("Content-Type", "application/json")
                                             .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
+        applyTimeout(builder);
         return HTTP_OPS.sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }
@@ -130,6 +149,7 @@ public sealed interface ClusterHttpClient {
                                             .header("Content-Type", "application/json")
                                             .PUT(HttpRequest.BodyPublishers.ofString(jsonBody));
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
+        applyTimeout(builder);
         return HTTP_OPS.sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }
@@ -152,6 +172,7 @@ public sealed interface ClusterHttpClient {
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> getDirect(String url) {
         var builder = HttpRequest.newBuilder().uri(URI.create(url))
                                             .GET();
+        applyTimeout(builder);
         return HTTP_OPS.sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }
@@ -160,6 +181,7 @@ public sealed interface ClusterHttpClient {
         var builder = HttpRequest.newBuilder().uri(URI.create(url))
                                             .header("Content-Type", "application/json")
                                             .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+        applyTimeout(builder);
         return HTTP_OPS.sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }

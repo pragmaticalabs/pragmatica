@@ -31,6 +31,7 @@ import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -82,6 +83,7 @@ import static org.pragmatica.lang.Option.some;
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
         extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
                         .onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
+        org.pragmatica.aether.cli.cluster.ClusterHttpClient.setRequestTimeout(resolveRequestTimeoutDuration(args));
         if (isReplMode(args)) {cli.runRepl(cmd);} else {
             int exitCode = cmd.execute(args);
             System.exit(exitCode);
@@ -101,6 +103,29 @@ import static org.pragmatica.lang.Option.some;
             if (args[i].startsWith("--api-key=")) {return some(args[i].substring("--api-key=".length()));}
         }
         return empty();
+    }
+
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"}) private static Option<String> extractRequestTimeoutArg(String[] args) {
+        for (int i = 0;i <args.length;i++) {
+            if (args[i].equals("--request-timeout") && i + 1 <args.length) {return some(args[i + 1]);}
+            if (args[i].startsWith("--request-timeout=")) {return some(args[i].substring("--request-timeout=".length()));}
+        }
+        return empty();
+    }
+
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) private static Duration resolveRequestTimeoutDuration(String[] args) {
+        var seconds = extractRequestTimeoutArg(args).map(s -> {
+                                                             try {
+                                                                 return Integer.parseInt(s.trim());
+                                                             } catch (NumberFormatException e) {
+                                                                 return 130;
+                                                             }
+                                                         })
+                                              .or(130);
+        return seconds > 0
+              ? TimeSpan.timeSpan(seconds).seconds()
+                                 .duration()
+              : Duration.ZERO;
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private static boolean isReplMode(String[] args) {
