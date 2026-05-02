@@ -931,7 +931,8 @@ public interface AetherNode extends ManageableNode {
                                                                                               invocationMetrics,
                                                                                               minuteAggregator);
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
-        var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig());
+        var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
+                                                                            clusterTopologyManager.observer()::clusterSize);
         var ttmManager = TTMManager.ttmManager(config.ttm(),
                                                minuteAggregator,
                                                controller::configuration)
@@ -2040,6 +2041,8 @@ public interface AetherNode extends ManageableNode {
                                                             nodeDeploymentManager::onNodeLifecycleRemove)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          clusterDeploymentManager::onNodeLifecyclePut)
+                                                  .onPut(AetherKey.NodeLifecycleKey.class,
+                                                         eventAggregator::onNodeLifecyclePut)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          put -> notifyCtmOnDuty(put, clusterTopologyManager))
                                                   .onPut(AetherKey.ActivationDirectiveKey.class,

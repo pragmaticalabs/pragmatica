@@ -11,12 +11,17 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.utility.RingBuffer;
 
@@ -25,9 +30,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.IntSupplier;
 
 
 @SuppressWarnings("JBCT-RET-01") public final class ClusterEventAggregator {
+    private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> - 1;
+
     private final RingBuffer<ClusterEvent> buffer;
 
     private final AtomicLong quorumSequence = new AtomicLong();
@@ -36,12 +44,22 @@ import java.util.concurrent.atomic.AtomicLong;
 
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
 
-    private ClusterEventAggregator(ClusterEventAggregatorConfig config) {
+    private final ConcurrentHashMap<NodeId, NodeLifecycleState> lastLifecycleState = new ConcurrentHashMap<>();
+
+    private final IntSupplier clusterSizeSupplier;
+
+    private ClusterEventAggregator(ClusterEventAggregatorConfig config, IntSupplier clusterSizeSupplier) {
         this.buffer = RingBuffer.ringBuffer(config.maxEvents());
+        this.clusterSizeSupplier = clusterSizeSupplier;
     }
 
     public static ClusterEventAggregator clusterEventAggregator(ClusterEventAggregatorConfig config) {
-        return new ClusterEventAggregator(config);
+        return new ClusterEventAggregator(config, UNKNOWN_CLUSTER_SIZE);
+    }
+
+    public static ClusterEventAggregator clusterEventAggregator(ClusterEventAggregatorConfig config,
+                                                                IntSupplier clusterSizeSupplier) {
+        return new ClusterEventAggregator(config, clusterSizeSupplier);
     }
 
     public List<ClusterEvent> events() {
@@ -66,14 +84,46 @@ import java.util.concurrent.atomic.AtomicLong;
     }
 
     public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
+        bufferNodeLeftEvent(event.nodeId().id(),
+                            event.topology().size());
+    }
+
+    @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
+        var nodeId = put.cause().key()
+                              .nodeId();
+        var newState = put.cause().value()
+                                .state();
+        var prior = lastLifecycleState.put(nodeId, newState);
+        if (prior == newState) {return;}
+        switch (newState){
+            case DECOMMISSIONED -> bufferNodeLeftEvent(nodeId.id(), clusterSizeSupplier.getAsInt());
+            case DRAINING -> bufferNodeLifecycleChangedEvent(nodeId.id(), prior, newState);
+            default -> {}
+        }
+    }
+
+    @Contract private void bufferNodeLeftEvent(String nodeId, int clusterSize) {
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LEFT,
                                              Severity.INFO,
-                                             "Node " + event.nodeId().id() + " left cluster (now " + event.topology()
-                                                                                                                   .size() + " nodes)",
+                                             "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
+                                             Map.of("nodeId", nodeId, "clusterSize", String.valueOf(clusterSize))));
+    }
+
+    @Contract private void bufferNodeLifecycleChangedEvent(String nodeId,
+                                                           NodeLifecycleState prior,
+                                                           NodeLifecycleState next) {
+        var transition = (prior == null
+                          ? "NONE"
+                          : prior.name()) + "->" + next.name();
+        buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LIFECYCLE_CHANGED,
+                                             Severity.INFO,
+                                             "Node " + nodeId + " lifecycle: " + transition,
                                              Map.of("nodeId",
-                                                    event.nodeId().id(),
-                                                    "clusterSize",
-                                                    String.valueOf(event.topology().size()))));
+                                                    nodeId,
+                                                    "transition",
+                                                    transition,
+                                                    "requestedBy",
+                                                    "HealthReconciler")));
     }
 
     public void onNodeDown(TopologyChangeNotification.NodeDown event) {
