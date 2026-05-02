@@ -12,7 +12,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhaseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.swim.SwimObservation;
@@ -64,6 +66,30 @@ class HealthReconcilerTest {
                                                  onDutySupplier,
                                                  applier,
                                                  config);
+    }
+
+    private HealthReconciler buildReconcilerWith(int clusterSize,
+                                                 HealthReconcilerConfig config,
+                                                 Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> customApplier,
+                                                 HealthReconciler.RetryScheduler retryScheduler) {
+        Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader = lifecycleStore::get;
+        Supplier<Option<ClusterPhase>> phaseReader = () -> Option.option(phaseRef.get());
+        Supplier<Option<NodeId>> leaderReader = () -> Option.option(leaderRef.get());
+        Supplier<Integer> onDutySupplier = onDutyCount::get;
+        return HealthReconciler.healthReconciler(SELF,
+                                                 clusterSize,
+                                                 lifecycleReader,
+                                                 phaseReader,
+                                                 leaderReader,
+                                                 onDutySupplier,
+                                                 customApplier,
+                                                 config,
+                                                 HealthReconciler.defaultSelfOnDutyAtomFactory(),
+                                                 retryScheduler);
+    }
+
+    private static HealthReconciler.RetryScheduler immediateRetryScheduler() {
+        return (runnable, delay) -> runnable.run();
     }
 
     private static SwimObservation healthy(NodeId target) {
@@ -153,6 +179,66 @@ class HealthReconcilerTest {
             reconciler.onSwimObservation(faulty(TARGET));
             // No commands emitted — aggregator suppressed the edge
             assertThat(applier.commands).isEmpty();
+        }
+    }
+
+    @Nested class SelfOnDutyRetry {
+        @Test
+        void signalSelfReady_writeRejectedByInactive_retriesUntilSuccess() {
+            // Applier fails first 3 attempts with NodeInactive, then succeeds on 4th.
+            var flakyApplier = new FlakyInactiveApplier(3);
+            var immediateScheduler = immediateRetryScheduler();
+            var reconciler = buildReconcilerWith(3,
+                                                 HealthReconcilerConfig.DEFAULT,
+                                                 flakyApplier,
+                                                 immediateScheduler);
+            reconciler.start();
+            reconciler.signalSelfReady();
+            assertThat(flakyApplier.totalAttempts())
+                    .as("Applier called once initially + 3 retries = 4 total")
+                    .isEqualTo(4);
+            assertThat(flakyApplier.commands.stream().anyMatch(HealthReconcilerTest::isSelfOnDutyWrite))
+                    .as("ON_DUTY write proposed at least once")
+                    .isTrue();
+            // Final attempt succeeded, recordWrite executed
+            assertThat(flakyApplier.successfulWrites.get())
+                    .as("Exactly one successful ON_DUTY write after retries")
+                    .isEqualTo(1);
+        }
+
+        @Test
+        void signalSelfReady_writeRejectedRepeatedly_givesUpAfterMaxAttempts() {
+            // Applier always fails with NodeInactive — must give up after MAX_SELF_ONDUTY_RETRIES.
+            var alwaysFailingApplier = new FlakyInactiveApplier(Integer.MAX_VALUE);
+            var immediateScheduler = immediateRetryScheduler();
+            var reconciler = buildReconcilerWith(3,
+                                                 HealthReconcilerConfig.DEFAULT,
+                                                 alwaysFailingApplier,
+                                                 immediateScheduler);
+            reconciler.start();
+            reconciler.signalSelfReady();
+            assertThat(alwaysFailingApplier.totalAttempts())
+                    .as("Caps at MAX_SELF_ONDUTY_RETRIES (8) attempts")
+                    .isEqualTo(HealthReconcilerImpl.MAX_SELF_ONDUTY_RETRIES);
+            assertThat(alwaysFailingApplier.successfulWrites.get())
+                    .as("No successful ON_DUTY write after exhausting retries")
+                    .isEqualTo(0);
+        }
+
+        @Test
+        void signalSelfReady_writeRejectedByNonRetriableCause_doesNotRetry() {
+            // Non-NodeInactive failure (e.g. arbitrary Cause) must NOT trigger retry.
+            var nonRetriableApplier = new NonRetriableFailingApplier();
+            var immediateScheduler = immediateRetryScheduler();
+            var reconciler = buildReconcilerWith(3,
+                                                 HealthReconcilerConfig.DEFAULT,
+                                                 nonRetriableApplier,
+                                                 immediateScheduler);
+            reconciler.start();
+            reconciler.signalSelfReady();
+            assertThat(nonRetriableApplier.totalAttempts())
+                    .as("Non-retriable cause: exactly one attempt, no retries")
+                    .isEqualTo(1);
         }
     }
 
@@ -290,6 +376,55 @@ class HealthReconcilerTest {
         @Override public Promise<List<Object>> apply(List<KVCommand<AetherKey>> input) {
             commands.addAll(input);
             return Promise.success(List.of());
+        }
+    }
+
+    /// Fails first {@code failuresBeforeSuccess} attempts with `ConsensusError.NodeInactive`,
+    /// succeeds thereafter. Records every command attempted (including failed ones).
+    private static final class FlakyInactiveApplier implements Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> {
+        final List<KVCommand<?>> commands = new ArrayList<>();
+        final AtomicInteger attempts = new AtomicInteger(0);
+        final AtomicInteger successfulWrites = new AtomicInteger(0);
+        private final int failuresBeforeSuccess;
+
+        FlakyInactiveApplier(int failuresBeforeSuccess) {
+            this.failuresBeforeSuccess = failuresBeforeSuccess;
+        }
+
+        int totalAttempts() {
+            return attempts.get();
+        }
+
+        @Override public Promise<List<Object>> apply(List<KVCommand<AetherKey>> input) {
+            commands.addAll(input);
+            var attempt = attempts.incrementAndGet();
+            if (attempt <= failuresBeforeSuccess) {
+                return new ConsensusError.NodeInactive(SELF).promise();
+            }
+            successfulWrites.incrementAndGet();
+            return Promise.success(List.of());
+        }
+    }
+
+    /// Always fails with a non-retriable `Cause` (not `ConsensusError.NodeInactive`).
+    private static final class NonRetriableFailingApplier implements Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> {
+        final AtomicInteger attempts = new AtomicInteger(0);
+
+        int totalAttempts() {
+            return attempts.get();
+        }
+
+        @Override public Promise<List<Object>> apply(List<KVCommand<AetherKey>> input) {
+            attempts.incrementAndGet();
+            return new PermanentReject().promise();
+        }
+    }
+
+    /// Test-only `Cause` distinct from `ConsensusError.NodeInactive` to validate
+    /// non-retriable failure handling.
+    record PermanentReject() implements Cause {
+        @Override public String message() {
+            return "permanent rejection (test fixture)";
         }
     }
 

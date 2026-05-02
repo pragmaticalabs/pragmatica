@@ -1528,8 +1528,8 @@ public interface AetherNode extends ManageableNode {
 
     @Contract private static void bridgeSelfReadyToLifecycle(HealthReconciler healthReconciler,
                                                              NodeLifecycle nodeLifecycle) {
-        healthReconciler.signalSelfReady();
         nodeLifecycle.signalReady();
+        healthReconciler.signalSelfReady();
     }
 
     @SuppressWarnings("unchecked") private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,

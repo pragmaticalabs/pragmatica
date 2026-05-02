@@ -13,13 +13,17 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhaseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimObservation;
 
 import java.util.List;
@@ -40,6 +44,12 @@ import org.slf4j.LoggerFactory;
 final class HealthReconcilerImpl implements HealthReconciler {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerImpl.class);
 
+    static final int MAX_SELF_ONDUTY_RETRIES = 8;
+
+    static final long INITIAL_SELF_ONDUTY_RETRY_DELAY_MS = 200L;
+
+    static final long MAX_SELF_ONDUTY_RETRY_DELAY_MS = 2_000L;
+
     private final NodeId self;
     private final int expectedClusterSize;
     private final Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader;
@@ -50,6 +60,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
     private final HealthReconcilerConfig config;
     private final ObservationAggregator aggregator;
     private final SelfOnDutyAtomFactory selfOnDutyAtomFactory;
+    private final RetryScheduler retryScheduler;
 
     private final Object aggregatorLock = new Object();
 
@@ -77,7 +88,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                  Supplier<Integer> onDutyCountSupplier,
                                  Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                  HealthReconcilerConfig config,
-                                 SelfOnDutyAtomFactory selfOnDutyAtomFactory) {
+                                 SelfOnDutyAtomFactory selfOnDutyAtomFactory,
+                                 RetryScheduler retryScheduler) {
         this.self = self;
         this.expectedClusterSize = expectedClusterSize;
         this.lifecycleReader = lifecycleReader;
@@ -87,6 +99,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
         this.commandApplier = commandApplier;
         this.config = config;
         this.selfOnDutyAtomFactory = selfOnDutyAtomFactory;
+        this.retryScheduler = retryScheduler;
         this.aggregator = ObservationAggregator.observationAggregator(config.aggregationWindowMs());
     }
 
@@ -98,7 +111,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                                      Supplier<Integer> onDutyCountSupplier,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                      HealthReconcilerConfig config,
-                                                     SelfOnDutyAtomFactory selfOnDutyAtomFactory) {
+                                                     SelfOnDutyAtomFactory selfOnDutyAtomFactory,
+                                                     RetryScheduler retryScheduler) {
         return new HealthReconcilerImpl(self,
                                         expectedClusterSize,
                                         lifecycleReader,
@@ -107,7 +121,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                         onDutyCountSupplier,
                                         commandApplier,
                                         config,
-                                        selfOnDutyAtomFactory);
+                                        selfOnDutyAtomFactory,
+                                        retryScheduler);
     }
 
     @Override public Promise<Unit> start() {
@@ -165,15 +180,56 @@ final class HealthReconcilerImpl implements HealthReconciler {
     }
 
     @Contract private void proposeSelfOnDutyWrite(long nowMs) {
+        attemptSelfOnDutyWrite(nowMs, 1);
+    }
+
+    @Contract private void attemptSelfOnDutyWrite(long nowMs, int attempt) {
+        if (selfAlreadyOnDuty()) {
+            log.debug("HealthReconciler: self {} already ON_DUTY — retry attempt {} short-circuited", self, attempt);
+            return;
+        }
         var prior = lifecycleReader.apply(self);
         var value = prior.isPresent()
                    ? buildLifecycleValue(prior, NodeLifecycleState.ON_DUTY, nowMs)
                    : selfOnDutyAtomFactory.build(NodeLifecycleState.ON_DUTY, nowMs);
         var command = putLifecycleAtom(NodeLifecycleKey.nodeLifecycleKey(self), value);
-        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("HealthReconciler: failed to write ON_DUTY for self {}: {}",
-                                                                           self,
-                                                                           cause.message()))
+        commandApplier.apply(List.of(command)).onFailure(cause -> handleSelfOnDutyFailure(cause, attempt))
                             .onSuccess(_ -> recordWrite(self, NodeLifecycleState.ON_DUTY, nowMs));
+    }
+
+    private void handleSelfOnDutyFailure(Cause cause, int attempt) {
+        if (!isTransientInactiveRejection(cause)) {
+            log.error("HealthReconciler: self {} ON_DUTY write rejected with non-retriable cause on attempt {}: {}",
+                      self,
+                      attempt,
+                      cause.message());
+            return;
+        }
+        if (attempt >= MAX_SELF_ONDUTY_RETRIES) {
+            log.error("HealthReconciler: self {} ON_DUTY write exhausted {} attempts — giving up; last cause: {}",
+                      self,
+                      MAX_SELF_ONDUTY_RETRIES,
+                      cause.message());
+            return;
+        }
+        var delay = computeBackoffDelay(attempt);
+        log.warn("HealthReconciler: self {} ON_DUTY write rejected (attempt {}/{}); retrying in {}ms — cause: {}",
+                 self,
+                 attempt,
+                 MAX_SELF_ONDUTY_RETRIES,
+                 delay.millis(),
+                 cause.message());
+        retryScheduler.schedule(() -> attemptSelfOnDutyWrite(System.currentTimeMillis(), attempt + 1), delay);
+    }
+
+    private static boolean isTransientInactiveRejection(Cause cause) {
+        return cause instanceof ConsensusError.NodeInactive;
+    }
+
+    private static TimeSpan computeBackoffDelay(int attempt) {
+        var raw = INITIAL_SELF_ONDUTY_RETRY_DELAY_MS<<Math.min(attempt - 1, 30);
+        var clamped = Math.min(raw, MAX_SELF_ONDUTY_RETRY_DELAY_MS);
+        return TimeSpan.timeSpan(clamped).millis();
     }
 
     private Option<ObservationAggregator.StateChanged> aggregateEdge(SwimObservation observation, long nowMs) {

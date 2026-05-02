@@ -15,6 +15,8 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimObservation;
 
 import java.util.List;
@@ -39,8 +41,16 @@ public interface HealthReconciler {
         NodeLifecycleValue build(NodeLifecycleState targetState, long nowMs);
     }
 
+    @FunctionalInterface interface RetryScheduler {
+        @Contract void schedule(Runnable runnable, TimeSpan delay);
+    }
+
     static SelfOnDutyAtomFactory defaultSelfOnDutyAtomFactory() {
         return (state, nowMs) -> NodeLifecycleValue.nodeLifecycleValue(state, nowMs);
+    }
+
+    static RetryScheduler defaultRetryScheduler() {
+        return (runnable, delay) -> SharedScheduler.schedule(runnable, delay);
     }
 
     static HealthReconciler healthReconciler(NodeId self,
@@ -71,6 +81,28 @@ public interface HealthReconciler {
                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                              HealthReconcilerConfig config,
                                              SelfOnDutyAtomFactory selfOnDutyAtomFactory) {
+        return healthReconciler(self,
+                                expectedClusterSize,
+                                lifecycleReader,
+                                phaseReader,
+                                leaderReader,
+                                onDutyCountSupplier,
+                                commandApplier,
+                                config,
+                                selfOnDutyAtomFactory,
+                                defaultRetryScheduler());
+    }
+
+    static HealthReconciler healthReconciler(NodeId self,
+                                             int expectedClusterSize,
+                                             Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                             Supplier<Option<ClusterPhase>> phaseReader,
+                                             Supplier<Option<NodeId>> leaderReader,
+                                             Supplier<Integer> onDutyCountSupplier,
+                                             Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                             HealthReconcilerConfig config,
+                                             SelfOnDutyAtomFactory selfOnDutyAtomFactory,
+                                             RetryScheduler retryScheduler) {
         return HealthReconcilerImpl.healthReconcilerImpl(self,
                                                          expectedClusterSize,
                                                          lifecycleReader,
@@ -79,6 +111,7 @@ public interface HealthReconciler {
                                                          onDutyCountSupplier,
                                                          commandApplier,
                                                          config,
-                                                         selfOnDutyAtomFactory);
+                                                         selfOnDutyAtomFactory,
+                                                         retryScheduler);
     }
 }
