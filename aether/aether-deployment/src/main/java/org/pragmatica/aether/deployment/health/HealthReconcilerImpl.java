@@ -240,6 +240,13 @@ final class HealthReconcilerImpl implements HealthReconciler {
     }
 
     private void handleAggregatedEdge(ObservationAggregator.StateChanged edge, long nowMs) {
+        if (!isLeader()) {
+            log.trace("HealthReconciler: follower {} skips lifecycle write for {} -> {} (leader-gated)",
+                      self,
+                      edge.target(),
+                      edge.newState());
+            return;
+        }
         var target = edge.target();
         if (cooldownActive(target, nowMs)) {
             log.debug("HealthReconciler: cooldown active for {} — suppressing aggregated edge {}",

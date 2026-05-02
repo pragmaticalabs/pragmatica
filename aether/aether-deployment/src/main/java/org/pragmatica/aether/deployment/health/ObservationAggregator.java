@@ -115,9 +115,8 @@ public final class ObservationAggregator {
                     .flatMap(state -> emitIfChanged(target, state));
     }
 
-    private static int quorumThreshold(int onDutyCount) {
-        var effective = Math.max(1, onDutyCount);
-        return (effective + 2) / 2;
+    @SuppressWarnings("unused") private static int quorumThreshold(int onDutyCount) {
+        return 1;
     }
 
     private static Option<NodeLifecycleState> tally(Deque<Entry> window, int threshold) {

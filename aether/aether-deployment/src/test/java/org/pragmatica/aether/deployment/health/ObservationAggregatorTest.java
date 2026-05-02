@@ -38,42 +38,42 @@ class ObservationAggregatorTest {
     }
 
     @Test
-    void aggregator_kOfNHealthyObservations_emitsOnDutyEdge() {
+    void aggregator_singleObserverHealthy_emitsOnDutyEdge() {
+        // Single-observer mode: leader's local SWIM observation alone is sufficient.
+        // First HEALTHY observation emits ON_DUTY edge.
         var aggregator = ObservationAggregator.observationAggregator();
-        var t0 = 0L;
-        // 3 of 5 → quorum reached
-        aggregator.onObservation(SELF, healthy(TARGET), 5, t0);
-        aggregator.onObservation(OBS_A, healthy(TARGET), 5, t0);
-        var emitted = aggregator.onObservation(OBS_B, healthy(TARGET), 5, t0);
+        var emitted = aggregator.onObservation(SELF, healthy(TARGET), 5, 0L);
         assertThat(emitted.isPresent()).isTrue();
         assertThat(emitted.unwrap().target()).isEqualTo(TARGET);
         assertThat(emitted.unwrap().newState()).isEqualTo(NodeLifecycleState.ON_DUTY);
     }
 
     @Test
-    void aggregator_kOfNFaultyObservations_emitsFaultyEdge() {
+    void aggregator_singleObserverFaulty_emitsDecommissionedEdge() {
+        // Single-observer mode: after target was previously HEALTHY, a single FAULTY
+        // observation emits DECOMMISSIONED edge.
         var aggregator = ObservationAggregator.observationAggregator();
         var t0 = 0L;
-        // First promote target (so cold-boot honor doesn't suppress FAULTY)
+        // First promote target so cold-boot honor allows DECOMMISSIONED
         aggregator.onObservation(SELF, healthy(TARGET), 5, t0);
-        aggregator.onObservation(OBS_A, healthy(TARGET), 5, t0);
-        aggregator.onObservation(OBS_B, healthy(TARGET), 5, t0);
-        // Now flip 3 of 5 to FAULTY
-        aggregator.onObservation(SELF, faulty(TARGET), 5, t0 + 100);
-        aggregator.onObservation(OBS_A, faulty(TARGET), 5, t0 + 100);
-        var emitted = aggregator.onObservation(OBS_B, faulty(TARGET), 5, t0 + 100);
+        // Now a single FAULTY observation crosses the threshold
+        var emitted = aggregator.onObservation(SELF, faulty(TARGET), 5, t0 + 100);
         assertThat(emitted.isPresent()).isTrue();
+        assertThat(emitted.unwrap().target()).isEqualTo(TARGET);
         assertThat(emitted.unwrap().newState()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
     }
 
     @Test
-    void aggregator_belowQuorumObservations_emitsNothing() {
+    void aggregator_repeatedSameStateObservations_emitsOnceOnly() {
+        // Single-observer mode: idempotence is enforced by lastAggregated state, not by
+        // a k-of-n threshold. First observation emits; subsequent observations of the
+        // same state from any observer do not emit.
         var aggregator = ObservationAggregator.observationAggregator();
         var t0 = 0L;
-        // Only 2 of 5 → below k=3
-        aggregator.onObservation(SELF, healthy(TARGET), 5, t0);
-        var emitted = aggregator.onObservation(OBS_A, healthy(TARGET), 5, t0);
-        assertThat(emitted.isEmpty()).isTrue();
+        var first = aggregator.onObservation(SELF, healthy(TARGET), 5, t0);
+        assertThat(first.isPresent()).isTrue();
+        var second = aggregator.onObservation(OBS_A, healthy(TARGET), 5, t0);
+        assertThat(second.isEmpty()).isTrue();
     }
 
     @Test
@@ -92,39 +92,26 @@ class ObservationAggregatorTest {
     }
 
     @Test
-    void aggregator_idempotentSameState_noEdgeEmitted() {
-        var aggregator = ObservationAggregator.observationAggregator();
-        var t0 = 0L;
-        aggregator.onObservation(SELF, healthy(TARGET), 5, t0);
-        aggregator.onObservation(OBS_A, healthy(TARGET), 5, t0);
-        // First quorum-crossing: emits
-        var first = aggregator.onObservation(OBS_B, healthy(TARGET), 5, t0);
-        assertThat(first.isPresent()).isTrue();
-        // Same state — no new edge
-        var second = aggregator.onObservation(OBS_C, healthy(TARGET), 5, t0 + 100);
-        assertThat(second.isEmpty()).isTrue();
-    }
-
-    @Test
     void aggregator_unknownOnly_neverEmitsFaulty() {
         var aggregator = ObservationAggregator.observationAggregator();
         var t0 = 0L;
-        // Only UnknownObserved + FaultyObserved — never HEALTHY
+        // Only UnknownObserved + FaultyObserved — never HEALTHY.
+        // Cold-boot: FAULTY must NOT promote because target was never HEALTHY,
+        // even though single-observer threshold would otherwise be reached.
         aggregator.onObservation(SELF, unknown(TARGET), 5, t0);
-        aggregator.onObservation(OBS_A, faulty(TARGET), 5, t0);
-        aggregator.onObservation(OBS_B, faulty(TARGET), 5, t0);
-        var emitted = aggregator.onObservation(OBS_C, faulty(TARGET), 5, t0);
-        // Cold-boot: even quorum FAULTY does not promote because target was never HEALTHY
-        assertThat(emitted.isEmpty()).isTrue();
+        var first = aggregator.onObservation(OBS_A, faulty(TARGET), 5, t0);
+        assertThat(first.isEmpty()).isTrue();
+        var second = aggregator.onObservation(OBS_B, faulty(TARGET), 5, t0);
+        assertThat(second.isEmpty()).isTrue();
+        var third = aggregator.onObservation(OBS_C, faulty(TARGET), 5, t0);
+        assertThat(third.isEmpty()).isTrue();
     }
 
     @Test
     void aggregator_selfObservationCounted() {
+        // Single-observer mode: self's own observation alone reaches the threshold.
         var aggregator = ObservationAggregator.observationAggregator();
-        var t0 = 0L;
-        // Cluster of 3 → k = 2; self + one peer == 2 distinct observers
-        aggregator.onObservation(SELF, healthy(TARGET), 3, t0);
-        var emitted = aggregator.onObservation(OBS_A, healthy(TARGET), 3, t0);
+        var emitted = aggregator.onObservation(SELF, healthy(TARGET), 3, 0L);
         assertThat(emitted.isPresent()).isTrue();
         assertThat(emitted.unwrap().newState()).isEqualTo(NodeLifecycleState.ON_DUTY);
     }
@@ -135,10 +122,8 @@ class ObservationAggregatorTest {
         var t0 = 0L;
         // First reach HEALTHY so cold-boot honor allows DECOMMISSIONED
         aggregator.onObservation(SELF, healthy(TARGET), 3, t0);
-        aggregator.onObservation(OBS_A, healthy(TARGET), 3, t0);
-        // Now 2 of 3 observers report DEPARTED
-        aggregator.onObservation(SELF, departed(TARGET), 3, t0 + 100);
-        var emitted = aggregator.onObservation(OBS_A, departed(TARGET), 3, t0 + 100);
+        // A single DEPARTED observation now emits DECOMMISSIONED
+        var emitted = aggregator.onObservation(SELF, departed(TARGET), 3, t0 + 100);
         assertThat(emitted.isPresent()).isTrue();
         assertThat(emitted.unwrap().newState()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
     }

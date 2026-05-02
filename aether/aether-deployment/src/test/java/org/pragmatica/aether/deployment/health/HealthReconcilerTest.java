@@ -139,31 +139,26 @@ class HealthReconcilerTest {
 
     @Nested class StepFailures {
         @Test
-        void reconciler_cooldown_suppressesRepeatedWritesWithinWindow() throws InterruptedException {
-            // 30s cooldown → second drain attempt should be ignored on the SWIM-driven path.
-            // requestDrain bypasses cooldown (operator override), so we simulate via observations.
+        void reconciler_cooldown_suppressesRepeatedWritesWithinWindow() {
+            // 30s cooldown → after a SWIM-driven aggregated edge produces a write,
+            // a subsequent same-state SWIM-driven edge within the cooldown window must
+            // be suppressed. With single-observer leader-gated mode, leader's local SWIM
+            // observation alone reaches the threshold, so this is now directly testable.
             var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 30_000L, 5_000L, 30_000L);
             var reconciler = buildReconciler(3, config);
             reconciler.start();
             onDutyCount.set(3);
-            // Cluster of 3, k=2: two HEALTHY observations (SELF + simulated other observer)
+            // First SWIM HEALTHY observation: leader writes ON_DUTY, recordWrite stamps lastWriteAt.
             reconciler.onSwimObservation(healthy(TARGET));
-            // Single-observer can't reach k=2 in tests: but we can prove the API path with
-            // requestDrain followed by a second SWIM-driven attempt at the same edge —
-            // requestDrain populates lastWriteAt, suppressing same-state SWIM edges.
-            lifecycleStore.put(TARGET,
-                               NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, 0L));
-            reconciler.requestDrain(TARGET);
             assertThat(applier.commands).hasSize(1);
-            // Now SWIM observes target as faulty — but cooldown should suppress
+            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
+            // Reset edge state in aggregator (recordWrite did this) — to force a fresh edge
+            // emission, the aggregator's lastAggregated must differ from the next observation.
+            // We simulate this by clearing the recorded commands and observing FAULTY: with
+            // a recently-written lastWriteAt, the cooldown gate must suppress the FAULTY write.
             applier.commands.clear();
-            // Force aggregated edge by sending healthy twice (k=2 reached implicitly via
-            // dedup logic isn't possible from a single observer; rely on requestDrain test).
-            // This test asserts the cooldown gate state via direct API: a second requestDrain
-            // also writes (operator commands bypass cooldown), but a SWIM-driven write at the
-            // same state for the cooldown window would be rejected.
-            // For the scope of R3, the cooldown logic is internal to handleAggregatedEdge —
-            // we verify by checking lastWriteAt updated on the prior write.
+            reconciler.onSwimObservation(faulty(TARGET));
+            // Cooldown still active → suppressed
             assertThat(applier.commands).isEmpty();
         }
 
@@ -280,6 +275,43 @@ class HealthReconcilerTest {
         }
     }
 
+    @Nested class LeaderGate {
+        @Test
+        void handleAggregatedEdge_followerObservation_doesNotProposeWrite() {
+            // Follower (leader != self) must NOT propose lifecycle writes from its own
+            // SWIM observations, even when the aggregator emits an edge.
+            var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 0L, 5_000L, 30_000L);
+            var reconciler = buildReconciler(1, config);
+            reconciler.start();
+            // Demote self: another node is leader
+            leaderRef.set(nodeId("other-leader").unwrap());
+            onDutyCount.set(1);
+            // SWIM observation that would otherwise emit ON_DUTY edge
+            reconciler.onSwimObservation(healthy(TARGET));
+            // No lifecycle write proposed for TARGET
+            assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
+                    .as("Follower must not propose lifecycle writes for SWIM-driven edges")
+                    .isTrue();
+        }
+
+        @Test
+        void handleAggregatedEdge_leaderObservation_proposesWrite() {
+            // Leader (self == leader) MUST propose lifecycle writes when the aggregator
+            // emits an edge from its own SWIM observation.
+            var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 0L, 5_000L, 30_000L);
+            var reconciler = buildReconciler(1, config);
+            reconciler.start();
+            // Self is leader (default in setUp), but assert explicitly
+            leaderRef.set(SELF);
+            onDutyCount.set(1);
+            reconciler.onSwimObservation(healthy(TARGET));
+            assertThat(applier.commands.stream().anyMatch(HealthReconcilerTest::isLifecycleWriteFor))
+                    .as("Leader proposes lifecycle write on aggregated edge")
+                    .isTrue();
+            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
+        }
+    }
+
     @Nested class PhaseTransitions {
         @Test
         void reconciler_phaseTransitionsBootingToNormal_onStableLeaderAndOnDuty() {
@@ -361,6 +393,12 @@ class HealthReconcilerTest {
         if (!(cmd instanceof KVCommand.Put<?, ?> put)) {return false;}
         if (!(put.key() instanceof AetherKey.ClusterPhaseKey)) {return false;}
         return put.value() instanceof ClusterPhaseValue v && v.phase() == expected;
+    }
+
+    private static boolean isLifecycleWriteFor(KVCommand<?> cmd) {
+        if (!(cmd instanceof KVCommand.Put<?, ?> put)) {return false;}
+        if (!(put.key() instanceof NodeLifecycleKey lifecycleKey)) {return false;}
+        return lifecycleKey.nodeId().equals(TARGET);
     }
 
     private static boolean isSelfOnDutyWrite(KVCommand<?> cmd) {
