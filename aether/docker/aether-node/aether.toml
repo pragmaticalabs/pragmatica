@@ -32,6 +32,10 @@ api_key = "aether-integration-test-key"
 docker_gid = "${env:DOCKER_GID}"
 cluster_port = "6000"
 socket_path = "/var/run/docker.sock"
+# Dev/integration convenience: publish each CTM-provisioned container's management
+# port to the host (managementPortBase + nodeIndex). Production keeps overlay-only
+# behavior by setting this to false (default).
+expose_host_ports = "true"
 
 [database]
 username = "forge"

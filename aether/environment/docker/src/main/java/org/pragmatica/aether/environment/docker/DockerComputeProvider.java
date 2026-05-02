@@ -142,6 +142,10 @@ import static org.pragmatica.lang.Result.success;
             command.add("--group-add");
             command.add(config.dockerGid());
         }
+        if (config.exposeHostPorts()) {
+            command.add("-p");
+            command.add((config.managementPortBase() + nodeIndex) + ":8080");
+        }
         addSpecLabels(command, spec.tags());
         addPlacementLabels(command, spec.placement());
         command.add(config.imageName());

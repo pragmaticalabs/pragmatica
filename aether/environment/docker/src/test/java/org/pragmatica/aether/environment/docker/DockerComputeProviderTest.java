@@ -37,6 +37,68 @@ class DockerComputeProviderTest {
     }
 
     @Nested
+    class BuildRunCommandTests {
+
+        @Test
+        void buildRunCommand_exposeHostPortsFalse_doesNotAddPortMapping() {
+            testRunner.nextResponse = Promise.success("container-id-0");
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.lastCommand).doesNotContain("-p");
+        }
+
+        @Test
+        void buildRunCommand_exposeHostPortsTrue_addsManagementPortMapping() {
+            var exposingConfig = DockerConfig.dockerConfig("aether-node:local",
+                                                            "aether-network",
+                                                            5160,
+                                                            8080,
+                                                            6000,
+                                                            "/var/run/docker.sock",
+                                                            "",
+                                                            "",
+                                                            true)
+                                              .unwrap();
+            var exposingRunner = new TestDockerCommandRunner();
+            exposingRunner.nextResponse = Promise.success("container-id-0");
+            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, exposingConfig).unwrap();
+
+            exposingProvider.provision(InstanceType.ON_DEMAND)
+                            .await()
+                            .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(exposingRunner.lastCommand).containsSequence("-p", "5160:8080");
+        }
+
+        @Test
+        void buildRunCommand_exposeHostPortsTrue_secondNodeUsesNextPort() {
+            var exposingConfig = DockerConfig.dockerConfig("aether-node:local",
+                                                            "aether-network",
+                                                            5160,
+                                                            8080,
+                                                            6000,
+                                                            "/var/run/docker.sock",
+                                                            "",
+                                                            "",
+                                                            true)
+                                              .unwrap();
+            var exposingRunner = new TestDockerCommandRunner();
+            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, exposingConfig).unwrap();
+
+            exposingRunner.nextResponse = Promise.success("container-id-0");
+            exposingProvider.provision(InstanceType.ON_DEMAND).await();
+
+            exposingRunner.nextResponse = Promise.success("container-id-1");
+            exposingProvider.provision(InstanceType.ON_DEMAND).await();
+
+            assertThat(exposingRunner.lastCommand).containsSequence("-p", "5161:8080");
+        }
+    }
+
+    @Nested
     class ProvisionTests {
 
         @Test

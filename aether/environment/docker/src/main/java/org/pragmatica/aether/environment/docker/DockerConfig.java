@@ -16,7 +16,8 @@ public record DockerConfig(String imageName,
                            int clusterPort,
                            String socketPath,
                            String apiKey,
-                           String dockerGid) {
+                           String dockerGid,
+                           boolean exposeHostPorts) {
     private static final String DEFAULT_IMAGE_NAME = "aether-node:local";
 
     private static final String DEFAULT_NETWORK_NAME = "aether-network";
@@ -33,6 +34,8 @@ public record DockerConfig(String imageName,
 
     private static final String DEFAULT_DOCKER_GID = "";
 
+    private static final boolean DEFAULT_EXPOSE_HOST_PORTS = false;
+
     public static Result<DockerConfig> dockerConfig(String imageName,
                                                     String networkName,
                                                     int managementPortBase,
@@ -41,6 +44,26 @@ public record DockerConfig(String imageName,
                                                     String socketPath,
                                                     String apiKey,
                                                     String dockerGid) {
+        return dockerConfig(imageName,
+                            networkName,
+                            managementPortBase,
+                            appPortBase,
+                            clusterPort,
+                            socketPath,
+                            apiKey,
+                            dockerGid,
+                            DEFAULT_EXPOSE_HOST_PORTS);
+    }
+
+    public static Result<DockerConfig> dockerConfig(String imageName,
+                                                    String networkName,
+                                                    int managementPortBase,
+                                                    int appPortBase,
+                                                    int clusterPort,
+                                                    String socketPath,
+                                                    String apiKey,
+                                                    String dockerGid,
+                                                    boolean exposeHostPorts) {
         return success(new DockerConfig(imageName,
                                         networkName,
                                         managementPortBase,
@@ -48,7 +71,8 @@ public record DockerConfig(String imageName,
                                         clusterPort,
                                         socketPath,
                                         apiKey,
-                                        dockerGid));
+                                        dockerGid,
+                                        exposeHostPorts));
     }
 
     public static Result<DockerConfig> dockerConfig() {
@@ -59,6 +83,7 @@ public record DockerConfig(String imageName,
                             DEFAULT_CLUSTER_PORT,
                             DEFAULT_SOCKET_PATH,
                             DEFAULT_API_KEY,
-                            DEFAULT_DOCKER_GID);
+                            DEFAULT_DOCKER_GID,
+                            DEFAULT_EXPOSE_HOST_PORTS);
     }
 }
