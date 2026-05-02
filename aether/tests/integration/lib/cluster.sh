@@ -293,6 +293,61 @@ wait_for_node_count() {
     wait_for "${expected} nodes" "[ \$(cluster_node_count) -eq ${expected} ]" "$timeout"
 }
 
+# Faster variant of wait_for_node_count for tight scaling polls (test-02/03 scale up/down).
+# `cluster_node_count` round-trips through `_resolve_live_endpoint` (one curl probe) and
+# then through `api_get` (a second curl to fetch topology). On Hetzner remote each curl
+# can spend up to 2s on a stalled endpoint — combined with the 2s `wait_for` interval
+# and JSON parsing, an iteration can take 4-6s, so a 300s timeout only buys ~50-75
+# iterations. This helper bypasses the double probe by curling a known-live port
+# directly with a tight 2s timeout, polling once per second.
+#
+# Spec deviation justification (per project rule "prefer aether CLI"): this is a
+# tight polling loop where CLI/double-probe overhead dominates. Used only inside
+# scaling tests; functional cluster ops still go through the CLI / api_get layer.
+#
+# Endpoint discovery rotates through MGMT_PORT..MGMT_PORT+NODE_COUNT-1, picking the
+# first one that answers /health/live within 1s. JSON path: `.coreCount` from
+# /api/cluster/topology — same field `cluster_node_count` reads.
+wait_for_node_count_fast() {
+    local expected="$1" timeout="${2:-120}"
+    local deadline=$(($(date +%s) + timeout))
+    local last_count="?"
+    log_info "Waiting for: ${expected} nodes (timeout: ${timeout}s, fast poll)"
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        local endpoint=""
+        local base_port="${MGMT_PORT}"
+        for i in $(seq 0 $((NODE_COUNT - 1))); do
+            local port=$((base_port + i))
+            local candidate="http://${TARGET_HOST}:${port}"
+            if curl -sf -m 1 -H "X-API-Key: ${API_KEY}" "${candidate}/health/live" >/dev/null 2>&1; then
+                endpoint="${candidate}"
+                break
+            fi
+        done
+        if [ -n "$endpoint" ]; then
+            local body
+            body=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
+                        "${endpoint}/api/cluster/topology" 2>/dev/null) || body=""
+            if [ -n "$body" ]; then
+                # `|| true` guards the pipeline against `set -euo pipefail` aborts
+                # when the response has not yet populated `coreCount` (cold cluster).
+                last_count=$(printf '%s' "$body" \
+                    | grep -o '"coreCount"[[:space:]]*:[[:space:]]*[0-9]*' \
+                    | head -1 \
+                    | grep -o '[0-9]*$' || true)
+                last_count="${last_count:-0}"
+                if [ "$last_count" = "$expected" ]; then
+                    log_pass "${expected} nodes (fast poll)"
+                    return 0
+                fi
+            fi
+        fi
+        sleep 1
+    done
+    log_fail "wait_for_node_count_fast: expected ${expected}, last seen '${last_count}' after ${timeout}s"
+    return 1
+}
+
 wait_for_leader() {
     # Fix I: cluster-B destructive suites observe legitimate cold-boot leader-election
     # of 60–120s after `restart_all_nodes` (5x JVM cold start + QUIC mesh formation +

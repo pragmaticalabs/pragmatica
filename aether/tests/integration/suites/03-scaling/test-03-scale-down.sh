@@ -21,7 +21,10 @@ test_seed_config() {
 test_scale_up_to_7() {
     log_info "Scaling up to 7 nodes first"
     scale_cluster 7
-    wait_for_node_count 7 180
+    # Fast-poll variant (see lib/cluster.sh:wait_for_node_count_fast) — avoids
+    # the CLI/double-curl per-iter cost that pushed scale-up past 300s on
+    # Hetzner remote even when the cluster was actually at 7.
+    wait_for_node_count_fast 7 180
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "7" "Scaled to 7 nodes"
@@ -37,8 +40,8 @@ test_scale_down_under_load() {
     log_info "Scaling down to 5 under load"
     scale_cluster 5
 
-    # Wait for scale-down
-    wait_for_node_count 5 180
+    # Wait for scale-down (fast poll — see test-02-scale-up.sh comment)
+    wait_for_node_count_fast 5 180
 
     # Wait for load to complete
     for pid in "${LOAD_PIDS[@]}"; do
