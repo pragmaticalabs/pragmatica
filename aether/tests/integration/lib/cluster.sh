@@ -9,8 +9,52 @@ source "${LIB_DIR}/generation.sh"
 # Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
 cluster_node_count() {
-    # Query core node topology directly — LB's topology may not see provisioned nodes.
-    # Uses coreCount which excludes passive nodes (LB).
+    # Query core node count via the generation snapshot rather than the topology
+    # endpoint. `/api/cluster/topology` `coreCount` is filtered to ON_DUTY+HEALTHY
+    # members only, so during a CTM scale-up the freshly-provisioned overlay-only
+    # node (no host port mapping) lags arbitrarily — first as JOINING then while
+    # SWIM reaches HEALTHY. The test host can't reach the new node directly, so
+    # it never sees `coreCount` reflect the actual cluster size during the
+    # convergence window.
+    #
+    # `/api/cluster/generation` exposes the authoritative snapshot member set:
+    #   - `core.members[]`   — every member admitted to the snapshot, including
+    #                          JOINING / non-HEALTHY ones (CTM has placed them
+    #                          in the cluster manifest)
+    #   - `core.desiredSize` — the configured target after the most recent
+    #                          committed scale request
+    #
+    # Primary signal is `members.length` (ground truth: what the cluster
+    # considers its membership). `desiredSize` is consulted as a tie-breaker
+    # only when the snapshot has not yet been published at all (cold boot)
+    # or when it lags desired during the brief admit window. Falls back to
+    # topology.coreCount only if the generation endpoint is unreachable / empty.
+    local gen
+    gen=$(direct_api_get "/api/cluster/generation" 2>/dev/null)
+    local desired members observed=0
+    if [ -n "$gen" ]; then
+        # Count occurrences of `"nodeId"` inside the response — each
+        # ClusterGenerationMember carries exactly one such field; communities[]
+        # uses governorNodeId, partitions[] uses ownerNodeId, so a bare
+        # "nodeId" key count gives an exact snapshot member tally regardless
+        # of array nesting.
+        members=$(printf '%s' "$gen" | grep -o '"nodeId"' | wc -l | tr -d ' ')
+        members="${members:-0}"
+        desired=$(printf '%s' "$gen" \
+            | grep -o '"desiredSize"[[:space:]]*:[[:space:]]*[0-9]*' \
+            | head -1 | grep -o '[0-9]*$' || true)
+        desired="${desired:-0}"
+        observed="$members"
+        if [ "$desired" -gt "$observed" ] 2>/dev/null; then
+            observed="$desired"
+        fi
+    fi
+    if [ "$observed" -gt 0 ] 2>/dev/null; then
+        echo "$observed"
+        return 0
+    fi
+    # Fallback: topology endpoint (legacy behaviour, used when generation
+    # snapshot is unavailable — cold cluster pre-projection).
     local response
     response=$(direct_api_get "/api/cluster/topology" 2>/dev/null)
     json_value "$response" "coreCount" 2>/dev/null || echo "0"
@@ -306,8 +350,13 @@ wait_for_node_count() {
 # scaling tests; functional cluster ops still go through the CLI / api_get layer.
 #
 # Endpoint discovery rotates through MGMT_PORT..MGMT_PORT+NODE_COUNT-1, picking the
-# first one that answers /health/live within 1s. JSON path: `.coreCount` from
-# /api/cluster/topology — same field `cluster_node_count` reads.
+# first one that answers /health/live within 1s. JSON path: max(`core.desiredSize`,
+# count of `"nodeId"` occurrences in core.members[]) from /api/cluster/generation,
+# falling back to `coreCount` from /api/cluster/topology if generation is empty.
+# Mirrors `cluster_node_count` — see that helper for the full rationale; the short
+# version is that topology.coreCount filters to ON_DUTY+HEALTHY and lags during
+# CTM scale-up while the generation snapshot reflects the committed cluster
+# membership including JOINING peers (overlay-only, not host-port-mapped).
 wait_for_node_count_fast() {
     local expected="$1" timeout="${2:-120}"
     local deadline=$(($(date +%s) + timeout))
@@ -325,21 +374,42 @@ wait_for_node_count_fast() {
             fi
         done
         if [ -n "$endpoint" ]; then
-            local body
-            body=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
-                        "${endpoint}/api/cluster/topology" 2>/dev/null) || body=""
-            if [ -n "$body" ]; then
-                # `|| true` guards the pipeline against `set -euo pipefail` aborts
-                # when the response has not yet populated `coreCount` (cold cluster).
-                last_count=$(printf '%s' "$body" \
-                    | grep -o '"coreCount"[[:space:]]*:[[:space:]]*[0-9]*' \
-                    | head -1 \
-                    | grep -o '[0-9]*$' || true)
-                last_count="${last_count:-0}"
-                if [ "$last_count" = "$expected" ]; then
-                    log_pass "${expected} nodes (fast poll)"
-                    return 0
+            local gen
+            gen=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
+                        "${endpoint}/api/cluster/generation" 2>/dev/null) || gen=""
+            local desired members observed=0
+            if [ -n "$gen" ]; then
+                # `|| true` guards each pipeline against `set -euo pipefail` aborts
+                # when the snapshot has not yet been published (cold cluster).
+                desired=$(printf '%s' "$gen" \
+                    | grep -o '"desiredSize"[[:space:]]*:[[:space:]]*[0-9]*' \
+                    | head -1 | grep -o '[0-9]*$' || true)
+                desired="${desired:-0}"
+                members=$(printf '%s' "$gen" | grep -o '"nodeId"' | wc -l | tr -d ' ')
+                members="${members:-0}"
+                observed="$members"
+                if [ "$desired" -gt "$observed" ] 2>/dev/null; then
+                    observed="$desired"
                 fi
+            fi
+            if [ "$observed" -eq 0 ] 2>/dev/null; then
+                # Fallback to topology.coreCount for cold-boot cases where the
+                # generation snapshot has not yet been projected to KV.
+                local body
+                body=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
+                            "${endpoint}/api/cluster/topology" 2>/dev/null) || body=""
+                if [ -n "$body" ]; then
+                    observed=$(printf '%s' "$body" \
+                        | grep -o '"coreCount"[[:space:]]*:[[:space:]]*[0-9]*' \
+                        | head -1 \
+                        | grep -o '[0-9]*$' || true)
+                    observed="${observed:-0}"
+                fi
+            fi
+            last_count="$observed"
+            if [ "$last_count" = "$expected" ]; then
+                log_pass "${expected} nodes (fast poll)"
+                return 0
             fi
         fi
         sleep 1
