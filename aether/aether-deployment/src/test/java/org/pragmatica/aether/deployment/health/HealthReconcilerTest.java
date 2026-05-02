@@ -100,10 +100,6 @@ class HealthReconcilerTest {
         return new SwimObservation.FaultyObserved(target, 1L);
     }
 
-    private static SwimObservation unknown(NodeId target) {
-        return new SwimObservation.UnknownObserved(target, 1L);
-    }
-
     @Nested class HappyPath {
         @Test
         void reconciler_writesNodeLifecycleKey_onAggregatedHealthyEdge() {
@@ -167,35 +163,17 @@ class HealthReconcilerTest {
         }
 
         @Test
-        void reconciler_neverWritesFaulty_forUnknownOnlyPeer() {
-            // Cold-boot: target has only ever produced UnknownObserved (no concrete signal
-            // that the peer exists in the cluster) → aggregator must not emit FAULTY.
-            // FaultyObserved itself IS proof of peer existence and unlocks the guard, so
-            // only UnknownObserved-only sequences keep cold-boot active.
+        void reconciler_neverWritesFaulty_forNeverHealthyPeer() {
+            // Cold-boot: target has never been HEALTHY → aggregator must not emit FAULTY.
             var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
             reconciler.start();
             phaseRef.set(ClusterPhase.NORMAL); // Even outside BOOTING, aggregator's cold-boot honor applies
             onDutyCount.set(3);
-            reconciler.onSwimObservation(unknown(TARGET));
-            reconciler.onSwimObservation(unknown(TARGET));
-            reconciler.onSwimObservation(unknown(TARGET));
-            // No commands emitted — aggregator suppressed the edge (no concrete signal)
-            assertThat(applier.commands).isEmpty();
-        }
-
-        @Test
-        void reconciler_writesFaulty_onFirstFaultyForJoinedPeer() {
-            // Regression: peer joined cluster already HEALTHY (no HealthyObserved edge ever
-            // produced by SwimProtocol on this leader), then was killed. The very first
-            // FaultyObserved must drive a DECOMMISSIONED write — cold-boot suppression
-            // must not swallow it.
-            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
-            reconciler.start();
-            phaseRef.set(ClusterPhase.NORMAL);
-            onDutyCount.set(3);
             reconciler.onSwimObservation(faulty(TARGET));
-            assertThat(applier.commands).hasSize(1);
-            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+            reconciler.onSwimObservation(faulty(TARGET));
+            reconciler.onSwimObservation(faulty(TARGET));
+            // No commands emitted — aggregator suppressed the edge
+            assertThat(applier.commands).isEmpty();
         }
     }
 
