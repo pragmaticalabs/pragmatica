@@ -4,11 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Functions.Fn1;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -19,17 +21,22 @@ import java.util.List;
     record unused() implements BootstrapCleanup{}
 
     static Result<Unit> cleanup(BootstrapState state) {
+        return cleanup(state, ProviderResolver::resolveCloudCompute);
+    }
+
+    static Result<Unit> cleanup(BootstrapState state, Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         System.out.println("Cleaning up resources for cluster '" + state.clusterName() + "'...");
         var resources = new ArrayList<>(state.createdResources());
         Collections.reverse(resources);
-        var failures = collectCleanupFailures(resources);
+        var failures = collectCleanupFailures(resources, cloudComputeResolver);
         return finishCleanup(state, failures);
     }
 
-    private static List<String> collectCleanupFailures(List<CreatedResource> resources) {
+    private static List<String> collectCleanupFailures(List<CreatedResource> resources,
+                                                       Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         var failures = new ArrayList<String>();
         for (var resource : resources) {
-            var result = destroyResource(resource);
+            var result = destroyResource(resource, cloudComputeResolver);
             logResourceResult(result, resource);
             var _ = result.onFailure(cause -> failures.add(resource.description() + ": " + cause.message()));
         }
@@ -46,9 +53,10 @@ import java.util.List;
         return BootstrapStatePersistence.delete(state.clusterName());
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> destroyResource(CreatedResource resource) {
+    @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> destroyResource(CreatedResource resource,
+                                                                                  Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         return switch (resource){
-            case CreatedResource.ProvisionedVm vm -> destroyVm(vm);
+            case CreatedResource.ProvisionedVm vm -> destroyVm(vm, cloudComputeResolver);
             case CreatedResource.FirewallRule rule -> deleteFirewallRule(rule);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
             case CreatedResource.DockerContainer container -> removeContainer(container);
@@ -56,14 +64,15 @@ import java.util.List;
         };
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> destroyVm(CreatedResource.ProvisionedVm vm) {
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> destroyVm(CreatedResource.ProvisionedVm vm,
+                                                                           Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         System.out.printf("  Destroying VM %s (provider: %s)...%n", vm.resourceId(), vm.provider());
-        return ProviderResolver.resolveCloudCompute(vm.provider())
+        return cloudComputeResolver.apply(vm.provider())
                                                    .flatMap(compute -> terminateInstance(compute,
                                                                                          vm.resourceId()));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> terminateInstance(org.pragmatica.aether.environment.ComputeProvider compute,
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> terminateInstance(ComputeProvider compute,
                                                                                   String resourceId) {
         return InstanceId.instanceId(resourceId).flatMap(id -> compute.terminate(id).await());
     }

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -58,14 +59,18 @@ import static org.pragmatica.lang.Result.success;
                                    .entrySet()) {
             var sourceName = entry.getKey();
             var source = entry.getValue();
-            for (var node : allNodes) {if (node.nodeId().startsWith(sourceName + "-")) {state = state.withResource(CreatedResource.ProvisionedVm.provisionedVm(source.type()
-                                                                                                                                                                          .value(),
+            var providerName = resolveProviderName(source);
+            for (var node : allNodes) {if (node.nodeId().startsWith(sourceName + "-")) {state = state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
                                                                                                                                                                node.nodeId(),
                                                                                                                                                                sourceName,
                                                                                                                                                                extractRole(node.nodeId(),
                                                                                                                                                                            sourceName)));}}
         }
         return state;
+    }
+
+    static String resolveProviderName(SourceProfile source) {
+        return source.provider().map(CloudProviderName::value).or(source.type().value());
     }
 
     private static String extractRole(String nodeId, String sourceName) {
