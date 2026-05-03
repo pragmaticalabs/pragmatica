@@ -23,7 +23,7 @@ A simple integer that identifies the **format version** of the generated envelop
 
 ## Current Version
 
-`ENVELOPE_FORMAT_VERSION = 1004` (defined in `ManifestGenerator.java`)
+`ENVELOPE_FORMAT_VERSION = 1000` (defined in `ManifestGenerator.java`)
 
 ### Version History
 
