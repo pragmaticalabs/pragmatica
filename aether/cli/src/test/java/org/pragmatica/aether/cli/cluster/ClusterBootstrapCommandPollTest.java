@@ -24,12 +24,15 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Regression tests for Bug 19: post-bootstrap `--wait` polled the wrong cluster-status route
-/// (`/api/health`) and matched the wrong success token (`"healthy"`) instead of reading
-/// `clusterPhase` from `/api/status`. These tests pin the corrected behavior:
-///   - Poll route is `CLUSTER_STATUS` (resolves to `/api/status`).
-///   - JSON field consulted is `clusterPhase`.
-///   - Success token is `"NORMAL"` (matches `ClusterPhase` enum, NOT a fabricated `"CONVERGED"`).
+/// Regression tests for Bug 19 (corrected by Bug 19a): post-bootstrap `--wait` queries the
+/// cluster-deployment-status endpoint to determine readiness. These tests pin the behavior:
+///   - Poll route is `CLUSTER_CONFIG_STATUS` (resolves to `/api/cluster/status`).
+///   - JSON field consulted is `state` (the `ClusterDeploymentState` enum name on the wire).
+///   - Success token is `"CONVERGED"`.
+/// (Earlier Bug 19 fix used `/api/status` + `clusterPhase` + `NORMAL`; that endpoint exposes
+/// per-node uptime and a node summary but no cluster-deployment phase, so the poll never
+/// converged in production. Empirical verification on Hetzner: `/api/cluster/status` returns
+/// `{"state":"CONVERGED",...}` once the cluster reaches steady state.)
 class ClusterBootstrapCommandPollTest {
 
     private static PrintStream silentStream() {
@@ -37,27 +40,27 @@ class ClusterBootstrapCommandPollTest {
     }
 
     @Test
-    void waitForClusterPhase_succeeds_whenStatusReturnsNormalPhase() {
+    void waitForClusterPhase_succeeds_whenStateReturnsConverged() {
         var routeSeen = new AtomicReference<ManagementRoute>();
         var attempts = new AtomicInteger();
         var fetcher = (Function<ManagementRoute, Result<String>>) route -> {
             routeSeen.set(route);
             var n = attempts.incrementAndGet();
-            return Result.success("{\"clusterPhase\":\"" + (n == 1 ? "BOOTING" : "NORMAL") + "\"}");
+            return Result.success("{\"state\":\"" + (n == 1 ? "PROVISIONING" : "CONVERGED") + "\"}");
         };
 
         var rc = ClusterBootstrapCommand.waitForClusterPhase(fetcher, 5, 1, silentStream(), silentStream());
 
-        assertAll("converges on NORMAL via CLUSTER_STATUS",
+        assertAll("converges on CONVERGED via CLUSTER_CONFIG_STATUS",
                   () -> assertEquals(ExitCode.SUCCESS, rc),
-                  () -> assertSame(ManagementRoute.CLUSTER_STATUS, routeSeen.get(), "must poll /api/status, not /api/health"),
+                  () -> assertSame(ManagementRoute.CLUSTER_CONFIG_STATUS, routeSeen.get(), "must poll /api/cluster/status, not /api/status or /api/health"),
                   () -> assertTrue(attempts.get() >= 2, "should have polled at least twice"));
     }
 
     @Test
-    void waitForClusterPhase_timesOut_whenPhaseStaysBooting() {
+    void waitForClusterPhase_timesOut_whenStateStaysProvisioning() {
         var fetcher = (Function<ManagementRoute, Result<String>>) _ ->
-                Result.success("{\"clusterPhase\":\"BOOTING\"}");
+                Result.success("{\"state\":\"PROVISIONING\"}");
 
         var rc = ClusterBootstrapCommand.waitForClusterPhase(fetcher, 0, 1, silentStream(), silentStream());
 
@@ -65,17 +68,17 @@ class ClusterBootstrapCommandPollTest {
     }
 
     @Test
-    void queryClusterPhase_returnsClusterPhaseField_notStatusField() {
-        // Defensive: HealthResponse uses field "status" with value "healthy"; StatusResponse uses
-        // field "clusterPhase" with enum-name values. Verify we do NOT regress to reading "status".
+    void queryClusterPhase_returnsStateField_notStatusField() {
+        // Defensive: /api/health returns {"status": "UP"|"DOWN"}; /api/cluster/status returns
+        // {"state": <ClusterDeploymentState>}. Verify we read `state`, not `status`.
         var fetcher = (Function<ManagementRoute, Result<String>>) _ ->
-                Result.success("{\"status\":\"healthy\",\"clusterPhase\":\"RECOVERING\"}");
+                Result.success("{\"status\":\"UP\",\"state\":\"SCALING\"}");
 
         var phase = ClusterBootstrapCommand.queryClusterPhase(fetcher);
 
-        assertAll("reads clusterPhase, not status",
-                  () -> assertEquals("RECOVERING", phase),
-                  () -> assertNotEquals("healthy", phase));
+        assertAll("reads state, not status",
+                  () -> assertEquals("SCALING", phase),
+                  () -> assertNotEquals("UP", phase));
     }
 
     @Test
@@ -89,25 +92,26 @@ class ClusterBootstrapCommandPollTest {
     @Test
     void queryClusterPhase_returnsUnknown_whenFieldMissing() {
         var fetcher = (Function<ManagementRoute, Result<String>>) _ ->
-                Result.success("{\"otherField\":\"NORMAL\"}");
+                Result.success("{\"otherField\":\"CONVERGED\"}");
 
         assertEquals("UNKNOWN", ClusterBootstrapCommand.queryClusterPhase(fetcher));
     }
 
     @Test
-    void isReady_acceptsNormalCaseInsensitive() {
-        assertAll(() -> assertTrue(ClusterBootstrapCommand.isReady("NORMAL")),
-                  () -> assertTrue(ClusterBootstrapCommand.isReady("normal")),
-                  () -> assertTrue(ClusterBootstrapCommand.isReady("Normal")));
+    void isReady_acceptsConvergedCaseInsensitive() {
+        assertAll(() -> assertTrue(ClusterBootstrapCommand.isReady("CONVERGED")),
+                  () -> assertTrue(ClusterBootstrapCommand.isReady("converged")),
+                  () -> assertTrue(ClusterBootstrapCommand.isReady("Converged")));
     }
 
     @Test
-    void isReady_rejectsLegacyHealthyToken() {
-        // Old (buggy) implementation matched "healthy". After fix, only NORMAL counts.
+    void isReady_rejectsNonConvergedTokens() {
+        // Only CONVERGED counts as ready; transient deployment states do not.
         assertAll(() -> assertEquals(false, ClusterBootstrapCommand.isReady("healthy")),
                   () -> assertEquals(false, ClusterBootstrapCommand.isReady("HEALTHY")),
-                  () -> assertEquals(false, ClusterBootstrapCommand.isReady("BOOTING")),
-                  () -> assertEquals(false, ClusterBootstrapCommand.isReady("RECOVERING")),
+                  () -> assertEquals(false, ClusterBootstrapCommand.isReady("NORMAL")),
+                  () -> assertEquals(false, ClusterBootstrapCommand.isReady("PROVISIONING")),
+                  () -> assertEquals(false, ClusterBootstrapCommand.isReady("SCALING")),
                   () -> assertEquals(false, ClusterBootstrapCommand.isReady("UNKNOWN")));
     }
 

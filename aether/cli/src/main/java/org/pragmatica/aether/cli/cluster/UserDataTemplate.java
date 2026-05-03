@@ -227,8 +227,17 @@ sealed interface UserDataTemplate {
         sb.append("# JVM-mode jar URL: ").append(jarUrl)
                  .append('\n');
         sb.append("# Override via [runtime.<name>] jar_url = \"...\" for prereleases or private mirrors.\n");
-        sb.append("if ! command -v java &> /dev/null; then\n");
-        sb.append("    apt-get update -qq && apt-get install -y -qq openjdk-21-jre-headless\n");
+        sb.append("# Aether-node is built with Java 25 (class file 69); Ubuntu 22.04 ships JDK 11/17/21,\n");
+        sb.append("# so we install Temurin 25 from Adoptium's apt repo to match the JAR's bytecode.\n");
+        sb.append("if ! command -v java &> /dev/null || ! java -version 2>&1 | grep -q '\"25'; then\n");
+        sb.append("    apt-get update -qq\n");
+        sb.append("    apt-get install -y -qq wget gnupg ca-certificates apt-transport-https\n");
+        sb.append("    mkdir -p /etc/apt/keyrings\n");
+        sb.append("    wget -qO /etc/apt/keyrings/adoptium.asc https://packages.adoptium.net/artifactory/api/gpg/key/public\n");
+        sb.append("    CODENAME=$(. /etc/os-release && echo \"${VERSION_CODENAME}\")\n");
+        sb.append("    echo \"deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb ${CODENAME} main\" > /etc/apt/sources.list.d/adoptium.list\n");
+        sb.append("    apt-get update -qq\n");
+        sb.append("    apt-get install -y -qq temurin-25-jre\n");
         sb.append("fi\n");
         sb.append("mkdir -p /opt/aether\n");
         sb.append("curl -fsSL -o /opt/aether/aether-node.jar \\\n");

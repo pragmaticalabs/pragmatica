@@ -39,9 +39,9 @@ import static org.pragmatica.lang.Option.option;
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    private static final String READY_PHASE = "NORMAL";
+    private static final String READY_PHASE = "CONVERGED";
 
-    private static final String CLUSTER_PHASE_FIELD = "clusterPhase";
+    private static final String CLUSTER_PHASE_FIELD = "state";
 
     private static final String UNKNOWN = "UNKNOWN";
 
@@ -213,7 +213,7 @@ import static org.pragmatica.lang.Option.option;
     }
 
     static String queryClusterPhase(Function<ManagementRoute, Result<String>> fetcher) {
-        return fetcher.apply(ManagementRoute.CLUSTER_STATUS).flatMap(MAPPER::readTree)
+        return fetcher.apply(ManagementRoute.CLUSTER_CONFIG_STATUS).flatMap(MAPPER::readTree)
                             .map(node -> node.path(CLUSTER_PHASE_FIELD).asText(UNKNOWN))
                             .or(UNKNOWN);
     }
