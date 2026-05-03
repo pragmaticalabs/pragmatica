@@ -16,8 +16,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
@@ -35,26 +37,38 @@ import static org.pragmatica.lang.Result.success;
     long DEFAULT_TIMEOUT_MS = 300_000;
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config) {
-        return bootstrap(config, false, false);
+        return bootstrap(config, false, false, List.of());
     }
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config, boolean resume, boolean fullCheck) {
-        if (resume) {return resumeBootstrap(config, fullCheck);}
-        return freshBootstrap(config, fullCheck);
+        return bootstrap(config, resume, fullCheck, List.of());
     }
 
-    private static Result<BootstrapResult> freshBootstrap(ClusterBootstrapConfig config, boolean fullCheck) {
-        return BootstrapPhaseValidate.execute(config, fullCheck).flatMap(ClusterBootstrapOrchestrator::runPhaseChain)
+    static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config,
+                                             boolean resume,
+                                             boolean fullCheck,
+                                             List<SshPublicKey> sshPublicKeys) {
+        if (resume) {return resumeBootstrap(config, fullCheck, sshPublicKeys);}
+        return freshBootstrap(config, fullCheck, sshPublicKeys);
+    }
+
+    private static Result<BootstrapResult> freshBootstrap(ClusterBootstrapConfig config,
+                                                          boolean fullCheck,
+                                                          List<SshPublicKey> sshPublicKeys) {
+        return BootstrapPhaseValidate.execute(config, fullCheck).map(ctx -> ctx.withSshPublicKeys(sshPublicKeys))
+                                             .flatMap(ClusterBootstrapOrchestrator::runPhaseChain)
                                              .onFailure(cause -> cleanupOnFailure(config.cluster().name(),
                                                                                   cause));
     }
 
-    private static Result<BootstrapResult> resumeBootstrap(ClusterBootstrapConfig config, boolean fullCheck) {
+    private static Result<BootstrapResult> resumeBootstrap(ClusterBootstrapConfig config,
+                                                           boolean fullCheck,
+                                                           List<SshPublicKey> sshPublicKeys) {
         var clusterName = config.cluster().name();
         return BootstrapStatePersistence.load(clusterName).toResult(new BootstrapError.ProvisionFailed(clusterName,
                                                                                                        "No bootstrap state found for resume"))
                                              .flatMap(state -> validateResumeState(state, config))
-                                             .flatMap(state -> resumeFromState(config, state))
+                                             .flatMap(state -> resumeFromState(config, state, sshPublicKeys))
                                              .onFailure(cause -> cleanupOnFailure(clusterName, cause));
     }
 
@@ -65,16 +79,25 @@ import static org.pragmatica.lang.Result.success;
         return success(state);
     }
 
-    private static Result<BootstrapResult> resumeFromState(ClusterBootstrapConfig config, BootstrapState state) {
+    private static Result<BootstrapResult> resumeFromState(ClusterBootstrapConfig config,
+                                                           BootstrapState state,
+                                                           List<SshPublicKey> sshPublicKeys) {
         System.out.println("Resuming bootstrap for cluster '" + state.clusterName() + "' from persisted state");
-        var ctx = BootstrapContext.bootstrapContext(config, state, List.of(), List.of());
+        var ctx = BootstrapContext.bootstrapContext(config,
+                                                    state,
+                                                    List.of(),
+                                                    List.of())
+        .withSshPublicKeys(sshPublicKeys);
         return runPhaseChain(ctx);
     }
 
     private static Result<BootstrapResult> runPhaseChain(BootstrapContext ctx) {
-        return executePhase(ctx, BootstrapPhase.PROVISION, BootstrapPhaseProvision::execute).flatMap(c -> executePhase(c,
-                                                                                                                       BootstrapPhase.COLLECT_ADDRESSES,
-                                                                                                                       BootstrapPhaseCollect::execute))
+        return executePhase(ctx, BootstrapPhase.UPLOAD_SSH_KEYS, BootstrapPhaseSshKey::execute).flatMap(c -> executePhase(c,
+                                                                                                                          BootstrapPhase.PROVISION,
+                                                                                                                          BootstrapPhaseProvision::execute))
+                           .flatMap(c -> executePhase(c,
+                                                      BootstrapPhase.COLLECT_ADDRESSES,
+                                                      BootstrapPhaseCollect::execute))
                            .flatMap(c -> executePhase(c, BootstrapPhase.DEPLOY_RUNTIME, BootstrapPhaseDeploy::execute))
                            .flatMap(c -> executePhase(c,
                                                       BootstrapPhase.CLUSTER_FORMATION,
@@ -205,28 +228,68 @@ import static org.pragmatica.lang.Result.success;
                             BootstrapState state,
                             List<ProvisionedNode> nodes,
                             List<NodeAddress> addresses,
-                            Option<String> apiKey) {
+                            Option<String> apiKey,
+                            List<SshPublicKey> sshPublicKeys,
+                            Map<String, List<Long>> sshKeyIdsByProvider) {
         static BootstrapContext bootstrapContext(ClusterBootstrapConfig config,
                                                  BootstrapState state,
                                                  List<ProvisionedNode> nodes,
                                                  List<NodeAddress> addresses) {
-            return new BootstrapContext(config, state, List.copyOf(nodes), List.copyOf(addresses), none());
+            return new BootstrapContext(config,
+                                        state,
+                                        List.copyOf(nodes),
+                                        List.copyOf(addresses),
+                                        none(),
+                                        List.of(),
+                                        Map.of());
         }
 
         BootstrapContext withNodes(List<ProvisionedNode> newNodes) {
-            return new BootstrapContext(config, state, List.copyOf(newNodes), addresses, apiKey);
+            return new BootstrapContext(config,
+                                        state,
+                                        List.copyOf(newNodes),
+                                        addresses,
+                                        apiKey,
+                                        sshPublicKeys,
+                                        sshKeyIdsByProvider);
         }
 
         BootstrapContext withAddresses(List<NodeAddress> newAddresses) {
-            return new BootstrapContext(config, state, nodes, List.copyOf(newAddresses), apiKey);
+            return new BootstrapContext(config,
+                                        state,
+                                        nodes,
+                                        List.copyOf(newAddresses),
+                                        apiKey,
+                                        sshPublicKeys,
+                                        sshKeyIdsByProvider);
         }
 
         BootstrapContext withApiKey(String key) {
-            return new BootstrapContext(config, state, nodes, addresses, Option.some(key));
+            return new BootstrapContext(config,
+                                        state,
+                                        nodes,
+                                        addresses,
+                                        Option.some(key),
+                                        sshPublicKeys,
+                                        sshKeyIdsByProvider);
         }
 
         BootstrapContext withState(BootstrapState newState) {
-            return new BootstrapContext(config, newState, nodes, addresses, apiKey);
+            return new BootstrapContext(config, newState, nodes, addresses, apiKey, sshPublicKeys, sshKeyIdsByProvider);
+        }
+
+        BootstrapContext withSshPublicKeys(List<SshPublicKey> keys) {
+            return new BootstrapContext(config, state, nodes, addresses, apiKey, List.copyOf(keys), sshKeyIdsByProvider);
+        }
+
+        BootstrapContext withSshKeyIds(String provider, List<Long> ids) {
+            var merged = new HashMap<String, List<Long>>(sshKeyIdsByProvider);
+            merged.put(provider, List.copyOf(ids));
+            return new BootstrapContext(config, state, nodes, addresses, apiKey, sshPublicKeys, Map.copyOf(merged));
+        }
+
+        List<Long> sshKeyIdsFor(String provider) {
+            return sshKeyIdsByProvider.getOrDefault(provider, List.of());
         }
     }
 

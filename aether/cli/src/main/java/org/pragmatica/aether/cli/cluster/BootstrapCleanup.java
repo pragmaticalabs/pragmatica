@@ -6,6 +6,8 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.cloud.hetzner.HetznerClient;
+import org.pragmatica.cloud.hetzner.HetznerConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
@@ -21,22 +23,29 @@ import java.util.List;
     record unused() implements BootstrapCleanup{}
 
     static Result<Unit> cleanup(BootstrapState state) {
-        return cleanup(state, ProviderResolver::resolveCloudCompute);
+        return cleanup(state, ProviderResolver::resolveCloudCompute, BootstrapCleanup::defaultHetznerClient);
     }
 
     static Result<Unit> cleanup(BootstrapState state, Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+        return cleanup(state, cloudComputeResolver, BootstrapCleanup::defaultHetznerClient);
+    }
+
+    static Result<Unit> cleanup(BootstrapState state,
+                                Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
+                                Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
         System.out.println("Cleaning up resources for cluster '" + state.clusterName() + "'...");
         var resources = new ArrayList<>(state.createdResources());
         Collections.reverse(resources);
-        var failures = collectCleanupFailures(resources, cloudComputeResolver);
+        var failures = collectCleanupFailures(resources, cloudComputeResolver, hetznerClientResolver);
         return finishCleanup(state, failures);
     }
 
     private static List<String> collectCleanupFailures(List<CreatedResource> resources,
-                                                       Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+                                                       Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
+                                                       Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
         var failures = new ArrayList<String>();
         for (var resource : resources) {
-            var result = destroyResource(resource, cloudComputeResolver);
+            var result = destroyResource(resource, cloudComputeResolver, hetznerClientResolver);
             logResourceResult(result, resource);
             var _ = result.onFailure(cause -> failures.add(resource.description() + ": " + cause.message()));
         }
@@ -54,22 +63,39 @@ import java.util.List;
     }
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> destroyResource(CreatedResource resource,
-                                                                                  Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+                                                                                 Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
+                                                                                 Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
         return switch (resource){
             case CreatedResource.ProvisionedVm vm -> destroyVm(vm, cloudComputeResolver);
             case CreatedResource.FirewallRule rule -> deleteFirewallRule(rule);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
             case CreatedResource.DockerContainer container -> removeContainer(container);
             case CreatedResource.SshDeployedConfig config -> removeRemoteConfig(config);
+            case CreatedResource.SshKeyResource key -> deleteSshKey(key, hetznerClientResolver);
         };
     }
 
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> deleteSshKey(CreatedResource.SshKeyResource key,
+                                                                             Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
+        System.out.printf("  Deleting SSH key %d (%s) from %s...%n", key.sshKeyId(), key.name(), key.provider());
+        if (!"hetzner".equals(key.provider())) {return new UnsupportedSshKeyProvider(key.provider()).result();}
+        return hetznerClientResolver.apply(key.provider())
+                                          .flatMap(client -> client.deleteSshKey(key.sshKeyId()).await());
+    }
+
+    private static Result<HetznerClient> defaultHetznerClient(String providerName) {
+        if (!"hetzner".equals(providerName)) {return new UnsupportedSshKeyProvider(providerName).result();}
+        var token = System.getenv("HCLOUD_TOKEN");
+        if (token == null || token.isBlank()) {return new HetznerCredentialsMissing().result();}
+        return Result.success(HetznerClient.hetznerClient(HetznerConfig.hetznerConfig(token)));
+    }
+
     @SuppressWarnings("JBCT-EX-01") private static Result<Unit> destroyVm(CreatedResource.ProvisionedVm vm,
-                                                                           Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+                                                                          Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         System.out.printf("  Destroying VM %s (provider: %s)...%n", vm.resourceId(), vm.provider());
         return cloudComputeResolver.apply(vm.provider())
-                                                   .flatMap(compute -> terminateInstance(compute,
-                                                                                         vm.resourceId()));
+                                         .flatMap(compute -> terminateInstance(compute,
+                                                                               vm.resourceId()));
     }
 
     @SuppressWarnings("JBCT-EX-01") private static Result<Unit> terminateInstance(ComputeProvider compute,
@@ -102,6 +128,18 @@ import java.util.List;
     record CleanupError(String detail) implements Cause {
         @Override public String message() {
             return "Cleanup completed with failures: " + detail;
+        }
+    }
+
+    record UnsupportedSshKeyProvider(String provider) implements Cause {
+        @Override public String message() {
+            return "Unsupported SSH key provider for cleanup: '" + provider + "'";
+        }
+    }
+
+    record HetznerCredentialsMissing() implements Cause {
+        @Override public String message() {
+            return "Hetzner credentials missing for SSH key cleanup: set HCLOUD_TOKEN env var";
         }
     }
 }

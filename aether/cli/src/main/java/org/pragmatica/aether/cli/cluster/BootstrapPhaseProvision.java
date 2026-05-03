@@ -44,7 +44,7 @@ import static org.pragmatica.lang.Result.success;
                                    .entrySet()) {
             var sourceName = entry.getKey();
             var source = entry.getValue();
-            var result = provisionSource(sourceName, source, mgmtPort, clusterName);
+            var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName);
             if (result.isFailure()) {return result.map(_ -> ctx);}
             var _ = result.onSuccess(allNodes::addAll);
         }
@@ -70,7 +70,8 @@ import static org.pragmatica.lang.Result.success;
     }
 
     static String resolveProviderName(SourceProfile source) {
-        return source.provider().map(CloudProviderName::value).or(source.type().value());
+        return source.provider().map(CloudProviderName::value)
+                              .or(source.type().value());
     }
 
     private static String extractRole(String nodeId, String sourceName) {
@@ -81,22 +82,27 @@ import static org.pragmatica.lang.Result.success;
               : suffix;
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSource(String sourceName,
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
+                                                                                                  String sourceName,
                                                                                                   SourceProfile source,
                                                                                                   int managementPort,
                                                                                                   String clusterName) {
         return switch (source.type()){
-            case CLOUD -> provisionCloudSource(sourceName, source, clusterName);
+            case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
             case DOCKER -> provisionDockerSource(sourceName, source, clusterName);
             case SSH -> provisionSshSource(sourceName, source);
             case FORGE -> provisionForgeSource(sourceName, source, managementPort);
         };
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionCloudSource(String sourceName,
+    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionCloudSource(BootstrapContext ctx,
+                                                                                                       String sourceName,
                                                                                                        SourceProfile source,
                                                                                                        String clusterName) {
-        return ProviderResolver.resolveCloudCompute(source)
+        var providerName = resolveProviderName(source);
+        var sshKeyIds = ctx.sshKeyIdsFor(providerName);
+        var userData = SshAuthorizedKeysScript.render(ctx.sshPublicKeys());
+        return ProviderResolver.resolveCloudCompute(source, sshKeyIds, userData)
                                                    .flatMap(compute -> provisionWithCompute(compute,
                                                                                             sourceName,
                                                                                             source,

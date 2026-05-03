@@ -118,6 +118,9 @@ import static org.pragmatica.lang.Result.success;
             case "SshDeployedConfig" -> CreatedResource.SshDeployedConfig.sshDeployedConfig(node.path("host").asText(),
                                                                                             node.path("remotePath")
                                                                                                      .asText());
+            case "SshKeyResource" -> CreatedResource.SshKeyResource.sshKeyResource(node.path("provider").asText(),
+                                                                                   node.path("sshKeyId").asLong(),
+                                                                                   node.path("name").asText());
             default -> null;
         };
     }
@@ -170,7 +173,17 @@ import static org.pragmatica.lang.Result.success;
             case CreatedResource.FloatingIpAssignment ip -> appendFloatingIp(sb, ip);
             case CreatedResource.DockerContainer container -> appendDockerContainer(sb, container);
             case CreatedResource.SshDeployedConfig config -> appendSshConfig(sb, config);
+            case CreatedResource.SshKeyResource key -> appendSshKey(sb, key);
         }
+    }
+
+    private static void appendSshKey(StringBuilder sb, CreatedResource.SshKeyResource key) {
+        sb.append("{\"type\": \"SshKeyResource\", \"provider\": \"").append(escapeJson(key.provider()))
+                 .append("\", \"sshKeyId\": ")
+                 .append(key.sshKeyId())
+                 .append(", \"name\": \"")
+                 .append(escapeJson(key.name()))
+                 .append("\"}");
     }
 
     private static void appendVm(StringBuilder sb, CreatedResource.ProvisionedVm vm) {

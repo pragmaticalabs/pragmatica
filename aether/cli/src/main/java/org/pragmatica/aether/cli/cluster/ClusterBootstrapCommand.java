@@ -26,6 +26,7 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEALTH;
 
 
@@ -49,6 +50,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
     @Option(names = "--timeout", description = "Timeout in seconds when waiting") private int timeoutSeconds = 0;
 
     @Option(names = "--cluster", description = "Override [cluster].name from the TOML (CLI > TOML > default)") private String clusterNameOverride;
+
+    @Option(names = "--ssh-public-key", description = "Path to operator SSH public key (e.g. ~/.ssh/id_ed25519.pub). " + "Overrides [infrastructure.ssh].public_key_file in TOML and the AETHER_SSH_KEY env fallback. " + "Required for cloud sources to be SSH-reachable.") private String sshPublicKeyPath;
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
@@ -89,7 +92,9 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
             System.out.println("Aborted.");
             return new AbortedError().result();
         }
-        return ClusterBootstrapOrchestrator.bootstrap(config, resume, fullCheck);
+        return SshKeyResolver.resolveOrFailIfCloud(config,
+                                                   option(sshPublicKeyPath))
+        .flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(config, resume, fullCheck, keys));
     }
 
     private static void printPlan(ClusterBootstrapConfig config) {

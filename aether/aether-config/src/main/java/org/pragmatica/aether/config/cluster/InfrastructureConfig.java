@@ -4,8 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
-public record InfrastructureConfig(NetworkingType networkingType) {
+import org.pragmatica.lang.Option;
+
+
+public record InfrastructureConfig(NetworkingType networkingType, Option<SshDeploymentConfig> ssh) {
     public static InfrastructureConfig infrastructureConfig(NetworkingType networkingType) {
-        return new InfrastructureConfig(networkingType);
+        return new InfrastructureConfig(networkingType, Option.empty());
+    }
+
+    public static InfrastructureConfig infrastructureConfig(NetworkingType networkingType,
+                                                            Option<SshDeploymentConfig> ssh) {
+        return new InfrastructureConfig(networkingType, ssh);
     }
 }

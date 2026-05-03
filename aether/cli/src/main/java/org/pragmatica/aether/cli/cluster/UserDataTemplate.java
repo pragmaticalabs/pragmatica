@@ -13,6 +13,8 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Option;
 
+import java.util.List;
+
 
 sealed interface UserDataTemplate {
     record unused() implements UserDataTemplate{}
@@ -25,6 +27,18 @@ sealed interface UserDataTemplate {
                          String clusterSecret,
                          String clusterName,
                          TomlDocument composedConfig) {
+        return render(config, source, role, nodeId, nodeIndex, clusterSecret, clusterName, composedConfig, List.of());
+    }
+
+    static String render(ClusterBootstrapConfig config,
+                         SourceProfile source,
+                         NodeRole role,
+                         String nodeId,
+                         int nodeIndex,
+                         String clusterSecret,
+                         String clusterName,
+                         TomlDocument composedConfig,
+                         List<SshPublicKey> sshPublicKeys) {
         var ports = config.operations().ports();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
@@ -37,6 +51,7 @@ sealed interface UserDataTemplate {
                         image,
                         nodeId,
                         clusterSecret);
+        appendSshAuthorizedKeys(sb, sshPublicKeys);
         if (isContainer) {
             appendDockerInstall(sb);
             appendComposedConfig(sb, composedConfig);
@@ -50,6 +65,23 @@ sealed interface UserDataTemplate {
         }
         appendReadinessSignal(sb, nodeId, ports.cluster(), ports.management());
         return sb.toString();
+    }
+
+    private static void appendSshAuthorizedKeys(StringBuilder sb, List<SshPublicKey> keys) {
+        if (keys.isEmpty()) {return;}
+        sb.append("# --- Provision operator SSH access ---\n");
+        sb.append("install -d -m 0700 /root/.ssh\n");
+        sb.append("id -u aether >/dev/null 2>&1 || useradd -m -s /bin/bash aether || true\n");
+        sb.append("install -d -m 0700 -o aether -g aether /home/aether/.ssh\n");
+        sb.append("cat >> /root/.ssh/authorized_keys <<'AETHER_SSH_KEYS'\n");
+        for (var key : keys) {sb.append(key.value()).append('\n');}
+        sb.append("AETHER_SSH_KEYS\n");
+        sb.append("chmod 0600 /root/.ssh/authorized_keys\n");
+        sb.append("cat >> /home/aether/.ssh/authorized_keys <<'AETHER_SSH_KEYS'\n");
+        for (var key : keys) {sb.append(key.value()).append('\n');}
+        sb.append("AETHER_SSH_KEYS\n");
+        sb.append("chown aether:aether /home/aether/.ssh/authorized_keys\n");
+        sb.append("chmod 0600 /home/aether/.ssh/authorized_keys\n\n");
     }
 
     private static Option<RuntimeProfile> resolveRuntimeProfile(ClusterBootstrapConfig config,

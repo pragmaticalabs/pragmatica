@@ -69,6 +69,20 @@ public sealed interface CreatedResource {
         }
     }
 
+    record SshKeyResource(String provider, long sshKeyId, String name) implements CreatedResource {
+        public static SshKeyResource sshKeyResource(String provider, long sshKeyId, String name) {
+            return new SshKeyResource(provider, sshKeyId, name);
+        }
+
+        @Override public String resourceId() {
+            return Long.toString(sshKeyId);
+        }
+
+        @Override public String description() {
+            return "SSH key " + sshKeyId + " (" + name + ", provider=" + provider + ")";
+        }
+    }
+
     record SshDeployedConfig(String host, String remotePath) implements CreatedResource {
         static SshDeployedConfig sshDeployedConfig(String host, String remotePath) {
             return new SshDeployedConfig(host, remotePath);

@@ -32,6 +32,8 @@ import static org.pragmatica.lang.Result.success;
 
     private static final String INFRA_NETWORKING_SECTION = "infrastructure.networking";
 
+    private static final String INFRA_SSH_SECTION = "infrastructure.ssh";
+
     private static final String OPERATIONS_SECTION = "operations";
 
     private static final String OPERATIONS_AUTO_HEAL_SECTION = "operations.auto_heal";
@@ -329,7 +331,21 @@ import static org.pragmatica.lang.Result.success;
         var networkingType = doc.getString(INFRA_NETWORKING_SECTION, "type").flatMap(raw -> NetworkingType.networkingType(raw)
                                                                                                                          .option())
                                           .or(NetworkingType.MANUAL);
-        return InfrastructureConfig.infrastructureConfig(networkingType);
+        return InfrastructureConfig.infrastructureConfig(networkingType, parseSshConfig(doc));
+    }
+
+    private static Option<SshDeploymentConfig> parseSshConfig(TomlDocument doc) {
+        if (!doc.hasSection(INFRA_SSH_SECTION)) {return Option.empty();}
+        var keyFiles = collectSshKeyFiles(doc);
+        return Option.some(SshDeploymentConfig.sshDeploymentConfig(keyFiles));
+    }
+
+    private static List<String> collectSshKeyFiles(TomlDocument doc) {
+        var single = doc.getString(INFRA_SSH_SECTION, "public_key_file").map(s -> List.of(s))
+                                  .or(List.of());
+        var multiple = doc.getStringList(INFRA_SSH_SECTION, "public_key_files").or(List.of());
+        if (multiple.isEmpty()) {return single;}
+        return multiple;
     }
 
     private static OperationsConfig parseOperations(TomlDocument doc) {

@@ -13,7 +13,9 @@ import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.lang.Result;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 
@@ -31,9 +33,17 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
     private ProviderResolver() {}
 
     public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source) {
+        return resolveCloudCompute(source, List.of(), "");
+    }
+
+    public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
+                                                              List<Long> sshKeyIds,
+                                                              String userData) {
         return source.provider().toResult(NO_PROVIDER)
                               .flatMap(provider -> lookupAndCreateCloud(provider.value(),
-                                                                        source))
+                                                                        source,
+                                                                        sshKeyIds,
+                                                                        userData))
                               .flatMap(ProviderResolver::extractCompute);
     }
 
@@ -55,7 +65,17 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
     }
 
     private static Result<EnvironmentIntegration> lookupAndCreateCloud(String providerName, SourceProfile source) {
-        return lookupFactory(providerName).flatMap(factory -> factory.create(buildCloudConfig(providerName, source)));
+        return lookupAndCreateCloud(providerName, source, List.of(), "");
+    }
+
+    private static Result<EnvironmentIntegration> lookupAndCreateCloud(String providerName,
+                                                                       SourceProfile source,
+                                                                       List<Long> sshKeyIds,
+                                                                       String userData) {
+        return lookupFactory(providerName).flatMap(factory -> factory.create(buildCloudConfig(providerName,
+                                                                                              source,
+                                                                                              sshKeyIds,
+                                                                                              userData)));
     }
 
     private static Result<EnvironmentIntegrationFactory> lookupFactory(String providerName) {
@@ -71,6 +91,13 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
     }
 
     private static CloudConfig buildCloudConfig(String providerName, SourceProfile source) {
+        return buildCloudConfig(providerName, source, List.of(), "");
+    }
+
+    private static CloudConfig buildCloudConfig(String providerName,
+                                                SourceProfile source,
+                                                List<Long> sshKeyIds,
+                                                String userData) {
         var credentials = new HashMap<String, String>();
         source.credentials()
                           .onPresent(c -> {
@@ -81,6 +108,8 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
         var compute = new HashMap<String, String>();
         source.region().onPresent(r -> compute.put("region", r));
         source.zone().onPresent(z -> compute.put("zone", z));
+        if (!sshKeyIds.isEmpty()) {compute.put("ssh_key_ids", joinLongs(sshKeyIds));}
+        if (!userData.isEmpty()) {compute.put("user_data", userData);}
         return new CloudConfig(providerName,
                                Map.copyOf(credentials),
                                Map.copyOf(compute),
@@ -88,6 +117,11 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
                                Map.of(),
                                Map.of(),
                                Map.of());
+    }
+
+    private static String joinLongs(List<Long> ids) {
+        return ids.stream().map(String::valueOf)
+                         .collect(Collectors.joining(","));
     }
 
     private static CloudConfig minimalCloudConfig(String providerName) {
