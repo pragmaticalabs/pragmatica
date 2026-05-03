@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.regex.Pattern;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -30,6 +31,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
 
 @Command(name = "bootstrap", description = {"Bootstrap a new cluster from config file.", "", "Required when the cluster has no static seed members (cluster.static=0) and the cloud", "minimum is at least the quorum size (cloud.min >= quorum): with no static seeds the", "nodes cannot self-form a quorum, so an explicit operator-driven bootstrap is required."}) @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterBootstrapCommand implements Callable<Integer> {
     private static final int POLL_INTERVAL_MS = 2000;
+
+    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
@@ -45,11 +48,28 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
 
     @Option(names = "--timeout", description = "Timeout in seconds when waiting") private int timeoutSeconds = 0;
 
+    @Option(names = "--cluster", description = "Override [cluster].name from the TOML (CLI > TOML > default)") private String clusterNameOverride;
+
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
-        return parseConfig().flatMap(this::confirmAndBootstrap)
+        if (!isOverrideAcceptable()) {
+            System.err.println("Invalid --cluster value: '" + clusterNameOverride + "': must match ^[a-z][a-z0-9-]{0,62}$");
+            return ExitCode.USAGE;
+        }
+        return parseConfig().map(this::applyClusterNameOverride)
+                          .flatMap(this::confirmAndBootstrap)
                           .fold(ClusterBootstrapCommand::onFailure, this::onSuccess);
+    }
+
+    private boolean isOverrideAcceptable() {
+        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return true;}
+        return CLUSTER_NAME_PATTERN.matcher(clusterNameOverride).matches();
+    }
+
+    private ClusterBootstrapConfig applyClusterNameOverride(ClusterBootstrapConfig parsedConfig) {
+        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return parsedConfig;}
+        return parsedConfig.withClusterName(clusterNameOverride);
     }
 
     private Result<ClusterBootstrapConfig> parseConfig() {

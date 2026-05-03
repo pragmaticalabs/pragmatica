@@ -38,6 +38,16 @@ public record ClusterBootstrapConfig(String configVersion,
                                           operations);
     }
 
+    public ClusterBootstrapConfig withClusterName(String newName) {
+        return new ClusterBootstrapConfig(configVersion,
+                                          cluster.withName(newName),
+                                          coreTopology,
+                                          sources,
+                                          runtimes,
+                                          infrastructure,
+                                          operations);
+    }
+
     public int derivedCoreCount() {
         return sources.values().stream()
                              .flatMap(s -> Option.option(s.roles().get(NodeRole.CORE)).stream())
