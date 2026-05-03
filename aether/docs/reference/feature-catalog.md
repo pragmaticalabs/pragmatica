@@ -67,7 +67,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 161 | Compile-time route registry | Complete | 116-route `ManagementRoute` enum with `RouteMatcher`, `RouteAssembler`, `RouteTarget` (LOCAL/ANY/TaskGroupTarget). Enum-keyed dispatch in `ManagementRouter`. All path literals eliminated from server and CLI. Compile-time safety on route add/rename |
 | 162 | Task-group-aware forwarding | Complete | `TaskGroupAssignmentRegistry` maintains `TaskGroup→NodeId` via consensus. LB forwarder routes management requests to correct task-group owner. Encrypted cloud credentials in KV-Store for auto-heal |
 | 163 | Cloud testing infrastructure | Complete | Hetzner Cloud test scripts (deploy/run/teardown), `CLOUD_MODE` in test library (SSH bastion, timeout multiplier, LB-routed operations), `aether-cloud.toml` config, private network + managed LB architecture |
-| 137 | SharedScheduler consolidation | Complete | Unified shared scheduler (min 8 platform threads) replaces per-subsystem thread pools. 10 production schedulers migrated: SWIM, CircuitBreaker, Retry, canary evaluation, heartbeat, and others |
+| 204 | SharedScheduler consolidation | Complete | Unified shared scheduler (min 8 platform threads) replaces per-subsystem thread pools. 10 production schedulers migrated: SWIM, CircuitBreaker, Retry, canary evaluation, heartbeat, and others |
 | 154 | Server UDP support | Complete | `Server` supports optional UDP port binding alongside TCP via `ServerConfig.withUdpPort()`. UDP DatagramChannel shares workerGroup with TCP. Foundation for SWIM integration |
 | 155 | Shared EventLoopGroups | Complete | HTTP servers share Server's boss/worker EventLoopGroups instead of creating their own. Reduces per-node thread pools from 6+ to 2 |
 | 159 | QUIC transport | Complete | QUIC-based cluster transport alongside TCP. QuicClusterNetwork, QuicClusterServer, QuicClusterClient, QuicTlsProvider, QuicTransportMetrics. 7 classes, 5 tests |
@@ -104,8 +104,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 105 | Hybrid Logical Clock | Complete | `integrations/hlc/` module. HlcTimestamp (48-bit microseconds + 16-bit counter packed into long), HlcClock (thread-safe, ReentrantLock), drift detection, counter overflow protection. Foundation for causal ordering |
 | 106 | DHT versioned writes | Complete | HLC-stamped puts with atomic version comparison in storage. Rejects stale writes (version ≤ current). Synchronous notification delivery via `withSuccess()` preserves causal write ordering. Full replication (`DHTConfig.FULL`) for control plane maps |
 | 107 | Centralized timeout configuration | Complete | All operator-facing timeouts externalized to `TimeoutsConfig` with 13 subsystem groups. TOML `[timeouts.*]` sections with human-readable duration strings. Legacy `_ms` fields supported with automatic migration |
-| 139 | KV-Store durable backup | Complete | Cluster metadata serialized to TOML file in local git repo. Git provides versioning, history, diffs, optional remote push. BackupService with automatic periodic + on-change triggers. REST API, CLI |
-| 140 | Hierarchical Storage Engine | Complete | Content-addressed block storage (`integrations/storage` library). SHA-256 BlockId, Memory + LocalDisk tiers with CAS-bounded capacity, write-through + tier-waterfall reads, SingleFlightCache dedup, MetadataStore, SnapshotManager, StorageReadinessGate, per-instance TOML config, ArtifactStore migration, REST + CLI management. 93 tests |
+| 206 | KV-Store durable backup | Complete | Cluster metadata serialized to TOML file in local git repo. Git provides versioning, history, diffs, optional remote push. BackupService with automatic periodic + on-change triggers. REST API, CLI |
+| 207 | Hierarchical Storage Engine | Complete | Content-addressed block storage (`integrations/storage` library). SHA-256 BlockId, Memory + LocalDisk tiers with CAS-bounded capacity, write-through + tier-waterfall reads, SingleFlightCache dedup, MetadataStore, SnapshotManager, StorageReadinessGate, per-instance TOML config, ArtifactStore migration, REST + CLI management. 93 tests |
 
 ## Observability & Metrics
 
@@ -132,7 +132,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 46 | HTTP client resource | Complete | Configurable outbound HTTP with timeouts, retries, SSL/TLS, Jackson integration |
 | 47 | Interceptor framework | Complete | Method-level interceptors: retry, circuit breaker, rate limit, logging, metrics. Runtime enable/disable |
 | 48 | Runtime extensions | Complete | `registerExtension()` for injecting runtime components into resource factories |
-| 161 | PgNotification subscriber | Complete | Slice-level PostgreSQL LISTEN/NOTIFY subscription. PgNotification, PgNotificationSubscriber, PgNotificationConfig in slice-api; NotificationListenerFactory in db-async |
+| 209 | PgNotification subscriber | Complete | Slice-level PostgreSQL LISTEN/NOTIFY subscription. PgNotification, PgNotificationSubscriber, PgNotificationConfig in slice-api; NotificationListenerFactory in db-async |
 
 ## Cloud Integration
 
@@ -192,11 +192,11 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 77 | Topology graph | Complete | Compile-time topology extraction (envelope v6): HTTP routes, resources, pub-sub topics from `.manifest` files. REST `GET /api/topology`, WebSocket `INITIAL_STATE`. Swim-lane SVG layout with Manhattan routing, HSL color-coded topic groups, hover highlighting, search filtering |
 | 78 | `jbct add-slice` command | Complete | Scaffolds a new slice into an existing project: creates interface, test, routes.toml, config, and dependency manifest |
 | 79 | IDE plugins | Planned | Slice development plugins for IntelliJ IDEA (native), VS Code, Eclipse, NetBeans. Shared LSP backend for routes.toml support, JBCT diagnostics, TOML schema validation |
-| 138 | Core value objects | Complete | Reusable validated value objects in `org.pragmatica.lang.vo`: Email, Url, NonBlankString, Uuid, IsoDateTime |
-| 141 | GitHub Issues as worklog | Complete | GitHub Issues adopted as primary work tracking and project log |
+| 205 | Core value objects | Complete | Reusable validated value objects in `org.pragmatica.lang.vo`: Email, Url, NonBlankString, Uuid, IsoDateTime |
+| 208 | GitHub Issues as worklog | Complete | GitHub Issues adopted as primary work tracking and project log |
 | 158 | V1.0.0 roadmap | Complete | Evolutionary implementation protocol with phased milestones, feature prioritization, and release criteria for Aether 1.0 |
-| 162 | JBCT code formatter | Complete | CST-based Java code formatter (`jbct-format` module). Records, enums, switch expressions, text blocks, chain alignment, multiline parameters, ternary operators, lambdas, comments. 17 golden test files |
-| 163 | JBCT compliance scorer | Complete | Numeric JBCT compliance scoring (`jbct-core/score`). ScoreCalculator, ScoreResult, ScoreCategory, RuleCategoryMapping |
+| 210 | JBCT code formatter | Complete | CST-based Java code formatter (`jbct-format` module). Records, enums, switch expressions, text blocks, chain alignment, multiline parameters, ternary operators, lambdas, comments. 17 golden test files |
+| 211 | JBCT compliance scorer | Complete | Numeric JBCT compliance scoring (`jbct-core/score`). ScoreCalculator, ScoreResult, ScoreCategory, RuleCategoryMapping |
 | 164 | JBCT project scaffolding | Complete | Full project initialization (`jbct-init` module). ProjectInitializer, SliceProjectInitializer, PersistenceAdder, EventAdder, AiToolsInstaller, self-upgrade mechanism. 17 classes, 4 test classes |
 | 165 | Property-based testing | Complete | Property-based testing library (`testing` module). PropertyTest, Arbitrary, Shrinkable, Shrinkers, RandomSource. 7 classes, 3 tests |
 
@@ -234,7 +234,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 90 | Certificate lifecycle | Complete | CertificateRenewalScheduler with automatic renewal at 50% validity, gossip key rotation via consensus KV store |
 | 91 | TLS default for containers | Complete | TLS enabled by default for DOCKER and KUBERNETES environments (LOCAL remains plain for development) |
 | 92 | RBAC — per-route security | Complete | Per-route security via routes.toml `[security]` section (public/authenticated/role:name), type-safe SecurityPolicy with `canAccess()` and deny-by-default for unknown values, route-level enforcement in AppHttpServer, Principal/SecurityContext injection in handlers, blueprint operator overrides with strengthen_only policy, security metadata in KV-Store, dashboard security badges, security denial metrics |
-| 136 | Security hardening (RC1) | Complete | QUIC cluster transport mandates a real `TlsConfig` with deterministic CA derived from `AETHER_CLUSTER_SECRET` — no plaintext mode, no `AETHER_INSECURE_DEV_MODE` escape hatch, ALPN `"aether-cluster/1"` pinned. PostgreSQL `InsecureTrustManagerFactory` still gated behind an explicit system-property opt-in. Cloud config `toString()` redacts secrets. SQL injection prevention in PG LISTEN/UNLISTEN. SSH command injection prevention via image name validation. Bootstrap API key stored to file with 600 permissions instead of stdout. Docker Compose uses random fallback secret |
+| 203 | Security hardening (RC1) | Complete | QUIC cluster transport mandates a real `TlsConfig` with deterministic CA derived from `AETHER_CLUSTER_SECRET` — no plaintext mode, no `AETHER_INSECURE_DEV_MODE` escape hatch, ALPN `"aether-cluster/1"` pinned. PostgreSQL `InsecureTrustManagerFactory` still gated behind an explicit system-property opt-in. Cloud config `toString()` redacts secrets. SQL injection prevention in PG LISTEN/UNLISTEN. SSH command injection prevention via image name validation. Bootstrap API key stored to file with 600 permissions instead of stdout. Docker Compose uses random fallback secret |
 
 ## Embeddable Runtime
 
@@ -284,15 +284,14 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
-| 65 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools |
-| 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts |
+| 200 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
+| 201 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools |
+| 202 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts |
 | 70 | Aether runtime rolling upgrade | Partial | Phase 1: `POST /api/cluster/upgrade` endpoint and CLI. Full rolling orchestration deferred to Phase 2 |
 | 71 | Email notification resource | Complete | `integrations/net/smtp` (async Netty SMTP client), `integrations/email-http` (HTTP sender with SendGrid/Mailgun/Postmark/Resend SPI), `aether/resource/notification` (ResourceFactory + @Notify qualifier). 57 tests |
-| 79 | IDE plugins | Planned | Slice development plugins for IntelliJ IDEA, VS Code, Eclipse, NetBeans. Shared LSP backend |
 | 157 | Per-blueprint artifact scoping (Tier 2) | Planned | Per-blueprint SliceTargetKey scoping for multi-tenant clusters. Prerequisite: Tier 1 (#102) |
 | 174 | DigitalOcean cloud integration | Planned | DigitalOcean compute, discovery, load balancer providers. Spec exists |
-| 175 | Fluid cross-environment migration | Planned | Cross-environment migration protocol. Spec exists |
+| 212 | Fluid cross-environment migration | Planned | Cross-environment migration protocol. Spec exists |
 | 176 | Application config provisioning | Complete | `@ResourceQualifier(type = ConfigurationSection.class)` pattern. Compile-time parser generation via `Result.all()`. Three-source merge (bundled + aether.toml + KV-Store). Runtime notification via single-threaded executor with record diff. ACTIVATE integration |
 | 177 | ContentStore resource | Complete | `@ContentStoreQualifier` annotation, `ContentStoreFactory` SPI. AHSE-backed content-addressable storage with chunking and compression |
 | 178 | Cloud certificate adapters | Complete | AWS (ACM/Secrets Manager), GCP (Certificate Manager), Azure (Key Vault) via `CertificateProvider` SPI. `CloudCertificateProvider` shared implementation |
@@ -325,12 +324,12 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | Status | Count |
 |--------|-------|
-| Battle-tested | 24 |
-| Complete | 152 |
+| Battle-tested | 25 |
+| Complete | 169 |
 | Critical | 1 |
-| Partial | 3 |
-| Planned | 6 |
-| Total | 181 |
+| Partial | 4 |
+| Planned | 7 |
+| Total | 206 |
 
 **Critical features:**
 | Feature | Issue |
@@ -345,4 +344,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-31*
+*Last updated: 2026-05-01*
