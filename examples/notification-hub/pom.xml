@@ -26,6 +26,7 @@
     <modules>
         <module>notification-service</module>
         <module>notification-analytics</module>
+        <module>notification-emailer</module>
     </modules>
 
     <dependencies>
