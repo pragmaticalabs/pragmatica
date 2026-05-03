@@ -50,7 +50,7 @@ import picocli.CommandLine.Option;
 class ClusterInitCommand implements Callable<Integer> {
     private static final String DEFAULT_OUTPUT = "cluster-config.toml";
 
-    @Option(names = {"-o", "--output"}, description = "Output path", defaultValue = DEFAULT_OUTPUT)
+    @Option(names = "--output", description = "Output path", defaultValue = DEFAULT_OUTPUT)
     private Path output;
 
     @Option(names = "--force", description = "Overwrite existing output file")
