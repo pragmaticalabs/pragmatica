@@ -175,12 +175,18 @@ import static org.pragmatica.lang.Option.option;
     }
 
     private int pollUntilHealthy(ClusterBootstrapOrchestrator.BootstrapResult result) {
+        applyEndpointOverride(result);
         applyApiKeyOverride(result);
         return waitForClusterPhase(ClusterBootstrapCommand::fetchStatusJson,
                                    timeoutSeconds,
                                    POLL_INTERVAL_MS,
                                    System.out,
                                    System.err);
+    }
+
+    private static void applyEndpointOverride(ClusterBootstrapOrchestrator.BootstrapResult result) {
+        if (result.endpoint() == null || result.endpoint().isBlank()) {return;}
+        ClusterHttpClient.setEndpointOverride(result.endpoint());
     }
 
     private static void applyApiKeyOverride(ClusterBootstrapOrchestrator.BootstrapResult result) {
