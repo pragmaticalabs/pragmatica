@@ -47,8 +47,11 @@ public interface BootstrapOverlayGenerator {
 
     private static Section clusterSection(ClusterBootstrapConfig config) {
         var values = new LinkedHashMap<String, Object>();
-        values.put("name", config.cluster().name());
-        values.put("tls", config.operations().tls().autoGenerate());
+        values.put("name",
+                   config.cluster().name());
+        values.put("tls",
+                   config.operations().tls()
+                                    .autoGenerate());
         return Section.section("cluster", values);
     }
 

@@ -47,7 +47,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
 
     @Option(names = "--wait", description = "Wait for cluster to become healthy after bootstrap") private boolean waitForCompletion;
 
-    @Option(names = "--timeout", description = "Timeout in seconds when waiting") private int timeoutSeconds = 0;
+    @Option(names = "--timeout", description = "Timeout in seconds when waiting", defaultValue = "300") private int timeoutSeconds;
 
     @Option(names = "--cluster", description = "Override [cluster].name from the TOML (CLI > TOML > default)") private String clusterNameOverride;
 
@@ -72,15 +72,20 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
         return CLUSTER_NAME_PATTERN.matcher(clusterNameOverride).matches();
     }
 
-    private ClusterBootstrapConfig applyClusterNameOverride(ClusterBootstrapConfig parsedConfig) {
-        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return parsedConfig;}
-        return parsedConfig.withClusterName(clusterNameOverride);
+    private ParsedConfig applyClusterNameOverride(ParsedConfig parsed) {
+        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return parsed;}
+        return new ParsedConfig(parsed.config().withClusterName(clusterNameOverride),
+                                parsed.rawToml());
     }
 
-    private Result<ClusterBootstrapConfig> parseConfig() {
+    private Result<ParsedConfig> parseConfig() {
         System.out.printf("Reading config from %s...%n", configFile);
-        return readFileContent(configFile).flatMap(ConfigReferenceResolver::resolveAll)
-                              .flatMap(ClusterBootstrapConfigParser::parse);
+        return readFileContent(configFile).flatMap(raw -> parseFromRaw(raw, configFile));
+    }
+
+    private static Result<ParsedConfig> parseFromRaw(String raw, Path source) {
+        return ConfigReferenceResolver.resolveAll(raw).flatMap(ClusterBootstrapConfigParser::parse)
+                                                 .map(config -> new ParsedConfig(config, raw));
     }
 
     @SuppressWarnings("JBCT-EX-01") private static Result<String> readFileContent(Path path) {
@@ -88,7 +93,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
                            () -> Files.readString(path));
     }
 
-    private Result<ClusterBootstrapOrchestrator.BootstrapResult> confirmAndBootstrap(ClusterBootstrapConfig config) {
+    private Result<ClusterBootstrapOrchestrator.BootstrapResult> confirmAndBootstrap(ParsedConfig parsed) {
+        var config = parsed.config();
         printPlan(config);
         if (!skipConfirmation && !confirmBootstrap(config.cluster().name())) {
             System.out.println("Aborted.");
@@ -96,8 +102,15 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
         }
         return SshKeyResolver.resolveOrFailIfCloud(config,
                                                    option(sshPublicKeyPath))
-        .flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(config, resume, fullCheck, keys, keepOnFailure));
+        .flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(config,
+                                                                resume,
+                                                                fullCheck,
+                                                                keys,
+                                                                keepOnFailure,
+                                                                parsed.rawToml()));
     }
+
+    record ParsedConfig(ClusterBootstrapConfig config, String rawToml){}
 
     private static void printPlan(ClusterBootstrapConfig config) {
         var cluster = config.cluster();
@@ -149,16 +162,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
 
     private int onSuccess(ClusterBootstrapOrchestrator.BootstrapResult result) {
         System.out.println("Step 12/12: Done.");
-        if (waitForCompletion) {return validateTimeoutAndPoll();}
+        if (waitForCompletion) {return pollUntilHealthy();}
         return ExitCode.SUCCESS;
-    }
-
-    private int validateTimeoutAndPoll() {
-        if (timeoutSeconds <= 0) {
-            System.err.println("--timeout is required when using --wait");
-            return ExitCode.ERROR;
-        }
-        return pollUntilHealthy();
     }
 
     @SuppressWarnings("JBCT-SEQ-01") private int pollUntilHealthy() {

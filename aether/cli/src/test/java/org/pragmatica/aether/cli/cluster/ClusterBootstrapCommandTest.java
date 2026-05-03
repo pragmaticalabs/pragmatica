@@ -155,6 +155,26 @@ class ClusterBootstrapCommandTest {
         }
 
         @Test
+        void bootstrap_waitWithoutTimeout_defaultsToThreeHundredSeconds() throws Exception {
+            var tomlPath = writeMinimalToml("from-toml");
+            var cmd = new ClusterBootstrapCommand();
+            new CommandLine(cmd).parseArgs(tomlPath.toString(), "--wait", "--yes");
+
+            assertEquals(Boolean.TRUE, readField(cmd, "waitForCompletion"));
+            assertEquals(300, readField(cmd, "timeoutSeconds"));
+        }
+
+        @Test
+        void bootstrap_waitWithExplicitTimeout_keepsExplicitValue() throws Exception {
+            var tomlPath = writeMinimalToml("from-toml");
+            var cmd = new ClusterBootstrapCommand();
+            new CommandLine(cmd).parseArgs(tomlPath.toString(), "--wait", "--timeout", "60", "--yes");
+
+            assertEquals(Boolean.TRUE, readField(cmd, "waitForCompletion"));
+            assertEquals(60, readField(cmd, "timeoutSeconds"));
+        }
+
+        @Test
         void bootstrap_invalidClusterValue_returnsUsageError() throws Exception {
             var tomlPath = writeMissingToml();
             var cmd = new ClusterBootstrapCommand();

@@ -6,7 +6,6 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
-import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -136,7 +135,7 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
     @Contract private static void storeClusterConfig(BootstrapContext ctx) {
         if (ctx.addresses().isEmpty()) {return;}
         var endpoint = buildManagementEndpoint(ctx);
-        var configJson = buildConfigJson(ctx.config());
+        var configJson = buildConfigJson(ctx.rawTomlContent());
         var result = ClusterBootstrapOrchestrator.httpPost(endpoint + "/api/cluster/config", configJson);
         var _ = result.onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"))
                                 .onFailure(cause -> System.err.println("  Warning: failed to store config: " + cause.message()));
@@ -152,9 +151,6 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
         var _ = result.onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
                                                         keyId))
         .onFailure(cause -> System.err.println("  Warning: failed to store API key: " + cause.message()));
-        var legacyJson = "{\"apiKey\":\"" + apiKey + "\"}";
-        var legacyResult = ClusterBootstrapOrchestrator.httpPost(endpoint + "/api/cluster/api-key", legacyJson);
-        var _ = legacyResult.onFailure(cause -> System.err.println("  Warning: failed to store legacy API key: " + cause.message()));
     }
 
     private static String buildManagementEndpoint(BootstrapContext ctx) {
@@ -166,7 +162,15 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
         return "http://" + ip + ":" + port;
     }
 
-    private static String buildConfigJson(ClusterBootstrapConfig config) {
-        return "{\"clusterName\":\"" + config.cluster().name() + "\",\"version\":\"" + config.cluster().version() + "\"}";
+    static String buildConfigJson(String rawTomlContent) {
+        return "{\"tomlContent\":\"" + escapeJsonString(rawTomlContent) + "\",\"expectedVersion\":0}";
+    }
+
+    private static String escapeJsonString(String s) {
+        if (s == null) {return "";}
+        return s.replace("\\", "\\\\").replace("\"", "\\\"")
+                        .replace("\n", "\\n")
+                        .replace("\r", "\\r")
+                        .replace("\t", "\\t");
     }
 }

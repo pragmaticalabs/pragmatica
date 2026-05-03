@@ -544,7 +544,7 @@ import static org.pragmatica.lang.Option.some;
 
         @CommandLine.Option(names = "--wait", description = "Wait for scaling to complete") private boolean waitForCompletion;
 
-        @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting") private int timeoutSeconds = 0;
+        @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting", defaultValue = "300") private int timeoutSeconds;
 
         @Override public Integer call() {
             var body = buildScaleBody();
@@ -553,14 +553,6 @@ import static org.pragmatica.lang.Option.some;
                                                      parent.outputOptions(),
                                                      "Scaled " + artifact + " to " + instances + " instances");
             if (result != ExitCode.SUCCESS || !waitForCompletion) {return result;}
-            return validateTimeoutAndPoll();
-        }
-
-        private int validateTimeoutAndPoll() {
-            if (timeoutSeconds <= 0) {
-                System.err.println("--timeout is required when using --wait");
-                return ExitCode.ERROR;
-            }
             return pollUntilScaled();
         }
 
@@ -1154,7 +1146,7 @@ import static org.pragmatica.lang.Option.some;
 
             @CommandLine.Option(names = "--wait", description = "Wait for deployment to complete") private boolean waitForCompletion;
 
-            @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting") private int timeoutSeconds = 0;
+            @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting", defaultValue = "300") private int timeoutSeconds;
 
             @Override@SuppressWarnings("JBCT-UTIL-02") public Integer call() {
                 var fullCoords = coords.split(":").length == 3
@@ -1168,14 +1160,6 @@ import static org.pragmatica.lang.Option.some;
                 if (errorCode >= 0) {return errorCode;}
                 var printResult = OutputFormatter.printQuery(response, blueprintParent.parent.outputOptions());
                 if (printResult != ExitCode.SUCCESS || !waitForCompletion) {return printResult;}
-                return validateTimeoutAndPoll();
-            }
-
-            private int validateTimeoutAndPoll() {
-                if (timeoutSeconds <= 0) {
-                    System.err.println("--timeout is required when using --wait");
-                    return ExitCode.ERROR;
-                }
                 return pollUntilDeployed();
             }
 

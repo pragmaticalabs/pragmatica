@@ -49,18 +49,18 @@ import static org.pragmatica.lang.Result.success;
     }
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config) {
-        return bootstrap(config, false, false, List.of(), false);
+        return bootstrap(config, false, false, List.of(), false, "");
     }
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config, boolean resume, boolean fullCheck) {
-        return bootstrap(config, resume, fullCheck, List.of(), false);
+        return bootstrap(config, resume, fullCheck, List.of(), false, "");
     }
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config,
                                              boolean resume,
                                              boolean fullCheck,
                                              List<SshPublicKey> sshPublicKeys) {
-        return bootstrap(config, resume, fullCheck, sshPublicKeys, false);
+        return bootstrap(config, resume, fullCheck, sshPublicKeys, false, "");
     }
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config,
@@ -68,15 +68,26 @@ import static org.pragmatica.lang.Result.success;
                                              boolean fullCheck,
                                              List<SshPublicKey> sshPublicKeys,
                                              boolean keepOnFailure) {
-        if (resume) {return resumeBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure);}
-        return freshBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure);
+        return bootstrap(config, resume, fullCheck, sshPublicKeys, keepOnFailure, "");
+    }
+
+    static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config,
+                                             boolean resume,
+                                             boolean fullCheck,
+                                             List<SshPublicKey> sshPublicKeys,
+                                             boolean keepOnFailure,
+                                             String rawTomlContent) {
+        if (resume) {return resumeBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);}
+        return freshBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
     }
 
     private static Result<BootstrapResult> freshBootstrap(ClusterBootstrapConfig config,
                                                           boolean fullCheck,
                                                           List<SshPublicKey> sshPublicKeys,
-                                                          boolean keepOnFailure) {
+                                                          boolean keepOnFailure,
+                                                          String rawTomlContent) {
         return BootstrapPhaseValidate.execute(config, fullCheck).map(ctx -> ctx.withSshPublicKeys(sshPublicKeys))
+                                             .map(ctx -> ctx.withRawTomlContent(rawTomlContent))
                                              .flatMap(ClusterBootstrapOrchestrator::runPhaseChain)
                                              .onFailure(cause -> handleFailure(config.cluster().name(),
                                                                                cause,
@@ -86,12 +97,16 @@ import static org.pragmatica.lang.Result.success;
     private static Result<BootstrapResult> resumeBootstrap(ClusterBootstrapConfig config,
                                                            boolean fullCheck,
                                                            List<SshPublicKey> sshPublicKeys,
-                                                           boolean keepOnFailure) {
+                                                           boolean keepOnFailure,
+                                                           String rawTomlContent) {
         var clusterName = config.cluster().name();
         return BootstrapStatePersistence.load(clusterName).toResult(new BootstrapError.ProvisionFailed(clusterName,
                                                                                                        "No bootstrap state found for resume"))
                                              .flatMap(state -> validateResumeState(state, config))
-                                             .flatMap(state -> resumeFromState(config, state, sshPublicKeys))
+                                             .flatMap(state -> resumeFromState(config,
+                                                                               state,
+                                                                               sshPublicKeys,
+                                                                               rawTomlContent))
                                              .onFailure(cause -> handleFailure(clusterName, cause, keepOnFailure));
     }
 
@@ -104,7 +119,8 @@ import static org.pragmatica.lang.Result.success;
 
     private static Result<BootstrapResult> resumeFromState(ClusterBootstrapConfig config,
                                                            BootstrapState state,
-                                                           List<SshPublicKey> sshPublicKeys) {
+                                                           List<SshPublicKey> sshPublicKeys,
+                                                           String rawTomlContent) {
         System.out.println("Resuming bootstrap for cluster '" + state.clusterName() + "' from persisted state");
         var resumedSecret = state.clusterSecret().isEmpty()
                            ? generateClusterSecret()
@@ -116,7 +132,8 @@ import static org.pragmatica.lang.Result.success;
                                                     resumedState,
                                                     List.of(),
                                                     List.of()).withSshPublicKeys(sshPublicKeys)
-                                                   .withClusterSecret(resumedSecret);
+                                                   .withClusterSecret(resumedSecret)
+                                                   .withRawTomlContent(rawTomlContent);
         return runPhaseChain(ctx);
     }
 
@@ -296,7 +313,8 @@ import static org.pragmatica.lang.Result.success;
                             Option<String> apiKey,
                             List<SshPublicKey> sshPublicKeys,
                             Map<String, List<Long>> sshKeyIdsByProvider,
-                            String clusterSecret) {
+                            String clusterSecret,
+                            String rawTomlContent) {
         static BootstrapContext bootstrapContext(ClusterBootstrapConfig config,
                                                  BootstrapState state,
                                                  List<ProvisionedNode> nodes,
@@ -308,6 +326,7 @@ import static org.pragmatica.lang.Result.success;
                                         none(),
                                         List.of(),
                                         Map.of(),
+                                        "",
                                         "");
         }
 
@@ -319,7 +338,8 @@ import static org.pragmatica.lang.Result.success;
                                         apiKey,
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
-                                        clusterSecret);
+                                        clusterSecret,
+                                        rawTomlContent);
         }
 
         BootstrapContext withAddresses(List<NodeAddress> newAddresses) {
@@ -330,7 +350,8 @@ import static org.pragmatica.lang.Result.success;
                                         apiKey,
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
-                                        clusterSecret);
+                                        clusterSecret,
+                                        rawTomlContent);
         }
 
         BootstrapContext withApiKey(String key) {
@@ -341,7 +362,8 @@ import static org.pragmatica.lang.Result.success;
                                         Option.some(key),
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
-                                        clusterSecret);
+                                        clusterSecret,
+                                        rawTomlContent);
         }
 
         BootstrapContext withState(BootstrapState newState) {
@@ -352,7 +374,8 @@ import static org.pragmatica.lang.Result.success;
                                         apiKey,
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
-                                        clusterSecret);
+                                        clusterSecret,
+                                        rawTomlContent);
         }
 
         BootstrapContext withSshPublicKeys(List<SshPublicKey> keys) {
@@ -363,7 +386,8 @@ import static org.pragmatica.lang.Result.success;
                                         apiKey,
                                         List.copyOf(keys),
                                         sshKeyIdsByProvider,
-                                        clusterSecret);
+                                        clusterSecret,
+                                        rawTomlContent);
         }
 
         BootstrapContext withSshKeyIds(String provider, List<Long> ids) {
@@ -376,7 +400,8 @@ import static org.pragmatica.lang.Result.success;
                                         apiKey,
                                         sshPublicKeys,
                                         Map.copyOf(merged),
-                                        clusterSecret);
+                                        clusterSecret,
+                                        rawTomlContent);
         }
 
         BootstrapContext withClusterSecret(String secret) {
@@ -387,7 +412,20 @@ import static org.pragmatica.lang.Result.success;
                                         apiKey,
                                         sshPublicKeys,
                                         sshKeyIdsByProvider,
-                                        secret);
+                                        secret,
+                                        rawTomlContent);
+        }
+
+        BootstrapContext withRawTomlContent(String toml) {
+            return new BootstrapContext(config,
+                                        state,
+                                        nodes,
+                                        addresses,
+                                        apiKey,
+                                        sshPublicKeys,
+                                        sshKeyIdsByProvider,
+                                        clusterSecret,
+                                        toml);
         }
 
         List<Long> sshKeyIdsFor(String provider) {

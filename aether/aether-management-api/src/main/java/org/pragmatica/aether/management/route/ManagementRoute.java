@@ -76,7 +76,6 @@ public enum ManagementRoute {
     WORKERS_ENDPOINTS(GET, "/api/workers/endpoints", List.of(), ANY),
     CLUSTER_MIGRATE(POST, "/api/cluster/migrate", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_MIGRATE_PLAN(POST, "/api/cluster/migrate/plan", List.of(), taskGroup(DEPLOYMENT)),
-    CLUSTER_API_KEY_SET(POST, "/api/cluster/api-key", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_KEYS_CREATE(POST, "/api/cluster/keys", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_KEYS_LIST(GET, "/api/cluster/keys", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_KEYS_REVOKE(POST, "/api/cluster/keys/revoke", List.of("keyId"), taskGroup(DEPLOYMENT)),
