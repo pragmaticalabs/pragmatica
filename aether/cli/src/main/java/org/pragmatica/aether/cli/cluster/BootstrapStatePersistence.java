@@ -40,6 +40,10 @@ import static org.pragmatica.lang.Option.some;
         return Result.lift(PersistenceError::new, () -> doDelete(clusterName));
     }
 
+    static Path statePath(String clusterName) {
+        return stateFilePath(clusterName);
+    }
+
     private static Unit doSave(BootstrapState state) throws Exception {
         var dir = AETHER_DIR.resolve(state.clusterName());
         Files.createDirectories(dir);

@@ -129,6 +129,32 @@ class ClusterBootstrapCommandTest {
         }
 
         @Test
+        void bootstrap_keepOnFailureFlag_parsesAsTrue_whenPassed() throws Exception {
+            var tomlPath = writeMinimalToml("from-toml");
+            var cmd = new ClusterBootstrapCommand();
+            new CommandLine(cmd).parseArgs(tomlPath.toString(), "--keep-on-failure", "--yes");
+
+            assertEquals(Boolean.TRUE, readField(cmd, "keepOnFailure"));
+        }
+
+        @Test
+        void bootstrap_keepOnFailureFlag_defaultsToFalse_whenAbsent() throws Exception {
+            var tomlPath = writeMinimalToml("from-toml");
+            var cmd = new ClusterBootstrapCommand();
+            new CommandLine(cmd).parseArgs(tomlPath.toString(), "--yes");
+
+            assertEquals(Boolean.FALSE, readField(cmd, "keepOnFailure"));
+        }
+
+        @Test
+        void bootstrap_keepOnFailureFlag_appearsInHelp() {
+            var help = new CommandLine(new ClusterBootstrapCommand()).getUsageMessage();
+
+            assertNotEquals(-1, help.indexOf("--keep-on-failure"),
+                            "expected --keep-on-failure in help output, got: " + help);
+        }
+
+        @Test
         void bootstrap_invalidClusterValue_returnsUsageError() throws Exception {
             var tomlPath = writeMissingToml();
             var cmd = new ClusterBootstrapCommand();

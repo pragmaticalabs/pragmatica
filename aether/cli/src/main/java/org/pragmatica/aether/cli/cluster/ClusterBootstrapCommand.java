@@ -53,6 +53,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
 
     @Option(names = "--ssh-public-key", description = "Path to operator SSH public key (e.g. ~/.ssh/id_ed25519.pub). " + "Overrides [infrastructure.ssh].public_key_file in TOML and the AETHER_SSH_KEY env fallback. " + "Required for cloud sources to be SSH-reachable.") private String sshPublicKeyPath;
 
+    @Option(names = "--keep-on-failure", description = "Skip automatic cleanup of provisioned VMs and SSH keys when bootstrap fails. " + "Symmetric with 'aether cluster destroy --keep-resources'. " + "Use to preserve resources for SSH-inspection diagnosis; clean up later with " + "'aether cluster destroy --cluster <name> --yes'.") private boolean keepOnFailure;
+
     @CommandLine.ParentCommand private ClusterCommand parent;
 
     @Override public Integer call() {
@@ -94,7 +96,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
         }
         return SshKeyResolver.resolveOrFailIfCloud(config,
                                                    option(sshPublicKeyPath))
-        .flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(config, resume, fullCheck, keys));
+        .flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(config, resume, fullCheck, keys, keepOnFailure));
     }
 
     private static void printPlan(ClusterBootstrapConfig config) {

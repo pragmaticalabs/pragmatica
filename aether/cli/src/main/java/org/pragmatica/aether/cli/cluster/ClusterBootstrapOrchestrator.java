@@ -11,6 +11,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -20,6 +21,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
@@ -36,40 +38,61 @@ import static org.pragmatica.lang.Result.success;
 
     long DEFAULT_TIMEOUT_MS = 300_000;
 
+    AtomicReference<Function<BootstrapState, Result<Unit>>> CLEANUP_HOOK = new AtomicReference<>(BootstrapCleanup::cleanup);
+
+    static Function<BootstrapState, Result<Unit>> cleanupHook() {
+        return CLEANUP_HOOK.get();
+    }
+
+    @Contract static void setCleanupHook(Function<BootstrapState, Result<Unit>> hook) {
+        CLEANUP_HOOK.set(hook);
+    }
+
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config) {
-        return bootstrap(config, false, false, List.of());
+        return bootstrap(config, false, false, List.of(), false);
     }
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config, boolean resume, boolean fullCheck) {
-        return bootstrap(config, resume, fullCheck, List.of());
+        return bootstrap(config, resume, fullCheck, List.of(), false);
     }
 
     static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config,
                                              boolean resume,
                                              boolean fullCheck,
                                              List<SshPublicKey> sshPublicKeys) {
-        if (resume) {return resumeBootstrap(config, fullCheck, sshPublicKeys);}
-        return freshBootstrap(config, fullCheck, sshPublicKeys);
+        return bootstrap(config, resume, fullCheck, sshPublicKeys, false);
+    }
+
+    static Result<BootstrapResult> bootstrap(ClusterBootstrapConfig config,
+                                             boolean resume,
+                                             boolean fullCheck,
+                                             List<SshPublicKey> sshPublicKeys,
+                                             boolean keepOnFailure) {
+        if (resume) {return resumeBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure);}
+        return freshBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure);
     }
 
     private static Result<BootstrapResult> freshBootstrap(ClusterBootstrapConfig config,
                                                           boolean fullCheck,
-                                                          List<SshPublicKey> sshPublicKeys) {
+                                                          List<SshPublicKey> sshPublicKeys,
+                                                          boolean keepOnFailure) {
         return BootstrapPhaseValidate.execute(config, fullCheck).map(ctx -> ctx.withSshPublicKeys(sshPublicKeys))
                                              .flatMap(ClusterBootstrapOrchestrator::runPhaseChain)
-                                             .onFailure(cause -> cleanupOnFailure(config.cluster().name(),
-                                                                                  cause));
+                                             .onFailure(cause -> handleFailure(config.cluster().name(),
+                                                                               cause,
+                                                                               keepOnFailure));
     }
 
     private static Result<BootstrapResult> resumeBootstrap(ClusterBootstrapConfig config,
                                                            boolean fullCheck,
-                                                           List<SshPublicKey> sshPublicKeys) {
+                                                           List<SshPublicKey> sshPublicKeys,
+                                                           boolean keepOnFailure) {
         var clusterName = config.cluster().name();
         return BootstrapStatePersistence.load(clusterName).toResult(new BootstrapError.ProvisionFailed(clusterName,
                                                                                                        "No bootstrap state found for resume"))
                                              .flatMap(state -> validateResumeState(state, config))
                                              .flatMap(state -> resumeFromState(config, state, sshPublicKeys))
-                                             .onFailure(cause -> cleanupOnFailure(clusterName, cause));
+                                             .onFailure(cause -> handleFailure(clusterName, cause, keepOnFailure));
     }
 
     private static Result<BootstrapState> validateResumeState(BootstrapState state, ClusterBootstrapConfig config) {
@@ -136,9 +159,45 @@ import static org.pragmatica.lang.Result.success;
         BootstrapStatePersistence.save(failed.state());
     }
 
-    @Contract private static void cleanupOnFailure(String clusterName, Cause cause) {
+    @Contract static void handleFailure(String clusterName, Cause cause, boolean keepOnFailure) {
+        if (keepOnFailure) {
+            warnKeepOnFailure(clusterName, cause);
+            return;
+        }
+        cleanupOnFailure(clusterName);
+    }
+
+    @Contract private static void cleanupOnFailure(String clusterName) {
         BootstrapStatePersistence.load(clusterName).filter(state -> !state.createdResources().isEmpty())
-                                      .onPresent(BootstrapCleanup::cleanup);
+                                      .onPresent(state -> cleanupHook().apply(state));
+    }
+
+    @Contract private static void warnKeepOnFailure(String clusterName, Cause cause) {
+        var state = BootstrapStatePersistence.load(clusterName);
+        var resources = state.map(BootstrapState::createdResources).or(List.of());
+        var vmCount = resources.stream().filter(r -> r instanceof CreatedResource.ProvisionedVm)
+                                      .count();
+        var keyCount = resources.stream().filter(r -> r instanceof CreatedResource.SshKeyResource)
+                                       .count();
+        var failedPhase = state.map(ClusterBootstrapOrchestrator::resolveFailedPhase).or("UNKNOWN");
+        System.err.printf("[--keep-on-failure] Bootstrap of cluster '%s' failed at phase %s (%s).%n",
+                          clusterName,
+                          failedPhase,
+                          cause.message());
+        System.err.printf("[--keep-on-failure] Keeping %d provisioned VM(s) and %d SSH key(s); state retained at %s.%n",
+                          vmCount,
+                          keyCount,
+                          BootstrapStatePersistence.statePath(clusterName));
+        System.err.println("[--keep-on-failure] To inspect: ssh aether@<vm-ip> (or root@). " + "To clean up later: aether cluster destroy --cluster " + clusterName + " --yes.");
+    }
+
+    private static String resolveFailedPhase(BootstrapState state) {
+        return state.phases().entrySet()
+                           .stream()
+                           .filter(e -> e.getValue() == PhaseStatus.FAILED || e.getValue() == PhaseStatus.IN_PROGRESS)
+                           .map(e -> e.getKey().name())
+                           .findFirst()
+                           .orElse("UNKNOWN");
     }
 
     @SuppressWarnings("JBCT-EX-01") static String computeConfigHash(ClusterBootstrapConfig config) {
