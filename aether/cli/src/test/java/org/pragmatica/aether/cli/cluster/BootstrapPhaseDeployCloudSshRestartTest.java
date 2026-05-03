@@ -1,0 +1,455 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
+package org.pragmatica.aether.cli.cluster;
+
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.config.cluster.AutoHealSpec;
+import org.pragmatica.aether.config.cluster.CloudProviderName;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterIdentity;
+import org.pragmatica.aether.config.cluster.CoreTopology;
+import org.pragmatica.aether.config.cluster.InfrastructureConfig;
+import org.pragmatica.aether.config.cluster.LoadBalancerMode;
+import org.pragmatica.aether.config.cluster.NetworkingType;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.OperationsConfig;
+import org.pragmatica.aether.config.cluster.PortMapping;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
+import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.config.cluster.SshConfig;
+import org.pragmatica.aether.config.cluster.TimeoutsConfig;
+import org.pragmatica.aether.config.cluster.TlsDeploymentConfig;
+import org.pragmatica.aether.environment.NodeAddress;
+import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn3;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class BootstrapPhaseDeployCloudSshRestartTest {
+
+    private static final String CLUSTER_NAME = "prod";
+
+    private static final String CLUSTER_VERSION = "1.0.0";
+
+    private static final String CLUSTER_SECRET = "super-secret-token";
+
+    private static SourceProfile cloudSource() {
+        return SourceProfile.sourceProfile("eu-1",
+                                           SourceType.CLOUD,
+                                           Option.some(CloudProviderName.HETZNER),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           Map.of(NodeRole.CORE,
+                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                                            Option.some(3),
+                                                                            Option.empty(),
+                                                                            Option.empty(),
+                                                                            "default")),
+                                           List.of());
+    }
+
+    private static SourceProfile cloudSourceWithKey(String keyPath) {
+        return SourceProfile.sourceProfile("eu-1",
+                                           SourceType.CLOUD,
+                                           Option.some(CloudProviderName.HETZNER),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.some("aether"),
+                                           Option.some(keyPath),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           Map.of(NodeRole.CORE,
+                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                                            Option.some(3),
+                                                                            Option.empty(),
+                                                                            Option.empty(),
+                                                                            "default")),
+                                           List.of());
+    }
+
+    private static ClusterBootstrapConfig configWithShortTimeout(SourceProfile source) {
+        var timeouts = TimeoutsConfig.timeoutsConfig("3s", "10s", "10s");
+        var ports = PortMapping.defaultPortMapping();
+        var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
+                                                    TlsDeploymentConfig.defaultTlsConfig(),
+                                                    timeouts,
+                                                    ports);
+        return ClusterBootstrapConfig.clusterBootstrapConfig(CLUSTER_VERSION,
+                                                             ClusterIdentity.clusterIdentity(CLUSTER_NAME, CLUSTER_VERSION),
+                                                             CoreTopology.defaultCoreTopology(),
+                                                             Map.of("eu-1", source),
+                                                             Map.of(),
+                                                             InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                             ops);
+    }
+
+    private static BootstrapContext contextWithThreeCloudNodes(SourceProfile source) {
+        var config = configWithShortTimeout(source);
+        var nodes = List.of(
+            ProvisionedNode.provisionedNode("eu-1-core-0", "100", "203.0.113.10"),
+            ProvisionedNode.provisionedNode("eu-1-core-1", "101", "203.0.113.11"),
+            ProvisionedNode.provisionedNode("eu-1-core-2", "102", "203.0.113.12"));
+        var addresses = List.of(
+            NodeAddress.nodeAddress("eu-1-core-0", "203.0.113.10", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-core-1", "203.0.113.11", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-core-2", "203.0.113.12", Option.empty()));
+        var state = BootstrapState.initialState(CLUSTER_NAME, "h", "now").withClusterSecret(CLUSTER_SECRET);
+        return BootstrapContext.bootstrapContext(config, state, nodes, addresses)
+                               .withClusterSecret(CLUSTER_SECRET);
+    }
+
+    private record SshInvocation(String host, String command, SshConfig config) {}
+
+    private record TestError(String detail) implements Cause {
+        @Override public String message() { return detail; }
+    }
+
+    private static Fn1<Result<String>, String> alwaysHealthy() {
+        return url -> Result.success("OK");
+    }
+
+    private static Fn1<String, String> envWithKey(String keyPath) {
+        return name -> SshKeyResolver.AETHER_SSH_KEY_ENV.equals(name) ? keyPath : null;
+    }
+
+    private static Fn1<String, String> emptyEnv() {
+        return name -> null;
+    }
+
+    @Test
+    void deployCloudSource_invokesSshExec_oncePerNode_withDockerRestartCommand() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var invocations = new ConcurrentLinkedQueue<SshInvocation>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            invocations.add(new SshInvocation(host, command, config));
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed when SSH and health-poll succeed; got: " + result);
+        assertEquals(3, invocations.size(), "SSH must be invoked exactly once per cloud node");
+        var hostsSeen = invocations.stream().map(SshInvocation::host).toList();
+        assertTrue(hostsSeen.contains("203.0.113.10"), "Must SSH-back to node 0; saw: " + hostsSeen);
+        assertTrue(hostsSeen.contains("203.0.113.11"), "Must SSH-back to node 1; saw: " + hostsSeen);
+        assertTrue(hostsSeen.contains("203.0.113.12"), "Must SSH-back to node 2; saw: " + hostsSeen);
+    }
+
+    @Test
+    void deployCloudSource_passesFinalThreePartPeers_inDockerRunCommand() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            commands.put(host, command);
+            return Result.success("");
+        };
+
+        var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                      ctx.config().sources().get("eu-1"),
+                                                      "eu-1",
+                                                      alwaysHealthy(),
+                                                      sshExec,
+                                                      envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        var expectedPeers = String.join(",", BootstrapPhaseDeploy.buildThreePartPeers(ctx));
+        // Sanity: peers are nodeId:host:port format
+        assertTrue(expectedPeers.contains("eu-1-core-0:203.0.113.10:"),
+                   "buildThreePartPeers must produce nodeId:host:port; got: " + expectedPeers);
+        for (var cmd : commands.values()) {
+            assertTrue(cmd.contains("-e PEERS=\"" + expectedPeers + "\""),
+                       () -> "Each docker-run command must export the finalized PEERS env var: " + cmd);
+        }
+    }
+
+    @Test
+    void deployCloudSource_threadsAllPerNodeEnvVars_intoDockerRunCommand() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            commands.put(host, command);
+            return Result.success("");
+        };
+
+        var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                      ctx.config().sources().get("eu-1"),
+                                                      "eu-1",
+                                                      alwaysHealthy(),
+                                                      sshExec,
+                                                      envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        var clusterPort = ctx.config().operations().ports().cluster();
+        var mgmtPort = ctx.config().operations().ports().management();
+
+        var cmd0 = commands.get("203.0.113.10");
+        assertTrue(cmd0.contains("-e NODE_ID=\"eu-1-core-0\""), "NODE_ID must be set per node: " + cmd0);
+        assertTrue(cmd0.contains("-e CLUSTER_PORT=\"" + clusterPort + "\""), "CLUSTER_PORT must be set: " + cmd0);
+        assertTrue(cmd0.contains("-e MANAGEMENT_PORT=\"" + mgmtPort + "\""), "MANAGEMENT_PORT must be set: " + cmd0);
+        assertTrue(cmd0.contains("-e AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""),
+                   "AETHER_CLUSTER_SECRET must be threaded through: " + cmd0);
+
+        var cmd1 = commands.get("203.0.113.11");
+        assertTrue(cmd1.contains("-e NODE_ID=\"eu-1-core-1\""), "NODE_ID must be node-specific: " + cmd1);
+    }
+
+    @Test
+    void deployCloudSource_dockerRunCommand_alwaysIncludesRmFAndConfigBindMount() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            commands.put(host, command);
+            return Result.success("");
+        };
+
+        var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                      ctx.config().sources().get("eu-1"),
+                                                      "eu-1",
+                                                      alwaysHealthy(),
+                                                      sshExec,
+                                                      envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        for (var cmd : commands.values()) {
+            assertTrue(cmd.contains("docker rm -f aether-node"),
+                       () -> "Restart command MUST tear down the previous container: " + cmd);
+            assertTrue(cmd.contains("docker run -d"),
+                       () -> "Restart command MUST start a new container in detached mode: " + cmd);
+            assertTrue(cmd.contains("-v /opt/aether/config/aether.toml:/app/aether.toml:ro"),
+                       () -> "Bind-mount of composed aether.toml MUST be preserved (Bug 13): " + cmd);
+            assertTrue(cmd.contains("--restart unless-stopped"),
+                       () -> "Container must auto-restart on failure: " + cmd);
+            assertTrue(cmd.contains("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION),
+                       () -> "Image must match cloud-init's cluster.version selector: " + cmd);
+        }
+    }
+
+    @Test
+    void deployCloudSource_failsAndNamesIp_whenSshUnreachable() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var failingHost = "203.0.113.11";
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> failingHost.equals(host)
+                                                                                              ? new TestError("ssh: connect refused").result()
+                                                                                              : Result.success("");
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isFailure(), "Phase must fail when SSH-back fails on at least one node");
+        var msg = result.fold(c -> c.message(), v -> "<unexpected success: " + v + ">");
+        assertTrue(msg.contains(failingHost),
+                   () -> "Failure message must name the unreachable IP. Got: " + msg);
+        assertTrue(msg.contains("Failed to restart aether-node"),
+                   () -> "Failure message must explain *what* failed. Got: " + msg);
+    }
+
+    @Test
+    void deployCloudSource_failsFastWithoutHealthPoll_whenSshFails() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> new TestError("denied").result();
+        var pollCount = new AtomicInteger();
+        Fn1<Result<String>, String> healthCheck = url -> {
+            pollCount.incrementAndGet();
+            return Result.success("OK");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            healthCheck,
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isFailure(), "SSH failure must abort the phase before health-poll");
+        assertEquals(0, pollCount.get(),
+                     "Health poll MUST NOT run when SSH-back failed — that would be a false positive");
+    }
+
+    @Test
+    void deployCloudSource_failsWithGuidance_whenNoSshKeyAvailable() {
+        // No source.key() and no env var → can't SSH back → must fail with actionable message.
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> Result.success("");
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            emptyEnv());
+
+        assertTrue(result.isFailure(), "Must fail when no SSH private key is available for cloud restart");
+        var msg = result.fold(c -> c.message(), v -> "<unexpected success: " + v + ">");
+        assertTrue(msg.contains(SshKeyResolver.AETHER_SSH_KEY_ENV),
+                   () -> "Failure message must point operator to the env var: " + msg);
+    }
+
+    @Test
+    void deployCloudSource_resolvesSshKey_fromSourceProfile_whenProvided() {
+        var keyPath = "/operator/keys/cluster_id_ed25519";
+        var source = cloudSourceWithKey(keyPath);
+        var ctx = contextWithThreeCloudNodes(source);
+        var configsSeen = new ConcurrentLinkedQueue<SshConfig>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            configsSeen.add(config);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            emptyEnv());
+
+        assertTrue(result.isSuccess(), () -> "Source-provided key must be sufficient; got: " + result);
+        for (var c : configsSeen) {
+            assertEquals(keyPath, c.keyPath(), "SshConfig must use source.key() when present");
+            assertEquals("aether", c.user(), "SshConfig user must come from source.user()");
+        }
+    }
+
+    @Test
+    void deployCloudSource_resolvesSshKey_fromEnvVar_whenSourceHasNoKey() {
+        var envKey = "/home/operator/.ssh/aether_bootstrap_key";
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var configsSeen = new ConcurrentLinkedQueue<SshConfig>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            configsSeen.add(config);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey(envKey));
+
+        assertTrue(result.isSuccess(), () -> "Env-var key must be a valid fallback; got: " + result);
+        for (var c : configsSeen) {
+            assertEquals(envKey, c.keyPath(), "SshConfig must use AETHER_SSH_KEY env var when source.key() absent");
+        }
+    }
+
+    @Test
+    void deployCloudSource_skipsSshAndPoll_whenNoCloudNodesProvisioned() {
+        var emptyCtx = BootstrapContext.bootstrapContext(configWithShortTimeout(cloudSource()),
+                                                         BootstrapState.initialState(CLUSTER_NAME, "h", "now"),
+                                                         List.of(),
+                                                         List.of()).withClusterSecret(CLUSTER_SECRET);
+        var sshCount = new AtomicInteger();
+        var pollCount = new AtomicInteger();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            sshCount.incrementAndGet();
+            return Result.success("");
+        };
+        Fn1<Result<String>, String> healthCheck = url -> {
+            pollCount.incrementAndGet();
+            return Result.success("OK");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(emptyCtx,
+                                                            emptyCtx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            healthCheck,
+                                                            sshExec,
+                                                            envWithKey("/some/key"));
+
+        assertTrue(result.isSuccess(), "Empty node list must be a no-op success");
+        assertEquals(0, sshCount.get(), "No SSH attempts when no nodes were provisioned");
+        assertEquals(0, pollCount.get(), "No polling when no nodes were provisioned");
+    }
+
+    @Test
+    void buildRestartCommand_includesAllRequiredEnvVarsAndImage_inExpectedOrder() {
+        // Mutation guard: any future refactor that drops/renames an env var should fail here.
+        var cmd = BootstrapPhaseDeploy.buildRestartCommand("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION,
+                                                           CLUSTER_NAME,
+                                                           "eu-1-core-0",
+                                                           8090,
+                                                           8091,
+                                                           "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091",
+                                                           CLUSTER_SECRET);
+        assertTrue(cmd.contains("docker rm -f aether-node"), cmd);
+        assertTrue(cmd.contains("docker run -d --name aether-node --restart unless-stopped --network host"), cmd);
+        assertTrue(cmd.contains("-l aether-cluster=" + CLUSTER_NAME), cmd);
+        assertTrue(cmd.contains("-l aether-node-id=eu-1-core-0"), cmd);
+        assertTrue(cmd.contains("-v /opt/aether/config/aether.toml:/app/aether.toml:ro"), cmd);
+        assertTrue(cmd.contains("-e NODE_ID=\"eu-1-core-0\""), cmd);
+        assertTrue(cmd.contains("-e CLUSTER_PORT=\"8090\""), cmd);
+        assertTrue(cmd.contains("-e MANAGEMENT_PORT=\"8091\""), cmd);
+        assertTrue(cmd.contains("-e PEERS=\"eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091\""), cmd);
+        assertTrue(cmd.contains("-e AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""), cmd);
+        assertTrue(cmd.endsWith("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION), cmd);
+        assertFalse(cmd.contains(":latest"), "Image tag must follow cluster.version, not :latest. Got: " + cmd);
+    }
+
+    @Test
+    void deployCloudSource_runsSshBackBeforeHealthPoll_notAfter() {
+        // Ordering guarantee: SSH-back must happen first, otherwise an empty-PEERS container
+        // could falsely appear "healthy" on /health/live and we'd skip the restart entirely.
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var order = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            order.add("ssh:" + host);
+            return Result.success("");
+        };
+        Fn1<Result<String>, String> healthCheck = url -> {
+            order.add("poll:" + url);
+            return Result.success("OK");
+        };
+
+        var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                      ctx.config().sources().get("eu-1"),
+                                                      "eu-1",
+                                                      healthCheck,
+                                                      sshExec,
+                                                      envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        var events = order.stream().toList();
+        var firstPoll = events.indexOf(events.stream().filter(e -> e.startsWith("poll:")).findFirst().orElse(""));
+        var lastSsh = -1;
+        for (int i = 0; i < events.size(); i++) {
+            if (events.get(i).startsWith("ssh:")) { lastSsh = i; }
+        }
+        assertTrue(lastSsh >= 0, "At least one SSH must have happened: " + events);
+        assertTrue(firstPoll == -1 || lastSsh < firstPoll,
+                   () -> "All SSH-back events must precede the first health poll. Events: " + events);
+    }
+}

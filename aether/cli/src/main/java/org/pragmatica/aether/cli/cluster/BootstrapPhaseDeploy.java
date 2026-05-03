@@ -13,6 +13,7 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -36,6 +37,13 @@ import static org.pragmatica.lang.Result.success;
 
     @SuppressWarnings("JBCT-PAT-01") static Result<BootstrapContext> execute(BootstrapContext ctx,
                                                                              Fn1<Result<String>, String> healthCheck) {
+        return execute(ctx, healthCheck, RemoteCommandRunner::ssh, System::getenv);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") static Result<BootstrapContext> execute(BootstrapContext ctx,
+                                                                             Fn1<Result<String>, String> healthCheck,
+                                                                             Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                                                             Fn1<String, String> envLookup) {
         ClusterBootstrapOrchestrator.logPhase(DEPLOY_RUNTIME,
                                               "Deploying runtime to %d node(s)",
                                               ctx.addresses().size());
@@ -43,7 +51,7 @@ import static org.pragmatica.lang.Result.success;
                                    .entrySet()) {
             var sourceName = entry.getKey();
             var source = entry.getValue();
-            var deployResult = deploySource(ctx, source, sourceName, healthCheck);
+            var deployResult = deploySource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
             if (deployResult.isFailure()) {return deployResult.map(_ -> ctx);}
         }
         return verifyForgeReachable(ctx).map(_ -> ctx);
@@ -75,9 +83,11 @@ import static org.pragmatica.lang.Result.success;
     @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> deploySource(BootstrapContext ctx,
                                                                               SourceProfile source,
                                                                               String sourceName,
-                                                                              Fn1<Result<String>, String> healthCheck) {
+                                                                              Fn1<Result<String>, String> healthCheck,
+                                                                              Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                                                              Fn1<String, String> envLookup) {
         return switch (source.type()){
-            case CLOUD -> deployCloudSource(ctx, source, sourceName, healthCheck);
+            case CLOUD -> deployCloudSource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
             case SSH -> deploySshSource(ctx, source, sourceName);
             case FORGE -> deployForgeSource(sourceName);
             case DOCKER -> deployDockerSource(sourceName);
@@ -88,22 +98,105 @@ import static org.pragmatica.lang.Result.success;
                                                                           SourceProfile source,
                                                                           String sourceName,
                                                                           Fn1<Result<String>, String> healthCheck) {
+        Fn3<Result<String>, String, String, SshConfig> noopSsh = (host, command, config) -> Result.success("");
+        Fn1<String, String> noopEnv = name -> "/dev/null";
+        return deployCloudSource(ctx, source, sourceName, healthCheck, noopSsh, noopEnv);
+    }
+
+    @SuppressWarnings("JBCT-EX-01") static Result<Unit> deployCloudSource(BootstrapContext ctx,
+                                                                          SourceProfile source,
+                                                                          String sourceName,
+                                                                          Fn1<Result<String>, String> healthCheck,
+                                                                          Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                                                          Fn1<String, String> envLookup) {
         var sourceNodes = collectSourceNodes(ctx, sourceName);
         if (sourceNodes.isEmpty()) {
             System.out.printf("  [%s/cloud] No nodes to wait for%n", sourceName);
             return Result.unitResult();
         }
+        var restartResult = restartContainersWithFinalPeers(ctx, source, sourceName, sourceNodes, sshExec, envLookup);
+        if (restartResult.isFailure()) {return restartResult;}
         var mgmtPort = ctx.config().operations()
                                  .ports()
                                  .management();
         var timeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations()
                                                                                .timeouts()
                                                                                .healthCheck());
-        System.out.printf("  [%s/cloud] Waiting for %d node(s) to finish cloud-init (timeout: %ds)%n",
+        System.out.printf("  [%s/cloud] Waiting for %d node(s) to become healthy (timeout: %ds)%n",
                           sourceName,
                           sourceNodes.size(),
                           timeoutMs / 1000);
         return waitForCloudInit(sourceNodes, mgmtPort, timeoutMs, healthCheck, sourceName);
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> restartContainersWithFinalPeers(BootstrapContext ctx,
+                                                                                                SourceProfile source,
+                                                                                                String sourceName,
+                                                                                                List<ProvisionedNode> sourceNodes,
+                                                                                                Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                                                                                Fn1<String, String> envLookup) {
+        var sshConfigResult = buildCloudSshConfig(source, envLookup);
+        if (sshConfigResult.isFailure()) {return sshConfigResult.map(_ -> Unit.unit());}
+        var sshConfig = sshConfigResult.unwrap();
+        var peers = String.join(",", buildThreePartPeers(ctx));
+        var clusterPort = ctx.config().operations()
+                                    .ports()
+                                    .cluster();
+        var managementPort = ctx.config().operations()
+                                       .ports()
+                                       .management();
+        var clusterSecret = ctx.clusterSecret();
+        var clusterName = ctx.config().cluster()
+                                    .name();
+        var image = resolveContainerImage(ctx);
+        System.out.printf("  [%s/cloud] Re-launching aether-node containers on %d host(s) with finalized PEERS=%s%n",
+                          sourceName,
+                          sourceNodes.size(),
+                          peers);
+        for (var node : sourceNodes) {
+            var command = buildRestartCommand(image,
+                                              clusterName,
+                                              node.nodeId(),
+                                              clusterPort,
+                                              managementPort,
+                                              peers,
+                                              clusterSecret);
+            var result = sshExec.apply(node.publicIp(), command, sshConfig);
+            if (result.isFailure()) {return new BootstrapError.DeploymentFailed(node.publicIp(),
+                                                                                "Failed to restart aether-node container with finalized PEERS: " + result.fold(c -> c.message(),
+                                                                                                                                                               v -> v)).result();}
+        }
+        System.out.printf("  [%s/cloud] All %d container(s) restarted with finalized PEERS%n",
+                          sourceName,
+                          sourceNodes.size());
+        return Result.unitResult();
+    }
+
+    static String buildRestartCommand(String image,
+                                      String clusterName,
+                                      String nodeId,
+                                      int clusterPort,
+                                      int managementPort,
+                                      String peers,
+                                      String clusterSecret) {
+        return "docker rm -f aether-node 2>/dev/null || true" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -l aether-cluster=" + clusterName + " -l aether-node-id=" + nodeId + " -l aether-role=core" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + " -e PEERS=\"" + peers + "\"" + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " " + image;
+    }
+
+    private static String resolveContainerImage(BootstrapContext ctx) {
+        return "ghcr.io/pragmaticalabs/aether-node:" + ctx.config().cluster()
+                                                                 .version();
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private static Result<SshConfig> buildCloudSshConfig(SourceProfile source,
+                                                                                         Fn1<String, String> envLookup) {
+        var user = source.user().or("aether");
+        var port = source.sshPort().or(22);
+        var keyFromSource = source.key().filter(s -> !s.isBlank());
+        if (keyFromSource.isPresent()) {return Result.success(SshConfig.sshConfig(user, keyFromSource.unwrap(), port));}
+        var envKey = envLookup.apply(SshKeyResolver.AETHER_SSH_KEY_ENV);
+        if (envKey == null || envKey.isBlank()) {return new BootstrapError.DeploymentFailed("cloud",
+                                                                                            "Cannot SSH-back to cloud nodes: no private key configured. " + "Set " + SshKeyResolver.AETHER_SSH_KEY_ENV + " env var, or [sources.<name>] key = \"<path>\" in TOML.").result();}
+        return Result.success(SshConfig.sshConfig(user, envKey, port));
     }
 
     private static List<ProvisionedNode> collectSourceNodes(BootstrapContext ctx, String sourceName) {
