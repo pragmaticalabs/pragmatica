@@ -174,6 +174,52 @@ public class PgConnection implements Connection {
 
     private Columns currentColumns;
 
+    /// Outer-transaction depth: 0 = no tx, 1 = inside outer tx, >1 = nested savepoints.
+    /// PostgreSQL connections are single-threaded — no synchronization needed.
+    private int txDepth = 0;
+    /// Hooks fired once when the outer transaction commits (depth transitions 1 → 0 via COMMIT).
+    private final ArrayList<Runnable> onCommitHooks = new ArrayList<>();
+    /// Hooks fired once when the outer transaction rolls back (depth 1 → 0 via ROLLBACK).
+    private final ArrayList<Runnable> onRollbackHooks = new ArrayList<>();
+
+    boolean inTransaction() {
+        return txDepth > 0;
+    }
+
+    void enterTx() {
+        txDepth++;
+    }
+
+    /// Decrement tx depth. When the outer tx ends (depth reaches 0), fire either the
+    /// commit or rollback hooks (and discard the other side). Savepoint release/rollback
+    /// just decrements — hooks remain pending for the outer outcome. This means
+    /// subscribe/unlisten inside a rolled-back savepoint may leave inconsistent state;
+    /// see the javadoc on [#subscribe(String, Consumer)].
+    void exitTx(boolean committed) {
+        txDepth--;
+        if (txDepth > 0) {
+            return;
+        }
+        var fire = committed ? new ArrayList<>(onCommitHooks) : new ArrayList<>(onRollbackHooks);
+        onCommitHooks.clear();
+        onRollbackHooks.clear();
+        for (var hook : fire) {
+            try {
+                hook.run();
+            } catch (Throwable t) {
+                log.warn("Transaction {} hook threw", committed ? "commit" : "rollback", t);
+            }
+        }
+    }
+
+    void registerOnCommit(Runnable hook) {
+        onCommitHooks.add(hook);
+    }
+
+    void registerOnRollback(Runnable hook) {
+        onRollbackHooks.add(hook);
+    }
+
     PgConnection(ProtocolStream stream, DataConverter dataConverter, int maxStatements) {
         this.stream = stream;
         this.dataConverter = dataConverter;
@@ -316,31 +362,55 @@ public class PgConnection implements Connection {
     @Override
     public Promise<Transaction> begin() {
         return completeScript("BEGIN")
+            .withSuccess(_ -> enterTx())
             .map(_ -> new PgConnectionTransaction());
     }
 
+    /// Subscribe to NOTIFY messages on a channel.
+    ///
+    /// **Auto-commit (no active transaction):** LISTEN takes effect immediately.
+    /// The returned [Listening] removes the local handler and issues UNLISTEN.
+    ///
+    /// **Inside an explicit transaction:** PostgreSQL defers LISTEN until COMMIT
+    /// (and discards it on ROLLBACK). The local handler is registered immediately,
+    /// but a rollback hook is also registered: if the outer transaction rolls back,
+    /// the handler is removed (mirrors the server-side discard). Likewise, when
+    /// the returned [Listening] is invoked inside a transaction, UNLISTEN is queued
+    /// and the local handler is only removed if/when the outer transaction commits.
+    ///
+    /// **Limitation:** subscribe/unlisten inside a SAVEPOINT that is later rolled
+    /// back via `ROLLBACK TO SAVEPOINT` may leave the client and server states
+    /// inconsistent until the outer transaction completes. Outer COMMIT/ROLLBACK
+    /// always fires the registered hooks.
     public Promise<Listening> subscribe(String channel, Consumer<String> onNotification) {
-        // TODO: wait for commit before sending unlisten as otherwise it can be rolled back
         return validateChannelName(channel)
             .flatMap(_ -> completeScript("LISTEN " + channel))
-            .map(_ -> {
-                var unsubscribe = stream.subscribe(channel, onNotification);
-
-                return () -> completeScript("UNLISTEN " + channel).withSuccess(_ -> unsubscribe.run())
-                                                                  .mapToUnit();
-            });
+            .map(_ -> registerSubscription(channel, stream.subscribe(channel, onNotification)));
     }
 
     @Override
     public Promise<Listening> subscribe(String channel, NotificationHandler onNotification) {
         return validateChannelName(channel)
             .flatMap(_ -> completeScript("LISTEN " + channel))
-            .map(_ -> {
-                var unsubscribe = stream.subscribeWithDetails(channel, onNotification);
+            .map(_ -> registerSubscription(channel, stream.subscribeWithDetails(channel, onNotification)));
+    }
 
-                return () -> completeScript("UNLISTEN " + channel).withSuccess(_ -> unsubscribe.run())
-                                                                  .mapToUnit();
-            });
+    private Listening registerSubscription(String channel, Runnable unsubscribe) {
+        if (inTransaction()) {
+            registerOnRollback(unsubscribe);
+        }
+        return () -> doUnlisten(channel, unsubscribe);
+    }
+
+    private Promise<Unit> doUnlisten(String channel, Runnable unsubscribe) {
+        if (inTransaction()) {
+            return completeScript("UNLISTEN " + channel)
+                .withSuccess(_ -> registerOnCommit(unsubscribe))
+                .mapToUnit();
+        }
+        return completeScript("UNLISTEN " + channel)
+            .withSuccess(_ -> unsubscribe.run())
+            .mapToUnit();
     }
 
     private static Promise<Unit> validateChannelName(String channel) {
@@ -412,21 +482,36 @@ public class PgConnection implements Connection {
         public Promise<Transaction> begin() {
             int next = depth + 1;
             return completeScript("SAVEPOINT sp_" + next)
+                .withSuccess(_ -> enterTx())
                 .map(_ -> new PgConnectionTransaction(next));
         }
 
         @Override
         public Promise<Unit> commit() {
-            return depth == 0
-                ? PgConnection.this.completeScript("COMMIT").map(Unit::toUnit)
-                : PgConnection.this.completeScript("RELEASE SAVEPOINT sp_" + depth).map(Unit::toUnit);
+            if (depth == 0) {
+                // COMMIT: on server failure, the tx is automatically rolled back per PG semantics —
+                // fire rollback hooks. On wire/connection failure, also fire rollback hooks (best effort).
+                return PgConnection.this.completeScript("COMMIT")
+                                        .onResult(result -> exitTx(result.isSuccess()))
+                                        .map(Unit::toUnit);
+            }
+            return PgConnection.this.completeScript("RELEASE SAVEPOINT sp_" + depth)
+                                    .withSuccess(_ -> exitTx(true))
+                                    .map(Unit::toUnit);
         }
 
         @Override
         public Promise<Unit> rollback() {
-            return depth == 0
-                ? PgConnection.this.completeScript("ROLLBACK").map(Unit::toUnit)
-                : PgConnection.this.completeScript("ROLLBACK TO SAVEPOINT sp_" + depth).map(Unit::toUnit);
+            if (depth == 0) {
+                // ROLLBACK: fire rollback hooks regardless — on wire failure the connection is broken
+                // anyway, so unsubscribing local handlers is the right cleanup.
+                return PgConnection.this.completeScript("ROLLBACK")
+                                        .onResultRun(() -> exitTx(false))
+                                        .map(Unit::toUnit);
+            }
+            return PgConnection.this.completeScript("ROLLBACK TO SAVEPOINT sp_" + depth)
+                                    .withSuccess(_ -> exitTx(false))
+                                    .map(Unit::toUnit);
         }
 
         @Override
