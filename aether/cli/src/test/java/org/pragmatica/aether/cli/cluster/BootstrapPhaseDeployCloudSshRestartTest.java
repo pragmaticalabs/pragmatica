@@ -19,6 +19,8 @@ import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
+import org.pragmatica.aether.config.cluster.RuntimeProfile;
+import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
@@ -96,7 +98,35 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                            List.of());
     }
 
+    private static SourceProfile cloudSourceWithUser(String user) {
+        return SourceProfile.sourceProfile("eu-1",
+                                           SourceType.CLOUD,
+                                           Option.some(CloudProviderName.HETZNER),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.some(user),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           Map.of(NodeRole.CORE,
+                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                                            Option.some(3),
+                                                                            Option.empty(),
+                                                                            Option.empty(),
+                                                                            "default")),
+                                           List.of());
+    }
+
     private static ClusterBootstrapConfig configWithShortTimeout(SourceProfile source) {
+        return configWithShortTimeout(source, Map.of());
+    }
+
+    private static ClusterBootstrapConfig configWithShortTimeout(SourceProfile source,
+                                                                 Map<String, RuntimeProfile> runtimes) {
         var timeouts = TimeoutsConfig.timeoutsConfig("3s", "10s", "10s");
         var ports = PortMapping.defaultPortMapping();
         var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
@@ -107,9 +137,29 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                              ClusterIdentity.clusterIdentity(CLUSTER_NAME, CLUSTER_VERSION),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("eu-1", source),
-                                                             Map.of(),
+                                                             runtimes,
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
                                                              ops);
+    }
+
+    private static BootstrapContext contextWithRuntimeImage(SourceProfile source, String image) {
+        var runtimes = Map.of("default",
+                              RuntimeProfile.runtimeProfile("default",
+                                                            RuntimeType.CONTAINER,
+                                                            Option.some(image),
+                                                            Option.empty()));
+        var config = configWithShortTimeout(source, runtimes);
+        var nodes = List.of(
+            ProvisionedNode.provisionedNode("eu-1-core-0", "100", "203.0.113.10"),
+            ProvisionedNode.provisionedNode("eu-1-core-1", "101", "203.0.113.11"),
+            ProvisionedNode.provisionedNode("eu-1-core-2", "102", "203.0.113.12"));
+        var addresses = List.of(
+            NodeAddress.nodeAddress("eu-1-core-0", "203.0.113.10", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-core-1", "203.0.113.11", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-core-2", "203.0.113.12", Option.empty()));
+        var state = BootstrapState.initialState(CLUSTER_NAME, "h", "now").withClusterSecret(CLUSTER_SECRET);
+        return BootstrapContext.bootstrapContext(config, state, nodes, addresses)
+                               .withClusterSecret(CLUSTER_SECRET);
     }
 
     private static BootstrapContext contextWithThreeCloudNodes(SourceProfile source) {
@@ -147,6 +197,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
     @Test
     void deployCloudSource_invokesSshExec_oncePerNode_withDockerRestartCommand() {
+        // Bug 16-D: each node now gets TWO sshExec calls (preflight 'true' + docker-restart).
+        // This test focuses on the docker-restart leg.
         var ctx = contextWithThreeCloudNodes(cloudSource());
         var invocations = new ConcurrentLinkedQueue<SshInvocation>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
@@ -162,8 +214,9 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
 
         assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed when SSH and health-poll succeed; got: " + result);
-        assertEquals(3, invocations.size(), "SSH must be invoked exactly once per cloud node");
-        var hostsSeen = invocations.stream().map(SshInvocation::host).toList();
+        var dockerInvocations = invocations.stream().filter(i -> i.command().startsWith("docker")).toList();
+        assertEquals(3, dockerInvocations.size(), "Docker-restart SSH must be invoked exactly once per cloud node");
+        var hostsSeen = dockerInvocations.stream().map(SshInvocation::host).toList();
         assertTrue(hostsSeen.contains("203.0.113.10"), "Must SSH-back to node 0; saw: " + hostsSeen);
         assertTrue(hostsSeen.contains("203.0.113.11"), "Must SSH-back to node 1; saw: " + hostsSeen);
         assertTrue(hostsSeen.contains("203.0.113.12"), "Must SSH-back to node 2; saw: " + hostsSeen);
@@ -189,6 +242,12 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         // Sanity: peers are nodeId:host:port format
         assertTrue(expectedPeers.contains("eu-1-core-0:203.0.113.10:"),
                    "buildThreePartPeers must produce nodeId:host:port; got: " + expectedPeers);
+        // Bug 16-C: all peers MUST advertise the SAME cluster port (each VM is a separate host with --network host).
+        var clusterPort = ctx.config().operations().ports().cluster();
+        assertTrue(expectedPeers.contains("eu-1-core-0:203.0.113.10:" + clusterPort)
+                   && expectedPeers.contains("eu-1-core-1:203.0.113.11:" + clusterPort)
+                   && expectedPeers.contains("eu-1-core-2:203.0.113.12:" + clusterPort),
+                   "All peers must advertise the same cluster port (no +i offset); got: " + expectedPeers);
         for (var cmd : commands.values()) {
             assertTrue(cmd.contains("-e PEERS=\"" + expectedPeers + "\""),
                        () -> "Each docker-run command must export the finalized PEERS env var: " + cmd);
@@ -251,24 +310,32 @@ class BootstrapPhaseDeployCloudSshRestartTest {
             assertTrue(cmd.contains("--restart unless-stopped"),
                        () -> "Container must auto-restart on failure: " + cmd);
             assertTrue(cmd.contains("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION),
-                       () -> "Image must match cloud-init's cluster.version selector: " + cmd);
+                       () -> "Image must fall back to derived (cluster.version) when no [runtime.default] image set: " + cmd);
         }
     }
 
     @Test
     void deployCloudSource_failsAndNamesIp_whenSshUnreachable() {
+        // Bug 16-D: SSH-back failure during the docker-restart loop must surface the failing IP and
+        // the reason. Preflight passes (sshExec succeeds for "true"), but the restart command fails.
         var ctx = contextWithThreeCloudNodes(cloudSource());
         var failingHost = "203.0.113.11";
-        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> failingHost.equals(host)
-                                                                                              ? new TestError("ssh: connect refused").result()
-                                                                                              : Result.success("");
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            // Preflight uses command="true"; restart uses "docker rm -f ...". Only fail the restart.
+            if (failingHost.equals(host) && command.startsWith("docker")) {
+                return new TestError("ssh: connect refused").result();
+            }
+            return Result.success("");
+        };
 
         var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
                                                             ctx.config().sources().get("eu-1"),
                                                             "eu-1",
                                                             alwaysHealthy(),
                                                             sshExec,
-                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            100L,
+                                                            10L);
 
         assertTrue(result.isFailure(), "Phase must fail when SSH-back fails on at least one node");
         var msg = result.fold(c -> c.message(), v -> "<unexpected success: " + v + ">");
@@ -280,6 +347,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
     @Test
     void deployCloudSource_failsFastWithoutHealthPoll_whenSshFails() {
+        // With Bug 16-D: persistent SSH failure is now caught by the preflight (before docker-restart).
+        // Health poll still must not run.
         var ctx = contextWithThreeCloudNodes(cloudSource());
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> new TestError("denied").result();
         var pollCount = new AtomicInteger();
@@ -293,7 +362,9 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                             "eu-1",
                                                             healthCheck,
                                                             sshExec,
-                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            100L,
+                                                            10L);
 
         assertTrue(result.isFailure(), "SSH failure must abort the phase before health-poll");
         assertEquals(0, pollCount.get(),
@@ -451,5 +522,234 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(lastSsh >= 0, "At least one SSH must have happened: " + events);
         assertTrue(firstPoll == -1 || lastSsh < firstPoll,
                    () -> "All SSH-back events must precede the first health poll. Events: " + events);
+    }
+
+    // --- Bug 16-A: SSH user defaults to "root" for cloud sources ---
+
+    @Test
+    void deployCloudSource_sshUserDefaultsToRoot_whenSourceHasNoUser() {
+        // Bug 16-A: cloud-init runs as root and 'aether' user has no docker group access.
+        // Cloud SSH-back must default to root unless the operator explicitly overrides source.user.
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var configsSeen = new ConcurrentLinkedQueue<SshConfig>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            configsSeen.add(config);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
+        assertFalse(configsSeen.isEmpty(), "At least one SSH invocation must have been recorded");
+        for (var c : configsSeen) {
+            assertEquals("root", c.user(),
+                         "Cloud source without explicit user MUST default to 'root' (Bug 16-A); got: " + c.user());
+        }
+    }
+
+    @Test
+    void deployCloudSource_sshUser_honoursExplicitOverride() {
+        // Operator's explicit source.user wins over the root default.
+        var ctx = contextWithThreeCloudNodes(cloudSourceWithUser("ubuntu"));
+        var configsSeen = new ConcurrentLinkedQueue<SshConfig>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            configsSeen.add(config);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
+        for (var c : configsSeen) {
+            assertEquals("ubuntu", c.user(),
+                         "Explicit source.user MUST win over the root default; got: " + c.user());
+        }
+    }
+
+    // --- Bug 16-B: image comes from RuntimeProfile when set, falls back to derived otherwise ---
+
+    @Test
+    void deployCloudSource_imageFromRuntimeProfile_whenConfigured() {
+        // Bug 16-B: image must come from [runtime.default].image, not derived from cluster.version.
+        var configuredImage = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate";
+        var ctx = contextWithRuntimeImage(cloudSource(), configuredImage);
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            commands.put(host + "|" + command.split(" ", 2)[0], command);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
+        var dockerCommands = commands.values().stream().filter(c -> c.startsWith("docker")).toList();
+        assertFalse(dockerCommands.isEmpty(), "At least one docker-restart command must have been issued");
+        for (var cmd : dockerCommands) {
+            assertTrue(cmd.endsWith(configuredImage),
+                       () -> "Docker run MUST use image from [runtime.default].image verbatim. Got: " + cmd);
+            assertFalse(cmd.contains("aether-node:" + CLUSTER_VERSION + " "),
+                        () -> "Configured image MUST override derived (cluster.version). Got: " + cmd);
+        }
+    }
+
+    @Test
+    void deployCloudSource_imageFallsBackToDerived_whenRuntimeProfileHasNoImage() {
+        // No [runtime.default] entry → fall back to the cluster.version-derived tag.
+        var ctx = contextWithThreeCloudNodes(cloudSource()); // empty runtimes map
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            commands.put(host, command);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
+        for (var cmd : commands.values()) {
+            if (!cmd.startsWith("docker")) { continue; }
+            assertTrue(cmd.endsWith("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION),
+                       () -> "Without runtime.image config, image MUST fall back to cluster.version. Got: " + cmd);
+        }
+    }
+
+    // --- Bug 16-C: peers list emits the SAME cluster port for all nodes ---
+
+    @Test
+    void buildThreePartPeers_emitsSameClusterPort_forAllNodes() {
+        // Bug 16-C: previous +i offset broke multi-host clouds where every VM binds the same port.
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var clusterPort = ctx.config().operations().ports().cluster();
+
+        var peers = BootstrapPhaseDeploy.buildThreePartPeers(ctx);
+
+        assertEquals(3, peers.size(), "All three nodes must appear in peers list");
+        assertEquals("eu-1-core-0:203.0.113.10:" + clusterPort, peers.get(0),
+                     "Peer 0 must use the cluster port (no +i offset)");
+        assertEquals("eu-1-core-1:203.0.113.11:" + clusterPort, peers.get(1),
+                     "Peer 1 must use the SAME cluster port as peer 0 (was port+1, regression)");
+        assertEquals("eu-1-core-2:203.0.113.12:" + clusterPort, peers.get(2),
+                     "Peer 2 must use the SAME cluster port as peers 0 and 1");
+    }
+
+    // --- Bug 16-D: SSH preflight polls until reachable, fails after budget ---
+
+    @Test
+    void deployCloudSource_sshPreflight_retriesUntilReachable_thenProceeds() {
+        // Bug 16-D: timing race — cloud-init may still be installing docker when DEPLOY_RUNTIME starts.
+        // Preflight must retry and proceed once SSH becomes reachable.
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var attempts = new ConcurrentHashMap<String, AtomicInteger>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            // Preflight uses 'true' as command; restart uses 'docker ...'. Track preflight per host.
+            if ("true".equals(command)) {
+                var n = attempts.computeIfAbsent(host, _ -> new AtomicInteger()).incrementAndGet();
+                if (n < 3) { return new TestError("ssh: connection timed out").result(); }
+            }
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            10_000L,
+                                                            10L);
+
+        assertTrue(result.isSuccess(),
+                   () -> "Preflight must retry until reachable, then proceed; got: " + result);
+        for (var counter : attempts.values()) {
+            assertTrue(counter.get() >= 3,
+                       "Each host's preflight must have been retried at least 3 times. Got: " + counter.get());
+        }
+    }
+
+    @Test
+    void deployCloudSource_sshPreflight_failsAndNamesUnreachableIp_afterBudget() {
+        // Persistent SSH failure → preflight times out → phase fails naming the unreachable IP.
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var failingHost = "203.0.113.12";
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            if (failingHost.equals(host) && "true".equals(command)) {
+                return new TestError("ssh: connect timeout").result();
+            }
+            return Result.success("");
+        };
+        var pollCount = new AtomicInteger();
+        Fn1<Result<String>, String> healthCheck = url -> {
+            pollCount.incrementAndGet();
+            return Result.success("OK");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            healthCheck,
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            100L,
+                                                            10L);
+
+        assertTrue(result.isFailure(), "Preflight timeout must fail the phase");
+        var msg = result.fold(c -> c.message(), v -> "<unexpected success: " + v + ">");
+        assertTrue(msg.contains("SSH preflight failed"),
+                   () -> "Failure message must explain the failure mode. Got: " + msg);
+        assertTrue(msg.contains(failingHost),
+                   () -> "Failure message must name the unreachable IP. Got: " + msg);
+        assertEquals(0, pollCount.get(),
+                     "Health poll MUST NOT run when preflight failed");
+    }
+
+    @Test
+    void deployCloudSource_sshPreflight_runsBeforeDockerRestartLoop() {
+        // Ordering: preflight (command="true") for ALL nodes must precede the first docker-restart command.
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var order = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            var kind = command.startsWith("docker") ? "restart" : "preflight";
+            order.add(kind + ":" + host);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
+        var events = order.stream().toList();
+        var firstRestart = -1;
+        var lastPreflight = -1;
+        for (int i = 0; i < events.size(); i++) {
+            if (events.get(i).startsWith("preflight:")) { lastPreflight = i; }
+            if (events.get(i).startsWith("restart:") && firstRestart == -1) { firstRestart = i; }
+        }
+        assertTrue(lastPreflight >= 0, "At least one preflight event expected: " + events);
+        assertTrue(firstRestart >= 0, "At least one restart event expected: " + events);
+        assertTrue(lastPreflight < firstRestart,
+                   () -> "All preflight checks must precede the first docker-restart. Events: " + events);
     }
 }

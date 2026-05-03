@@ -6,6 +6,8 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
@@ -109,12 +111,37 @@ import static org.pragmatica.lang.Result.success;
                                                                           Fn1<Result<String>, String> healthCheck,
                                                                           Fn3<Result<String>, String, String, SshConfig> sshExec,
                                                                           Fn1<String, String> envLookup) {
+        return deployCloudSource(ctx,
+                                 source,
+                                 sourceName,
+                                 healthCheck,
+                                 sshExec,
+                                 envLookup,
+                                 SSH_PREFLIGHT_TIMEOUT_MS,
+                                 SSH_PREFLIGHT_POLL_MS);
+    }
+
+    @SuppressWarnings("JBCT-EX-01") static Result<Unit> deployCloudSource(BootstrapContext ctx,
+                                                                          SourceProfile source,
+                                                                          String sourceName,
+                                                                          Fn1<Result<String>, String> healthCheck,
+                                                                          Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                                                          Fn1<String, String> envLookup,
+                                                                          long preflightTimeoutMs,
+                                                                          long preflightPollMs) {
         var sourceNodes = collectSourceNodes(ctx, sourceName);
         if (sourceNodes.isEmpty()) {
             System.out.printf("  [%s/cloud] No nodes to wait for%n", sourceName);
             return Result.unitResult();
         }
-        var restartResult = restartContainersWithFinalPeers(ctx, source, sourceName, sourceNodes, sshExec, envLookup);
+        var restartResult = restartContainersWithFinalPeers(ctx,
+                                                            source,
+                                                            sourceName,
+                                                            sourceNodes,
+                                                            sshExec,
+                                                            envLookup,
+                                                            preflightTimeoutMs,
+                                                            preflightPollMs);
         if (restartResult.isFailure()) {return restartResult;}
         var mgmtPort = ctx.config().operations()
                                  .ports()
@@ -134,10 +161,19 @@ import static org.pragmatica.lang.Result.success;
                                                                                                 String sourceName,
                                                                                                 List<ProvisionedNode> sourceNodes,
                                                                                                 Fn3<Result<String>, String, String, SshConfig> sshExec,
-                                                                                                Fn1<String, String> envLookup) {
+                                                                                                Fn1<String, String> envLookup,
+                                                                                                long preflightTimeoutMs,
+                                                                                                long preflightPollMs) {
         var sshConfigResult = buildCloudSshConfig(source, envLookup);
         if (sshConfigResult.isFailure()) {return sshConfigResult.map(_ -> Unit.unit());}
         var sshConfig = sshConfigResult.unwrap();
+        var preflight = waitForSshReachable(sourceNodes,
+                                            sshConfig,
+                                            sourceName,
+                                            sshExec,
+                                            preflightTimeoutMs,
+                                            preflightPollMs);
+        if (preflight.isFailure()) {return preflight;}
         var peers = String.join(",", buildThreePartPeers(ctx));
         var clusterPort = ctx.config().operations()
                                     .ports()
@@ -148,7 +184,7 @@ import static org.pragmatica.lang.Result.success;
         var clusterSecret = ctx.clusterSecret();
         var clusterName = ctx.config().cluster()
                                     .name();
-        var image = resolveContainerImage(ctx);
+        var image = resolveContainerImage(ctx, source);
         System.out.printf("  [%s/cloud] Re-launching aether-node containers on %d host(s) with finalized PEERS=%s%n",
                           sourceName,
                           sourceNodes.size(),
@@ -172,6 +208,51 @@ import static org.pragmatica.lang.Result.success;
         return Result.unitResult();
     }
 
+    long SSH_PREFLIGHT_TIMEOUT_MS = 180_000;
+
+    long SSH_PREFLIGHT_POLL_MS = 5_000;
+
+    @SuppressWarnings("JBCT-EX-01") static Result<Unit> waitForSshReachable(List<ProvisionedNode> nodes,
+                                                                            SshConfig sshConfig,
+                                                                            String sourceName,
+                                                                            Fn3<Result<String>, String, String, SshConfig> sshExec) {
+        return waitForSshReachable(nodes,
+                                   sshConfig,
+                                   sourceName,
+                                   sshExec,
+                                   SSH_PREFLIGHT_TIMEOUT_MS,
+                                   SSH_PREFLIGHT_POLL_MS);
+    }
+
+    @SuppressWarnings("JBCT-EX-01") static Result<Unit> waitForSshReachable(List<ProvisionedNode> nodes,
+                                                                            SshConfig sshConfig,
+                                                                            String sourceName,
+                                                                            Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                                                            long timeoutMs,
+                                                                            long pollIntervalMs) {
+        if (nodes.isEmpty()) {return Result.unitResult();}
+        System.out.printf("  [%s/cloud] Waiting up to %ds for SSH to become reachable on %d host(s)%n",
+                          sourceName,
+                          timeoutMs / 1000,
+                          nodes.size());
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        var unreachable = new ArrayList<>(nodes);
+        while (System.currentTimeMillis() <deadline && !unreachable.isEmpty()) {
+            unreachable.removeIf(node -> sshExec.apply(node.publicIp(), "true", sshConfig).isSuccess());
+            if (unreachable.isEmpty()) {break;}
+            ClusterBootstrapOrchestrator.sleepQuietly(pollIntervalMs);
+        }
+        if (!unreachable.isEmpty()) {
+            var ips = unreachable.stream().map(ProvisionedNode::publicIp)
+                                        .toList();
+            return new BootstrapError.DeploymentFailed(sourceName,
+                                                       "SSH preflight failed: " + unreachable.size() + " host(s) unreachable after " + (timeoutMs / 1000) + "s. Unreachable IPs: " + String.join(", ",
+                                                                                                                                                                                                 ips)).result();
+        }
+        System.out.printf("  [%s/cloud] SSH reachable on all %d host(s)%n", sourceName, nodes.size());
+        return Result.unitResult();
+    }
+
     static String buildRestartCommand(String image,
                                       String clusterName,
                                       String nodeId,
@@ -182,14 +263,24 @@ import static org.pragmatica.lang.Result.success;
         return "docker rm -f aether-node 2>/dev/null || true" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -l aether-cluster=" + clusterName + " -l aether-node-id=" + nodeId + " -l aether-role=core" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + " -e PEERS=\"" + peers + "\"" + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " " + image;
     }
 
-    private static String resolveContainerImage(BootstrapContext ctx) {
+    static String resolveContainerImage(BootstrapContext ctx, SourceProfile source) {
+        return resolveRuntimeProfile(ctx, source).flatMap(RuntimeProfile::image).or(derivedImage(ctx));
+    }
+
+    private static String derivedImage(BootstrapContext ctx) {
         return "ghcr.io/pragmaticalabs/aether-node:" + ctx.config().cluster()
                                                                  .version();
     }
 
+    private static Option<RuntimeProfile> resolveRuntimeProfile(BootstrapContext ctx, SourceProfile source) {
+        var roleTable = Option.option(source.roles().get(NodeRole.CORE));
+        return roleTable.map(rt -> rt.runtimeRef()).flatMap(ref -> Option.option(ctx.config().runtimes()
+                                                                                           .get(ref)));
+    }
+
     @SuppressWarnings("JBCT-EX-01") private static Result<SshConfig> buildCloudSshConfig(SourceProfile source,
                                                                                          Fn1<String, String> envLookup) {
-        var user = source.user().or("aether");
+        var user = source.user().or("root");
         var port = source.sshPort().or(22);
         var keyFromSource = source.key().filter(s -> !s.isBlank());
         if (keyFromSource.isPresent()) {return Result.success(SshConfig.sshConfig(user, keyFromSource.unwrap(), port));}
@@ -294,7 +385,7 @@ import static org.pragmatica.lang.Result.success;
                                     .ports()
                                     .cluster();
         var size = Math.min(nodes.size(), addresses.size());
-        return IntStream.range(0, size).mapToObj(i -> nodes.get(i).nodeId() + ":" + addresses.get(i).publicIp() + ":" + (clusterPort + i))
+        return IntStream.range(0, size).mapToObj(i -> nodes.get(i).nodeId() + ":" + addresses.get(i).publicIp() + ":" + clusterPort)
                               .toList();
     }
 
