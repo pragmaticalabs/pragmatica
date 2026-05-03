@@ -72,7 +72,12 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
 
     private static CloudConfig buildCloudConfig(String providerName, SourceProfile source) {
         var credentials = new HashMap<String, String>();
-        source.credentials().onPresent(c -> credentials.put("credentials_file", c));
+        source.credentials()
+                          .onPresent(c -> {
+                                         credentials.put("credentials_file", c);
+                                         credentials.put("api_token", c);
+                                         credentials.put("access_key", c);
+                                     });
         var compute = new HashMap<String, String>();
         source.region().onPresent(r -> compute.put("region", r));
         source.zone().onPresent(z -> compute.put("zone", z));

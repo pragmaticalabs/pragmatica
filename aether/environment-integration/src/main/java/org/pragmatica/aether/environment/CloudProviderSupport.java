@@ -62,7 +62,20 @@ import static org.pragmatica.lang.Option.option;
 
     private static Promise<ProvisionedNode> provisionSingle(ComputeProvider compute, NodeGroupConfig group, int index) {
         var nodeId = group.sourceName() + "-" + group.role() + "-" + index;
-        return compute.provision(InstanceType.ON_DEMAND).map(info -> toProvisionedNode(nodeId, info));
+        return buildProvisionSpec(group).async()
+                                 .flatMap(compute::provision)
+                                 .map(info -> toProvisionedNode(nodeId, info));
+    }
+
+    static Result<ProvisionSpec> buildProvisionSpec(NodeGroupConfig group) {
+        var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, group.instanceType(), group.role(), group.tags());
+        return spec.map(s -> withZonePlacement(s, group.zone()));
+    }
+
+    private static ProvisionSpec withZonePlacement(ProvisionSpec spec, String zone) {
+        return zone.isEmpty() || "default".equals(zone)
+              ? spec
+              : spec.withPlacement(PlacementHint.zoneHint(zone));
     }
 
     private static Promise<Unit> terminateSingle(ComputeProvider compute, String nodeId) {
