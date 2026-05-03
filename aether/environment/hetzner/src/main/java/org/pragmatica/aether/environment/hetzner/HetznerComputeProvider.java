@@ -22,6 +22,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -44,13 +45,16 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.createServer(buildCreateRequest(config.region())).map(HetznerComputeProvider::toInstanceInfo)
+        return client.createServer(buildCreateRequest(config.region(), Map.of())).map(HetznerComputeProvider::toInstanceInfo)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var location = extractLocation(spec.placement());
-        return client.createServer(buildCreateRequest(location)).map(HetznerComputeProvider::toInstanceInfo)
+        // Caller-supplied tags (e.g. aether-cluster=<actual-cluster-name>, aether-source, aether-role) take
+        // precedence over factory defaults so cleanup tools can label-match correctly. Without this the
+        // provider's fallback "aether-cluster=unknown" leaks through and the reaper misses orphaned VMs.
+        return client.createServer(buildCreateRequest(location, spec.tags())).map(HetznerComputeProvider::toInstanceInfo)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
 
@@ -105,7 +109,12 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return client.getServer(serverId);
     }
 
-    private CreateServerRequest buildCreateRequest(String location) {
+    // Default: IPv4-only. Saves one Primary IP per server (quota-bounded per Hetzner account, ~10 default).
+    // Cluster traffic doesn't require IPv6; SSH/management goes via IPv4. If IPv6 needed later, surface
+    // a knob through HetznerEnvironmentConfig.
+    private static final CreateServerRequest.PublicNetSpec IPV4_ONLY = new CreateServerRequest.PublicNetSpec(true, false);
+
+    private CreateServerRequest buildCreateRequest(String location, Map<String, String> extraLabels) {
         var name = generateServerName();
         var serverType = config.serverType();
         var image = config.image();
@@ -113,7 +122,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var networkIds = config.networkIds();
         var firewallIds = config.firewallIds();
         var userData = config.userData();
-        var labels = buildLabels();
+        var labels = mergeLabels(buildLabels(), extraLabels);
         return CreateServerRequest.createServerRequest(name,
                                                        serverType,
                                                        image,
@@ -123,12 +132,22 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                        location,
                                                        userData,
                                                        true,
+                                                       IPV4_ONLY,
                                                        labels);
     }
 
     private Map<String, String> buildLabels() {
         var clusterLabel = config.clusterName().or("unknown");
         return Map.of("aether-cluster", clusterLabel, "aether-role", "core");
+    }
+
+    /// Merge defaults with caller-supplied tags. Caller wins on key conflict
+    /// (e.g. when bootstrap supplies a real cluster name in spec.tags()).
+    private static Map<String, String> mergeLabels(Map<String, String> defaults, Map<String, String> overrides) {
+        if (overrides.isEmpty()) {return defaults;}
+        var merged = new HashMap<String, String>(defaults);
+        merged.putAll(overrides);
+        return Map.copyOf(merged);
     }
 
     private String extractLocation(Option<PlacementHint> placement) {

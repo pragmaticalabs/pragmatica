@@ -29,13 +29,18 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
                                      .map(EnvironmentIntegration.class::cast);
     }
 
+    // Defaults applied when the bootstrap TOML / config map omits these compute fields. Hetzner API
+    // rejects empty strings (422 invalid_input). cx33 = current cheapest 4 vCPU type (cx22 deprecated).
+    private static final String DEFAULT_SERVER_TYPE = "cx33";
+    private static final String DEFAULT_IMAGE       = "ubuntu-22.04";
+
     private static Result<HetznerEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
         var creds = config.credentials();
         var compute = config.compute();
         var hetznerConfig = HetznerConfig.hetznerConfig(creds.getOrDefault("api_token", ""));
         return hetznerEnvironmentConfig(hetznerConfig,
-                                        compute.getOrDefault("server_type", ""),
-                                        compute.getOrDefault("image", ""),
+                                        nonBlank(compute.get("server_type"), DEFAULT_SERVER_TYPE),
+                                        nonBlank(compute.get("image"), DEFAULT_IMAGE),
                                         compute.getOrDefault("region", ""),
                                         parseLongList(compute.getOrDefault("ssh_key_ids", "")),
                                         parseLongList(compute.getOrDefault("network_ids", "")),
@@ -90,5 +95,9 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
                             .filter(s -> !s.isEmpty())
                             .map(Long::parseLong)
                             .toList();
+    }
+
+    private static String nonBlank(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 }
