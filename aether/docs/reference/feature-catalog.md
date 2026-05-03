@@ -314,6 +314,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 197 | Bootstrap resource tracking | Complete | `CreatedResource` sealed interface tracks VMs, firewall rules, floating IPs, containers, SSH configs. LIFO cleanup on failure. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` |
 | 198 | Pre-flight validation | Complete | Static validation (30+ checks from §12). Default cloud credential ping. `--full-check` for SSH reachability, Docker CLI, floating IP ownership |
 | 199 | Node config composition | Partial | 4-layer CLI-side TOML composition (global default + per-source-type default + operator override + CLI overlay), template inheritance for `node_config` subtrees, auto-detected `jdbc_url`/`async_url` per database, SSH path uses composed config. Follow-ups: #154 Docker bootstrap path, #155 cloud provisioning wiring, #156 Forge in-memory passing |
+| 200 | Cloud bootstrap end-to-end (container) | Complete | `aether cluster bootstrap` against `type=cloud` source provisions Hetzner VMs, runs cloud-init (SSH keys, Docker install, image pull), SSHes each VM after provisioning to inject finalized 3-part PEERS via `docker run`, polls `/health/live` per node, persists API key + raw TOML to KV-Store, registers cluster. Validated end-to-end on Hetzner via `aether/tests/integration/env/cloud-hetzner.toml`. `--keep-on-failure` preserves VMs for diagnosis; `--ssh-public-key` injects operator key |
+| 201 | Cloud bootstrap end-to-end (JVM) | Complete | Same as #200 but `type=jvm`: VMs install Temurin 25 from Adoptium, download `aether-node.jar` (default URL derived from `cluster.version`, optional `[runtime.jvm] jar_url` override), start via `nohup java -jar … --node-id= --port= --management-port= --peers= --config=`. SSH-back uses `pkill -f '^java -jar /opt/aether/aether-node.jar' && nohup java -jar …` to inject finalized PEERS. Validated end-to-end on Hetzner via `aether/tests/integration/env/cloud-hetzner-jvm.toml` |
+| 202 | Cloud SSH preflight | Complete | `BootstrapPhaseDeploy` polls each cloud VM with `ssh ... 'cloud-init status --wait'` (180s outer budget, 5s interval, removes successful hosts each iteration) before issuing runtime restart commands. Eliminates the "SSH up but Docker not installed yet" race on slow VMs |
+| 203 | Bootstrap resource ownership labels | Complete | All Hetzner VMs and SSH keys uploaded by `BootstrapPhaseProvision` / `BootstrapPhaseSshKey` are tagged `aether-cluster=<name>`, `aether-source=<sourceName>`, `aether-role=<role>`. `tools/cloud-reaper.sh --cluster <name>` filters by these labels for safe cluster-scoped cleanup independent of bootstrap state files |
 
 ---
 
@@ -322,11 +326,11 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 148 |
+| Complete | 152 |
 | Critical | 1 |
 | Partial | 3 |
 | Planned | 6 |
-| Total | 177 |
+| Total | 181 |
 
 **Critical features:**
 | Feature | Issue |

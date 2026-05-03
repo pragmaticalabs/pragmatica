@@ -1284,18 +1284,29 @@ Already at version 0.26.0. No upgrade needed.
 Bootstrap a new cluster from a configuration file.
 
 ```bash
-aether cluster bootstrap <config-file> [--yes] [--resume] [--full-check] [--wait --timeout <seconds>]
+aether cluster bootstrap <config-file> [--cluster <name>] [--yes] [--resume] [--full-check] \
+                                       [--wait [--timeout <seconds>]] [--keep-on-failure] \
+                                       [--ssh-public-key <path>]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `--cluster <name>` | Override `[cluster].name` from the TOML (precedence: CLI > TOML > default) |
 | `--yes` | Skip confirmation prompt |
 | `--resume` | Resume a failed bootstrap from last completed phase |
 | `--full-check` | Run full network pre-flight checks (SSH, Docker, floating IP) |
-| `--wait` | Wait for cluster to become healthy after bootstrap |
-| `--timeout` | Timeout in seconds when using `--wait` |
+| `--wait` | Wait for cluster to become healthy (`state == CONVERGED`) after bootstrap |
+| `--timeout <seconds>` | Timeout when using `--wait` (default: `300`) |
+| `--keep-on-failure` | On failure, skip auto-cleanup so VMs/SSH keys remain for SSH-based diagnosis |
+| `--ssh-public-key <path>` | Operator SSH public key for cloud-init injection. Resolution priority: CLI > `[infrastructure.ssh] public_key_files` TOML > `${AETHER_SSH_KEY}.pub` sibling. Cloud sources fail fast if no key resolves |
 
-Six-phase flow: Validate → Provision → Collect Addresses → Deploy Runtime → Cluster Formation → Post-Bootstrap. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` after each phase. On failure, all created resources (VMs, firewall rules, floating IPs) are cleaned up automatically.
+Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Addresses → Deploy Runtime → Cluster Formation → Post-Bootstrap. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` after each phase.
+
+**Runtime modes** (`[runtime.default] type = "container" | "jvm"`):
+- **container** — VMs install Docker, pull `ghcr.io/.../aether-node:<tag>` (from `[runtime.default] image`), run with the composed `aether.toml` bind-mounted over `/app/aether.toml`. Restart via `--restart unless-stopped`.
+- **jvm** — VMs install Eclipse Temurin 25 from Adoptium, download `aether-node.jar` from `[runtime.jvm] jar_url` (or auto-derived `https://github.com/pragmaticalabs/pragmatica/releases/download/v<version>{-candidate?}/aether-node.jar`), run via `nohup java -jar … & disown`. No process supervision (consider auto-heal for crash recovery).
+
+After provisioning, the deploy phase SSHes each cloud node (via `cloud-init status --wait` preflight) and restarts the runtime with the finalized 3-part PEERS list (`nodeId:host:port`). On default (`--keep-on-failure` not set), all tracked resources (VMs, SSH keys, firewall rules, floating IPs) are cleaned up automatically on failure.
 
 ### `aether cluster apply`
 
