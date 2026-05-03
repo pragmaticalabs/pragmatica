@@ -23,13 +23,13 @@ import org.pragmatica.serialization.Codec;
         .map(Artifact::new);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static Artifact artifact(GroupId groupId,
+    public static Artifact artifact(GroupId groupId,
                                                                     ArtifactId artifactId,
                                                                     Version version) {
         return new Artifact(groupId, artifactId, version);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static Artifact artifact(ArtifactBase base, Version version) {
+    public static Artifact artifact(ArtifactBase base, Version version) {
         return new Artifact(base.groupId(), base.artifactId(), version);
     }
 

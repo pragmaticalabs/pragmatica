@@ -326,7 +326,7 @@ public interface AbTestManager extends DelegatedComponent {
                 if (restoredCount > 0) {log.info("Restored {} A/B tests from KV-Store", restoredCount);}
             }
 
-            @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) private void restoreTest(AbTestValue atv) {
+            @SuppressWarnings("JBCT-RET-01") private void restoreTest(AbTestValue atv) {
                 var state = AbTestState.valueOf(atv.state());
                 var routing = new VersionRouting(atv.newWeight(), atv.oldWeight());
                 var variantVersions = deserializeVariantVersions(atv.variantVersionsJson());
@@ -433,7 +433,7 @@ public interface AbTestManager extends DelegatedComponent {
         return new long[]{a[0] + b[0], a[1] + b[1], a[2] + b[2], Math.max(a[3], b[3])};
     }
 
-    @SuppressWarnings("JBCT-VO-02") private static Map<String, Version> deserializeVariantVersions(String json) {
+    private static Map<String, Version> deserializeVariantVersions(String json) {
         if (json.isEmpty()) {return Map.of();}
         var result = new HashMap<String, Version>();
         for (var entry : json.split(",")) {
@@ -447,7 +447,7 @@ public interface AbTestManager extends DelegatedComponent {
         return Map.copyOf(result);
     }
 
-    @SuppressWarnings("JBCT-VO-02") private static SplitRule deserializeSplitRule(String json) {
+    private static SplitRule deserializeSplitRule(String json) {
         if (json.isEmpty()) {return SplitRule.HeaderHashSplit.headerHashSplit("X-Request-Id", 2);}
         if (json.startsWith("header-hash:")) {return parseHeaderHashSplit(json);}
         if (json.startsWith("cookie-hash:")) {return parseCookieHashSplit(json);}

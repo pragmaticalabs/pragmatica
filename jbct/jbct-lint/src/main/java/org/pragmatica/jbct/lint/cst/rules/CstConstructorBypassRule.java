@@ -14,6 +14,13 @@ import java.util.stream.Stream;
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
 /// JBCT-VO-02: Direct constructor calls bypass factory validation.
+///
+/// A type is considered a value object if any of its records contains a `Result<T>`
+/// factory. `new T(...)` outside a factory method is flagged unless one of:
+/// - The enclosing static method itself returns `Result<...>` (parse factory).
+/// - The enclosing type is itself a value object (parse + construct factory pattern):
+///   the inner factory builds T from already-validated typed arguments and does not
+///   need to re-wrap in Result.
 public class CstConstructorBypassRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-VO-02";
     private static final Pattern NEW_PATTERN = Pattern.compile("new\\s+(\\w+)\\s*\\(");
@@ -40,7 +47,7 @@ public class CstConstructorBypassRule implements CstLintRule {
         // Find direct constructor calls outside factory methods
         return findAll(root, RuleId.Primary.class).stream()
                       .filter(node -> isDirectConstruction(node, source, valueObjectTypes))
-                      .filter(node -> !isInAllowedContext(root, node, source))
+                      .filter(node -> !isInAllowedContext(root, node, source, valueObjectTypes))
                       .map(node -> createDiagnostic(node, source, ctx));
     }
 
@@ -68,16 +75,31 @@ public class CstConstructorBypassRule implements CstLintRule {
         return false;
     }
 
-    private boolean isInAllowedContext(CstNode root, CstNode node, String source) {
-        // Check if inside factory method (static method returning Result)
-        // Note: "static" keyword is in ClassMember/RecordMember, not Member
-        // RecordMember wraps ClassMember in records (ordered choice)
+    private boolean isInAllowedContext(CstNode root, CstNode node, String source, Set<String> valueObjectTypes) {
+        // Two acceptance criteria:
+        //   (a) The construction happens inside the value-object type's own scope.
+        //       Anything inside T's body is trusted: the parse factory has validated
+        //       inputs, and any internal members (construct factories, with-builders,
+        //       static constants) operate on already-validated state.
+        //   (b) The construction happens inside a static method on another type that
+        //       returns Result<...>. This covers cross-type parse factories.
+        if (enclosingTypeIsValueObject(root, node, source, valueObjectTypes)) {
+            return true;
+        }
         return findAncestor(root, node, RuleId.ClassMember.class)
                           .orElse(() -> findAncestor(root, node, RuleId.RecordMember.class))
                           .map(member -> {
                                    var memberText = text(member, source);
                                    return memberText.contains("static ") && memberText.contains("Result<");
                                })
+                          .or(false);
+    }
+
+    private boolean enclosingTypeIsValueObject(CstNode root, CstNode node, String source, Set<String> valueObjectTypes) {
+        return findAncestor(root, node, RuleId.TypeKind.class)
+                          .flatMap(typeKind -> childByRule(typeKind, RuleId.Identifier.class))
+                          .map(id -> text(id, source))
+                          .map(valueObjectTypes::contains)
                           .or(false);
     }
 

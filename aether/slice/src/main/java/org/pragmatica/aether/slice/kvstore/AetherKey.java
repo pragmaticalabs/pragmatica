@@ -39,7 +39,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static SliceTargetKey sliceTargetKey(ArtifactBase artifactBase) {
+        public static SliceTargetKey sliceTargetKey(ArtifactBase artifactBase) {
             return new SliceTargetKey(artifactBase);
         }
 
@@ -67,7 +67,7 @@ import static org.pragmatica.lang.Result.success;
             return BlueprintId.blueprintId(blueprintIdPart).map(AppBlueprintKey::new);
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static AppBlueprintKey appBlueprintKey(BlueprintId blueprintId) {
+        public static AppBlueprintKey appBlueprintKey(BlueprintId blueprintId) {
             return new AppBlueprintKey(blueprintId);
         }
     }
@@ -85,7 +85,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static SliceNodeKey sliceNodeKey(Artifact artifact, NodeId nodeId) {
+        public static SliceNodeKey sliceNodeKey(Artifact artifact, NodeId nodeId) {
             return new SliceNodeKey(artifact, nodeId);
         }
 
@@ -138,7 +138,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static VersionRoutingKey versionRoutingKey(ArtifactBase artifactBase) {
+        public static VersionRoutingKey versionRoutingKey(ArtifactBase artifactBase) {
             return new VersionRoutingKey(artifactBase);
         }
 
@@ -160,7 +160,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static DeploymentKey deploymentKey(String deploymentId) {
+        public static DeploymentKey deploymentKey(String deploymentId) {
             return new DeploymentKey(deploymentId);
         }
 
@@ -183,7 +183,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static PreviousVersionKey previousVersionKey(ArtifactBase artifactBase) {
+        public static PreviousVersionKey previousVersionKey(ArtifactBase artifactBase) {
             return new PreviousVersionKey(artifactBase);
         }
 
@@ -209,7 +209,7 @@ import static org.pragmatica.lang.Result.success;
             return httpMethod + ":" + pathPrefix;
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static HttpNodeRouteKey httpNodeRouteKey(String httpMethod,
+        public static HttpNodeRouteKey httpNodeRouteKey(String httpMethod,
                                                                                         String pathPrefix,
                                                                                         NodeId nodeId) {
             return new HttpNodeRouteKey(httpMethod.toUpperCase(), normalizePrefix(pathPrefix), nodeId);
@@ -250,7 +250,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static LogLevelKey forLogger(String loggerName) {
+        public static LogLevelKey forLogger(String loggerName) {
             return new LogLevelKey(loggerName);
         }
 
@@ -273,7 +273,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ObservabilityDepthKey observabilityDepthKey(String artifactBase,
+        public static ObservabilityDepthKey observabilityDepthKey(String artifactBase,
                                                                                                   String methodName) {
             return new ObservabilityDepthKey(artifactBase, methodName);
         }
@@ -320,7 +320,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static TopicSubscriptionKey topicSubscriptionKey(String topicName,
+        public static TopicSubscriptionKey topicSubscriptionKey(String topicName,
                                                                                                 Artifact artifact,
                                                                                                 MethodName methodName) {
             return new TopicSubscriptionKey(topicName, artifact, methodName);
@@ -356,7 +356,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ScheduledTaskKey scheduledTaskKey(String configSection,
+        public static ScheduledTaskKey scheduledTaskKey(String configSection,
                                                                                         Artifact artifact,
                                                                                         MethodName methodName) {
             return new ScheduledTaskKey(configSection, artifact, methodName);
@@ -392,7 +392,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ScheduledTaskStateKey scheduledTaskStateKey(String configSection,
+        public static ScheduledTaskStateKey scheduledTaskStateKey(String configSection,
                                                                                                   Artifact artifact,
                                                                                                   MethodName methodName) {
             return new ScheduledTaskStateKey(configSection, artifact, methodName);
@@ -428,7 +428,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static NodeLifecycleKey nodeLifecycleKey(NodeId nodeId) {
+        public static NodeLifecycleKey nodeLifecycleKey(NodeId nodeId) {
             return new NodeLifecycleKey(nodeId);
         }
 
@@ -457,11 +457,11 @@ import static org.pragmatica.lang.Result.success;
             return nodeScope.isEmpty();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ConfigKey forKey(String key) {
+        public static ConfigKey forKey(String key) {
             return new ConfigKey(key, none());
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ConfigKey forKey(String key, NodeId nodeId) {
+        public static ConfigKey forKey(String key, NodeId nodeId) {
             return new ConfigKey(key, some(nodeId));
         }
 
@@ -495,11 +495,11 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact) {
+        public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact) {
             return new WorkerSliceDirectiveKey(artifact, Option.none());
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact,
+        public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact,
                                                                                                       String communityId) {
             return new WorkerSliceDirectiveKey(artifact, Option.option(communityId));
         }
@@ -532,7 +532,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ActivationDirectiveKey activationDirectiveKey(NodeId nodeId) {
+        public static ActivationDirectiveKey activationDirectiveKey(NodeId nodeId) {
             return new ActivationDirectiveKey(nodeId);
         }
 
@@ -555,7 +555,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static BlueprintResourcesKey blueprintResourcesKey(BlueprintId blueprintId) {
+        public static BlueprintResourcesKey blueprintResourcesKey(BlueprintId blueprintId) {
             return new BlueprintResourcesKey(blueprintId);
         }
 
@@ -577,7 +577,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static SchemaVersionKey schemaVersionKey(String datasourceName) {
+        public static SchemaVersionKey schemaVersionKey(String datasourceName) {
             return new SchemaVersionKey(datasourceName);
         }
 
@@ -600,7 +600,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static SchemaMigrationLockKey schemaMigrationLockKey(String datasourceName) {
+        public static SchemaMigrationLockKey schemaMigrationLockKey(String datasourceName) {
             return new SchemaMigrationLockKey(datasourceName);
         }
 
@@ -623,7 +623,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static GossipKeyRotationKey gossipKeyRotationKey() {
+        public static GossipKeyRotationKey gossipKeyRotationKey() {
             return new GossipKeyRotationKey();
         }
 
@@ -644,7 +644,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static GovernorAnnouncementKey forCommunity(String communityId) {
+        public static GovernorAnnouncementKey forCommunity(String communityId) {
             return new GovernorAnnouncementKey(communityId);
         }
 
@@ -686,7 +686,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static AbTestRoutingKey abTestRoutingKey(ArtifactBase artifactBase) {
+        public static AbTestRoutingKey abTestRoutingKey(ArtifactBase artifactBase) {
             return new AbTestRoutingKey(artifactBase);
         }
 
@@ -712,7 +712,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static NodeArtifactKey nodeArtifactKey(NodeId nodeId,
+        public static NodeArtifactKey nodeArtifactKey(NodeId nodeId,
                                                                                       Artifact artifact) {
             return new NodeArtifactKey(nodeId, artifact);
         }
@@ -746,7 +746,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static NodeRoutesKey nodeRoutesKey(NodeId nodeId, Artifact artifact) {
+        public static NodeRoutesKey nodeRoutesKey(NodeId nodeId, Artifact artifact) {
             return new NodeRoutesKey(nodeId, artifact);
         }
 
@@ -845,7 +845,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static StreamMetadataKey streamMetadataKey(String streamName) {
+        public static StreamMetadataKey streamMetadataKey(String streamName) {
             return new StreamMetadataKey(streamName);
         }
 
@@ -868,7 +868,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static StreamPartitionAssignmentKey streamPartitionAssignmentKey(String streamName,
+        public static StreamPartitionAssignmentKey streamPartitionAssignmentKey(String streamName,
                                                                                                                 String consumerGroup) {
             return new StreamPartitionAssignmentKey(streamName, consumerGroup);
         }
@@ -896,7 +896,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static StreamCursorCheckpointKey streamCursorCheckpointKey(String streamName,
+        public static StreamCursorCheckpointKey streamCursorCheckpointKey(String streamName,
                                                                                                           int partitionIndex,
                                                                                                           String consumerGroup) {
             return new StreamCursorCheckpointKey(streamName, partitionIndex, consumerGroup);
@@ -923,7 +923,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static StreamRegistrationKey streamRegistrationKey(String streamName,
+        public static StreamRegistrationKey streamRegistrationKey(String streamName,
                                                                                                   String configSection,
                                                                                                   Artifact artifact,
                                                                                                   MethodName methodName) {
@@ -964,7 +964,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static StorageBlockKey storageBlockKey(String instanceName,
+        public static StorageBlockKey storageBlockKey(String instanceName,
                                                                                       String blockIdHex) {
             return new StorageBlockKey(instanceName, blockIdHex);
         }
@@ -990,7 +990,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static StorageRefKey storageRefKey(String instanceName,
+        public static StorageRefKey storageRefKey(String instanceName,
                                                                                   String referenceName) {
             return new StorageRefKey(instanceName, referenceName);
         }
@@ -1020,7 +1020,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static StorageStatusKey storageStatusKey(NodeId nodeId,
+        public static StorageStatusKey storageStatusKey(NodeId nodeId,
                                                                                         String instanceName) {
             return new StorageStatusKey(nodeId, instanceName);
         }
@@ -1048,11 +1048,11 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static final ClusterConfigKey CURRENT = new ClusterConfigKey(0);
+        public static final ClusterConfigKey CURRENT = new ClusterConfigKey(0);
 
-        @SuppressWarnings("JBCT-VO-02") public static final ClusterConfigKey TEMPLATE = new ClusterConfigKey(- 1);
+        public static final ClusterConfigKey TEMPLATE = new ClusterConfigKey(- 1);
 
-        @SuppressWarnings("JBCT-VO-02") public static ClusterConfigKey clusterConfigKey(long configVersion) {
+        public static ClusterConfigKey clusterConfigKey(long configVersion) {
             return new ClusterConfigKey(configVersion);
         }
 
@@ -1075,7 +1075,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static TaskAssignmentKey taskAssignmentKey(TaskGroup taskGroup) {
+        public static TaskAssignmentKey taskAssignmentKey(TaskGroup taskGroup) {
             return new TaskAssignmentKey(taskGroup);
         }
 
@@ -1111,7 +1111,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ApiKeyKey apiKeyKey(String keyId) {
+        public static ApiKeyKey apiKeyKey(String keyId) {
             return new ApiKeyKey(keyId);
         }
 
@@ -1134,7 +1134,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ApiKeyAuditKey apiKeyAuditKey(String entryId) {
+        public static ApiKeyAuditKey apiKeyAuditKey(String entryId) {
             return new ApiKeyAuditKey(entryId);
         }
 
@@ -1157,7 +1157,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static CloudCredentialsKey cloudCredentialsKey(String provider) {
+        public static CloudCredentialsKey cloudCredentialsKey(String provider) {
             return new CloudCredentialsKey(provider);
         }
 
@@ -1180,7 +1180,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static DhtPartitionOwnershipKey dhtPartitionOwnershipKey(String partitionId) {
+        public static DhtPartitionOwnershipKey dhtPartitionOwnershipKey(String partitionId) {
             return new DhtPartitionOwnershipKey(partitionId);
         }
 
@@ -1203,7 +1203,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static SpokesmanKey spokesmanKey(NodeId coreNodeId) {
+        public static SpokesmanKey spokesmanKey(NodeId coreNodeId) {
             return new SpokesmanKey(coreNodeId);
         }
 
@@ -1232,7 +1232,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ProvisioningSlotKey provisioningSlotKey(String slotId) {
+        public static ProvisioningSlotKey provisioningSlotKey(String slotId) {
             return new ProvisioningSlotKey(slotId);
         }
 
@@ -1305,7 +1305,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02") public static ConsumerGroupKey consumerGroupKey(String groupId,
+        public static ConsumerGroupKey consumerGroupKey(String groupId,
                                                                                         String streamName,
                                                                                         int partition) {
             return new ConsumerGroupKey(groupId, streamName, partition);

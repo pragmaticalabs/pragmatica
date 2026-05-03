@@ -14,7 +14,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, int testAttempts) {
-    @SuppressWarnings("JBCT-VO-02") private static final CircuitBreakerConfig DEFAULTS = new CircuitBreakerConfig(5,
+    private static final CircuitBreakerConfig DEFAULTS = new CircuitBreakerConfig(5,
                                                                                                                   timeSpan(30).seconds(),
                                                                                                                   3);
 

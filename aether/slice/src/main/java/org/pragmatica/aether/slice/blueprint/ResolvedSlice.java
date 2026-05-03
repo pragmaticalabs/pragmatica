@@ -36,7 +36,7 @@ import static org.pragmatica.lang.Verify.ensure;
                      .map(a -> toResolvedSlice(a, instances, minAvailable, isDependency, dependencies));
     }
 
-    @SuppressWarnings("JBCT-VO-02") private static ResolvedSlice toResolvedSlice(Artifact artifact,
+    private static ResolvedSlice toResolvedSlice(Artifact artifact,
                                                                                  int instances,
                                                                                  int minAvailable,
                                                                                  boolean isDependency,

@@ -77,7 +77,7 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
               : envConfig.withCertificateSecretPrefix(prefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") private static AwsEnvironmentConfig withLoadBalancer(AwsEnvironmentConfig envConfig,
+    private static AwsEnvironmentConfig withLoadBalancer(AwsEnvironmentConfig envConfig,
                                                                                          AwsEnvironmentConfig.AwsLbConfig lbConfig) {
         return new AwsEnvironmentConfig(envConfig.awsConfig(),
                                         envConfig.amiId(),

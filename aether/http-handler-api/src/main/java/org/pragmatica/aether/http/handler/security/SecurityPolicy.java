@@ -12,7 +12,7 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 @SuppressWarnings("JBCT-NAM-01") public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     System.Logger log = System.getLogger(SecurityPolicy.class.getName());
 
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) record Public() implements SecurityPolicy {
+    @SuppressWarnings("JBCT-NAM-01") record Public() implements SecurityPolicy {
         private static final Public INSTANCE = new Public();
 
         @Override public <T extends RequestSecurityContext> Access canAccess(T context) {
@@ -20,7 +20,7 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
         }
     }
 
-    @SuppressWarnings("JBCT-VO-02") record Authenticated() implements SecurityPolicy {
+    record Authenticated() implements SecurityPolicy {
         private static final Authenticated INSTANCE = new Authenticated();
 
         @Override public <T extends RequestSecurityContext> Access canAccess(T context) {
@@ -28,7 +28,7 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
         }
     }
 
-    @SuppressWarnings("JBCT-VO-02") record ApiKeyRequired() implements SecurityPolicy {
+    record ApiKeyRequired() implements SecurityPolicy {
         private static final ApiKeyRequired INSTANCE = new ApiKeyRequired();
 
         @Override public <T extends RequestSecurityContext> Access canAccess(T context) {
@@ -36,7 +36,7 @@ import org.pragmatica.http.routing.security.RouteSecurityPolicy;
         }
     }
 
-    @SuppressWarnings("JBCT-VO-02") record BearerTokenRequired() implements SecurityPolicy {
+    record BearerTokenRequired() implements SecurityPolicy {
         private static final BearerTokenRequired INSTANCE = new BearerTokenRequired();
 
         @Override public <T extends RequestSecurityContext> Access canAccess(T context) {

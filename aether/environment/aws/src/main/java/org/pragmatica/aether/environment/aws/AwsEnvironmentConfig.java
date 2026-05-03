@@ -74,7 +74,7 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
                                                 Option.empty()));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AwsEnvironmentConfig withDiscovery(String clusterLabel) {
+    public AwsEnvironmentConfig withDiscovery(String clusterLabel) {
         return new AwsEnvironmentConfig(awsConfig,
                                         amiId,
                                         instanceType,
@@ -88,7 +88,7 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
                                         certificateSecretPrefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AwsEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+    public AwsEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
         return new AwsEnvironmentConfig(awsConfig,
                                         amiId,
                                         instanceType,
@@ -102,7 +102,7 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
                                         certificateSecretPrefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AwsEnvironmentConfig withCertificateSecretPrefix(String prefix) {
+    public AwsEnvironmentConfig withCertificateSecretPrefix(String prefix) {
         return new AwsEnvironmentConfig(awsConfig,
                                         amiId,
                                         instanceType,

@@ -44,7 +44,7 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
               : 1.0;
     }
 
-    @SuppressWarnings("JBCT-VO-02") public MetricWindow record(double value) {
+    public MetricWindow record(double value) {
         var newValues = valuesInternal.clone();
         var windowSize = newValues.length;
         var newRecordCount = recordCount + 1;

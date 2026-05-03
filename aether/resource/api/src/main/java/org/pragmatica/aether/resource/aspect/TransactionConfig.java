@@ -40,11 +40,11 @@ public record TransactionConfig(TransactionPropagation propagation,
         return Result.all(validPropagation, validIsolation).map(TransactionConfig::withPropagationAndIsolation);
     }
 
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) private static TransactionConfig withDefaultsFrom(TransactionPropagation p) {
+    @SuppressWarnings("JBCT-NAM-01") private static TransactionConfig withDefaultsFrom(TransactionPropagation p) {
         return new TransactionConfig(p, DEFAULT_ISOLATION, none(), false, EMPTY_ROLLBACK_FOR);
     }
 
-    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"}) private static TransactionConfig withPropagationAndIsolation(TransactionPropagation p,
+    @SuppressWarnings("JBCT-NAM-01") private static TransactionConfig withPropagationAndIsolation(TransactionPropagation p,
                                                                                                                   IsolationLevel i) {
         return new TransactionConfig(p, i, none(), false, EMPTY_ROLLBACK_FOR);
     }

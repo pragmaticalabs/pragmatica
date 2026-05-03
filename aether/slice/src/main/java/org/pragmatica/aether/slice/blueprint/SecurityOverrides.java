@@ -14,7 +14,12 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
-@Codec@SuppressWarnings({"JBCT-UTIL-02", "JBCT-VO-02"}) public record SecurityOverrides(List<Entry> entries,
+/// Blueprint security overrides: a set of route pattern-to-security mappings
+/// with an override policy controlling how they are applied.
+///
+/// @param entries  route pattern to security level mappings
+/// @param policy   how overrides interact with original route security
+@Codec@SuppressWarnings("JBCT-UTIL-02") public record SecurityOverrides(List<Entry> entries,
                                                                                         SecurityOverridePolicy policy) {
     @Codec public record Entry(String routePattern, String securityLevel) {
         public static Entry entry(String routePattern, String securityLevel) {

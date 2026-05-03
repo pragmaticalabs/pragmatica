@@ -80,7 +80,7 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
               : envConfig.withCertificateSecretPrefix(prefix);
     }
 
-    @SuppressWarnings("JBCT-VO-02") private static AzureEnvironmentConfig withLoadBalancer(AzureEnvironmentConfig envConfig,
+    private static AzureEnvironmentConfig withLoadBalancer(AzureEnvironmentConfig envConfig,
                                                                                            AzureEnvironmentConfig.AzureLbConfig lbConfig) {
         return new AzureEnvironmentConfig(envConfig.azureConfig(),
                                           envConfig.vmSize(),

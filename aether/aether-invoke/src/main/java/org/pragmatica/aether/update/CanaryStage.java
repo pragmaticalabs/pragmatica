@@ -22,11 +22,11 @@ public record CanaryStage(int trafficPercent, int observationMinutes) {
         return Result.success(new CanaryStage(trafficPercent, observationMinutes));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public VersionRouting toRouting() {
+    public VersionRouting toRouting() {
         return new VersionRouting(trafficPercent, 100 - trafficPercent);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static List<CanaryStage> defaultStages() {
+    public static List<CanaryStage> defaultStages() {
         return List.of(new CanaryStage(1, 5),
                        new CanaryStage(5, 5),
                        new CanaryStage(25, 10),

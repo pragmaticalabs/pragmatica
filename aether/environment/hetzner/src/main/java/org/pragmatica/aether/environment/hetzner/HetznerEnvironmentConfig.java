@@ -79,7 +79,7 @@ public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
                                                     DEFAULT_POLL_INTERVAL_MS));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public HetznerEnvironmentConfig withDiscovery(String clusterLabel) {
+    public HetznerEnvironmentConfig withDiscovery(String clusterLabel) {
         return new HetznerEnvironmentConfig(hetznerConfig,
                                             serverType,
                                             image,
@@ -94,7 +94,7 @@ public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
                                             discoveryPollIntervalMs);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public HetznerEnvironmentConfig withSelfServerId(long serverId) {
+    public HetznerEnvironmentConfig withSelfServerId(long serverId) {
         return new HetznerEnvironmentConfig(hetznerConfig,
                                             serverType,
                                             image,
@@ -109,7 +109,7 @@ public record HetznerEnvironmentConfig(HetznerConfig hetznerConfig,
                                             discoveryPollIntervalMs);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public HetznerEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+    public HetznerEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
         return new HetznerEnvironmentConfig(hetznerConfig,
                                             serverType,
                                             image,

@@ -184,7 +184,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
         public static final int DEFAULT_MAX_PIGGYBACK = 8;
 
-        @SuppressWarnings("JBCT-VO-02") private static final SwimSettings DEFAULT = new SwimSettings(DEFAULT_PERIOD,
+        private static final SwimSettings DEFAULT = new SwimSettings(DEFAULT_PERIOD,
                                                                                                      DEFAULT_PROBE_TIMEOUT,
                                                                                                      DEFAULT_INDIRECT_PROBES,
                                                                                                      DEFAULT_SUSPECT_TIMEOUT,

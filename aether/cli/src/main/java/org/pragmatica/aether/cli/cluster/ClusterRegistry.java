@@ -58,7 +58,7 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
         }
     }
 
-    @SuppressWarnings("JBCT-VO-02") static ClusterRegistry clusterRegistry(Path path,
+    static ClusterRegistry clusterRegistry(Path path,
                                                                            Option<String> context,
                                                                            List<ClusterEntry> entries) {
         return new ClusterRegistry(path, context, entries);

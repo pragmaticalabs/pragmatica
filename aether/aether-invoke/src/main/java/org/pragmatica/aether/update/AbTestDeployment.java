@@ -29,7 +29,7 @@ public record AbTestDeployment(String testId,
                                long updatedAt) {
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid A/B test state transition: %s");
 
-    @SuppressWarnings("JBCT-VO-02") public static AbTestDeployment abTestDeployment(String testId,
+    public static AbTestDeployment abTestDeployment(String testId,
                                                                                     ArtifactBase artifactBase,
                                                                                     Version baselineVersion,
                                                                                     Map<String, Version> variantVersions,
@@ -48,7 +48,7 @@ public record AbTestDeployment(String testId,
                                     now);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public Result<AbTestDeployment> transitionTo(AbTestState newState) {
+    public Result<AbTestDeployment> transitionTo(AbTestState newState) {
         if (!state.validTransitions().contains(newState)) {return INVALID_TRANSITION.apply(state + " -> " + newState)
                                                                                           .result();}
         return Result.success(new AbTestDeployment(testId,
@@ -64,7 +64,7 @@ public record AbTestDeployment(String testId,
                                                    System.currentTimeMillis()));
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AbTestDeployment withRouting(VersionRouting newRouting) {
+    public AbTestDeployment withRouting(VersionRouting newRouting) {
         return new AbTestDeployment(testId,
                                     artifactBase,
                                     baselineVersion,
@@ -78,7 +78,7 @@ public record AbTestDeployment(String testId,
                                     System.currentTimeMillis());
     }
 
-    @SuppressWarnings("JBCT-VO-02") public AbTestDeployment withBlueprintContext(String newBlueprintId,
+    public AbTestDeployment withBlueprintContext(String newBlueprintId,
                                                                                  List<ArtifactBase> newArtifacts) {
         return new AbTestDeployment(testId,
                                     artifactBase,
