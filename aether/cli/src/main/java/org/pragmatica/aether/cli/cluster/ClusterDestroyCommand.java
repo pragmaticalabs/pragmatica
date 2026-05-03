@@ -7,11 +7,14 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.function.Function;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -30,7 +33,17 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
+    static Function<String, org.pragmatica.lang.Option<BootstrapState>> stateLoader = BootstrapStatePersistence::load;
+
+    static Function<BootstrapState, Result<Unit>> resourceCleaner = BootstrapCleanup::cleanup;
+
     @Option(names = "--yes", description = "Skip interactive confirmation") private boolean skipConfirmation;
+
+    @Option(names = "--keep-resources", description = "Skip cloud resource termination (registry only)") private boolean keepResources;
+
+    @Contract void setKeepResources(boolean value) {
+        this.keepResources = value;
+    }
 
     @Override public Integer call() {
         return ClusterRegistry.load().flatMap(this::executeDestroy)
@@ -54,10 +67,37 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
         var nodeIds = fetchNodeIds();
         var drainResults = drainAllNodes(nodeIds);
         var shutdownResults = shutdownAllNodes(nodeIds);
+        var cleanupOk = cleanupCloudResources(entry.name());
         return removeRegistryEntry(registry, entry.name()).map(_ -> printSummary(entry.name(),
                                                                                  nodeIds,
                                                                                  drainResults,
-                                                                                 shutdownResults));
+                                                                                 shutdownResults,
+                                                                                 cleanupOk));
+    }
+
+    boolean cleanupCloudResources(String clusterName) {
+        if (keepResources) {
+            System.out.println("--keep-resources: skipping cloud resource termination.");
+            return true;
+        }
+        return stateLoader.apply(clusterName).fold(() -> warnNoState(clusterName), this::runCleanup);
+    }
+
+    private static boolean warnNoState(String clusterName) {
+        System.out.printf("No bootstrap state for cluster '%s' — skipping resource cleanup.%n", clusterName);
+        return true;
+    }
+
+    private boolean runCleanup(BootstrapState state) {
+        if (state.createdResources().isEmpty()) {
+            System.out.println("Bootstrap state has no created resources — nothing to clean up.");
+            return true;
+        }
+        System.out.printf("Cleaning up %d created resources from bootstrap state...%n",
+                          state.createdResources().size());
+        return resourceCleaner.apply(state).onFailure(c -> System.err.println("Resource cleanup failed: " + c.message()))
+                                    .onSuccess(_ -> System.out.println("Resource cleanup complete."))
+                                    .isSuccess();
     }
 
     private static boolean confirmDestruction(String clusterName) {
@@ -147,14 +187,18 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
     private static int printSummary(String clusterName,
                                     List<String> nodeIds,
                                     List<NodeResult> drainResults,
-                                    List<NodeResult> shutdownResults) {
+                                    List<NodeResult> shutdownResults,
+                                    boolean cleanupSucceeded) {
         System.out.println();
         System.out.printf("Cluster '%s' destruction summary:%n", clusterName);
         System.out.printf("  Nodes processed: %d%n", nodeIds.size());
         System.out.printf("  Drains succeeded: %d/%d%n", countSuccesses(drainResults), drainResults.size());
         System.out.printf("  Shutdowns succeeded: %d/%d%n", countSuccesses(shutdownResults), shutdownResults.size());
+        System.out.printf("  Cloud resource cleanup: %s%n", cleanupSucceeded
+                                                           ? "ok"
+                                                           : "failed");
         System.out.println("  Registry entry removed.");
-        var allSucceeded = countSuccesses(drainResults) == drainResults.size() && countSuccesses(shutdownResults) == shutdownResults.size();
+        var allSucceeded = countSuccesses(drainResults) == drainResults.size() && countSuccesses(shutdownResults) == shutdownResults.size() && cleanupSucceeded;
         if (!allSucceeded) {
             System.err.println("Warning: some operations failed. Check output above.");
             return ExitCode.ERROR;
