@@ -43,7 +43,16 @@ sealed interface UserDataTemplate {
                          String clusterSecret,
                          String clusterName,
                          TomlDocument composedConfig) {
-        return render(config, source, role, nodeId, nodeIndex, clusterSecret, clusterName, composedConfig, List.of());
+        return render(config,
+                      source,
+                      role,
+                      nodeId,
+                      nodeIndex,
+                      clusterSecret,
+                      clusterName,
+                      composedConfig,
+                      List.of(),
+                      List.of());
     }
 
     static String render(ClusterBootstrapConfig config,
@@ -55,18 +64,44 @@ sealed interface UserDataTemplate {
                          String clusterName,
                          TomlDocument composedConfig,
                          List<SshPublicKey> sshPublicKeys) {
+        return render(config,
+                      source,
+                      role,
+                      nodeId,
+                      nodeIndex,
+                      clusterSecret,
+                      clusterName,
+                      composedConfig,
+                      sshPublicKeys,
+                      List.of());
+    }
+
+    static String render(ClusterBootstrapConfig config,
+                         SourceProfile source,
+                         NodeRole role,
+                         String nodeId,
+                         int nodeIndex,
+                         String clusterSecret,
+                         String clusterName,
+                         TomlDocument composedConfig,
+                         List<SshPublicKey> sshPublicKeys,
+                         List<String> peers) {
         var ports = config.operations().ports();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
         var image = runtimeProfile.flatMap(RuntimeProfile::image)
                                           .or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
+        var peersValue = String.join(",", peers);
         var sb = new StringBuilder();
         appendHeader(sb, clusterName, nodeId, role);
         appendVariables(sb,
                         config.cluster().version(),
                         image,
                         nodeId,
-                        clusterSecret);
+                        clusterSecret,
+                        ports.cluster(),
+                        ports.management(),
+                        peersValue);
         appendSshAuthorizedKeys(sb, sshPublicKeys);
         if (isContainer) {
             appendDockerInstall(sb);
@@ -130,7 +165,10 @@ sealed interface UserDataTemplate {
                                         String version,
                                         String image,
                                         String nodeId,
-                                        String clusterSecret) {
+                                        String clusterSecret,
+                                        int clusterPort,
+                                        int managementPort,
+                                        String peers) {
         sb.append("AETHER_VERSION=\"").append(version)
                  .append("\"\n");
         sb.append("AETHER_IMAGE=\"").append(image)
@@ -138,6 +176,12 @@ sealed interface UserDataTemplate {
         sb.append("AETHER_NODE_ID=\"").append(nodeId)
                  .append("\"\n");
         sb.append("AETHER_CLUSTER_SECRET=\"").append(clusterSecret)
+                 .append("\"\n");
+        sb.append("AETHER_CLUSTER_PORT=\"").append(clusterPort)
+                 .append("\"\n");
+        sb.append("AETHER_MANAGEMENT_PORT=\"").append(managementPort)
+                 .append("\"\n");
+        sb.append("AETHER_PEERS=\"").append(peers)
                  .append("\"\n\n");
     }
 
@@ -170,6 +214,11 @@ sealed interface UserDataTemplate {
                  .append(" \\\n");
         sb.append("    -l aether-role=core \\\n");
         sb.append("    -v /opt/aether/config/aether.toml:/app/aether.toml:ro \\\n");
+        sb.append("    -e NODE_ID=\"${AETHER_NODE_ID}\" \\\n");
+        sb.append("    -e CLUSTER_PORT=\"${AETHER_CLUSTER_PORT}\" \\\n");
+        sb.append("    -e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\" \\\n");
+        sb.append("    -e PEERS=\"${AETHER_PEERS}\" \\\n");
+        sb.append("    -e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" \\\n");
         sb.append("    \"${AETHER_IMAGE}\"\n\n");
     }
 
@@ -189,9 +238,15 @@ sealed interface UserDataTemplate {
 
     private static void appendJvmRun(StringBuilder sb, String jvmArgs) {
         sb.append("# --- Start Aether ---\n");
-        sb.append("java ");
+        sb.append("PEERS_ARG=\"\"\n");
+        sb.append("if [ -n \"${AETHER_PEERS}\" ]; then PEERS_ARG=\"--peers=${AETHER_PEERS}\"; fi\n");
+        sb.append("AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" java ");
         if (!jvmArgs.isEmpty()) {sb.append(jvmArgs).append(' ');}
-        sb.append("-jar /opt/aether/aether-node.jar --config=/opt/aether/config/aether.toml &\n\n");
+        sb.append("-jar /opt/aether/aether-node.jar --config=/opt/aether/config/aether.toml ");
+        sb.append("--node-id=\"${AETHER_NODE_ID}\" ");
+        sb.append("--port=\"${AETHER_CLUSTER_PORT}\" ");
+        sb.append("--management-port=\"${AETHER_MANAGEMENT_PORT}\" ");
+        sb.append("${PEERS_ARG} &\n\n");
     }
 
     private static void appendReadinessSignal(StringBuilder sb, String nodeId, int clusterPort, int managementPort) {

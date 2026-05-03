@@ -10,8 +10,6 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.config.toml.TomlDocument;
 
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.lang.Option.empty;
@@ -41,10 +39,7 @@ class UserDataTemplateTest {
         var source = config.sources().get("eu-1");
         var overlay = BootstrapOverlayGenerator.overlay(config,
                                                         source,
-                                                        "node-1",
                                                         0,
-                                                        NodeRole.CORE,
-                                                        List.of("node-1:1.2.3.4:6000"),
                                                         empty(),
                                                         empty(),
                                                         empty());
@@ -62,8 +57,9 @@ class UserDataTemplateTest {
                    "Should write composed config to /opt/aether/config/aether.toml");
         assertTrue(script.contains("[cluster]"), "Should include cluster section from composed TOML");
         assertTrue(script.contains("name = \"prod-cluster\""), "Should include cluster name");
-        assertTrue(script.contains("[node]"), "Should include node section");
-        assertTrue(script.contains("id = \"node-1\""), "Should include node id");
+        // Per-node identity is NOT in TOML — it travels via env vars / CLI flags.
+        assertTrue(script.contains("AETHER_NODE_ID=\"node-1\""),
+                   "Per-node identity must travel via the AETHER_NODE_ID shell variable");
     }
 
     @Test
@@ -171,13 +167,63 @@ class UserDataTemplateTest {
     }
 
     @Test
-    void render_doesNotEmbedRedundantEnvVars() {
-        // After Layer D refactor, AETHER_NODE_ID and AETHER_CLUSTER_SECRET are inside the composed
-        // config, not passed as -e flags to docker run. They remain only as shell variables for
-        // clarity in cloud-init logs.
+    void render_threadsPerNodeIdentityViaContainerEnvVars() {
+        // Bug 14: per-node identity (NODE_ID, CLUSTER_PORT, MANAGEMENT_PORT, PEERS,
+        // AETHER_CLUSTER_SECRET) MUST be exported into the container via -e flags
+        // because Main.java reads them via env (NODE_ID/CLUSTER_PORT/MANAGEMENT_PORT/
+        // CLUSTER_PEERS) or via the bundled Dockerfile entrypoint that converts PEERS
+        // → --peers=. The bind-mounted aether.toml carries operator state only.
         var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
         var source = config.sources().get("eu-1");
-        var overlay = TomlDocument.EMPTY;
+
+        var script = UserDataTemplate.render(config,
+                                             source,
+                                             NodeRole.CORE,
+                                             "node-1",
+                                             0,
+                                             "secret-xyz",
+                                             "prod-cluster",
+                                             TomlDocument.EMPTY);
+
+        assertTrue(script.contains("-e NODE_ID=\"${AETHER_NODE_ID}\""),
+                   "docker run must export NODE_ID so Main.parseNodeId picks up the per-node id");
+        assertTrue(script.contains("-e CLUSTER_PORT=\"${AETHER_CLUSTER_PORT}\""),
+                   "docker run must export CLUSTER_PORT so the node binds the operator-supplied port");
+        assertTrue(script.contains("-e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\""),
+                   "docker run must export MANAGEMENT_PORT so the management API binds the operator port");
+        assertTrue(script.contains("-e PEERS=\"${AETHER_PEERS}\""),
+                   "docker run must export PEERS — Dockerfile entrypoint converts it to --peers=");
+        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\""),
+                   "docker run must export AETHER_CLUSTER_SECRET so TLS init resolves the seed");
+    }
+
+    @Test
+    void render_threadsClusterAndManagementPortsFromOperatorConfig() {
+        // Defense in depth: env vars carry the truth, but the cloud-init script
+        // also exports shell variables sourced from operator config so logs and
+        // diagnostics surface the actual ports.
+        var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "prod-cluster"
+                version = "1.0.0"
+
+                [operations.ports]
+                cluster = 6000
+                management = 5160
+                app_http = 8070
+
+                [source.eu-1]
+                type = "cloud"
+                provider = "hetzner"
+                region = "eu-central"
+
+                [source.eu-1.core]
+                count = 3
+                """;
+        var config = ClusterBootstrapConfigParser.parse(toml).unwrap();
+        var source = config.sources().get("eu-1");
 
         var script = UserDataTemplate.render(config,
                                              source,
@@ -186,11 +232,11 @@ class UserDataTemplateTest {
                                              0,
                                              "secret",
                                              "prod-cluster",
-                                             overlay);
+                                             TomlDocument.EMPTY);
 
-        assertFalse(script.contains("-e AETHER_NODE_ID="),
-                    "AETHER_NODE_ID should now come from composed config, not env var");
-        assertFalse(script.contains("-e AETHER_CLUSTER_SECRET="),
-                    "AETHER_CLUSTER_SECRET should now come from composed config, not env var");
+        assertTrue(script.contains("AETHER_CLUSTER_PORT=\"6000\""),
+                   "Operator-supplied cluster port must be exported as AETHER_CLUSTER_PORT shell var");
+        assertTrue(script.contains("AETHER_MANAGEMENT_PORT=\"5160\""),
+                   "Operator-supplied management port must be exported as AETHER_MANAGEMENT_PORT shell var");
     }
 }

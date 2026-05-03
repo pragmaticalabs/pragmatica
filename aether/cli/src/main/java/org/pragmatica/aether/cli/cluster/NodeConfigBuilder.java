@@ -7,13 +7,10 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.DefaultNodeConfig;
 import org.pragmatica.aether.config.cluster.NodeConfigComposer;
-import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.util.List;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface NodeConfigBuilder {
@@ -21,18 +18,12 @@ import java.util.List;
 
     static Result<TomlDocument> compose(BootstrapContext ctx,
                                         SourceProfile source,
-                                        String nodeId,
                                         int nodeIndex,
-                                        NodeRole role,
-                                        List<String> peers,
                                         Option<String> dockerGid,
                                         Option<String> clusterSecret) {
         var overlay = BootstrapOverlayGenerator.overlay(ctx.config(),
                                                         source,
-                                                        nodeId,
                                                         nodeIndex,
-                                                        role,
-                                                        peers,
                                                         ctx.apiKey(),
                                                         dockerGid,
                                                         clusterSecret);

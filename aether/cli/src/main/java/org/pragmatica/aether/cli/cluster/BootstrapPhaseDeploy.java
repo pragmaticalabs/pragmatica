@@ -6,11 +6,9 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
-import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
-import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
@@ -160,25 +158,35 @@ import static org.pragmatica.lang.Result.success;
         var clusterName = ctx.config().cluster()
                                     .name();
         var peers = buildThreePartPeers(ctx);
+        var peersValue = String.join(",", peers);
         var clusterSecret = ctx.clusterSecret();
+        var clusterPort = ctx.config().operations()
+                                    .ports()
+                                    .cluster();
+        var managementPort = ctx.config().operations()
+                                       .ports()
+                                       .management();
         var nodeIndex = 0;
         for (var node : ctx.nodes()) {
             if (!node.serverId().equals("ssh")) {
                 nodeIndex++;
                 continue;
             }
+            var nodeIdValue = node.nodeId();
             var result = NodeConfigBuilder.compose(ctx,
                                                    source,
-                                                   node.nodeId(),
                                                    nodeIndex,
-                                                   NodeRole.CORE,
-                                                   peers,
                                                    Option.empty(),
                                                    Option.some(clusterSecret))
             .flatMap(doc -> deploySshNode(node,
                                           TomlWriter.toToml(doc),
                                           sshConfig,
-                                          clusterName));
+                                          clusterName,
+                                          nodeIdValue,
+                                          clusterPort,
+                                          managementPort,
+                                          peersValue,
+                                          clusterSecret));
             if (result.isFailure()) {return result;}
             nodeIndex++;
         }
@@ -186,7 +194,7 @@ import static org.pragmatica.lang.Result.success;
         return Result.unitResult();
     }
 
-    private static List<String> buildThreePartPeers(BootstrapContext ctx) {
+    static List<String> buildThreePartPeers(BootstrapContext ctx) {
         var nodes = ctx.nodes();
         var addresses = ctx.addresses();
         var clusterPort = ctx.config().operations()
@@ -200,7 +208,12 @@ import static org.pragmatica.lang.Result.success;
     @SuppressWarnings("JBCT-EX-01") private static Result<Unit> deploySshNode(ProvisionedNode node,
                                                                               String nodeConfig,
                                                                               SshConfig sshConfig,
-                                                                              String clusterName) {
+                                                                              String clusterName,
+                                                                              String nodeId,
+                                                                              int clusterPort,
+                                                                              int managementPort,
+                                                                              String peers,
+                                                                              String clusterSecret) {
         return writeNodeConfigToTemp(node.nodeId(),
                                      nodeConfig).flatMap(tempPath -> scpConfigToNode(tempPath,
                                                                                      node.publicIp(),
@@ -208,7 +221,11 @@ import static org.pragmatica.lang.Result.success;
                                     .flatMap(_ -> startRuntimeViaSsh(node.publicIp(),
                                                                      sshConfig,
                                                                      clusterName,
-                                                                     node.nodeId()));
+                                                                     nodeId,
+                                                                     clusterPort,
+                                                                     managementPort,
+                                                                     peers,
+                                                                     clusterSecret));
     }
 
     private static Result<Path> writeNodeConfigToTemp(String nodeId, String content) {
@@ -228,8 +245,15 @@ import static org.pragmatica.lang.Result.success;
     private static Result<Unit> startRuntimeViaSsh(String host,
                                                    SshConfig sshConfig,
                                                    String clusterName,
-                                                   String nodeId) {
-        var startCommand = "mkdir -p /opt/aether/config && docker pull ghcr.io/pragmaticalabs/aether-node:latest" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -e AETHER_NODE_ID=" + nodeId + " -l aether-cluster=" + clusterName + " -v /opt/aether/config:/config:ro" + " ghcr.io/pragmaticalabs/aether-node:latest --config /config/aether.toml";
+                                                   String nodeId,
+                                                   int clusterPort,
+                                                   int managementPort,
+                                                   String peers,
+                                                   String clusterSecret) {
+        var peersEnv = peers.isEmpty()
+                      ? ""
+                      : " -e PEERS=\"" + peers + "\"";
+        var startCommand = "mkdir -p /opt/aether/config" + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -l aether-cluster=" + clusterName + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + peersEnv + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " ghcr.io/pragmaticalabs/aether-node:latest";
         return RemoteCommandRunner.ssh(host, startCommand, sshConfig).mapToUnit();
     }
 
@@ -242,12 +266,9 @@ import static org.pragmatica.lang.Result.success;
 
     static Result<TomlDocument> composeNodeConfig(BootstrapContext ctx,
                                                   SourceProfile source,
-                                                  String nodeId,
                                                   int nodeIndex,
-                                                  NodeRole role,
-                                                  List<String> peers,
                                                   Option<String> dockerGid,
                                                   Option<String> clusterSecret) {
-        return NodeConfigBuilder.compose(ctx, source, nodeId, nodeIndex, role, peers, dockerGid, clusterSecret);
+        return NodeConfigBuilder.compose(ctx, source, nodeIndex, dockerGid, clusterSecret);
     }
 }

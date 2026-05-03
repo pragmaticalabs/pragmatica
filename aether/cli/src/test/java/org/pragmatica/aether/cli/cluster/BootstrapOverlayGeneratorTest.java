@@ -7,9 +7,6 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
-import org.pragmatica.aether.config.cluster.NodeRole;
-
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -57,26 +54,18 @@ class BootstrapOverlayGeneratorTest {
             """;
 
     @Test
-    void overlay_dockerSetsClusterAndNodeAndCloudCompute() {
+    void overlay_dockerSetsClusterAndCloudCompute() {
         var config = ClusterBootstrapConfigParser.parse(DOCKER_BASE).unwrap();
         var source = config.sources().get("dev");
-        var peers = List.of("node-1:host-a:6000", "node-2:host-b:6001", "node-3:host-c:6002");
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    peers,
                                                     some("api-key-xyz"),
                                                     some("999"),
                                                     empty());
 
         assertEquals("test-cluster", doc.getString("cluster", "name").unwrap());
-        assertEquals("node-1:host-a:6000,node-2:host-b:6001,node-3:host-c:6002",
-                     doc.getString("cluster", "peers").unwrap());
-        assertEquals("node-1", doc.getString("node", "id").unwrap());
-        assertEquals("core", doc.getString("node", "role").unwrap());
         assertEquals("api-key-xyz", doc.getString("cloud.compute", "api_key").unwrap());
         assertEquals("999", doc.getString("cloud.compute", "docker_gid").unwrap());
         assertEquals(5160, doc.getInt("cloud.compute", "management_port_base").unwrap());
@@ -86,16 +75,69 @@ class BootstrapOverlayGeneratorTest {
     }
 
     @Test
+    void overlay_emitsClusterPortsSoMainParsePortReadsOperatorValues() {
+        var config = ClusterBootstrapConfigParser.parse(DOCKER_BASE).unwrap();
+        var source = config.sources().get("dev");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    empty());
+
+        assertEquals(5160, doc.getInt("cluster.ports", "management").unwrap(),
+                     "cluster.ports.management must surface operator port so Main.parseManagementPort " +
+                     "(via ConfigLoader.portsFromDocument) reads it");
+        assertEquals(6000, doc.getInt("cluster.ports", "cluster").unwrap(),
+                     "cluster.ports.cluster must surface operator port for the same reason");
+    }
+
+    @Test
+    void overlay_omitsNodeBlockEntirely() {
+        // [node] does not exist in Main's TOML schema (AetherConfig has no
+        // [node].id / [node].role / [node].zone). Per-node identity flows via
+        // env vars and CLI flags emitted by UserDataTemplate.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"));
+
+        assertFalse(doc.hasSection("node"),
+                    "[node] block must NOT be emitted — Main never reads it and we'd be lying about schema");
+    }
+
+    @Test
+    void overlay_omitsClusterPeersField() {
+        // Main.parsePeers reads --peers= flag or CLUSTER_PEERS env var, never
+        // [cluster].peers. Emitting it would be dead config that misleads operators.
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"));
+
+        assertTrue(doc.getString("cluster", "peers").isEmpty(),
+                   "[cluster].peers must NOT be emitted — Main has no such schema field");
+    }
+
+    @Test
     void overlay_dockerOmitsApiKeyAndGidWhenNotProvided() {
         var config = ClusterBootstrapConfigParser.parse(DOCKER_BASE).unwrap();
         var source = config.sources().get("dev");
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-2",
                                                     1,
-                                                    NodeRole.CORE,
-                                                    List.of(),
                                                     empty(),
                                                     empty(),
                                                     empty());
@@ -106,23 +148,19 @@ class BootstrapOverlayGeneratorTest {
     }
 
     @Test
-    void overlay_cloudSetsProviderRegionZoneAndTls() {
+    void overlay_cloudSetsProviderRegionAndTls() {
         var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
         var source = config.sources().get("eu-1");
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    List.of("node-1:1.2.3.4:6000"),
                                                     empty(),
                                                     empty(),
                                                     some("seed-secret"));
 
         assertEquals("hetzner", doc.getString("cloud.compute", "provider").unwrap());
         assertEquals("eu-central", doc.getString("cloud.compute", "region").unwrap());
-        assertEquals("fsn1", doc.getString("node", "zone").unwrap());
         assertEquals("seed-secret", doc.getString("tls", "cluster_secret").unwrap());
     }
 
@@ -133,10 +171,7 @@ class BootstrapOverlayGeneratorTest {
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    List.of(),
                                                     empty(),
                                                     empty(),
                                                     empty());
@@ -156,10 +191,7 @@ class BootstrapOverlayGeneratorTest {
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    List.of(),
                                                     empty(),
                                                     empty(),
                                                     empty());
@@ -180,10 +212,7 @@ class BootstrapOverlayGeneratorTest {
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    List.of(),
                                                     empty(),
                                                     empty(),
                                                     empty());
@@ -206,10 +235,7 @@ class BootstrapOverlayGeneratorTest {
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    List.of(),
                                                     empty(),
                                                     empty(),
                                                     empty());
@@ -230,10 +256,7 @@ class BootstrapOverlayGeneratorTest {
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    List.of(),
                                                     empty(),
                                                     empty(),
                                                     empty());
@@ -249,10 +272,7 @@ class BootstrapOverlayGeneratorTest {
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    List.of(),
                                                     empty(),
                                                     empty(),
                                                     empty());
@@ -281,10 +301,7 @@ class BootstrapOverlayGeneratorTest {
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    List.of(),
                                                     empty(),
                                                     empty(),
                                                     some("ignored-secret"));
@@ -313,36 +330,14 @@ class BootstrapOverlayGeneratorTest {
 
         var doc = BootstrapOverlayGenerator.overlay(config,
                                                     source,
-                                                    "node-1",
                                                     0,
-                                                    NodeRole.CORE,
-                                                    List.of(),
                                                     empty(),
                                                     empty(),
                                                     empty());
 
         assertFalse(doc.hasSection("cloud.compute"));
         assertFalse(doc.hasSection("tls"));
-        // cluster + node still always present
+        // cluster always present
         assertEquals("forge-cluster", doc.getString("cluster", "name").unwrap());
-        assertEquals("node-1", doc.getString("node", "id").unwrap());
-    }
-
-    @Test
-    void overlay_workerRoleSurfacedAsString() {
-        var config = ClusterBootstrapConfigParser.parse(DOCKER_BASE).unwrap();
-        var source = config.sources().get("dev");
-
-        var doc = BootstrapOverlayGenerator.overlay(config,
-                                                    source,
-                                                    "node-w1",
-                                                    5,
-                                                    NodeRole.WORKER,
-                                                    List.of(),
-                                                    empty(),
-                                                    empty(),
-                                                    empty());
-
-        assertEquals("worker", doc.getString("node", "role").unwrap());
     }
 }

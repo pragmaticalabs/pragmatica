@@ -223,10 +223,7 @@ import static org.pragmatica.lang.Result.success;
         var labels = Map.of("aether-cluster", clusterName, "aether-source", sourceName, "aether-role", role.value());
         return NodeConfigBuilder.compose(ctx,
                                          source,
-                                         nodeId,
                                          nodeIndex,
-                                         role,
-                                         List.of(),
                                          Option.empty(),
                                          Option.some(ctx.clusterSecret())).map(composedConfig -> renderUserData(ctx,
                                                                                                                 source,
@@ -258,7 +255,8 @@ import static org.pragmatica.lang.Result.success;
                                        ctx.clusterSecret(),
                                        clusterName,
                                        composedConfig,
-                                       ctx.sshPublicKeys());
+                                       ctx.sshPublicKeys(),
+                                       List.of());
     }
 
     private static ProvisionSpec applyZone(ProvisionSpec spec, String zone) {

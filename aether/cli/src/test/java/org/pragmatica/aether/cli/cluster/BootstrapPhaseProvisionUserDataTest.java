@@ -194,6 +194,78 @@ class BootstrapPhaseProvisionUserDataTest {
         assertEquals("core", spec.tags().get("aether-role"));
     }
 
+    @Test
+    void buildCloudProvisionSpec_threadsDistinctNodeIdEnvVarPerVm() {
+        // Bug 14: each VM's user_data must export its own NODE_ID so Main.parseNodeId
+        // resolves a deterministic id rather than randomNodeId().
+        var source = cloudHetznerSource(3);
+        var ctx = baseContext(configWithSource(source));
+
+        var ud0 = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-0", 0).userData().or("");
+        var ud1 = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-1", 1).userData().or("");
+        var ud2 = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-2", 2).userData().or("");
+
+        assertTrue(ud0.contains("AETHER_NODE_ID=\"eu-1-core-0\""));
+        assertTrue(ud1.contains("AETHER_NODE_ID=\"eu-1-core-1\""));
+        assertTrue(ud2.contains("AETHER_NODE_ID=\"eu-1-core-2\""));
+        assertTrue(ud0.contains("-e NODE_ID=\"${AETHER_NODE_ID}\""),
+                   "docker run -e NODE_ID feeds Main.parseNodeId via env so the node lands in coreNodes");
+    }
+
+    @Test
+    void buildCloudProvisionSpec_threadsIdenticalClusterAndManagementPortAcrossVms() {
+        // Per-cluster invariant: every VM uses the same operator-supplied ports.
+        var source = cloudHetznerSource(3);
+        var ctx = baseContext(configWithSource(source));
+
+        var ud0 = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-0", 0).userData().or("");
+        var ud2 = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-2", 2).userData().or("");
+
+        // OperationsConfig.defaultOperationsConfig() sets cluster=8090, management=8080.
+        assertTrue(ud0.contains("AETHER_CLUSTER_PORT=\"8090\""),
+                   "Cluster port must come from operations.ports.cluster");
+        assertTrue(ud0.contains("AETHER_MANAGEMENT_PORT=\"8080\""),
+                   "Management port must come from operations.ports.management");
+        assertTrue(ud2.contains("AETHER_CLUSTER_PORT=\"8090\""), "All VMs share cluster port");
+        assertTrue(ud2.contains("AETHER_MANAGEMENT_PORT=\"8080\""), "All VMs share mgmt port");
+        assertTrue(ud0.contains("-e CLUSTER_PORT=\"${AETHER_CLUSTER_PORT}\""),
+                   "docker run must export CLUSTER_PORT for the bundled entrypoint to consume");
+        assertTrue(ud0.contains("-e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\""),
+                   "docker run must export MANAGEMENT_PORT for the bundled entrypoint to consume");
+    }
+
+    @Test
+    void buildCloudProvisionSpec_threadsClusterSecretAsContainerEnvVar() {
+        // Without -e AETHER_CLUSTER_SECRET, Main.resolveClusterSecret falls back
+        // to the empty default and TLS init fails (the original Bug 13 symptom).
+        var source = cloudHetznerSource(1);
+        var ctx = baseContext(configWithSource(source));
+
+        var ud = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-0", 0).userData().or("");
+
+        assertTrue(ud.contains("-e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\""),
+                   "docker run must export AETHER_CLUSTER_SECRET so the env-fallback path resolves");
+    }
+
+    @Test
+    void buildCloudProvisionSpec_emitsEmptyPeersAtProvisionTime() {
+        // Cloud peers can't be known at user-data render time (IPs assigned
+        // after provisionOne returns). The cloud-init must therefore ship an
+        // empty PEERS placeholder; the Dockerfile entrypoint's
+        // ${PEERS:+--peers=$PEERS} skips the flag and Main.parsePeers falls
+        // through to its config / default chain. The deploy phase is the
+        // proper home for the finalised peer list (cascading concern).
+        var source = cloudHetznerSource(3);
+        var ctx = baseContext(configWithSource(source));
+
+        var ud = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-0", 0).userData().or("");
+
+        assertTrue(ud.contains("AETHER_PEERS=\"\""),
+                   "Cloud user_data must ship empty AETHER_PEERS (IPs unknown at render time)");
+        assertTrue(ud.contains("-e PEERS=\"${AETHER_PEERS}\""),
+                   "PEERS env var still exported so the Dockerfile entrypoint can fold it");
+    }
+
     /// Reflective indirection because BootstrapPhaseProvision keeps these helpers
     /// package-private/private. We exercise them through Java reflection rather
     /// than widening visibility just for tests.

@@ -5,7 +5,6 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
-import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.config.toml.TomlDocument;
@@ -26,15 +25,12 @@ public interface BootstrapOverlayGenerator {
 
     static TomlDocument overlay(ClusterBootstrapConfig config,
                                 SourceProfile source,
-                                String nodeId,
                                 int nodeIndex,
-                                NodeRole role,
-                                List<String> peers,
                                 Option<String> apiKey,
                                 Option<String> dockerGid,
                                 Option<String> clusterSecret) {
-        var fixed = Stream.of(Option.some(clusterSection(config, peers)),
-                              Option.some(nodeSection(nodeId, role, source)),
+        var fixed = Stream.of(Option.some(clusterSection(config)),
+                              Option.some(clusterPortsSection(config)),
                               sourceSpecificSection(config, source, nodeIndex, apiKey, dockerGid),
                               tlsSection(source, clusterSecret))
         .flatMap(Option::stream);
@@ -49,20 +45,18 @@ public interface BootstrapOverlayGenerator {
         return Map.copyOf(ordered);
     }
 
-    private static Section clusterSection(ClusterBootstrapConfig config, List<String> peers) {
+    private static Section clusterSection(ClusterBootstrapConfig config) {
         return Section.section("cluster",
                                Map.of("name",
-                                      config.cluster().name(),
-                                      "peers",
-                                      String.join(",", peers)));
+                                      config.cluster().name()));
     }
 
-    private static Section nodeSection(String nodeId, NodeRole role, SourceProfile source) {
+    private static Section clusterPortsSection(ClusterBootstrapConfig config) {
+        var ports = config.operations().ports();
         var values = new LinkedHashMap<String, Object>();
-        values.put("id", nodeId);
-        values.put("role", role.value());
-        source.zone().onPresent(zone -> values.put("zone", zone));
-        return Section.section("node", values);
+        values.put("management", ports.management());
+        values.put("cluster", ports.cluster());
+        return Section.section("cluster.ports", values);
     }
 
     private static Option<Section> sourceSpecificSection(ClusterBootstrapConfig config,
