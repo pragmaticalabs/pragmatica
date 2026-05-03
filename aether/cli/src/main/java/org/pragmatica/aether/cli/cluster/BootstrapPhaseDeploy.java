@@ -8,6 +8,7 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapC
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RuntimeProfile;
+import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshConfig;
@@ -134,14 +135,14 @@ import static org.pragmatica.lang.Result.success;
             System.out.printf("  [%s/cloud] No nodes to wait for%n", sourceName);
             return Result.unitResult();
         }
-        var restartResult = restartContainersWithFinalPeers(ctx,
-                                                            source,
-                                                            sourceName,
-                                                            sourceNodes,
-                                                            sshExec,
-                                                            envLookup,
-                                                            preflightTimeoutMs,
-                                                            preflightPollMs);
+        var restartResult = restartNodesWithFinalPeers(ctx,
+                                                       source,
+                                                       sourceName,
+                                                       sourceNodes,
+                                                       sshExec,
+                                                       envLookup,
+                                                       preflightTimeoutMs,
+                                                       preflightPollMs);
         if (restartResult.isFailure()) {return restartResult;}
         var mgmtPort = ctx.config().operations()
                                  .ports()
@@ -156,14 +157,14 @@ import static org.pragmatica.lang.Result.success;
         return waitForCloudInit(sourceNodes, mgmtPort, timeoutMs, healthCheck, sourceName);
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> restartContainersWithFinalPeers(BootstrapContext ctx,
-                                                                                                SourceProfile source,
-                                                                                                String sourceName,
-                                                                                                List<ProvisionedNode> sourceNodes,
-                                                                                                Fn3<Result<String>, String, String, SshConfig> sshExec,
-                                                                                                Fn1<String, String> envLookup,
-                                                                                                long preflightTimeoutMs,
-                                                                                                long preflightPollMs) {
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> restartNodesWithFinalPeers(BootstrapContext ctx,
+                                                                                           SourceProfile source,
+                                                                                           String sourceName,
+                                                                                           List<ProvisionedNode> sourceNodes,
+                                                                                           Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                                                                           Fn1<String, String> envLookup,
+                                                                                           long preflightTimeoutMs,
+                                                                                           long preflightPollMs) {
         var sshConfigResult = buildCloudSshConfig(source, envLookup);
         if (sshConfigResult.isFailure()) {return sshConfigResult.map(_ -> Unit.unit());}
         var sshConfig = sshConfigResult.unwrap();
@@ -184,28 +185,48 @@ import static org.pragmatica.lang.Result.success;
         var clusterSecret = ctx.clusterSecret();
         var clusterName = ctx.config().cluster()
                                     .name();
-        var image = resolveContainerImage(ctx, source);
-        System.out.printf("  [%s/cloud] Re-launching aether-node containers on %d host(s) with finalized PEERS=%s%n",
+        var isJvm = isJvmRuntime(ctx, source);
+        var runtimeLabel = isJvm
+                          ? "JVMs"
+                          : "containers";
+        System.out.printf("  [%s/cloud] Re-launching aether-node %s on %d host(s) with finalized PEERS=%s%n",
                           sourceName,
+                          runtimeLabel,
                           sourceNodes.size(),
                           peers);
         for (var node : sourceNodes) {
-            var command = buildRestartCommand(image,
-                                              clusterName,
-                                              node.nodeId(),
-                                              clusterPort,
-                                              managementPort,
-                                              peers,
-                                              clusterSecret);
+            var command = isJvm
+                         ? buildJvmRestartCommand(node.nodeId(), clusterPort, managementPort, peers, clusterSecret)
+                         : buildRestartCommand(resolveContainerImage(ctx, source),
+                                               clusterName,
+                                               node.nodeId(),
+                                               clusterPort,
+                                               managementPort,
+                                               peers,
+                                               clusterSecret);
             var result = sshExec.apply(node.publicIp(), command, sshConfig);
             if (result.isFailure()) {return new BootstrapError.DeploymentFailed(node.publicIp(),
-                                                                                "Failed to restart aether-node container with finalized PEERS: " + result.fold(c -> c.message(),
-                                                                                                                                                               v -> v)).result();}
+                                                                                failureReason(isJvm, result)).result();}
         }
-        System.out.printf("  [%s/cloud] All %d container(s) restarted with finalized PEERS%n",
+        var doneLabel = isJvm
+                       ? "JVM(s)"
+                       : "container(s)";
+        System.out.printf("  [%s/cloud] All %d %s restarted with finalized PEERS%n",
                           sourceName,
-                          sourceNodes.size());
+                          sourceNodes.size(),
+                          doneLabel);
         return Result.unitResult();
+    }
+
+    private static String failureReason(boolean isJvm, Result<String> result) {
+        var prefix = isJvm
+                    ? "Failed to restart aether-node JVM with finalized PEERS: "
+                    : "Failed to restart aether-node container with finalized PEERS: ";
+        return prefix + result.fold(c -> c.message(), v -> v);
+    }
+
+    static boolean isJvmRuntime(BootstrapContext ctx, SourceProfile source) {
+        return resolveRuntimeProfile(ctx, source).map(p -> p.type() == RuntimeType.JVM).or(false);
     }
 
     long SSH_PREFLIGHT_TIMEOUT_MS = 180_000;
@@ -264,6 +285,18 @@ import static org.pragmatica.lang.Result.success;
                                       String peers,
                                       String clusterSecret) {
         return "docker rm -f aether-node 2>/dev/null || true" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -l aether-cluster=" + clusterName + " -l aether-node-id=" + nodeId + " -l aether-role=core" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + " -e PEERS=\"" + peers + "\"" + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " " + image;
+    }
+
+    static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
+
+    static String JVM_LOG_PATH = "/var/log/aether-node.log";
+
+    static String buildJvmRestartCommand(String nodeId,
+                                         int clusterPort,
+                                         int managementPort,
+                                         String peers,
+                                         String clusterSecret) {
+        return "pkill -f " + JVM_JAR_PATH + " 2>/dev/null || true" + "; sleep 1" + "; pkill -9 -f " + JVM_JAR_PATH + " 2>/dev/null || true" + "; sleep 1" + "; AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\" nohup java -jar " + JVM_JAR_PATH + " --config=/opt/aether/config/aether.toml" + " --node-id=\"" + nodeId + "\"" + " --port=\"" + clusterPort + "\"" + " --management-port=\"" + managementPort + "\"" + " --peers=\"" + peers + "\"" + " > " + JVM_LOG_PATH + " 2>&1 & disown";
     }
 
     static String resolveContainerImage(BootstrapContext ctx, SourceProfile source) {

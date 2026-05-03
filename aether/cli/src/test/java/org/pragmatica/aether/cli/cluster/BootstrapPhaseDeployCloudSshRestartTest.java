@@ -162,6 +162,26 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                .withClusterSecret(CLUSTER_SECRET);
     }
 
+    private static BootstrapContext contextWithJvmRuntime(SourceProfile source) {
+        var runtimes = Map.of("default",
+                              RuntimeProfile.runtimeProfile("default",
+                                                            RuntimeType.JVM,
+                                                            Option.empty(),
+                                                            Option.empty()));
+        var config = configWithShortTimeout(source, runtimes);
+        var nodes = List.of(
+            ProvisionedNode.provisionedNode("eu-1-core-0", "100", "203.0.113.10"),
+            ProvisionedNode.provisionedNode("eu-1-core-1", "101", "203.0.113.11"),
+            ProvisionedNode.provisionedNode("eu-1-core-2", "102", "203.0.113.12"));
+        var addresses = List.of(
+            NodeAddress.nodeAddress("eu-1-core-0", "203.0.113.10", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-core-1", "203.0.113.11", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-core-2", "203.0.113.12", Option.empty()));
+        var state = BootstrapState.initialState(CLUSTER_NAME, "h", "now").withClusterSecret(CLUSTER_SECRET);
+        return BootstrapContext.bootstrapContext(config, state, nodes, addresses)
+                               .withClusterSecret(CLUSTER_SECRET);
+    }
+
     private static BootstrapContext contextWithThreeCloudNodes(SourceProfile source) {
         var config = configWithShortTimeout(source);
         var nodes = List.of(
@@ -757,6 +777,184 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     // --- Bug 17: SSH preflight must wait for cloud-init to finish, not just for SSH ---
+
+    // --- Bug 20: JVM runtime profile produces JVM SSH-back commands, not docker ---
+
+    @Test
+    void deployCloudSource_jvmRuntime_emitsPkillAndNohupJava_notDocker() {
+        var ctx = contextWithJvmRuntime(cloudSource());
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            // Track only the restart leg (preflight is "cloud-init status --wait").
+            if (!"cloud-init status --wait".equals(command)) { commands.put(host, command); }
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "JVM cloud deploy must succeed; got: " + result);
+        assertEquals(3, commands.size(), "Each JVM node must receive a single restart command");
+        for (var cmd : commands.values()) {
+            assertTrue(cmd.contains("pkill -f /opt/aether/aether-node.jar"),
+                       () -> "JVM restart MUST kill the previous JVM by jar path: " + cmd);
+            assertTrue(cmd.contains("pkill -9 -f /opt/aether/aether-node.jar"),
+                       () -> "JVM restart MUST escalate to SIGKILL after SIGTERM: " + cmd);
+            assertTrue(cmd.contains("nohup java -jar /opt/aether/aether-node.jar"),
+                       () -> "JVM restart MUST relaunch via nohup java -jar: " + cmd);
+            assertTrue(cmd.contains("--config=/opt/aether/config/aether.toml"),
+                       () -> "JVM restart MUST pass --config=: " + cmd);
+            assertTrue(cmd.contains("--node-id="),
+                       () -> "JVM restart MUST pass --node-id=: " + cmd);
+            assertTrue(cmd.contains("--port="),
+                       () -> "JVM restart MUST pass --port=: " + cmd);
+            assertTrue(cmd.contains("--management-port="),
+                       () -> "JVM restart MUST pass --management-port=: " + cmd);
+            assertTrue(cmd.contains("--peers="),
+                       () -> "JVM restart MUST pass --peers=: " + cmd);
+            assertTrue(cmd.contains("AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""),
+                       () -> "JVM restart MUST inline AETHER_CLUSTER_SECRET as env var: " + cmd);
+            assertTrue(cmd.contains("disown"),
+                       () -> "JVM restart MUST disown so the process survives the SSH session: " + cmd);
+            assertTrue(cmd.contains("/var/log/aether-node.log"),
+                       () -> "JVM restart MUST redirect stdout/stderr to a log file: " + cmd);
+            assertFalse(cmd.contains("docker run"),
+                        () -> "JVM restart MUST NOT use docker run: " + cmd);
+            assertFalse(cmd.contains("docker rm"),
+                        () -> "JVM restart MUST NOT use docker rm: " + cmd);
+        }
+    }
+
+    @Test
+    void deployCloudSource_jvmRuntime_threadsFinalizedPeers_intoJvmCli() {
+        var ctx = contextWithJvmRuntime(cloudSource());
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            if (!"cloud-init status --wait".equals(command)) { commands.put(host, command); }
+            return Result.success("");
+        };
+
+        var _ = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                      ctx.config().sources().get("eu-1"),
+                                                      "eu-1",
+                                                      alwaysHealthy(),
+                                                      sshExec,
+                                                      envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        var expectedPeers = String.join(",", BootstrapPhaseDeploy.buildThreePartPeers(ctx));
+        for (var cmd : commands.values()) {
+            assertTrue(cmd.contains("--peers=\"" + expectedPeers + "\""),
+                       () -> "Each JVM restart command must export the finalized PEERS via CLI flag: " + cmd);
+        }
+        var cmd0 = commands.get("203.0.113.10");
+        assertTrue(cmd0.contains("--node-id=\"eu-1-core-0\""), "Per-node node-id: " + cmd0);
+        var cmd1 = commands.get("203.0.113.11");
+        assertTrue(cmd1.contains("--node-id=\"eu-1-core-1\""), "Per-node node-id: " + cmd1);
+    }
+
+    @Test
+    void deployCloudSource_jvmRuntime_runsHealthPollAfterRestart_sameAsContainerPath() {
+        var ctx = contextWithJvmRuntime(cloudSource());
+        var order = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            var kind = command.startsWith("nohup") || command.contains("pkill") ? "restart" : "preflight";
+            order.add(kind + ":" + host);
+            return Result.success("");
+        };
+        Fn1<Result<String>, String> healthCheck = url -> {
+            order.add("poll:" + url);
+            return Result.success("OK");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            healthCheck,
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "JVM cloud deploy must succeed; got: " + result);
+        var events = order.stream().toList();
+        var firstPoll = -1;
+        var lastRestart = -1;
+        for (int i = 0; i < events.size(); i++) {
+            if (events.get(i).startsWith("poll:") && firstPoll == -1) { firstPoll = i; }
+            if (events.get(i).startsWith("restart:")) { lastRestart = i; }
+        }
+        assertTrue(lastRestart >= 0, "At least one JVM restart event expected: " + events);
+        assertTrue(firstPoll >= 0, "Health poll MUST run after JVM restart for jvm runtime: " + events);
+        assertTrue(lastRestart < firstPoll,
+                   () -> "JVM restart MUST precede the first health poll. Events: " + events);
+    }
+
+    @Test
+    void deployCloudSource_jvmRuntime_failsAndNamesIp_whenSshRestartFails() {
+        var ctx = contextWithJvmRuntime(cloudSource());
+        var failingHost = "203.0.113.11";
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            if (failingHost.equals(host) && command.contains("nohup java")) {
+                return new TestError("ssh: connect refused").result();
+            }
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            100L,
+                                                            10L);
+
+        assertTrue(result.isFailure(), "JVM SSH-back failure must fail the phase");
+        var msg = result.fold(c -> c.message(), v -> "<unexpected success: " + v + ">");
+        assertTrue(msg.contains(failingHost),
+                   () -> "Failure message must name the unreachable IP. Got: " + msg);
+        assertTrue(msg.contains("Failed to restart aether-node JVM"),
+                   () -> "Failure message must clarify the JVM restart failed (not container): " + msg);
+    }
+
+    @Test
+    void buildJvmRestartCommand_includesAllRequiredCliFlagsAndEnv_inExpectedOrder() {
+        // Mutation guard: any future refactor that drops/renames a CLI flag should fail here.
+        var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+                                                              8090,
+                                                              8091,
+                                                              "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090",
+                                                              CLUSTER_SECRET);
+        assertTrue(cmd.contains("pkill -f /opt/aether/aether-node.jar"), cmd);
+        assertTrue(cmd.contains("pkill -9 -f /opt/aether/aether-node.jar"), cmd);
+        assertTrue(cmd.contains("AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""), cmd);
+        assertTrue(cmd.contains("nohup java -jar /opt/aether/aether-node.jar"), cmd);
+        assertTrue(cmd.contains("--config=/opt/aether/config/aether.toml"), cmd);
+        assertTrue(cmd.contains("--node-id=\"eu-1-core-0\""), cmd);
+        assertTrue(cmd.contains("--port=\"8090\""), cmd);
+        assertTrue(cmd.contains("--management-port=\"8091\""), cmd);
+        assertTrue(cmd.contains("--peers=\"eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090\""), cmd);
+        assertTrue(cmd.contains("/var/log/aether-node.log 2>&1"), cmd);
+        assertTrue(cmd.endsWith("disown"), "Command must end with 'disown' to detach: " + cmd);
+        assertFalse(cmd.contains("docker"), "JVM command must NOT mention docker: " + cmd);
+    }
+
+    @Test
+    void isJvmRuntime_isTrue_forJvmProfile_andFalse_forContainerOrAbsent() {
+        // Branching test: a runtime profile of type JVM yields true; container or absent yields false.
+        var jvmCtx = contextWithJvmRuntime(cloudSource());
+        var containerCtx = contextWithRuntimeImage(cloudSource(), "ghcr.io/example/aether:1");
+        var absentCtx = contextWithThreeCloudNodes(cloudSource()); // no [runtime.default] entry
+
+        assertTrue(BootstrapPhaseDeploy.isJvmRuntime(jvmCtx, jvmCtx.config().sources().get("eu-1")),
+                   "JVM runtime profile MUST select the JVM branch");
+        assertFalse(BootstrapPhaseDeploy.isJvmRuntime(containerCtx, containerCtx.config().sources().get("eu-1")),
+                    "Container runtime profile MUST NOT select the JVM branch");
+        assertFalse(BootstrapPhaseDeploy.isJvmRuntime(absentCtx, absentCtx.config().sources().get("eu-1")),
+                    "Absent runtime profile MUST default to the container branch (existing behaviour)");
+    }
 
     @Test
     void deployCloudSource_sshPreflight_usesCloudInitStatusWaitProbe_notBareTrue() {
