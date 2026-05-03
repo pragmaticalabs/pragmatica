@@ -96,10 +96,10 @@ import static org.pragmatica.lang.Result.success;
     private static BootstrapResult buildResult(BootstrapContext ctx) {
         var clusterName = ctx.config().cluster()
                                     .name();
+        var mgmtPort = ctx.config().operations().ports().management();
         var endpoint = ctx.addresses().isEmpty()
-                      ? "http://localhost:9090"
-                      : "http://" + ctx.addresses().getFirst()
-                                                 .publicIp();
+                      ? "http://localhost:" + mgmtPort
+                      : "http://" + ctx.addresses().getFirst().publicIp() + ":" + mgmtPort;
         var apiKey = ctx.apiKey().or("");
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
         return BootstrapResult.bootstrapResult(clusterName, endpoint, apiKey, ctx.nodes(), apiKeyEnvName);
