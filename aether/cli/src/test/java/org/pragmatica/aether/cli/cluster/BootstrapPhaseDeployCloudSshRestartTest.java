@@ -197,8 +197,9 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
     @Test
     void deployCloudSource_invokesSshExec_oncePerNode_withDockerRestartCommand() {
-        // Bug 16-D: each node now gets TWO sshExec calls (preflight 'true' + docker-restart).
-        // This test focuses on the docker-restart leg.
+        // Bug 16-D: each node now gets TWO sshExec calls (preflight + docker-restart).
+        // Bug 17: preflight command is 'cloud-init status --wait' (not 'true') so it blocks until
+        // cloud-init has finished installing docker. This test focuses on the docker-restart leg.
         var ctx = contextWithThreeCloudNodes(cloudSource());
         var invocations = new ConcurrentLinkedQueue<SshInvocation>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
@@ -317,11 +318,13 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     @Test
     void deployCloudSource_failsAndNamesIp_whenSshUnreachable() {
         // Bug 16-D: SSH-back failure during the docker-restart loop must surface the failing IP and
-        // the reason. Preflight passes (sshExec succeeds for "true"), but the restart command fails.
+        // the reason. Preflight passes (sshExec succeeds for the cloud-init wait), but the restart
+        // command fails.
         var ctx = contextWithThreeCloudNodes(cloudSource());
         var failingHost = "203.0.113.11";
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
-            // Preflight uses command="true"; restart uses "docker rm -f ...". Only fail the restart.
+            // Preflight uses command="cloud-init status --wait"; restart uses "docker rm -f ...".
+            // Only fail the restart.
             if (failingHost.equals(host) && command.startsWith("docker")) {
                 return new TestError("ssh: connect refused").result();
             }
@@ -660,8 +663,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var ctx = contextWithThreeCloudNodes(cloudSource());
         var attempts = new ConcurrentHashMap<String, AtomicInteger>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
-            // Preflight uses 'true' as command; restart uses 'docker ...'. Track preflight per host.
-            if ("true".equals(command)) {
+            // Preflight uses 'cloud-init status --wait'; restart uses 'docker ...'. Track preflight per host.
+            if ("cloud-init status --wait".equals(command)) {
                 var n = attempts.computeIfAbsent(host, _ -> new AtomicInteger()).incrementAndGet();
                 if (n < 3) { return new TestError("ssh: connection timed out").result(); }
             }
@@ -691,7 +694,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var ctx = contextWithThreeCloudNodes(cloudSource());
         var failingHost = "203.0.113.12";
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
-            if (failingHost.equals(host) && "true".equals(command)) {
+            if (failingHost.equals(host) && "cloud-init status --wait".equals(command)) {
                 return new TestError("ssh: connect timeout").result();
             }
             return Result.success("");
@@ -723,7 +726,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
     @Test
     void deployCloudSource_sshPreflight_runsBeforeDockerRestartLoop() {
-        // Ordering: preflight (command="true") for ALL nodes must precede the first docker-restart command.
+        // Ordering: preflight (command="cloud-init status --wait") for ALL nodes must precede the first docker-restart command.
         var ctx = contextWithThreeCloudNodes(cloudSource());
         var order = new ConcurrentLinkedQueue<String>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
@@ -751,5 +754,35 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(firstRestart >= 0, "At least one restart event expected: " + events);
         assertTrue(lastPreflight < firstRestart,
                    () -> "All preflight checks must precede the first docker-restart. Events: " + events);
+    }
+
+    // --- Bug 17: SSH preflight must wait for cloud-init to finish, not just for SSH ---
+
+    @Test
+    void deployCloudSource_sshPreflight_usesCloudInitStatusWaitProbe_notBareTrue() {
+        // Bug 17: 'true' as the probe returns success the moment SSH accepts a session, which can
+        // happen before cloud-init has installed docker. The probe MUST be 'cloud-init status --wait'
+        // so a successful preflight implies docker is present and the initial container is up.
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var preflightCommands = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            if (!command.startsWith("docker")) { preflightCommands.add(command); }
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            "eu-1",
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
+        assertFalse(preflightCommands.isEmpty(), "At least one preflight probe must have been issued");
+        for (var cmd : preflightCommands) {
+            assertEquals("cloud-init status --wait", cmd,
+                         "SSH preflight probe MUST be 'cloud-init status --wait' (Bug 17), not '" + cmd + "'. "
+                         + "Bare 'true' returns the moment SSH accepts a session, before docker is installed.");
+        }
     }
 }

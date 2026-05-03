@@ -238,7 +238,10 @@ import static org.pragmatica.lang.Result.success;
         var deadline = System.currentTimeMillis() + timeoutMs;
         var unreachable = new ArrayList<>(nodes);
         while (System.currentTimeMillis() <deadline && !unreachable.isEmpty()) {
-            unreachable.removeIf(node -> sshExec.apply(node.publicIp(), "true", sshConfig).isSuccess());
+            unreachable.removeIf(node -> sshExec.apply(node.publicIp(),
+                                                       "cloud-init status --wait",
+                                                       sshConfig)
+            .isSuccess());
             if (unreachable.isEmpty()) {break;}
             ClusterBootstrapOrchestrator.sleepQuietly(pollIntervalMs);
         }
