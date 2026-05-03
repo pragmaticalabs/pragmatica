@@ -800,10 +800,20 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(result.isSuccess(), () -> "JVM cloud deploy must succeed; got: " + result);
         assertEquals(3, commands.size(), "Each JVM node must receive a single restart command");
         for (var cmd : commands.values()) {
-            assertTrue(cmd.contains("pkill -f /opt/aether/aether-node.jar"),
-                       () -> "JVM restart MUST kill the previous JVM by jar path: " + cmd);
-            assertTrue(cmd.contains("pkill -9 -f /opt/aether/aether-node.jar"),
-                       () -> "JVM restart MUST escalate to SIGKILL after SIGTERM: " + cmd);
+            // Bug 20a: pkill -f matches the regex against the full cmdline. The SSH bash session
+            // running this very command embeds "java -jar <JAR>" in its own argv (in the nohup
+            // line below), so an unanchored pattern would self-kill the session. Anchor with '^'
+            // so only processes whose cmdline STARTS WITH "java -jar <JAR>" match — i.e. the JVM,
+            // not bash. Single quotes are required because the pattern contains spaces.
+            assertTrue(cmd.contains("pkill -f '^java -jar /opt/aether/aether-node.jar'"),
+                       () -> "JVM restart MUST anchor pkill pattern at '^java -jar <JAR>' (Bug 20a): " + cmd);
+            assertTrue(cmd.contains("pkill -9 -f '^java -jar /opt/aether/aether-node.jar'"),
+                       () -> "JVM restart MUST escalate to SIGKILL using the same anchored pattern (Bug 20a): " + cmd);
+            assertFalse(cmd.contains("pkill -f /opt/aether/aether-node.jar 2>")
+                        || cmd.contains("pkill -9 -f /opt/aether/aether-node.jar 2>"),
+                        () -> "Bug 20a regression: bare JAR-path pkill pattern would also kill the SSH "
+                              + "session whose argv contains the JAR path. Pattern MUST be anchored "
+                              + "'^java -jar <JAR>'. Got: " + cmd);
             assertTrue(cmd.contains("nohup java -jar /opt/aether/aether-node.jar"),
                        () -> "JVM restart MUST relaunch via nohup java -jar: " + cmd);
             assertTrue(cmd.contains("--config=/opt/aether/config/aether.toml"),
@@ -927,8 +937,14 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                               8091,
                                                               "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090",
                                                               CLUSTER_SECRET);
-        assertTrue(cmd.contains("pkill -f /opt/aether/aether-node.jar"), cmd);
-        assertTrue(cmd.contains("pkill -9 -f /opt/aether/aether-node.jar"), cmd);
+        // Bug 20a: pkill pattern is anchored '^java -jar <JAR>' (single-quoted, leading '^') so
+        // only processes whose cmdline STARTS WITH "java -jar <JAR>" match — i.e. the JVM, NOT
+        // the SSH bash session whose argv embeds the same string later in argv[2].
+        assertTrue(cmd.contains("pkill -f '^java -jar /opt/aether/aether-node.jar'"), cmd);
+        assertTrue(cmd.contains("pkill -9 -f '^java -jar /opt/aether/aether-node.jar'"), cmd);
+        assertFalse(cmd.contains("pkill -f /opt/aether/aether-node.jar 2>")
+                    || cmd.contains("pkill -9 -f /opt/aether/aether-node.jar 2>"),
+                    "Bug 20a: unanchored bare JAR-path pkill pattern is forbidden — would kill the SSH session itself. Got: " + cmd);
         assertTrue(cmd.contains("AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""), cmd);
         assertTrue(cmd.contains("nohup java -jar /opt/aether/aether-node.jar"), cmd);
         assertTrue(cmd.contains("--config=/opt/aether/config/aether.toml"), cmd);

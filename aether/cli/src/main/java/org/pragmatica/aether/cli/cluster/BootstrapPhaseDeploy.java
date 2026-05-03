@@ -291,12 +291,14 @@ import static org.pragmatica.lang.Result.success;
 
     static String JVM_LOG_PATH = "/var/log/aether-node.log";
 
+    static String JVM_PKILL_PATTERN = "^java -jar " + JVM_JAR_PATH;
+
     static String buildJvmRestartCommand(String nodeId,
                                          int clusterPort,
                                          int managementPort,
                                          String peers,
                                          String clusterSecret) {
-        return "pkill -f " + JVM_JAR_PATH + " 2>/dev/null || true" + "; sleep 1" + "; pkill -9 -f " + JVM_JAR_PATH + " 2>/dev/null || true" + "; sleep 1" + "; AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\" nohup java -jar " + JVM_JAR_PATH + " --config=/opt/aether/config/aether.toml" + " --node-id=\"" + nodeId + "\"" + " --port=\"" + clusterPort + "\"" + " --management-port=\"" + managementPort + "\"" + " --peers=\"" + peers + "\"" + " > " + JVM_LOG_PATH + " 2>&1 & disown";
+        return "pkill -f '" + JVM_PKILL_PATTERN + "' 2>/dev/null || true" + "; sleep 1" + "; pkill -9 -f '" + JVM_PKILL_PATTERN + "' 2>/dev/null || true" + "; sleep 1" + "; AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\" nohup java -jar " + JVM_JAR_PATH + " --config=/opt/aether/config/aether.toml" + " --node-id=\"" + nodeId + "\"" + " --port=\"" + clusterPort + "\"" + " --management-port=\"" + managementPort + "\"" + " --peers=\"" + peers + "\"" + " > " + JVM_LOG_PATH + " 2>&1 & disown";
     }
 
     static String resolveContainerImage(BootstrapContext ctx, SourceProfile source) {
