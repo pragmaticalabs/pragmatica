@@ -1,17 +1,16 @@
 # Session Handover — 2026-05-04
 
-**Branch:** `release-1.0.0-rc1`  ·  **HEAD:** `7a913e80a` (pushed)  ·  **18 commits this session**
+**Branch:** `release-1.0.0-rc1`  ·  **HEAD:** `f71230dab` (pushed)  ·  **Tag:** `v1.0.0-rc1-candidate` at HEAD  ·  **22 commits this session**
 
 ---
 
-## ⚡ TL;DR — start the next session here
+## ⚡ TL;DR — next session's mission
 
-**Cloud bootstrap is complete and validated end-to-end on Hetzner for both deployment paths.** The 11 cloud-bootstrap bugs from the 2026-05-03 handover are all closed; cascading work surfaced 9 additional bug classes (12–20a) which are also fixed. Both `aether cluster bootstrap` runs (container mode and JVM mode) report `Cluster is healthy.` and `state=CONVERGED` after `--wait`.
+**Stage A (primary): 15/15 integration suites green against a Hetzner cloud cluster.**
+**Stage B (after Stage A): merge the 13 rebased PRs (#191–#204 except #198/#199/#200).**
+**Stage C (after merges land): re-validate `aether cluster bootstrap` for both container AND JVM modes against the merged trunk; wrap-up with /wrap-up.**
 
-The next session can:
-1. Run integration suites against cloud clusters (00-smoke, 15-delegation as Phase 1; then non-destructive Phase 2).
-2. Investigate the flaky `CertificateRenewalSchedulerStaleTimerTest` that's been red on CI for several pushes (pre-existing, not from this session's work).
-3. Optionally harden JVM mode with systemd supervision (currently `nohup … & disown`; a panic = node down forever, no auto-restart equivalent of container's `--restart unless-stopped`).
+The cloud-bootstrap pipeline is complete and validated end-to-end on Hetzner for both deployment paths (this session's deliverable). What remains for "RC1 production-ready on cloud" is the actual integration-suite sweep — the bootstrap pipeline produces a healthy cluster but we haven't yet run the 16 test suites against one.
 
 **Account state:** Hetzner clean except for the PG VM (`aether-test-pg-681ab7`, ~€0.008/hr). Cluster VMs reaped after each test.
 
@@ -262,50 +261,108 @@ Out of scope for this session (we focused on cloud sources). The SSH source path
 
 ---
 
-## 7 · The 13 PRs awaiting rebase
+## 7 · PR rebase status (as of session-end)
 
-User mentioned PRs #191–#204 (except #198) need to rebase onto current HEAD. The branch is now in a clean post-bootstrap-completion state with:
-- 18 commits ahead of where they last rebased
-- The Bug 19 → 19c chain is the most logically dense — if a PR's CI picks up an intermediate commit (e.g. `4c0b22ca0`), it'll see the wrong-route test failure; only `7a913e80a` is fully green-by-design.
+All 13 active PRs have been rebased onto current rc1 HEAD `f71230dab` and CI dispatched. Snapshot:
 
-Recommend rebasing onto `7a913e80a` (current HEAD). Do not rebase onto `4c0b22ca0` (broken intermediate state).
+| PR | Branch | Rebase | CI |
+|---|---|---|---|
+| 191 | `fix/feature-catalog-id-collisions` | resolved (catalog-stats re-tally → 25/169/1/4/7=206) | ✅ green |
+| 192 | `refactor/functions-ret03-suppression` | clean | ✅ green |
+| 193 | `docs/architecture-overview-set` | clean | in_progress |
+| 194 | `fix/postgres-listen-unlisten-ordering` | clean | in_progress |
+| 195 | `feat/examples-notify-coverage` | clean | in_progress |
+| 196 | `docs/parallel-spec-runner-enforcement` | clean | ✅ green |
+| 197 | `fix/postgres-async-typed-get-gaps` | clean | in_progress |
+| 201 | `refactor/jbct-vo-02-parse-construct` | resolved (BootstrapState — `--ours` per directive; PR #201 lint-removal becomes 47/48 files) | in_progress |
+| 202 | `feat/rbac-tier2-mvp` | clean | in_progress |
+| 203 | `feat/cluster-init-wizard` | clean | ✅ green |
+| 204 | `ci/trigger-on-release-prs` | clean | just dispatched |
+
+**Note:** PR #191's catalog-stats had a conflict because this session bumped totals (177 → 181 with the cloud-bootstrap entries 200–203). The PR's own re-tally landed at 206 — the next session should re-verify the final tally after both PR sets land to make sure the count reflects the union, not the last writer.
 
 ---
 
-## 8 · Next-session priority order
+## 8 · Next-session mission — three stages
 
-1. **Verify CI green on `7a913e80a`** — currently in_progress at session-write time. Run `gh run view <id> --log-failed` if it fails; expect either the CertificateRenewal flake or zero failures.
-2. **Rebase the 13 PRs** onto current HEAD (user's task; CI validates each).
-3. **Run integration suites against cloud cluster.** `aether/tests/integration/run-tests.sh` has Docker support — needs a `--env cloud-hetzner` mode (or similar) that sources the JVM/container TOML, runs `cluster bootstrap`, executes 00-smoke + 15-delegation, tears down via reaper. This is the actual "production readiness" deliverable from the prior handover.
-4. **Fix the flaky `CertificateRenewalSchedulerStaleTimerTest`** OR mark `@Disabled`. Stops red CI runs from masking real regressions.
-5. **Add `--cluster` to `aether cluster destroy`** (symmetry with bootstrap; ~10 LoC).
-6. **Optional: harden JVM mode with systemd unit** (~50 LoC in `appendJvmInstall`).
+### Stage A · 15/15 integration suites green on Hetzner cloud (PRIMARY)
+
+Goal: every integration suite under `aether/tests/integration/suites/` passes against a Hetzner-bootstrapped cluster, for both runtime modes.
+
+**Concrete sub-tasks:**
+
+1. **Wire cloud env into `run-tests.sh`** — today the script supports `--env docker|remote`. Add `--env cloud-hetzner` (and optionally `cloud-hetzner-jvm`) that:
+   - Sources `cloud-hetzner.toml` / `cloud-hetzner-jvm.toml`
+   - Runs `aether cluster bootstrap … --cluster <suite-prefix>-a --yes --wait --timeout 600 --keep-on-failure --ssh-public-key …`
+   - Discovers cluster endpoints via `aether status --field cluster.leaderEndpoint` (or equivalent) post-bootstrap
+   - Sets `MGMT_BASE_URL` / `APP_BASE_URL` / `AETHER_<NAME>_API_KEY` so suite scripts in `lib/api.sh` route correctly
+   - Tears down via `tools/cloud-reaper.sh --cluster <name> --destroy --force` after each run (or after the whole sweep)
+   - Mirrors the dual-cluster pattern (parallel non-destructive A + sequential destructive B) — but on cloud, dual = 10 cluster VMs + PG = 11 VMs, which may exceed Hetzner quota. Recommend single-cluster sequential for cloud pass.
+
+2. **Run Phase 1 smoke** (00-smoke + 15-delegation, single cluster). Validates the basic test infrastructure against a cloud-bootstrapped cluster. Estimate: 10-15 min wallclock.
+
+3. **Run Phase 2 non-destructive** suites (04-streaming, 06-deployment, 07-cluster-mgmt, 08-resources, 09-artifacts, 10-database, 11-observability, 14-storage). Per-suite cluster bootstrap-and-teardown if state pollution is observed; otherwise parallel across the same cluster.
+
+4. **Run Phase 3 destructive** suites (02-chaos, 03-scaling, 12-network, 13-edge-cases). These need full cluster lifecycle isolation per suite.
+
+5. **Compile a cloud-vs-docker delta** — any suite that passes on docker but fails on cloud is a real cloud-specific regression worth filing as a bug.
+
+**Repeat for JVM mode** if container mode lands clean (Stage A · part 2).
+
+**Cost projection:** 16 suites × ~5 min each × ~5 cluster VMs × €0.0079/hr ≈ €5-10 for the full sweep per runtime mode. Negligible.
+
+**Acceptance:** 15/15 (or whatever the current docker baseline is) on cloud, for both runtime modes. File any cloud-specific failures as separate bugs.
+
+### Stage B · Merge the 13 rebased PRs
+
+Once Stage A is green, merge the rebased PRs in dependency-aware order:
+
+1. **Docs/refactor first** (low blast radius, easy to revert):
+   - #191 (catalog ID fixes), #192 (RET03 suppression), #196 (parallel spec runner doc)
+   - #193 (architecture docs), #204 (CI trigger config)
+2. **Bug fixes** (medium blast radius):
+   - #194 (PG listen/unlisten), #197 (PG async typed-get gaps)
+3. **Features** (highest blast radius — verify each lands clean before continuing):
+   - #195 (examples notify), #201 (JBCT VO-02 parse/construct refactor — large), #203 (cluster-init wizard)
+   - #202 (RBAC Tier 2 MVP — large)
+
+After each PR merges, the rc1 branch advances. Subsequent PRs may need a quick rebase (squash-merge produces single commits, so cherry-pick conflicts should be rare).
+
+**Acceptance:** all 13 PRs merged, branch CI green, no regressions in Stage A's integration suite results.
+
+### Stage C · Re-validate bootstrap (both modes) + wrap-up
+
+After all PRs merge:
+
+1. **Re-bootstrap container mode** on Hetzner using `cloud-hetzner.toml`. Confirm `Cluster is healthy.` exit + `state=CONVERGED`.
+2. **Re-bootstrap JVM mode** on Hetzner using `cloud-hetzner-jvm.toml`. Same acceptance.
+3. **Re-run Phase 1 smoke** (00-smoke + 15-delegation) on a cloud cluster. Confirms PR merges didn't regress the cloud path.
+4. **`/wrap-up`** — verify changelog covers all merged PRs (sometimes PR descriptions don't make it into the squash-commit message and need manual reconciliation). Move `v1.0.0-rc1-candidate` tag to new HEAD. Push.
+5. **Optional `/release`** if RC1 is ready for promotion to `main` (separate decision).
 
 ---
 
-## 9 · Acceptance criteria — were they met?
+## 9 · Acceptance criteria — were this session's met?
 
 From the 2026-05-03 handover:
 
 > Mission complete when:
 > - `aether cluster bootstrap …` returns success. ✅
 > - `aether status` shows 5 ON_DUTY nodes with leader and `clusterPhase=NORMAL`. ✅ (verified via `/api/cluster/status` directly: state=CONVERGED, leaderId, 5 ON_DUTY)
-> - `aether cluster destroy …` cleans up all VMs (no reaper needed). ⚠️ Partial — `cluster destroy` exists, but lacks `--cluster` so reaper is still the practical tool for multi-cluster scenarios. Bug 9's fix made the destroy work correctly when invoked via reaper or active cluster.
+> - `aether cluster destroy …` cleans up all VMs (no reaper needed). ⚠️ Partial — `cluster destroy` exists and Bug 9's fix made it work correctly via the active-cluster path, but it lacks `--cluster <name>` so the reaper is still the practical tool for multi-cluster scenarios.
 > - 0 leaked resources in `tools/cloud-reaper.sh` dry-run output post-teardown. ✅
 
 > Stretch goal:
-> - Phase 2 non-destructive suites pass on cloud. ❌ Not attempted (next session).
+> - Phase 2 non-destructive suites pass on cloud. ❌ Deferred to Stage A above.
 
 ---
 
-## 10 · Total spend
+## 10 · Total spend (this session)
 
-Hetzner billing for this session: ~€0.40 across multiple bootstrap iterations. 5 cluster VMs × cx33 (~€0.0079/hr each) × ~6 iterations × ~10 min average per iteration. Plus PG VM running ~6 hours. Negligible relative to the value delivered.
+Hetzner billing: ~€0.40 across ~7 bootstrap iterations. 5 cluster VMs × cx33 (~€0.0079/hr each) × ~10 min average per iteration. Plus PG VM running ~7 hours. Negligible relative to the value delivered.
 
 ---
 
 ## 11 · Final thought
 
-The cloud bootstrap pipeline is now structurally complete and substantially tested. Container mode is the production path; JVM mode is the no-Docker fallback. Both share the same KV-store-backed cluster config, the same Rabia consensus, the same SWIM membership — the runtime difference is purely about how the JVM gets started.
-
-Next session can either tighten the cloud bootstrap (process supervision, destroy-by-cluster-flag, integration suite wiring) OR start running the actual integration test suites against Hetzner clusters. The latter is the more user-visible RC1 milestone.
+The cloud bootstrap pipeline is now structurally complete and substantially tested. Container mode is the production path; JVM mode is the no-Docker fallback. Both share the same KV-store-backed cluster config, the same Rabia consensus, the same SWIM membership — the runtime difference is purely about how the JVM gets started. **Stage A is the next big proof point.** When 15/15 suites are green on a cloud cluster, RC1 is genuinely production-ready on cloud — not just "the bootstrap pipeline works" but "the entire integration matrix works."
