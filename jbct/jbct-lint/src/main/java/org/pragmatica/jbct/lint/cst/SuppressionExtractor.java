@@ -9,13 +9,16 @@ import java.util.regex.Pattern;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/// Extracts @SuppressWarnings and @Contract annotations and determines which rules are suppressed at which locations.
+/// Extracts @SuppressWarnings, @Contract, @TerminalOperation, and @NullReturn annotations
+/// and determines which rules are suppressed at which locations.
 ///
 /// Supports both standard suppressions and JBCT rule IDs:
 /// - @SuppressWarnings("JBCT-RET-01") - single rule
 /// - @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-02"}) - multiple rules
 /// - @SuppressWarnings("all") - suppresses all JBCT rules
 /// - @Contract - suppresses all JBCT rules (method signature dictated by external API contract)
+/// - @TerminalOperation - suppresses JBCT-PAT-03 (intentional blocking)
+/// - @NullReturn - suppresses JBCT-RET-03 (intentional null return)
 public final class SuppressionExtractor {
     private static final Pattern JBCT_RULE_PATTERN = Pattern.compile("JBCT-[A-Z]+-\\d+");
 
@@ -52,6 +55,10 @@ public final class SuppressionExtractor {
                                                                   "org.pragmatica.lang.TerminalOperation");
     private static final Set<String> TERMINAL_OP_SUPPRESSED = Set.of("JBCT-PAT-03");
 
+    private static final Set<String> NULL_RETURN_NAMES = Set.of("NullReturn",
+                                                                  "org.pragmatica.lang.NullReturn");
+    private static final Set<String> NULL_RETURN_SUPPRESSED = Set.of("JBCT-RET-03");
+
     /// Extract all suppressions from a CST.
     public static List<Suppression> extractSuppressions(CstNode root, String source) {
         var suppressions = new ArrayList<Suppression>();
@@ -72,6 +79,14 @@ public final class SuppressionExtractor {
             if (TERMINAL_OP_NAMES.contains(name)) {
                 findAnnotatedDeclaration(root, annotation)
                 .onPresent(scopeNode -> suppressions.add(Suppression.suppression(TERMINAL_OP_SUPPRESSED,
+                                                                                  startLine(scopeNode),
+                                                                                  endLine(scopeNode))));
+                continue;
+            }
+            // @NullReturn suppresses JBCT-RET-03 (intentional null return)
+            if (NULL_RETURN_NAMES.contains(name)) {
+                findAnnotatedDeclaration(root, annotation)
+                .onPresent(scopeNode -> suppressions.add(Suppression.suppression(NULL_RETURN_SUPPRESSED,
                                                                                   startLine(scopeNode),
                                                                                   endLine(scopeNode))));
                 continue;

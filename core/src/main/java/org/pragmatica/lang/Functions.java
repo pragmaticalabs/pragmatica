@@ -506,7 +506,7 @@ public interface Functions {
     /// @param value Input value (ignored)
     ///
     /// @return null
-    @SuppressWarnings("JBCT-RET-03")
+    @NullReturn
     static <R, T1> R toNull(T1 value) {
         return null;
     }

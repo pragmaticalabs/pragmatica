@@ -14,6 +14,8 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// JBCT-RET-03: Never return null.
 ///
 /// JBCT code never returns null. Use Option<T> for optional values.
+/// Annotate with @NullReturn if returning null is intentional (side-effect fold branches,
+/// JDK callback contracts like Map.computeIfPresent).
 public class CstNullReturnRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-03";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/skills/jbct/fundamentals/four-return-kinds.md";
@@ -64,7 +66,8 @@ public class CstNullReturnRule implements CstLintRule {
                                      column,
                                      "Method '" + methodName + "' returns null; use Option<T> instead",
                                      "JBCT code never returns null. Use Option.none() for absent values, "
-                                     + "Option.some(value) for present values.")
+                                     + "Option.some(value) for present values. "
+                                     + "Annotate with @NullReturn if null return is intentional.")
                          .withExample("""
             // Before: returning null
             public User findUser(UserId id) {
