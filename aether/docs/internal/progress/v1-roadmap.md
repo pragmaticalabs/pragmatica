@@ -25,11 +25,10 @@ decompose into layers, hard correctness gate per layer, no layer starts until th
 
 ## Week 1: Docs Cleanup + Audit Trail (0.22.0)
 
-### 1a. Commit Architecture Docs (S — 1 day)
-- 13 architecture docs exist on disk, not in git
-- Review and commit to `aether/docs/architecture/`
-- Fix feature catalog: update to reflect 0.21.1/0.21.2 changes
-- Fix catalog contradiction: backup/restore listed as both Planned and Complete
+### 1a. Architecture Docs + Catalog Hygiene (✅ done)
+- ✅ 14 architecture docs committed in 0.21.0 (`aether/docs/architecture/00-overview.md` … `13-cloud-integration.md`)
+- ✅ Feature catalog ID collisions resolved (PR #191) — 14 duplicate IDs renumbered, stats refreshed
+- Feature catalog content refresh for 0.21.1/0.21.2 still pending
 
 ### 1b. Audit Trail Expansion (S — 2-3 days)
 
