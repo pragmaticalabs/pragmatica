@@ -6,8 +6,6 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
-import org.pragmatica.aether.config.cluster.DefaultNodeConfig;
-import org.pragmatica.aether.config.cluster.NodeConfigComposer;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -16,12 +14,14 @@ import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.IntStream;
 
@@ -33,15 +33,19 @@ import static org.pragmatica.lang.Result.success;
     record unused() implements BootstrapPhaseDeploy{}
 
     @SuppressWarnings("JBCT-PAT-01") static Result<BootstrapContext> execute(BootstrapContext ctx) {
+        return execute(ctx, ClusterBootstrapOrchestrator::httpGet);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") static Result<BootstrapContext> execute(BootstrapContext ctx,
+                                                                             Fn1<Result<String>, String> healthCheck) {
         ClusterBootstrapOrchestrator.logPhase(DEPLOY_RUNTIME,
                                               "Deploying runtime to %d node(s)",
                                               ctx.addresses().size());
-        var clusterSecret = ClusterBootstrapOrchestrator.generateClusterSecret();
         for (var entry : ctx.config().sources()
                                    .entrySet()) {
             var sourceName = entry.getKey();
             var source = entry.getValue();
-            var deployResult = deploySource(ctx, source, sourceName, clusterSecret);
+            var deployResult = deploySource(ctx, source, sourceName, healthCheck);
             if (deployResult.isFailure()) {return deployResult.map(_ -> ctx);}
         }
         return verifyForgeReachable(ctx).map(_ -> ctx);
@@ -73,18 +77,69 @@ import static org.pragmatica.lang.Result.success;
     @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> deploySource(BootstrapContext ctx,
                                                                               SourceProfile source,
                                                                               String sourceName,
-                                                                              String clusterSecret) {
+                                                                              Fn1<Result<String>, String> healthCheck) {
         return switch (source.type()){
-            case CLOUD -> deployCloudSource(sourceName);
-            case SSH -> deploySshSource(ctx, source, sourceName, clusterSecret);
+            case CLOUD -> deployCloudSource(ctx, source, sourceName, healthCheck);
+            case SSH -> deploySshSource(ctx, source, sourceName);
             case FORGE -> deployForgeSource(sourceName);
             case DOCKER -> deployDockerSource(sourceName);
         };
     }
 
-    private static Result<Unit> deployCloudSource(String sourceName) {
-        System.out.printf("  [%s/cloud] Cloud-init already applied during provisioning%n", sourceName);
+    @SuppressWarnings("JBCT-EX-01") static Result<Unit> deployCloudSource(BootstrapContext ctx,
+                                                                          SourceProfile source,
+                                                                          String sourceName,
+                                                                          Fn1<Result<String>, String> healthCheck) {
+        var sourceNodes = collectSourceNodes(ctx, sourceName);
+        if (sourceNodes.isEmpty()) {
+            System.out.printf("  [%s/cloud] No nodes to wait for%n", sourceName);
+            return Result.unitResult();
+        }
+        var mgmtPort = ctx.config().operations()
+                                 .ports()
+                                 .management();
+        var timeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations()
+                                                                               .timeouts()
+                                                                               .healthCheck());
+        System.out.printf("  [%s/cloud] Waiting for %d node(s) to finish cloud-init (timeout: %ds)%n",
+                          sourceName,
+                          sourceNodes.size(),
+                          timeoutMs / 1000);
+        return waitForCloudInit(sourceNodes, mgmtPort, timeoutMs, healthCheck, sourceName);
+    }
+
+    private static List<ProvisionedNode> collectSourceNodes(BootstrapContext ctx, String sourceName) {
+        return ctx.nodes().stream()
+                        .filter(n -> n.nodeId().startsWith(sourceName + "-"))
+                        .toList();
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> waitForCloudInit(List<ProvisionedNode> nodes,
+                                                                                 int mgmtPort,
+                                                                                 long timeoutMs,
+                                                                                 Fn1<Result<String>, String> healthCheck,
+                                                                                 String sourceName) {
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        var unreachable = new ArrayList<>(nodes);
+        while (System.currentTimeMillis() <deadline && !unreachable.isEmpty()) {
+            unreachable.removeIf(node -> isHealthy(node, mgmtPort, healthCheck));
+            if (unreachable.isEmpty()) {break;}
+            ClusterBootstrapOrchestrator.sleepQuietly(ClusterBootstrapOrchestrator.POLL_INTERVAL_MS);
+        }
+        if (!unreachable.isEmpty()) {
+            var ips = unreachable.stream().map(ProvisionedNode::publicIp)
+                                        .toList();
+            return new BootstrapError.DeploymentFailed(sourceName,
+                                                       "Cloud-init did not finish on " + unreachable.size() + " node(s). Unreachable IPs: " + String.join(", ",
+                                                                                                                                                          ips) + ". Investigate /var/log/cloud-init-output.log on the host.").result();
+        }
+        System.out.printf("  [%s/cloud] All nodes reported healthy%n", sourceName);
         return Result.unitResult();
+    }
+
+    private static boolean isHealthy(ProvisionedNode node, int mgmtPort, Fn1<Result<String>, String> healthCheck) {
+        var url = "http://" + node.publicIp() + ":" + mgmtPort + "/health/live";
+        return healthCheck.apply(url).isSuccess();
     }
 
     private static Result<Unit> deployDockerSource(String sourceName) {
@@ -100,29 +155,30 @@ import static org.pragmatica.lang.Result.success;
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) private static Result<Unit> deploySshSource(BootstrapContext ctx,
                                                                                                  SourceProfile source,
-                                                                                                 String sourceName,
-                                                                                                 String clusterSecret) {
+                                                                                                 String sourceName) {
         var sshConfig = buildSshConfig(source);
         var clusterName = ctx.config().cluster()
                                     .name();
         var peers = buildThreePartPeers(ctx);
+        var clusterSecret = ctx.clusterSecret();
         var nodeIndex = 0;
         for (var node : ctx.nodes()) {
             if (!node.serverId().equals("ssh")) {
                 nodeIndex++;
                 continue;
             }
-            var result = composeNodeConfig(ctx,
-                                           source,
-                                           node.nodeId(),
-                                           nodeIndex,
-                                           NodeRole.CORE,
-                                           peers,
-                                           Option.empty(),
-                                           Option.some(clusterSecret)).flatMap(doc -> deploySshNode(node,
-                                                                                                    TomlWriter.toToml(doc),
-                                                                                                    sshConfig,
-                                                                                                    clusterName));
+            var result = NodeConfigBuilder.compose(ctx,
+                                                   source,
+                                                   node.nodeId(),
+                                                   nodeIndex,
+                                                   NodeRole.CORE,
+                                                   peers,
+                                                   Option.empty(),
+                                                   Option.some(clusterSecret))
+            .flatMap(doc -> deploySshNode(node,
+                                          TomlWriter.toToml(doc),
+                                          sshConfig,
+                                          clusterName));
             if (result.isFailure()) {return result;}
             nodeIndex++;
         }
@@ -192,20 +248,6 @@ import static org.pragmatica.lang.Result.success;
                                                   List<String> peers,
                                                   Option<String> dockerGid,
                                                   Option<String> clusterSecret) {
-        var overlay = BootstrapOverlayGenerator.overlay(ctx.config(),
-                                                        source,
-                                                        nodeId,
-                                                        nodeIndex,
-                                                        role,
-                                                        peers,
-                                                        ctx.apiKey(),
-                                                        dockerGid,
-                                                        clusterSecret);
-        return Result.all(DefaultNodeConfig.globalDefault(),
-                          DefaultNodeConfig.sourceTypeDefault(source.type()))
-        .map((global, typeDefault) -> NodeConfigComposer.compose(global,
-                                                                 typeDefault,
-                                                                 source.nodeConfig(),
-                                                                 overlay));
+        return NodeConfigBuilder.compose(ctx, source, nodeId, nodeIndex, role, peers, dockerGid, clusterSecret);
     }
 }

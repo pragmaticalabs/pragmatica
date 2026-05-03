@@ -14,10 +14,26 @@ import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Option;
 
 import java.util.List;
+import java.util.regex.Pattern;
 
 
 sealed interface UserDataTemplate {
     record unused() implements UserDataTemplate{}
+
+    Pattern PLAIN_SEMVER = Pattern.compile("^[0-9]+\\.[0-9]+\\.[0-9]+$");
+
+    String JAR_REPO_PATH = "pragmaticalabs/pragmatica";
+
+    static String deriveJarTag(String version) {
+        if (version == null || version.isBlank()) {return "vunknown";}
+        if (PLAIN_SEMVER.matcher(version).matches()) {return "v" + version;}
+        return "v" + version + "-candidate";
+    }
+
+    static String resolveJarUrl(Option<RuntimeProfile> profile, String version) {
+        return profile.flatMap(RuntimeProfile::jarUrl)
+                              .or("https://github.com/" + JAR_REPO_PATH + "/releases/download/" + deriveJarTag(version) + "/aether-node.jar");
+    }
 
     static String render(ClusterBootstrapConfig config,
                          SourceProfile source,
@@ -58,7 +74,8 @@ sealed interface UserDataTemplate {
             appendContainerRun(sb, clusterName, nodeId);
         } else {
             appendJvmInstall(sb,
-                             config.cluster().version());
+                             resolveJarUrl(runtimeProfile,
+                                           config.cluster().version()));
             appendComposedConfig(sb, composedConfig);
             appendJvmRun(sb,
                          runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""));
@@ -156,15 +173,18 @@ sealed interface UserDataTemplate {
         sb.append("    --config /config/aether.toml\n\n");
     }
 
-    private static void appendJvmInstall(StringBuilder sb, String version) {
+    private static void appendJvmInstall(StringBuilder sb, String jarUrl) {
         sb.append("# --- Install Java and Aether ---\n");
+        sb.append("# JVM-mode jar URL: ").append(jarUrl)
+                 .append('\n');
+        sb.append("# Override via [runtime.<name>] jar_url = \"...\" for prereleases or private mirrors.\n");
         sb.append("if ! command -v java &> /dev/null; then\n");
         sb.append("    apt-get update -qq && apt-get install -y -qq openjdk-21-jre-headless\n");
         sb.append("fi\n");
         sb.append("mkdir -p /opt/aether\n");
         sb.append("curl -fsSL -o /opt/aether/aether-node.jar \\\n");
-        sb.append("    \"https://github.com/pragmaticalabs/aether/releases/download/v").append(version)
-                 .append("/aether-node.jar\"\n\n");
+        sb.append("    \"").append(jarUrl)
+                 .append("\"\n\n");
     }
 
     private static void appendJvmRun(StringBuilder sb, String jvmArgs) {

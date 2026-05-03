@@ -11,8 +11,12 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.NodeGroupConfig;
+import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -101,12 +105,12 @@ import static org.pragmatica.lang.Result.success;
                                                                                                        String clusterName) {
         var providerName = resolveProviderName(source);
         var sshKeyIds = ctx.sshKeyIdsFor(providerName);
-        var userData = SshAuthorizedKeysScript.render(ctx.sshPublicKeys());
-        return ProviderResolver.resolveCloudCompute(source, sshKeyIds, userData)
-                                                   .flatMap(compute -> provisionWithCompute(compute,
-                                                                                            sourceName,
-                                                                                            source,
-                                                                                            clusterName));
+        return ProviderResolver.resolveCloudCompute(source, sshKeyIds, "")
+                                                   .flatMap(compute -> provisionCloudWithCompute(compute,
+                                                                                                 ctx,
+                                                                                                 sourceName,
+                                                                                                 source,
+                                                                                                 clusterName));
     }
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionDockerSource(String sourceName,
@@ -143,6 +147,26 @@ import static org.pragmatica.lang.Result.success;
         return success(List.copyOf(allNodes));
     }
 
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) private static Result<List<ProvisionedNode>> provisionCloudWithCompute(ComputeProvider compute,
+                                                                                                                            BootstrapContext ctx,
+                                                                                                                            String sourceName,
+                                                                                                                            SourceProfile source,
+                                                                                                                            String clusterName) {
+        var allNodes = new ArrayList<ProvisionedNode>();
+        var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
+        var nodeIndex = 0;
+        for (var role : roleOrder) {
+            var roleTable = option(source.roles().get(role));
+            var count = roleTable.flatMap(rt -> rt.count()).or(0);
+            if (count == 0) {continue;}
+            var result = provisionCloudRoleGroup(compute, ctx, sourceName, role, count, source, clusterName, nodeIndex);
+            if (result.isFailure()) {return result;}
+            var _ = result.onSuccess(allNodes::addAll);
+            nodeIndex += count;
+        }
+        return success(List.copyOf(allNodes));
+    }
+
     @SuppressWarnings("JBCT-EX-01") private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
                                                                                                     String sourceName,
                                                                                                     NodeRole role,
@@ -159,6 +183,88 @@ import static org.pragmatica.lang.Result.success;
         var labels = Map.of("aether-cluster", clusterName, "aether-source", sourceName, "aether-role", role.value());
         var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, labels);
         return CloudProviderSupport.provisionVia(compute, group).await();
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private static Result<List<ProvisionedNode>> provisionCloudRoleGroup(ComputeProvider compute,
+                                                                                                         BootstrapContext ctx,
+                                                                                                         String sourceName,
+                                                                                                         NodeRole role,
+                                                                                                         int count,
+                                                                                                         SourceProfile source,
+                                                                                                         String clusterName,
+                                                                                                         int nodeIndexBase) {
+        logProvisionRole(sourceName, source.type(), role, Option.some(count));
+        var nodes = new ArrayList<ProvisionedNode>();
+        for (int i = 0;i <count;i++) {
+            var nodeId = sourceName + "-" + role.value() + "-" + i;
+            var globalIndex = nodeIndexBase + i;
+            var specResult = buildCloudProvisionSpec(ctx, sourceName, source, role, nodeId, globalIndex, clusterName);
+            if (specResult.isFailure()) {return specResult.map(_ -> List.<ProvisionedNode>of());}
+            var provisionResult = CloudProviderSupport.provisionOne(compute, nodeId, specResult.unwrap()).await();
+            if (provisionResult.isFailure()) {return provisionResult.map(_ -> List.<ProvisionedNode>of());}
+            var _ = provisionResult.onSuccess(nodes::add);
+        }
+        return success(List.copyOf(nodes));
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private static Result<ProvisionSpec> buildCloudProvisionSpec(BootstrapContext ctx,
+                                                                                                 String sourceName,
+                                                                                                 SourceProfile source,
+                                                                                                 NodeRole role,
+                                                                                                 String nodeId,
+                                                                                                 int nodeIndex,
+                                                                                                 String clusterName) {
+        var instanceType = source.roles().containsKey(role)
+                          ? source.roles().get(role)
+                                        .instanceType()
+                                        .or("default")
+                          : "default";
+        var zone = source.zone().or("default");
+        var labels = Map.of("aether-cluster", clusterName, "aether-source", sourceName, "aether-role", role.value());
+        return NodeConfigBuilder.compose(ctx,
+                                         source,
+                                         nodeId,
+                                         nodeIndex,
+                                         role,
+                                         List.of(),
+                                         Option.empty(),
+                                         Option.some(ctx.clusterSecret())).map(composedConfig -> renderUserData(ctx,
+                                                                                                                source,
+                                                                                                                role,
+                                                                                                                nodeId,
+                                                                                                                nodeIndex,
+                                                                                                                clusterName,
+                                                                                                                composedConfig))
+                                        .flatMap(userData -> ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                                                                         instanceType,
+                                                                                         role.value(),
+                                                                                         labels).map(spec -> applyZone(spec,
+                                                                                                                       zone))
+                                                                                        .map(spec -> spec.withUserData(userData)));
+    }
+
+    private static String renderUserData(BootstrapContext ctx,
+                                         SourceProfile source,
+                                         NodeRole role,
+                                         String nodeId,
+                                         int nodeIndex,
+                                         String clusterName,
+                                         TomlDocument composedConfig) {
+        return UserDataTemplate.render(ctx.config(),
+                                       source,
+                                       role,
+                                       nodeId,
+                                       nodeIndex,
+                                       ctx.clusterSecret(),
+                                       clusterName,
+                                       composedConfig,
+                                       ctx.sshPublicKeys());
+    }
+
+    private static ProvisionSpec applyZone(ProvisionSpec spec, String zone) {
+        return zone.isEmpty() || "default".equals(zone)
+              ? spec
+              : spec.withPlacement(PlacementHint.zoneHint(zone));
     }
 
     @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSshSource(String sourceName,

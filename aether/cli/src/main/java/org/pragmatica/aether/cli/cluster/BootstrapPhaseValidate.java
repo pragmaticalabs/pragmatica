@@ -47,9 +47,15 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.VALIDATE;
     private static BootstrapContext buildContext(ClusterBootstrapConfig validated) {
         var clusterName = validated.cluster().name();
         var configHash = ClusterBootstrapOrchestrator.computeConfigHash(validated);
+        var clusterSecret = ClusterBootstrapOrchestrator.generateClusterSecret();
         var state = BootstrapState.initialState(clusterName,
                                                 configHash,
-                                                Instant.now().toString());
-        return BootstrapContext.bootstrapContext(validated, state, List.of(), List.of());
+                                                Instant.now().toString())
+        .withClusterSecret(clusterSecret);
+        return BootstrapContext.bootstrapContext(validated,
+                                                 state,
+                                                 List.of(),
+                                                 List.of())
+        .withClusterSecret(clusterSecret);
     }
 }

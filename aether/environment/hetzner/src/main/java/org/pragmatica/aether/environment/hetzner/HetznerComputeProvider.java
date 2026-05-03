@@ -45,16 +45,18 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.createServer(buildCreateRequest(config.region(), Map.of())).map(HetznerComputeProvider::toInstanceInfo)
+        return client.createServer(buildCreateRequest(config.region(), Map.of(), config.userData())).map(HetznerComputeProvider::toInstanceInfo)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var location = extractLocation(spec.placement());
+        var userData = spec.userData().or(config.userData());
         // Caller-supplied tags (e.g. aether-cluster=<actual-cluster-name>, aether-source, aether-role) take
         // precedence over factory defaults so cleanup tools can label-match correctly. Without this the
         // provider's fallback "aether-cluster=unknown" leaks through and the reaper misses orphaned VMs.
-        return client.createServer(buildCreateRequest(location, spec.tags())).map(HetznerComputeProvider::toInstanceInfo)
+        // Caller-supplied user_data (per-node cloud-init) takes precedence over the factory-wide default.
+        return client.createServer(buildCreateRequest(location, spec.tags(), userData)).map(HetznerComputeProvider::toInstanceInfo)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
 
@@ -114,14 +116,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     // a knob through HetznerEnvironmentConfig.
     private static final CreateServerRequest.PublicNetSpec IPV4_ONLY = new CreateServerRequest.PublicNetSpec(true, false);
 
-    private CreateServerRequest buildCreateRequest(String location, Map<String, String> extraLabels) {
+    private CreateServerRequest buildCreateRequest(String location, Map<String, String> extraLabels, String userData) {
         var name = generateServerName();
         var serverType = config.serverType();
         var image = config.image();
         var sshKeyIds = config.sshKeyIds();
         var networkIds = config.networkIds();
         var firewallIds = config.firewallIds();
-        var userData = config.userData();
         var labels = mergeLabels(buildLabels(), extraLabels);
         return CreateServerRequest.createServerRequest(name,
                                                        serverType,

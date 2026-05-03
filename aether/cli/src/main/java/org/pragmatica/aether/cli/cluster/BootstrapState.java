@@ -20,7 +20,26 @@ import static org.pragmatica.lang.Result.success;
                                                               Map<BootstrapPhase, PhaseStatus> phases,
                                                               List<CreatedResource> createdResources,
                                                               List<String> provisionedNodeIds,
-                                                              List<String> collectedAddresses) {
+                                                              List<String> collectedAddresses,
+                                                              String clusterSecret) {
+    @SuppressWarnings("JBCT-VO-02") public static BootstrapState bootstrapState(String clusterName,
+                                                                                String configHash,
+                                                                                String startedAt,
+                                                                                Map<BootstrapPhase, PhaseStatus> phases,
+                                                                                List<CreatedResource> createdResources,
+                                                                                List<String> provisionedNodeIds,
+                                                                                List<String> collectedAddresses,
+                                                                                String clusterSecret) {
+        return new BootstrapState(clusterName,
+                                  configHash,
+                                  startedAt,
+                                  Map.copyOf(phases),
+                                  List.copyOf(createdResources),
+                                  List.copyOf(provisionedNodeIds),
+                                  List.copyOf(collectedAddresses),
+                                  clusterSecret);
+    }
+
     @SuppressWarnings("JBCT-VO-02") public static BootstrapState bootstrapState(String clusterName,
                                                                                 String configHash,
                                                                                 String startedAt,
@@ -28,19 +47,20 @@ import static org.pragmatica.lang.Result.success;
                                                                                 List<CreatedResource> createdResources,
                                                                                 List<String> provisionedNodeIds,
                                                                                 List<String> collectedAddresses) {
-        return new BootstrapState(clusterName,
-                                  configHash,
-                                  startedAt,
-                                  Map.copyOf(phases),
-                                  List.copyOf(createdResources),
-                                  List.copyOf(provisionedNodeIds),
-                                  List.copyOf(collectedAddresses));
+        return bootstrapState(clusterName,
+                              configHash,
+                              startedAt,
+                              phases,
+                              createdResources,
+                              provisionedNodeIds,
+                              collectedAddresses,
+                              "");
     }
 
     public static BootstrapState initialState(String clusterName, String configHash, String startedAt) {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
         for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.PENDING);}
-        return bootstrapState(clusterName, configHash, startedAt, phases, List.of(), List.of(), List.of());
+        return bootstrapState(clusterName, configHash, startedAt, phases, List.of(), List.of(), List.of(), "");
     }
 
     public BootstrapState withPhaseStatus(BootstrapPhase phase, PhaseStatus status) {
@@ -52,7 +72,8 @@ import static org.pragmatica.lang.Result.success;
                               updated,
                               createdResources,
                               provisionedNodeIds,
-                              collectedAddresses);
+                              collectedAddresses,
+                              clusterSecret);
     }
 
     public BootstrapState withResource(CreatedResource resource) {
@@ -64,15 +85,41 @@ import static org.pragmatica.lang.Result.success;
                               phases,
                               updated,
                               provisionedNodeIds,
-                              collectedAddresses);
+                              collectedAddresses,
+                              clusterSecret);
     }
 
     public BootstrapState withProvisionedNodeIds(List<String> ids) {
-        return bootstrapState(clusterName, configHash, startedAt, phases, createdResources, ids, collectedAddresses);
+        return bootstrapState(clusterName,
+                              configHash,
+                              startedAt,
+                              phases,
+                              createdResources,
+                              ids,
+                              collectedAddresses,
+                              clusterSecret);
     }
 
     public BootstrapState withCollectedAddresses(List<String> addrs) {
-        return bootstrapState(clusterName, configHash, startedAt, phases, createdResources, provisionedNodeIds, addrs);
+        return bootstrapState(clusterName,
+                              configHash,
+                              startedAt,
+                              phases,
+                              createdResources,
+                              provisionedNodeIds,
+                              addrs,
+                              clusterSecret);
+    }
+
+    public BootstrapState withClusterSecret(String secret) {
+        return bootstrapState(clusterName,
+                              configHash,
+                              startedAt,
+                              phases,
+                              createdResources,
+                              provisionedNodeIds,
+                              collectedAddresses,
+                              secret);
     }
 
     public String toJson() {

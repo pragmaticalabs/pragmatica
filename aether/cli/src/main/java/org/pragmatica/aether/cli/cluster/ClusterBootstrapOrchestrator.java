@@ -106,11 +106,17 @@ import static org.pragmatica.lang.Result.success;
                                                            BootstrapState state,
                                                            List<SshPublicKey> sshPublicKeys) {
         System.out.println("Resuming bootstrap for cluster '" + state.clusterName() + "' from persisted state");
+        var resumedSecret = state.clusterSecret().isEmpty()
+                           ? generateClusterSecret()
+                           : state.clusterSecret();
+        var resumedState = state.clusterSecret().isEmpty()
+                          ? state.withClusterSecret(resumedSecret)
+                          : state;
         var ctx = BootstrapContext.bootstrapContext(config,
-                                                    state,
+                                                    resumedState,
                                                     List.of(),
-                                                    List.of())
-        .withSshPublicKeys(sshPublicKeys);
+                                                    List.of()).withSshPublicKeys(sshPublicKeys)
+                                                   .withClusterSecret(resumedSecret);
         return runPhaseChain(ctx);
     }
 
@@ -289,7 +295,8 @@ import static org.pragmatica.lang.Result.success;
                             List<NodeAddress> addresses,
                             Option<String> apiKey,
                             List<SshPublicKey> sshPublicKeys,
-                            Map<String, List<Long>> sshKeyIdsByProvider) {
+                            Map<String, List<Long>> sshKeyIdsByProvider,
+                            String clusterSecret) {
         static BootstrapContext bootstrapContext(ClusterBootstrapConfig config,
                                                  BootstrapState state,
                                                  List<ProvisionedNode> nodes,
@@ -300,7 +307,8 @@ import static org.pragmatica.lang.Result.success;
                                         List.copyOf(addresses),
                                         none(),
                                         List.of(),
-                                        Map.of());
+                                        Map.of(),
+                                        "");
         }
 
         BootstrapContext withNodes(List<ProvisionedNode> newNodes) {
@@ -310,7 +318,8 @@ import static org.pragmatica.lang.Result.success;
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider);
+                                        sshKeyIdsByProvider,
+                                        clusterSecret);
         }
 
         BootstrapContext withAddresses(List<NodeAddress> newAddresses) {
@@ -320,7 +329,8 @@ import static org.pragmatica.lang.Result.success;
                                         List.copyOf(newAddresses),
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider);
+                                        sshKeyIdsByProvider,
+                                        clusterSecret);
         }
 
         BootstrapContext withApiKey(String key) {
@@ -330,21 +340,54 @@ import static org.pragmatica.lang.Result.success;
                                         addresses,
                                         Option.some(key),
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider);
+                                        sshKeyIdsByProvider,
+                                        clusterSecret);
         }
 
         BootstrapContext withState(BootstrapState newState) {
-            return new BootstrapContext(config, newState, nodes, addresses, apiKey, sshPublicKeys, sshKeyIdsByProvider);
+            return new BootstrapContext(config,
+                                        newState,
+                                        nodes,
+                                        addresses,
+                                        apiKey,
+                                        sshPublicKeys,
+                                        sshKeyIdsByProvider,
+                                        clusterSecret);
         }
 
         BootstrapContext withSshPublicKeys(List<SshPublicKey> keys) {
-            return new BootstrapContext(config, state, nodes, addresses, apiKey, List.copyOf(keys), sshKeyIdsByProvider);
+            return new BootstrapContext(config,
+                                        state,
+                                        nodes,
+                                        addresses,
+                                        apiKey,
+                                        List.copyOf(keys),
+                                        sshKeyIdsByProvider,
+                                        clusterSecret);
         }
 
         BootstrapContext withSshKeyIds(String provider, List<Long> ids) {
             var merged = new HashMap<String, List<Long>>(sshKeyIdsByProvider);
             merged.put(provider, List.copyOf(ids));
-            return new BootstrapContext(config, state, nodes, addresses, apiKey, sshPublicKeys, Map.copyOf(merged));
+            return new BootstrapContext(config,
+                                        state,
+                                        nodes,
+                                        addresses,
+                                        apiKey,
+                                        sshPublicKeys,
+                                        Map.copyOf(merged),
+                                        clusterSecret);
+        }
+
+        BootstrapContext withClusterSecret(String secret) {
+            return new BootstrapContext(config,
+                                        state,
+                                        nodes,
+                                        addresses,
+                                        apiKey,
+                                        sshPublicKeys,
+                                        sshKeyIdsByProvider,
+                                        secret);
         }
 
         List<Long> sshKeyIdsFor(String provider) {

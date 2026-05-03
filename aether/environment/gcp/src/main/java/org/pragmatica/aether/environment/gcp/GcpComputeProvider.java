@@ -51,13 +51,14 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.insertInstance(buildInsertRequest(Option.empty())).map(GcpComputeProvider::toInstanceInfo)
+        return client.insertInstance(buildInsertRequest(Option.empty(), config.userData())).map(GcpComputeProvider::toInstanceInfo)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var zone = extractZone(spec.placement());
-        return client.insertInstance(buildInsertRequest(zone)).map(GcpComputeProvider::toInstanceInfo)
+        var userData = spec.userData().or(config.userData());
+        return client.insertInstance(buildInsertRequest(zone, userData)).map(GcpComputeProvider::toInstanceInfo)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
@@ -97,13 +98,13 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return "";
     }
 
-    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride) {
+    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride, String userData) {
         var name = generateInstanceName();
         var machineType = config.machineType();
         var disk = buildBootDisk();
         var networkInterface = buildNetworkInterface();
         var labels = Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
-        var metadata = buildMetadata();
+        var metadata = buildMetadata(userData);
         return new InsertInstanceRequest(name,
                                          machineType,
                                          List.of(disk),
@@ -141,8 +142,8 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                                           List.of(new AccessConfig("External NAT", "ONE_TO_ONE_NAT")));
     }
 
-    private Metadata buildMetadata() {
-        return new Metadata(List.of(new MetadataItem("startup-script", config.userData())));
+    private Metadata buildMetadata(String userData) {
+        return new Metadata(List.of(new MetadataItem("startup-script", userData)));
     }
 
     private static String generateInstanceName() {

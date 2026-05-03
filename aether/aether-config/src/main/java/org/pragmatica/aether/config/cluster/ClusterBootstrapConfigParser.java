@@ -324,7 +324,8 @@ import static org.pragmatica.lang.Result.success;
     private static RuntimeProfile buildRuntimeProfile(TomlDocument doc, String section, String name, RuntimeType type) {
         var image = doc.getString(section, "image");
         var jvmArgs = doc.getString(section, "jvm_args");
-        return RuntimeProfile.runtimeProfile(name, type, image, jvmArgs);
+        var jarUrl = doc.getString(section, "jar_url");
+        return RuntimeProfile.runtimeProfile(name, type, image, jvmArgs, jarUrl);
     }
 
     private static InfrastructureConfig parseInfrastructure(TomlDocument doc) {

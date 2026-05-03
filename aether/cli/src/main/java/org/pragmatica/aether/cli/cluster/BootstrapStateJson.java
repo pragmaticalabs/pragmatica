@@ -41,6 +41,8 @@ import static org.pragmatica.lang.Result.success;
         appendStringList(sb, "provisionedNodeIds", state.provisionedNodeIds());
         sb.append(",\n");
         appendStringList(sb, "collectedAddresses", state.collectedAddresses());
+        sb.append(",\n");
+        appendStringField(sb, "clusterSecret", state.clusterSecret());
         sb.append("\n}");
         return sb.toString();
     }
@@ -61,7 +63,15 @@ import static org.pragmatica.lang.Result.success;
         var resources = parseResources(root.path("createdResources"));
         var nodeIds = parseStringList(root.path("provisionedNodeIds"));
         var addresses = parseStringList(root.path("collectedAddresses"));
-        return BootstrapState.bootstrapState(clusterName, configHash, startedAt, phases, resources, nodeIds, addresses);
+        var clusterSecret = root.path("clusterSecret").asText("");
+        return BootstrapState.bootstrapState(clusterName,
+                                             configHash,
+                                             startedAt,
+                                             phases,
+                                             resources,
+                                             nodeIds,
+                                             addresses,
+                                             clusterSecret);
     }
 
     private static Map<BootstrapPhase, PhaseStatus> parsePhases(JsonNode node) {

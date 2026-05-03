@@ -55,4 +55,4 @@ provisioning_timeout = "60s"
 
 [runtime.default]
 type = "container"
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate"

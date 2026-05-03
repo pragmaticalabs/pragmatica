@@ -47,13 +47,14 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.runInstances(buildRunRequest(Option.empty())).flatMap(this::tagAndMapFirstInstance)
+        return client.runInstances(buildRunRequest(Option.empty(), config.userData())).flatMap(this::tagAndMapFirstInstance)
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var zone = extractAvailabilityZone(spec.placement());
-        return client.runInstances(buildRunRequest(zone)).flatMap(this::tagAndMapFirstInstance)
+        var userData = spec.userData().or(config.userData());
+        return client.runInstances(buildRunRequest(zone, userData)).flatMap(this::tagAndMapFirstInstance)
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 
@@ -103,7 +104,7 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                        .mapError(AwsComputeProvider::toListInstancesError);
     }
 
-    private RunInstancesRequest buildRunRequest(Option<String> availabilityZone) {
+    private RunInstancesRequest buildRunRequest(Option<String> availabilityZone, String userData) {
         return RunInstancesRequest.runInstancesRequest(config.amiId(),
                                                        config.instanceType(),
                                                        1,
@@ -111,7 +112,7 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                                        config.keyName(),
                                                        config.securityGroupIds(),
                                                        Option.some(config.subnetId()),
-                                                       Option.some(config.userData()),
+                                                       Option.some(userData),
                                                        availabilityZone);
     }
 
