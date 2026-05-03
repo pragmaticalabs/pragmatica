@@ -257,6 +257,15 @@ run_suite() {
     export MGMT_ENTRY_POINT="$cluster_endpoint"
     export CLUSTER_ID="$cluster_id"
     export CLUSTER_NAME="aether-${cluster_id}-node-"
+    # Bootstrap state directory name — must match what `aether cluster bootstrap --cluster <name>`
+    # registered (i.e. CLUSTER_A_NAME/CLUSTER_B_NAME, which override [cluster].name from the TOML).
+    # Read by cloud_public_ip / cloud_ssh to look up VM public IPs after `aether cluster bootstrap`.
+    # Distinct from CLUSTER_NAME (a docker container-name prefix used by cluster.sh).
+    if [ "$target_cluster" = "a" ]; then
+        export BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME"
+    else
+        export BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME"
+    fi
     # aether_failover reads global LB_MGMT_ENDPOINT — must point at THIS cluster, not whichever
     # was discovered last. Otherwise suites on cluster A send CLI traffic to cluster B's LB.
     export LB_MGMT_ENDPOINT="$lb_mgmt"

@@ -1,6 +1,6 @@
 # Cluster B -- Hetzner Cloud (destructive test suites)
 #
-# 5-node cluster on Hetzner cx22 instances.
+# 5-node cluster on Hetzner cx33 instances (4 vCPU, 8 GB RAM).
 # Requires HCLOUD_TOKEN and PG_URL environment variables.
 
 config_version = "1.0.0"
@@ -25,9 +25,14 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
-instance_type = "cx22"
+instance_type = "cx33"
 
 [infrastructure.networking]
+# Option A — direct public-IP addressing.
+# Each provisioned VM receives a public IP (Hetzner default); the integration
+# test harness reads those IPs from ~/.aether/clusters/cloud-test-b/bootstrap-state.json
+# (BOOTSTRAP_CLUSTER_NAME) and SSHs to nodes directly. No private network, no
+# bastion. Option B (private network + bastion) is deferred to Phase 4.
 type = "manual"
 
 [operations]

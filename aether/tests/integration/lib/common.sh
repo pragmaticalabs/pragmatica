@@ -329,26 +329,108 @@ remote_scp() {
 ENV_TYPE="${ENV_TYPE:-docker}"
 CLOUD_MODE="${CLOUD_MODE:-false}"   # backward compat: true maps to ENV_TYPE=cloud
 if [ "$CLOUD_MODE" = "true" ]; then ENV_TYPE="cloud"; fi
+# BASTION_IP is retained for backward-compat env templates but ignored under
+# Option A (direct public-IP addressing). Bastion-via-private-network is Option B.
 BASTION_IP="${BASTION_IP:-}"
+if [ -n "$BASTION_IP" ] && [ "$ENV_TYPE" = "cloud" ]; then
+    echo "[WARN]  BASTION_IP=${BASTION_IP} is set but cloud_ssh now uses direct public-IP addressing (Option A) — value ignored." >&2
+fi
 CLOUD_TIMEOUT_MULTIPLIER="${CLOUD_TIMEOUT_MULTIPLIER:-1}"
+# Source name for cloud-provisioned nodes — matches `[source.<name>]` in cloud TOML.
+# Bootstrap-state stores nodeIds in the form `<source>-<role>-<index>` (e.g.,
+# `hetzner-eu-core-0`); the test harness uses friendly `node-N` IDs and translates
+# to the bootstrap form via this prefix when looking up public IPs.
+CLOUD_SOURCE_NAME="${CLOUD_SOURCE_NAME:-hetzner-eu}"
 
-# Map node-N to private IP (cloud mode only)
-cloud_node_ip() {
-    local node_id="$1"
-    local num
-    num=$(echo "$node_id" | sed 's/node-//')
-    echo "10.0.1.1${num}"
+# cloud_public_ip <node-id> — print the public IP of <node-id> by reading the
+# bootstrap-state.json that `aether cluster bootstrap` writes under
+# ~/.aether/clusters/<BOOTSTRAP_CLUSTER_NAME>/.
+#
+# <node-id> accepts two forms:
+#   - "node-N"            (1-based fixture form used by tests)            →  translated to <CLOUD_SOURCE_NAME>-core-<N-1>
+#   - "<source>-<role>-K" (raw bootstrap nodeId, e.g. hetzner-eu-core-2)  →  used as-is
+#
+# Cluster name resolution: $BOOTSTRAP_CLUSTER_NAME (set by run-tests.sh per cluster);
+# falls back to CLOUD_BOOTSTRAP_CLUSTER for ad-hoc invocations.
+#
+# Returns the IP on stdout. Logs a failure (without exiting the caller) and returns
+# non-zero if the state file is missing or the node has no recorded address.
+cloud_public_ip() {
+    local node_id="${1:-}"
+    if [ -z "$node_id" ]; then
+        log_fail "cloud_public_ip: node id argument is required"
+        return 2
+    fi
+    local cluster="${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-}}"
+    if [ -z "$cluster" ]; then
+        log_fail "cloud_public_ip: BOOTSTRAP_CLUSTER_NAME unset (run-tests.sh sets this per cluster)"
+        return 2
+    fi
+    local state_file="${HOME}/.aether/clusters/${cluster}/bootstrap-state.json"
+    if [ ! -f "$state_file" ]; then
+        log_fail "cloud_public_ip: bootstrap-state.json not found at ${state_file}"
+        return 1
+    fi
+    # Translate friendly node-N → bootstrap nodeId form.
+    local target="$node_id"
+    if [[ "$node_id" =~ ^node-([0-9]+)$ ]]; then
+        local idx=$((${BASH_REMATCH[1]} - 1))
+        target="${CLOUD_SOURCE_NAME}-core-${idx}"
+    fi
+    # Parse parallel arrays. The persisted JSON (BootstrapStateJson.appendStringList)
+    # writes them as: "provisionedNodeIds": ["a", "b", ...]  / "collectedAddresses": ["1.2.3.4", ...]
+    # — both flat string arrays in matching order.
+    local ids_raw addrs_raw
+    ids_raw=$(awk -v RS='' '{
+        match($0, /"provisionedNodeIds"[[:space:]]*:[[:space:]]*\[[^]]*\]/);
+        if (RSTART > 0) print substr($0, RSTART, RLENGTH);
+    }' "$state_file")
+    addrs_raw=$(awk -v RS='' '{
+        match($0, /"collectedAddresses"[[:space:]]*:[[:space:]]*\[[^]]*\]/);
+        if (RSTART > 0) print substr($0, RSTART, RLENGTH);
+    }' "$state_file")
+    if [ -z "$ids_raw" ] || [ -z "$addrs_raw" ]; then
+        log_fail "cloud_public_ip: provisionedNodeIds or collectedAddresses missing from ${state_file}"
+        return 1
+    fi
+    # Strip key + brackets, split into one quoted token per line, drop quotes.
+    local ids addrs
+    ids=$(printf '%s' "$ids_raw" | sed 's/.*\[//; s/\].*//' | tr ',' '\n' | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+    addrs=$(printf '%s' "$addrs_raw" | sed 's/.*\[//; s/\].*//' | tr ',' '\n' | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+    # Find the index of $target in $ids and return the parallel entry from $addrs.
+    local pos=0 ip=""
+    local id
+    while IFS= read -r id; do
+        pos=$((pos + 1))
+        if [ "$id" = "$target" ]; then
+            ip=$(printf '%s\n' "$addrs" | sed -n "${pos}p")
+            break
+        fi
+    done <<< "$ids"
+    if [ -z "$ip" ]; then
+        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file}"
+        return 1
+    fi
+    printf '%s\n' "$ip"
 }
 
-# SSH to a cloud node via the bastion (LB VM)
+# Map a node id to its public IP — Option A (direct public-IP addressing).
+# Backward-compat shim retained so existing call sites keep working unchanged.
+cloud_node_ip() {
+    cloud_public_ip "$1"
+}
+
+# SSH directly to a cloud node's public IP (Option A — no bastion / ProxyJump).
+# Resolves the IP from bootstrap-state.json via cloud_public_ip; fails fast if the
+# state file is absent so callers see the real cause instead of a misleading
+# "ssh: name resolution" or "Connection refused".
 cloud_ssh() {
     local node_id="$1"; shift
-    local ip
-    ip=$(cloud_node_ip "$node_id")
+    local target_ip
+    target_ip=$(cloud_public_ip "$node_id") || return $?
     ssh "${SSH_OPTS[@]}" \
-        -J "${AETHER_SSH_USER}@${BASTION_IP}" \
         -i "${AETHER_SSH_KEY}" \
-        "${AETHER_SSH_USER}@${ip}" "$@"
+        "${AETHER_SSH_USER}@${target_ip}" "$@"
 }
 
 # ---------------------------------------------------------------------------
