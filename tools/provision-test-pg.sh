@@ -25,11 +25,11 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' BOLD='' NC=''
 fi
 
-log_info() { printf '%b[INFO]%b  %s\n'  "$GREEN"  "$NC" "$1"; }
-log_warn() { printf '%b[WARN]%b  %s\n'  "$YELLOW" "$NC" "$1"; }
+log_info() { printf '%b[INFO]%b  %s\n'  "$GREEN"  "$NC" "$1" >&2; }
+log_warn() { printf '%b[WARN]%b  %s\n'  "$YELLOW" "$NC" "$1" >&2; }
 log_err()  { printf '%b[ERROR]%b %s\n'  "$RED"    "$NC" "$1" >&2; }
-log_step() { printf '%b[STEP]%b  %s\n'  "$BLUE"   "$NC" "$1"; }
-log_ok()   { printf '%b[ OK ]%b  %s\n'  "$GREEN"  "$NC" "$1"; }
+log_step() { printf '%b[STEP]%b  %s\n'  "$BLUE"   "$NC" "$1" >&2; }
+log_ok()   { printf '%b[ OK ]%b  %s\n'  "$GREEN"  "$NC" "$1" >&2; }
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -308,12 +308,7 @@ packages:
 runcmd:
   - systemctl enable docker --now
   - docker pull postgres:16
-  - docker run -d --name aether-pg --restart unless-stopped \\
-      -p 5432:5432 \\
-      -e POSTGRES_USER=aether \\
-      -e POSTGRES_PASSWORD='${pwd}' \\
-      -e POSTGRES_DB=aether_forge \\
-      postgres:16
+  - "docker run -d --name aether-pg --restart unless-stopped -p 5432:5432 -e POSTGRES_USER=aether -e POSTGRES_PASSWORD='${pwd}' -e POSTGRES_DB=aether_forge postgres:16"
 EOF
 }
 
@@ -363,12 +358,15 @@ smoke_test_pg() {
     local ip="$1" pwd="$2"
     log_step "smoke test: SELECT 1 via SSH docker exec"
     local out
+    # PG VM cloud-init creates only the `root` user; AETHER_SSH_USER (commonly `aether`) is for
+    # cluster nodes' app user. Override with PG_VM_SSH_USER (default `root`) for the smoke test.
+    local pg_user="${PG_VM_SSH_USER:-root}"
     if ! out=$(ssh -o StrictHostKeyChecking=no \
                    -o UserKnownHostsFile=/dev/null \
                    -o ConnectTimeout=10 \
                    -o LogLevel=ERROR \
                    -i "$AETHER_SSH_KEY" \
-                   "${AETHER_SSH_USER}@${ip}" \
+                   "${pg_user}@${ip}" \
                    "docker exec -e PGPASSWORD='${pwd}' aether-pg psql -U aether -d aether_forge -tAc 'SELECT 1'" 2>&1); then
         log_err "smoke test failed:"
         printf '%s\n' "$out" >&2
