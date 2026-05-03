@@ -2,7 +2,7 @@
 
 | Field   | Value                                       |
 |---------|---------------------------------------------|
-| Status  | Approved — ready for implementation         |
+| Status  | Implemented (RC1 scope)                     |
 | Date    | 2026-04-18                                  |
 | Scope   | **RC1** — single-source, all deployment targets, essential config |
 | Modules | `aether/cli`                                |

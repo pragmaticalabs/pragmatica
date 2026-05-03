@@ -13,8 +13,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.time.Instant;
 import java.util.List;
 
@@ -114,15 +112,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static boolean readConfirmation() {
-        System.out.print("Apply these changes? [y/N] ");
-        System.out.flush();
-        try {
-            var reader = new BufferedReader(new InputStreamReader(System.in));
-            var line = reader.readLine();
-            return line != null && (line.trim().equalsIgnoreCase("y") || line.trim().equalsIgnoreCase("yes"));
-        } catch (Exception _) {
-            return false;
-        }
+        return new org.pragmatica.aether.cli.Prompt().confirm("Apply these changes?", false);
     }
 
     private static Result<ApplyResult> executeWithState(DiffPlan plan,

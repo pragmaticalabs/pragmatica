@@ -102,19 +102,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
 
     private static boolean confirmDestruction(String clusterName) {
         System.out.printf("This will destroy cluster '%s' and shut down all nodes.%n", clusterName);
-        System.out.print("Type the cluster name to confirm: ");
-        System.out.flush();
-        var input = readLineFromConsole();
-        return clusterName.equals(input.trim());
-    }
-
-    @SuppressWarnings("JBCT-EX-01") private static String readLineFromConsole() {
-        try {
-            var bytes = System.in.readNBytes(256);
-            return new String(bytes).trim();
-        } catch (Exception _) {
-            return "";
-        }
+        var input = new org.pragmatica.aether.cli.Prompt().prompt("Type the cluster name to confirm", "");
+        return clusterName.equals(input);
     }
 
     private List<String> fetchNodeIds() {

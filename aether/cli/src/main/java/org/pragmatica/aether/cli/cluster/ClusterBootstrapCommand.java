@@ -153,19 +153,7 @@ import static org.pragmatica.lang.Option.option;
 
     private static boolean confirmBootstrap(String clusterName) {
         System.out.printf("This will provision cloud instances for cluster '%s'.%n", clusterName);
-        System.out.print("Continue? [y/N] ");
-        System.out.flush();
-        return readConfirmation();
-    }
-
-    @SuppressWarnings("JBCT-EX-01") private static boolean readConfirmation() {
-        try {
-            var bytes = System.in.readNBytes(256);
-            var input = new String(bytes).trim().toLowerCase();
-            return "y".equals(input) || "yes".equals(input);
-        } catch (Exception _) {
-            return false;
-        }
+        return new org.pragmatica.aether.cli.Prompt().confirm("Continue?", false);
     }
 
     private int onSuccess(ClusterBootstrapOrchestrator.BootstrapResult result) {
