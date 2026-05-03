@@ -170,7 +170,7 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
-    void loadFromString_defaultsAuthorizationRoleToAdminWhenOmitted() {
+    void loadFromString_defaultsAuthorizationRoleToViewerWhenOmitted() {
         var toml = MINIMAL_CLUSTER + """
 
             [app-http]
@@ -185,7 +185,7 @@ class ConfigLoaderSecurityTest {
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 var entry = config.appHttp().apiKeys().get("no-role-key");
-                assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+                assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
             });
     }
 
@@ -211,7 +211,7 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
-    void loadFromString_simpleApiKeysDefaultToAdminAuthorizationRole() {
+    void loadFromString_simpleApiKeysDefaultToViewerAuthorizationRole() {
         var toml = MINIMAL_CLUSTER + """
 
             [app-http]
@@ -223,7 +223,7 @@ class ConfigLoaderSecurityTest {
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 var entry = config.appHttp().apiKeys().get("simple-key");
-                assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+                assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
             });
     }
 

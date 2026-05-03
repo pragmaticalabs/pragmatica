@@ -327,18 +327,18 @@ class AuthorizationPipelineTest {
     @Nested
     class DefaultRoleHandling {
         @Test
-        void pipeline_defaultsToAdmin_whenAuthorizationRoleOmitted() {
+        void pipeline_defaultsToViewer_whenAuthorizationRoleOmitted() {
             var keyWithNoRole = "no-role-key-value-1";
             var entries = Map.of(
                 keyWithNoRole, ApiKeyEntry.apiKeyEntry("no-role-svc", Set.of("service"))
             );
             var validatorNoRole = SecurityValidator.apiKeyValidator(entries);
-            var request = createRequest(keyWithNoRole, "POST", "/api/blueprint");
-            var permission = RoutePermissionRegistry.resolve("POST", "/api/blueprint");
+            var request = createRequest(keyWithNoRole, "GET", "/api/status");
+            var permission = RoutePermissionRegistry.resolve("GET", "/api/status");
             validatorNoRole.validate(request, policy)
                            .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
-                           .onFailureRun(() -> fail("Expected success — default ADMIN role"))
-                           .onSuccess(sc -> assertThat(sc.authorizationRole()).isEqualTo(AuthorizationRole.ADMIN));
+                           .onFailureRun(() -> fail("Expected success — default VIEWER role grants /api/status"))
+                           .onSuccess(sc -> assertThat(sc.authorizationRole()).isEqualTo(AuthorizationRole.VIEWER));
         }
 
         @Test

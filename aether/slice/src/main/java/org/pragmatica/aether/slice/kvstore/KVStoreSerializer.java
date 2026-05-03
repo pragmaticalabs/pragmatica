@@ -1008,7 +1008,7 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static String serializeApiKey(ApiKeyValue v) {
-        return v.keyId() + PIPE + v.keyHash() + PIPE + v.createdAt() + PIPE + v.expiresAt() + PIPE + v.status() + PIPE + v.revokedAt() + PIPE + v.gracePeriodMs();
+        return v.keyId() + PIPE + v.keyHash() + PIPE + v.createdAt() + PIPE + v.expiresAt() + PIPE + v.status() + PIPE + v.revokedAt() + PIPE + v.gracePeriodMs() + PIPE + v.authorizationRole();
     }
 
     private static String serializeApiKeyAudit(ApiKeyAuditValue v) {
@@ -1017,7 +1017,7 @@ import static org.pragmatica.lang.Result.success;
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseApiKeyEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 7) {return parseFailure("api-key value requires 7 fields, got " + parts.length);}
+        if (parts.length != 8) {return parseFailure("api-key value requires 8 fields, got " + parts.length);}
         return ApiKeyKey.parseApiKeyKey("api-key/" + identity)
                                        .map(key -> entry(key,
                                                          new ApiKeyValue(parts[0],
@@ -1026,7 +1026,8 @@ import static org.pragmatica.lang.Result.success;
                                                                          Long.parseLong(parts[3]),
                                                                          parts[4],
                                                                          Long.parseLong(parts[5]),
-                                                                         Long.parseLong(parts[6]))));
+                                                                         Long.parseLong(parts[6]),
+                                                                         parts[7])));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseApiKeyAuditEntry(String identity, String raw) {

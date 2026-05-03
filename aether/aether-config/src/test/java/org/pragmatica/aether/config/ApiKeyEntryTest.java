@@ -84,17 +84,17 @@ class ApiKeyEntryTest {
     }
 
     @Test
-    void constructor_defaultsNullAuthorizationRoleToAdmin() {
+    void constructor_defaultsNullAuthorizationRoleToViewer() {
         var entry = new ApiKeyEntry("my-key", Set.of("service"), null);
 
-        assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+        assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
     }
 
     @Test
-    void constructor_defaultsBlankAuthorizationRoleToAdmin() {
+    void constructor_defaultsBlankAuthorizationRoleToViewer() {
         var entry = new ApiKeyEntry("my-key", Set.of("service"), "  ");
 
-        assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+        assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
     }
 
     @Test

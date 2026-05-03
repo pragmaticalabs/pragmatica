@@ -1179,15 +1179,24 @@ import static org.pragmatica.lang.Option.none;
                        long expiresAt,
                        String status,
                        long revokedAt,
-                       long gracePeriodMs) implements AetherValue {
+                       long gracePeriodMs,
+                       String authorizationRole) implements AetherValue {
         static final String ACTIVE = "ACTIVE";
 
         static final String REVOKED = "REVOKED";
 
         static final String EXPIRED = "EXPIRED";
 
+        /// Default authorization role for keys created without an explicit role.
+        /// Read-only access is the secure-by-default choice — operators must opt up.
+        public static final String DEFAULT_ROLE = "VIEWER";
+
         public static ApiKeyValue apiKeyValue(String keyId, String keyHash, long gracePeriodMs) {
-            return new ApiKeyValue(keyId, keyHash, System.currentTimeMillis(), - 1, ACTIVE, - 1, gracePeriodMs);
+            return new ApiKeyValue(keyId, keyHash, System.currentTimeMillis(), - 1, ACTIVE, - 1, gracePeriodMs, DEFAULT_ROLE);
+        }
+
+        public static ApiKeyValue apiKeyValue(String keyId, String keyHash, long gracePeriodMs, String authorizationRole) {
+            return new ApiKeyValue(keyId, keyHash, System.currentTimeMillis(), - 1, ACTIVE, - 1, gracePeriodMs, authorizationRole);
         }
 
         public static ApiKeyValue apiKeyValue(String keyId,
@@ -1196,8 +1205,9 @@ import static org.pragmatica.lang.Option.none;
                                               long expiresAt,
                                               String status,
                                               long revokedAt,
-                                              long gracePeriodMs) {
-            return new ApiKeyValue(keyId, keyHash, createdAt, expiresAt, status, revokedAt, gracePeriodMs);
+                                              long gracePeriodMs,
+                                              String authorizationRole) {
+            return new ApiKeyValue(keyId, keyHash, createdAt, expiresAt, status, revokedAt, gracePeriodMs, authorizationRole);
         }
 
         public boolean isActive() {
@@ -1223,11 +1233,12 @@ import static org.pragmatica.lang.Option.none;
                                    expiresAt,
                                    REVOKED,
                                    System.currentTimeMillis(),
-                                   gracePeriod);
+                                   gracePeriod,
+                                   authorizationRole);
         }
 
         public ApiKeyValue withExpired() {
-            return new ApiKeyValue(keyId, keyHash, createdAt, expiresAt, EXPIRED, revokedAt, gracePeriodMs);
+            return new ApiKeyValue(keyId, keyHash, createdAt, expiresAt, EXPIRED, revokedAt, gracePeriodMs, authorizationRole);
         }
     }
 
