@@ -153,7 +153,8 @@ sealed interface UserDataTemplate {
         sb.append("mkdir -p /opt/aether/config\n");
         sb.append("cat > /opt/aether/config/aether.toml <<'AETHER_CONFIG'\n");
         sb.append(TomlWriter.toToml(composedConfig));
-        sb.append("AETHER_CONFIG\n\n");
+        sb.append("AETHER_CONFIG\n");
+        sb.append("chmod 644 /opt/aether/config/aether.toml\n\n");
     }
 
     private static void appendContainerRun(StringBuilder sb, String clusterName, String nodeId) {
@@ -168,9 +169,8 @@ sealed interface UserDataTemplate {
         sb.append("    -l aether-node-id=").append(nodeId)
                  .append(" \\\n");
         sb.append("    -l aether-role=core \\\n");
-        sb.append("    -v /opt/aether/config:/config:ro \\\n");
-        sb.append("    \"${AETHER_IMAGE}\" \\\n");
-        sb.append("    --config /config/aether.toml\n\n");
+        sb.append("    -v /opt/aether/config/aether.toml:/app/aether.toml:ro \\\n");
+        sb.append("    \"${AETHER_IMAGE}\"\n\n");
     }
 
     private static void appendJvmInstall(StringBuilder sb, String jarUrl) {
@@ -191,7 +191,7 @@ sealed interface UserDataTemplate {
         sb.append("# --- Start Aether ---\n");
         sb.append("java ");
         if (!jvmArgs.isEmpty()) {sb.append(jvmArgs).append(' ');}
-        sb.append("-jar /opt/aether/aether-node.jar --config /opt/aether/config/aether.toml &\n\n");
+        sb.append("-jar /opt/aether/aether-node.jar --config=/opt/aether/config/aether.toml &\n\n");
     }
 
     private static void appendReadinessSignal(StringBuilder sb, String nodeId, int clusterPort, int managementPort) {
