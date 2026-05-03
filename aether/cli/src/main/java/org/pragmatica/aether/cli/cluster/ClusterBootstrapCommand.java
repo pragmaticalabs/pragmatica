@@ -11,14 +11,17 @@ import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
+import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 import picocli.CommandLine;
@@ -27,7 +30,6 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
 import static org.pragmatica.lang.Option.option;
-import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEALTH;
 
 
 @Command(name = "bootstrap", description = {"Bootstrap a new cluster from config file.", "", "Required when the cluster has no static seed members (cluster.static=0) and the cloud", "minimum is at least the quorum size (cloud.min >= quorum): with no static seeds the", "nodes cannot self-form a quorum, so an explicit operator-driven bootstrap is required."}) @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterBootstrapCommand implements Callable<Integer> {
@@ -36,6 +38,12 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
     private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
 
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
+
+    private static final String READY_PHASE = "NORMAL";
+
+    private static final String CLUSTER_PHASE_FIELD = "clusterPhase";
+
+    private static final String UNKNOWN = "UNKNOWN";
 
     @Parameters(index = "0", description = "Path to aether-cluster.toml config file") private Path configFile;
 
@@ -162,39 +170,61 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_HEA
 
     private int onSuccess(ClusterBootstrapOrchestrator.BootstrapResult result) {
         System.out.println("Step 12/12: Done.");
-        if (waitForCompletion) {return pollUntilHealthy();}
+        if (waitForCompletion) {return pollUntilHealthy(result);}
         return ExitCode.SUCCESS;
     }
 
-    @SuppressWarnings("JBCT-SEQ-01") private int pollUntilHealthy() {
-        System.out.printf("Waiting for cluster to become healthy (timeout: %ds)...%n", timeoutSeconds);
-        var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
+    private int pollUntilHealthy(ClusterBootstrapOrchestrator.BootstrapResult result) {
+        applyApiKeyOverride(result);
+        return waitForClusterPhase(ClusterBootstrapCommand::fetchStatusJson,
+                                   timeoutSeconds,
+                                   POLL_INTERVAL_MS,
+                                   System.out,
+                                   System.err);
+    }
+
+    private static void applyApiKeyOverride(ClusterBootstrapOrchestrator.BootstrapResult result) {
+        if (result.apiKey() == null || result.apiKey().isBlank()) {return;}
+        ClusterHttpClient.setApiKeyOverride(result.apiKey());
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01") static int waitForClusterPhase(Function<ManagementRoute, Result<String>> fetcher,
+                                                                    int timeoutSec,
+                                                                    int pollIntervalMs,
+                                                                    PrintStream out,
+                                                                    PrintStream err) {
+        out.printf("Waiting for cluster to become healthy (timeout: %ds)...%n", timeoutSec);
+        var deadline = System.currentTimeMillis() + (long) timeoutSec * 1000;
         while (System.currentTimeMillis() <deadline) {
-            var status = queryClusterHealthStatus();
-            if (isHealthy(status)) {
-                System.out.println("Cluster is healthy.");
+            var phase = queryClusterPhase(fetcher);
+            if (isReady(phase)) {
+                out.println("Cluster is healthy.");
                 return ExitCode.SUCCESS;
             }
-            System.out.printf("  Current status: %s%n", status);
-            sleepQuietly();
+            out.printf("  Current status: %s%n", phase);
+            sleepQuietly(pollIntervalMs);
         }
-        System.err.printf("Timeout: cluster did not become healthy within %ds.%n", timeoutSeconds);
+        err.printf("Timeout: cluster did not become healthy within %ds.%n", timeoutSec);
         return ExitCode.TIMEOUT;
     }
 
-    private static boolean isHealthy(String status) {
-        return "healthy".equalsIgnoreCase(status);
+    static boolean isReady(String phase) {
+        return READY_PHASE.equalsIgnoreCase(phase);
     }
 
-    private static String queryClusterHealthStatus() {
-        return ClusterHttpClient.fetch(CLUSTER_HEALTH).flatMap(MAPPER::readTree)
-                                      .map(node -> node.path("status").asText("UNKNOWN"))
-                                      .or("UNKNOWN");
+    static String queryClusterPhase(Function<ManagementRoute, Result<String>> fetcher) {
+        return fetcher.apply(ManagementRoute.CLUSTER_STATUS).flatMap(MAPPER::readTree)
+                            .map(node -> node.path(CLUSTER_PHASE_FIELD).asText(UNKNOWN))
+                            .or(UNKNOWN);
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static void sleepQuietly() {
+    private static Result<String> fetchStatusJson(ManagementRoute route) {
+        return ClusterHttpClient.fetch(route);
+    }
+
+    @SuppressWarnings("JBCT-EX-01") private static void sleepQuietly(int intervalMs) {
         try {
-            Thread.sleep(POLL_INTERVAL_MS);
+            Thread.sleep(intervalMs);
         } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
         }
