@@ -37,7 +37,11 @@ image = "ubuntu-22.04"
 type = "manual"
 
 [operations]
-tls_auto_generate = true
+
+[operations.tls]
+# Disabled for integration testing — mgmt API uses plain HTTP for curl/wget health
+# checks. Cluster QUIC transport still uses TLS via auto-generated [tls].cluster_secret.
+auto_generate = false
 
 [operations.ports]
 cluster = 6000
