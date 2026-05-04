@@ -465,8 +465,8 @@ teardown() {
             docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
             ;;
         cloud)
-            aether cluster destroy --cluster "$CLUSTER_A_NAME" --yes 2>/dev/null || true
-            aether cluster destroy --cluster "$CLUSTER_B_NAME" --yes 2>/dev/null || true
+            [ ${#A_SUITES[@]} -gt 0 ] && (aether cluster destroy --cluster "$CLUSTER_A_NAME" --yes 2>/dev/null || true)
+            [ ${#B_SUITES[@]} -gt 0 ] && (aether cluster destroy --cluster "$CLUSTER_B_NAME" --yes 2>/dev/null || true)
             ;;
     esac
 }
@@ -565,6 +565,10 @@ if [ "$SKIP_BUILD" = false ] && [ -x "${REPO_ROOT}/build.sh" ]; then
     "${REPO_ROOT}/build.sh"
 fi
 
+# --- Compute selected suites early so cluster bootstrap can be skipped per-cluster ---
+A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
+B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
+
 # --- Step 2: Deploy clusters ---
 PROVISION_START=$(date +%s)
 if [ "$SKIP_DEPLOY" = false ]; then
@@ -573,8 +577,16 @@ if [ "$SKIP_DEPLOY" = false ]; then
         docker|remote) deploy_docker ;;
         cloud)
             log_step "Bootstrapping cloud clusters"
-            aether cluster bootstrap "${SCRIPT_DIR}/env/cloud-hetzner.toml" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
-            aether cluster bootstrap "${SCRIPT_DIR}/env/cloud-hetzner-b.toml" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 300
+            if [ ${#A_SUITES[@]} -gt 0 ]; then
+                aether cluster bootstrap "${SCRIPT_DIR}/env/cloud-hetzner.toml" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
+            else
+                log_info "Skipping Cluster A bootstrap (no A-suites selected)"
+            fi
+            if [ ${#B_SUITES[@]} -gt 0 ]; then
+                aether cluster bootstrap "${SCRIPT_DIR}/env/cloud-hetzner-b.toml" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 300
+            else
+                log_info "Skipping Cluster B bootstrap (no B-suites selected)"
+            fi
             ;;
     esac
 fi
@@ -583,40 +595,48 @@ printf 'provisioning=%s\n' "$PROVISION_ELAPSED" >> "$TIMINGS_FILE"
 
 # --- Step 3: Wait for clusters ---
 FORMATION_START=$(date +%s)
-log_step "Waiting for Cluster A"
-wait_for_node_count_on "$CLUSTER_A_MGMT" 5 180
-wait_for_leader_on "$CLUSTER_A_MGMT" 60
+if [ ${#A_SUITES[@]} -gt 0 ]; then
+    log_step "Waiting for Cluster A"
+    wait_for_node_count_on "$CLUSTER_A_MGMT" 5 180
+    wait_for_leader_on "$CLUSTER_A_MGMT" 60
+fi
 
-log_step "Waiting for Cluster B"
-wait_for_node_count_on "$CLUSTER_B_MGMT" 5 180
-wait_for_leader_on "$CLUSTER_B_MGMT" 60
+if [ ${#B_SUITES[@]} -gt 0 ]; then
+    log_step "Waiting for Cluster B"
+    wait_for_node_count_on "$CLUSTER_B_MGMT" 5 180
+    wait_for_leader_on "$CLUSTER_B_MGMT" 60
+fi
 
 # Gate cluster readiness on ClusterGeneration quiescence — avoids racing the
 # later blueprint-deploy phase against a cluster that still hasn't converged.
-await_generation_quiesced "$CLUSTER_A_MGMT" "current" 60 || log_warn "Cluster A snapshot not quiesced yet"
-await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || log_warn "Cluster B snapshot not quiesced yet"
+[ ${#A_SUITES[@]} -gt 0 ] && (await_generation_quiesced "$CLUSTER_A_MGMT" "current" 60 || log_warn "Cluster A snapshot not quiesced yet")
+[ ${#B_SUITES[@]} -gt 0 ] && (await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || log_warn "Cluster B snapshot not quiesced yet")
 
 FORMATION_ELAPSED=$(( $(date +%s) - FORMATION_START ))
 printf 'cluster_formation=%s\n' "$FORMATION_ELAPSED" >> "$TIMINGS_FILE"
 
 # --- Step 4: Discover LB endpoints ---
 log_step "Discovering LB endpoints"
-discover_endpoints "$CLUSTER_A_MGMT"
-CLUSTER_A_LB_APP="${LB_APP_ENDPOINT}"
-CLUSTER_A_LB_MGMT="${LB_MGMT_ENDPOINT}"
-log_info "Cluster A: app=${CLUSTER_A_LB_APP} mgmt=${CLUSTER_A_LB_MGMT}"
+if [ ${#A_SUITES[@]} -gt 0 ]; then
+    discover_endpoints "$CLUSTER_A_MGMT"
+    CLUSTER_A_LB_APP="${LB_APP_ENDPOINT}"
+    CLUSTER_A_LB_MGMT="${LB_MGMT_ENDPOINT}"
+    log_info "Cluster A: app=${CLUSTER_A_LB_APP} mgmt=${CLUSTER_A_LB_MGMT}"
+fi
 
-discover_endpoints "$CLUSTER_B_MGMT"
-CLUSTER_B_LB_APP="${LB_APP_ENDPOINT}"
-CLUSTER_B_LB_MGMT="${LB_MGMT_ENDPOINT}"
-log_info "Cluster B: app=${CLUSTER_B_LB_APP} mgmt=${CLUSTER_B_LB_MGMT}"
+if [ ${#B_SUITES[@]} -gt 0 ]; then
+    discover_endpoints "$CLUSTER_B_MGMT"
+    CLUSTER_B_LB_APP="${LB_APP_ENDPOINT}"
+    CLUSTER_B_LB_MGMT="${LB_MGMT_ENDPOINT}"
+    log_info "Cluster B: app=${CLUSTER_B_LB_APP} mgmt=${CLUSTER_B_LB_MGMT}"
+fi
 
 # --- Step 5: Detect capabilities ---
 detect_capabilities "$ENV_TYPE"
 
 # --- Step 6: Filter suites ---
-A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
-B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
+# A_SUITES / B_SUITES already computed above (before Step 2) so per-cluster
+# bootstrap can be skipped when only one side's suites are selected.
 
 # --- Step 6.5: Drop ghost CTM-provisioned containers from previous runs ---
 # Bash dynamic-scoping bug + Wave 3 changes have historically allowed CTM
