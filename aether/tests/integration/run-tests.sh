@@ -465,8 +465,11 @@ teardown() {
             docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
             ;;
         cloud)
-            [ ${#A_SUITES[@]} -gt 0 ] && (aether cluster destroy --cluster "$CLUSTER_A_NAME" --yes 2>/dev/null || true)
-            [ ${#B_SUITES[@]} -gt 0 ] && (aether cluster destroy --cluster "$CLUSTER_B_NAME" --yes 2>/dev/null || true)
+            # `aether cluster destroy` has no --cluster flag (only operates on the active cluster).
+            # Use cloud-reaper.sh which filters by `aether-cluster` label — works regardless of
+            # bootstrap-state.json existence, idempotent, exits 0 if nothing to destroy.
+            [ ${#A_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
+            [ ${#B_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/tools/cloud-reaper.sh" --cluster "$CLUSTER_B_NAME" --destroy --force 2>&1 | tail -3 || true)
             ;;
     esac
 }
