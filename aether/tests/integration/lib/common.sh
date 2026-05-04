@@ -53,14 +53,29 @@ aether_failover() {
     local timeout="${AETHER_CLI_TIMEOUT:-5}"
     local host_port="${MGMT_ENTRY_POINT#http://}"
     if ! curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
-        local base_port="${MGMT_PORT}"
-        for i in $(seq 0 $((NODE_COUNT - 1))); do
-            local port=$((base_port + i))
-            if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1; then
-                host_port="${TARGET_HOST}:${port}"
-                break
-            fi
-        done
+        # Failover: probe alternate live core endpoints.
+        # docker/remote: nodes share TARGET_HOST with sequential mgmt ports (MGMT_PORT+0..N-1).
+        # cloud: each node has its own VM public IP; resolve via cloud_public_ip per node-id.
+        if [ "${ENV_TYPE:-docker}" = "cloud" ] && command -v cloud_public_ip >/dev/null 2>&1; then
+            for n in $(seq 0 $((NODE_COUNT - 1))); do
+                local node_ip
+                node_ip=$(cloud_public_ip "node-$((n+1))" 2>/dev/null || echo "")
+                [ -z "$node_ip" ] && continue
+                if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "http://${node_ip}:${MGMT_PORT}/health/live" >/dev/null 2>&1; then
+                    host_port="${node_ip}:${MGMT_PORT}"
+                    break
+                fi
+            done
+        else
+            local base_port="${MGMT_PORT}"
+            for i in $(seq 0 $((NODE_COUNT - 1))); do
+                local port=$((base_port + i))
+                if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1; then
+                    host_port="${TARGET_HOST}:${port}"
+                    break
+                fi
+            done
+        fi
     fi
     aether -c "${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" "$@"
 }
@@ -120,7 +135,7 @@ api_get() {
     local path="$1"
     local endpoint
     endpoint=$(_resolve_live_endpoint)
-    curl -sf -H "X-API-Key: ${API_KEY}" "${endpoint}${path}"
+    _api_call GET "${endpoint}${path}"
 }
 
 api_post() {
@@ -128,15 +143,36 @@ api_post() {
     local body="${2:-"{}"}"
     local endpoint
     endpoint=$(_resolve_live_endpoint)
-    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-        -d "$body" "${endpoint}${path}"
+    _api_call POST "${endpoint}${path}" "$body"
 }
 
 api_put() {
     local path="$1"
     local body="${2:-"{}"}"
-    curl -sf -X PUT -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-        -d "$body" "${CLUSTER_ENDPOINT}${path}"
+    _api_call PUT "${CLUSTER_ENDPOINT}${path}" "$body"
+}
+
+# Wraps `curl -sf` semantics (empty stdout + non-zero exit on HTTP error) with stderr
+# diagnostic logging. The original `curl -sf` was silently dropping HTTP error bodies,
+# which made cloud failures (e.g. "NotLeader", "TaskGroupInactive") invisible.
+_api_call() {
+    local method="$1" url="$2" body="${3:-}"
+    local response status body_only
+    if [ -n "$body" ]; then
+        response=$(curl -s -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+            -d "$body" -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
+    else
+        response=$(curl -s -X "$method" -H "X-API-Key: ${API_KEY}" \
+            -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
+    fi
+    status=$(printf '%s' "$response" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | sed 's/__API_HTTP_STATUS://;s/__//')
+    body_only=$(printf '%s' "$response" | sed '$d')
+    if [ -n "$status" ] && [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+        printf '%s' "$body_only"
+        return 0
+    fi
+    log_warn "api ${method} ${url#http://*/} status=${status:-000}: $(printf '%s' "$body_only" | head -c 300)" >&2
+    return 1
 }
 
 api_delete() {

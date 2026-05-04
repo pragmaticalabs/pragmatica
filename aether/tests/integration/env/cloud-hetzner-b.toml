@@ -57,6 +57,10 @@ startup_cooldown = "15s"
 provision_stability_window = "5s"
 provisioning_timeout = "60s"
 
+[source.hetzner-eu.node_config.app-http]
+enabled = true
+security_mode = "NONE"
+
 [runtime.default]
 type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate"

@@ -54,6 +54,18 @@ enabled = true
 retry_interval = "30s"
 startup_cooldown = "15s"
 
+[source.hetzner-eu.node_config.app-http]
+# Integration test config: app-http server enabled, security disabled.
+# - `enabled = true` starts the slice's app-HTTP server (port 8070).
+# - `security_mode = "NONE"` opens both app-http AND mgmt-api to unauthenticated requests
+#   (mgmt validator uses noOpValidator when securityEnabled() returns false).
+#   This avoids the bootstrap chicken-and-egg: with API_KEY mode, the bootstrap's
+#   storeClusterConfig POST is rejected because the bootstrap-generated key isn't in KV
+#   yet and the static key isn't in this composed config either.
+# Production deployments must set security_mode = "API_KEY" with a configured key list.
+enabled = true
+security_mode = "NONE"
+
 [runtime.default]
 type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate"

@@ -556,7 +556,19 @@ publish_blueprint() {
     # version (otherwise SameVersionDeployment is returned).
     local artifact="$1"
     log_info "Publishing blueprint (no instances): ${artifact}" >&2
-    api_post "/api/blueprint/publish" "{\"artifact\":\"${artifact}\"}"
+    local result
+    result=$(api_post "/api/blueprint/publish" "{\"artifact\":\"${artifact}\"}")
+    local rc=$?
+    printf '%s' "$result"
+    [ $rc -ne 0 ] && return $rc
+    # KV-Store consensus commits at the leader but follower nodes apply asynchronously;
+    # /api/deploy may land on a STRATEGIES owner whose local state machine hasn't yet
+    # processed the Put. Poll the cluster's blueprint list until the entry is visible
+    # to absorb the propagation gap (5s budget × scaled).
+    wait_for "blueprint ${artifact} visible" \
+        "api_get /api/blueprints 2>/dev/null | grep -q \"${artifact}\"" \
+        5 1 >/dev/null 2>&1 || log_warn "blueprint ${artifact} not visible after 5s — deploy may fail" >&2
+    return 0
 }
 
 deploy_blueprint_file() {
