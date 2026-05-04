@@ -36,6 +36,20 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
     int DEFAULT_PARTITIONS = 4;
 
+    /// Per spec §11.1.1: when `version` is omitted on a producer-role declaration (or omitted with no
+    /// explicit role — current parser-only assumption pending Wave 3 slice-binding role inference),
+    /// default to `"1.0.0"`. The producer assumption is the safer default for the common case where
+    /// the slice writes data.
+    String DEFAULT_PRODUCER_VERSION = "1.0.0";
+
+    /// Per spec §11.1.1: when `version` is omitted on an explicit consumer-role declaration, default
+    /// to `"latest"`.
+    String DEFAULT_CONSUMER_VERSION = StreamVersionSpec.LATEST_TOKEN;
+
+    String ROLE_PRODUCER = "producer";
+
+    String ROLE_CONSUMER = "consumer";
+
     static Result<Map<String, StreamConfig>> parse(String toml) {
         return option(toml).filter(s -> !s.isBlank())
                      .map(StreamConfigParser::parseStreamToml)
@@ -45,10 +59,13 @@ import static org.pragmatica.lang.utils.Causes.cause;
     /// Parse `[streams.*]` sections into [StreamResource] declarations.
     ///
     /// Each section is either:
-    ///  - [StreamResource.Owned] — internal declaration with `version = "..."` and optional config fields.
+    ///  - [StreamResource.Owned] — internal declaration with optional `version` (defaulted per role
+    ///    per spec §11.1.1) and optional config fields.
     ///  - [StreamResource.External] — reference with `source = "namespace:stream:version"`.
     ///
-    /// `version` and `source` are mutually exclusive. Absence of both is a parse error.
+    /// `version` and `source` are mutually exclusive. When both are absent the section is treated as
+    /// the spec §11.1 shortcut form and `version` is defaulted from `role` (or producer-assumed when
+    /// `role` is also omitted, pending Wave 3 slice-binding inference).
     static Result<Map<String, StreamResource>> parseResources(String toml) {
         return option(toml).filter(s -> !s.isBlank())
                      .map(StreamConfigParser::parseResourceToml)
@@ -87,6 +104,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
     private static Result<StreamResource> parseStreamResource(TomlDocument doc, String section, String streamName) {
         var sourceOpt = doc.getString(section, "source");
         var versionOpt = doc.getString(section, "version");
+        var roleOpt = doc.getString(section, "role");
 
         if (sourceOpt.isPresent() && versionOpt.isPresent()) {
             return Causes.cause("Stream resource '" + streamName + "' must not set both 'source' and 'version'").result();
@@ -95,11 +113,20 @@ import static org.pragmatica.lang.utils.Causes.cause;
             return sourceOpt.fold(() -> missingStreamResource(streamName),
                                   source -> parseExternalResource(streamName, source));
         }
-        if (versionOpt.isEmpty()) {
-            return missingStreamResource(streamName);
-        }
-        return versionOpt.fold(() -> missingStreamResource(streamName),
-                               version -> parseOwnedResource(doc, section, streamName, version));
+        // Spec §11.1.1: shortcut form — when `version` is omitted, default per role.
+        // Producer (explicit or, per Wave 2 scope, omitted role) → "1.0.0".
+        // Consumer (explicit) → "latest". Wave 3 will refine omitted-role inference from slice binding.
+        // TODO Wave 6: emit warning per spec §11.1.3 multi-version check
+        var resolvedVersion = versionOpt.or(defaultVersionForRole(roleOpt));
+        return parseOwnedResource(doc, section, streamName, resolvedVersion, roleOpt);
+    }
+
+    private static String defaultVersionForRole(Option<String> roleOpt) {
+        return roleOpt.map(String::trim)
+                      .map(String::toLowerCase)
+                      .filter(ROLE_CONSUMER::equals)
+                      .map(_ -> DEFAULT_CONSUMER_VERSION)
+                      .or(DEFAULT_PRODUCER_VERSION);
     }
 
     private static Result<StreamResource> missingStreamResource(String streamName) {
@@ -116,11 +143,31 @@ import static org.pragmatica.lang.utils.Causes.cause;
     private static Result<StreamResource> parseOwnedResource(TomlDocument doc,
                                                               String section,
                                                               String streamName,
-                                                              String version) {
+                                                              String version,
+                                                              Option<String> roleOpt) {
         return StreamVersionSpec.streamVersionSpec(version)
+                                 .flatMap(spec -> rejectProducerLatest(streamName, spec, roleOpt))
                                  .map(spec -> StreamResource.owned(streamName,
                                                                     spec,
                                                                     parseStreamSection(doc, section, streamName)));
+    }
+
+    /// Spec §11.1.3: producer with `version = "latest"` (explicit, after defaulting) is a build-time
+    /// error. Producers must pin to an exact triplet for write determinism.
+    private static Result<StreamVersionSpec> rejectProducerLatest(String streamName,
+                                                                   StreamVersionSpec spec,
+                                                                   Option<String> roleOpt) {
+        var isProducer = roleOpt.map(String::trim)
+                                .map(String::toLowerCase)
+                                .filter(ROLE_PRODUCER::equals)
+                                .isPresent();
+        if (isProducer && spec.isLatest()) {
+            return Causes.<Cause>cause(
+                    "Stream resource '" + streamName + "' has role 'producer' with version 'latest'; "
+                    + "producers must pin to an exact MAJOR.MINOR.PATCH triplet (spec §11.1.3)"
+            ).result();
+        }
+        return success(spec);
     }
 
     private static Result<Map<String, ConsumerConfig>> parseConsumerToml(String toml, String streamName) {

@@ -127,19 +127,6 @@ class StreamConfigParserTest {
     class ResourcesValidation {
 
         @Test
-        void rejectsMissingVersionAndSource() {
-            var toml = """
-                    [streams.orders]
-                    partitions = 8
-                    """;
-
-            var result = parseResources(toml);
-
-            assertThat(result.isFailure()).isTrue();
-            result.onFailure(cause -> assertThat(cause.message()).contains("must specify"));
-        }
-
-        @Test
         void rejectsBothVersionAndSource() {
             var toml = """
                     [streams.orders]
@@ -175,6 +162,80 @@ class StreamConfigParserTest {
             var result = parseResources(toml);
 
             assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void rejectsProducerWithLatestVersion() {
+            var toml = """
+                    [streams.orders]
+                    role = "producer"
+                    version = "latest"
+                    """;
+
+            var result = parseResources(toml);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("producer")
+                                                                    .contains("latest"));
+        }
+    }
+
+    @Nested
+    class ShortcutDefaults {
+
+        @Test
+        void omittedVersionWithProducerRoleDefaultsToOneZeroZero() {
+            var toml = """
+                    [streams.orders]
+                    role = "producer"
+                    partitions = 4
+                    """;
+
+            var result = parseResources(toml).unwrap();
+
+            var owned = (StreamResource.Owned) result.get("orders");
+            assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(StreamVersion.streamVersion(1, 0, 0).unwrap()));
+        }
+
+        @Test
+        void omittedVersionWithConsumerRoleDefaultsToLatest() {
+            var toml = """
+                    [streams.inventory]
+                    role = "consumer"
+                    """;
+
+            var result = parseResources(toml).unwrap();
+
+            var owned = (StreamResource.Owned) result.get("inventory");
+            assertThat(owned.version()).isSameAs(StreamVersionSpec.Latest.INSTANCE);
+        }
+
+        @Test
+        void omittedVersionAndOmittedRoleDefaultsToOneZeroZero() {
+            var toml = """
+                    [streams.notifications]
+                    partitions = 4
+                    retention = "time"
+                    retention-value = "5m"
+                    """;
+
+            var result = parseResources(toml).unwrap();
+
+            var owned = (StreamResource.Owned) result.get("notifications");
+            assertThat(owned.version()).isEqualTo(StreamVersionSpec.exact(StreamVersion.streamVersion(1, 0, 0).unwrap()));
+        }
+
+        @Test
+        void consumerRoleCaseInsensitive() {
+            var toml = """
+                    [streams.inventory]
+                    role = "Consumer"
+                    """;
+
+            var result = parseResources(toml).unwrap();
+
+            var owned = (StreamResource.Owned) result.get("inventory");
+            assertThat(owned.version()).isSameAs(StreamVersionSpec.Latest.INSTANCE);
         }
     }
 }
