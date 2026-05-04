@@ -197,6 +197,9 @@ http_status() {
 # ---------------------------------------------------------------------------
 wait_for() {
     local description="$1" check_cmd="$2" timeout="${3:-60}" interval="${4:-2}"
+    # Scale timeouts on slower environments (cloud VMs have higher inter-node latency than
+    # docker-localhost). TIMEOUT_SCALE=3 default for cloud, 1 elsewhere — set in run-tests.sh.
+    timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
     local elapsed=0
     log_info "Waiting for: ${description} (timeout: ${timeout}s)"
     while [ "$elapsed" -lt "$timeout" ]; do

@@ -58,6 +58,8 @@ await_generation_quiesced() {
     local endpoint="${1:-${CLUSTER_ENDPOINT}}"
     local epoch="${2:-current+1}"
     local timeout="${3:-30}"
+    # Same scaling as wait_for — cloud's higher inter-node latency stretches consensus rounds.
+    timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
 
     local target_epoch
     target_epoch=$(_resolve_epoch "$endpoint" "$epoch") || return 1

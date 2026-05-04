@@ -115,6 +115,10 @@ case "$ENV_TYPE" in
         ;;
     cloud)
         : "${HCLOUD_TOKEN:?HCLOUD_TOKEN must be set for cloud env}"
+        # Cloud has higher inter-node latency than docker-localhost: 04-streaming ran 2.7×
+        # slower in the run-5 baseline, 09-artifacts ~9× slower. Scale every wait_for_*
+        # / await_generation_quiesced timeout proportionally. Override via env if needed.
+        export TIMEOUT_SCALE="${TIMEOUT_SCALE:-3}"
         ;;
     *)
         echo "ERROR: Invalid --env value: ${ENV_TYPE}. Must be docker, remote, or cloud."
