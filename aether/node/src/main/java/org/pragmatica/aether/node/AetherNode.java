@@ -950,7 +950,10 @@ public interface AetherNode extends ManageableNode {
                                                                                               invocationMetrics,
                                                                                               minuteAggregator);
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
+        var eventIdAllocator = org.pragmatica.aether.api.EventIdAllocator.eventIdAllocator(config.self());
         var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
+                                                                            config.self(),
+                                                                            eventIdAllocator,
                                                                             clusterTopologyManager.observer()::clusterSize);
         var ttmManager = TTMManager.ttmManager(config.ttm(),
                                                minuteAggregator,

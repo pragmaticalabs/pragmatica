@@ -4,12 +4,33 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import org.pragmatica.aether.api.ClusterEvent.EventType;
+import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
+import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
+import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
+import org.pragmatica.aether.api.ClusterEvent.BlueprintDeleted;
+import org.pragmatica.aether.api.ClusterEvent.BlueprintDeployed;
+import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
+import org.pragmatica.aether.api.ClusterEvent.ConnectionEstablished;
+import org.pragmatica.aether.api.ClusterEvent.ConnectionFailed;
+import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
+import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
+import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
+import org.pragmatica.aether.api.ClusterEvent.GenerationChanged;
+import org.pragmatica.aether.api.ClusterEvent.LeaderElected;
+import org.pragmatica.aether.api.ClusterEvent.LeaderLost;
+import org.pragmatica.aether.api.ClusterEvent.NodeFailed;
+import org.pragmatica.aether.api.ClusterEvent.NodeJoined;
+import org.pragmatica.aether.api.ClusterEvent.NodeLeft;
+import org.pragmatica.aether.api.ClusterEvent.NodeLifecycleChanged;
+import org.pragmatica.aether.api.ClusterEvent.QuorumEstablished;
+import org.pragmatica.aether.api.ClusterEvent.QuorumLost;
+import org.pragmatica.aether.api.ClusterEvent.ScaleDown;
+import org.pragmatica.aether.api.ClusterEvent.ScaleUp;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
+import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -39,6 +60,8 @@ import java.util.function.IntSupplier;
     private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> - 1;
 
     private final RingBuffer<ClusterEvent> buffer;
+    private final EventIdAllocator eventIdAllocator;
+    private final NodeId selfNode;
 
     private final AtomicLong quorumSequence = new AtomicLong();
 
@@ -50,18 +73,27 @@ import java.util.function.IntSupplier;
 
     private final IntSupplier clusterSizeSupplier;
 
-    private ClusterEventAggregator(ClusterEventAggregatorConfig config, IntSupplier clusterSizeSupplier) {
+    private ClusterEventAggregator(ClusterEventAggregatorConfig config,
+                                   NodeId selfNode,
+                                   EventIdAllocator eventIdAllocator,
+                                   IntSupplier clusterSizeSupplier) {
         this.buffer = RingBuffer.ringBuffer(config.maxEvents());
+        this.selfNode = selfNode;
+        this.eventIdAllocator = eventIdAllocator;
         this.clusterSizeSupplier = clusterSizeSupplier;
     }
 
-    public static ClusterEventAggregator clusterEventAggregator(ClusterEventAggregatorConfig config) {
-        return new ClusterEventAggregator(config, UNKNOWN_CLUSTER_SIZE);
+    public static ClusterEventAggregator clusterEventAggregator(ClusterEventAggregatorConfig config,
+                                                                NodeId selfNode,
+                                                                EventIdAllocator eventIdAllocator) {
+        return new ClusterEventAggregator(config, selfNode, eventIdAllocator, UNKNOWN_CLUSTER_SIZE);
     }
 
     public static ClusterEventAggregator clusterEventAggregator(ClusterEventAggregatorConfig config,
+                                                                NodeId selfNode,
+                                                                EventIdAllocator eventIdAllocator,
                                                                 IntSupplier clusterSizeSupplier) {
-        return new ClusterEventAggregator(config, clusterSizeSupplier);
+        return new ClusterEventAggregator(config, selfNode, eventIdAllocator, clusterSizeSupplier);
     }
 
     public List<ClusterEvent> events() {
@@ -85,14 +117,15 @@ import java.util.function.IntSupplier;
     public void onPeerJoined(TransportObservation.PeerJoined event) {
         nodeJoinTimes.put(event.nodeId().id(),
                           System.currentTimeMillis());
-        buffer.add(ClusterEvent.clusterEvent(EventType.NODE_JOINED,
-                                             Severity.INFO,
-                                             "Node " + event.nodeId().id() + " joined cluster (now " + event.topology()
-                                                                                                                     .size() + " nodes)",
-                                             Map.of("nodeId",
-                                                    event.nodeId().id(),
-                                                    "clusterSize",
-                                                    String.valueOf(event.topology().size()))));
+        buffer.add(new NodeJoined(eventIdAllocator.next(),
+                                  Instant.now(),
+                                  selfNode,
+                                  Severity.INFO,
+                                  "Node " + event.nodeId().id() + " joined cluster (now " + event.topology().size() + " nodes)",
+                                  Map.of("nodeId",
+                                         event.nodeId().id(),
+                                         "clusterSize",
+                                         String.valueOf(event.topology().size()))));
     }
 
     @Contract public void onSwimObservation(SwimObservation observation) {
@@ -108,10 +141,8 @@ import java.util.function.IntSupplier;
     }
 
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
-        var nodeId = put.cause().key()
-                              .nodeId();
-        var newState = put.cause().value()
-                                .state();
+        var nodeId = put.cause().key().nodeId();
+        var newState = put.cause().value().state();
         var prior = lastLifecycleState.put(nodeId, newState);
         if (prior == newState) {return;}
         switch (newState){
@@ -130,27 +161,25 @@ import java.util.function.IntSupplier;
     }
 
     @Contract private void bufferNodeLeftEvent(String nodeId, int clusterSize, String source) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LEFT,
-                                             Severity.INFO,
-                                             "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
-                                             Map.of("nodeId",
-                                                    nodeId,
-                                                    "clusterSize",
-                                                    String.valueOf(clusterSize),
-                                                    "source",
-                                                    source)));
+        buffer.add(new NodeLeft(eventIdAllocator.next(),
+                                Instant.now(),
+                                selfNode,
+                                Severity.INFO,
+                                "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
+                                Map.of("nodeId", nodeId,
+                                       "clusterSize", String.valueOf(clusterSize),
+                                       "source", source)));
     }
 
     @Contract private void bufferNodeFailedEvent(String nodeId, int clusterSize, String source) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.NODE_FAILED,
-                                             Severity.CRITICAL,
-                                             "Node " + nodeId + " failed (cluster size " + clusterSize + ")",
-                                             Map.of("nodeId",
-                                                    nodeId,
-                                                    "clusterSize",
-                                                    String.valueOf(clusterSize),
-                                                    "source",
-                                                    source)));
+        buffer.add(new NodeFailed(eventIdAllocator.next(),
+                                  Instant.now(),
+                                  selfNode,
+                                  Severity.CRITICAL,
+                                  "Node " + nodeId + " failed (cluster size " + clusterSize + ")",
+                                  Map.of("nodeId", nodeId,
+                                         "clusterSize", String.valueOf(clusterSize),
+                                         "source", source)));
     }
 
     @Contract private void bufferNodeLifecycleChangedEvent(String nodeId,
@@ -159,40 +188,49 @@ import java.util.function.IntSupplier;
         var transition = (prior == null
                           ? "NONE"
                           : prior.name()) + "->" + next.name();
-        buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LIFECYCLE_CHANGED,
-                                             Severity.INFO,
-                                             "Node " + nodeId + " lifecycle: " + transition,
-                                             Map.of("nodeId",
-                                                    nodeId,
-                                                    "transition",
-                                                    transition,
-                                                    "requestedBy",
-                                                    "MembershipFsm")));
+        buffer.add(new NodeLifecycleChanged(eventIdAllocator.next(),
+                                            Instant.now(),
+                                            selfNode,
+                                            Severity.INFO,
+                                            "Node " + nodeId + " lifecycle: " + transition,
+                                            Map.of("nodeId",
+                                                   nodeId,
+                                                   "transition",
+                                                   transition,
+                                                   "requestedBy",
+                                                   "MembershipFsm")));
     }
 
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
-        event.leaderId().onPresent(leaderId -> buffer.add(ClusterEvent.clusterEvent(EventType.LEADER_ELECTED,
-                                                                                    Severity.INFO,
-                                                                                    "Node " + leaderId.id() + " elected as leader",
-                                                                                    Map.of("leaderId",
-                                                                                           leaderId.id()))))
-                      .onEmpty(() -> buffer.add(ClusterEvent.clusterEvent(EventType.LEADER_LOST,
-                                                                          Severity.WARNING,
-                                                                          "Leadership lost, election in progress",
-                                                                          Map.of())));
+        event.leaderId().onPresent(leaderId -> buffer.add(new LeaderElected(eventIdAllocator.next(),
+                                                                            Instant.now(),
+                                                                            selfNode,
+                                                                            Severity.INFO,
+                                                                            "Node " + leaderId.id() + " elected as leader",
+                                                                            Map.of("leaderId", leaderId.id()))))
+                      .onEmpty(() -> buffer.add(new LeaderLost(eventIdAllocator.next(),
+                                                               Instant.now(),
+                                                               selfNode,
+                                                               Severity.WARNING,
+                                                               "Leadership lost, election in progress",
+                                                               Map.of())));
     }
 
     public void onQuorumStateChange(QuorumStateNotification event) {
         if (!event.advanceSequence(quorumSequence)) {return;}
         switch (event.state()){
-            case ESTABLISHED -> buffer.add(ClusterEvent.clusterEvent(EventType.QUORUM_ESTABLISHED,
-                                                                     Severity.INFO,
-                                                                     "Quorum established",
-                                                                     Map.of()));
-            case DISAPPEARED -> buffer.add(ClusterEvent.clusterEvent(EventType.QUORUM_LOST,
-                                                                     Severity.CRITICAL,
-                                                                     "Quorum lost",
-                                                                     Map.of()));
+            case ESTABLISHED -> buffer.add(new QuorumEstablished(eventIdAllocator.next(),
+                                                                 Instant.now(),
+                                                                 selfNode,
+                                                                 Severity.INFO,
+                                                                 "Quorum established",
+                                                                 Map.of()));
+            case DISAPPEARED -> buffer.add(new QuorumLost(eventIdAllocator.next(),
+                                                          Instant.now(),
+                                                          selfNode,
+                                                          Severity.CRITICAL,
+                                                          "Quorum lost",
+                                                          Map.of()));
         }
     }
 
@@ -213,191 +251,220 @@ import java.util.function.IntSupplier;
 
     private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
         deploymentStartTimes.put(trackingKey, System.currentTimeMillis());
-        buffer.add(ClusterEvent.clusterEvent(EventType.DEPLOYMENT_STARTED,
-                                             Severity.INFO,
-                                             "Deploying " + artifact + " to " + nodeId,
-                                             Map.of("artifact", artifact, "nodeId", nodeId)));
+        buffer.add(new DeploymentStarted(eventIdAllocator.next(),
+                                         Instant.now(),
+                                         selfNode,
+                                         Severity.INFO,
+                                         "Deploying " + artifact + " to " + nodeId,
+                                         Map.of("artifact", artifact, "nodeId", nodeId)));
     }
 
     private void handleDeploymentCompleted(String trackingKey, String artifact, String nodeId) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms)).or("");
         var nodeReadySuffix = buildNodeReadySuffix(nodeId);
-        buffer.add(ClusterEvent.clusterEvent(EventType.DEPLOYMENT_COMPLETED,
-                                             Severity.INFO,
-                                             "Deployed " + artifact + " on " + nodeId + durationSuffix + nodeReadySuffix,
-                                             buildCompletedMetadata(artifact, nodeId, durationMs)));
+        buffer.add(new DeploymentCompleted(eventIdAllocator.next(),
+                                           Instant.now(),
+                                           selfNode,
+                                           Severity.INFO,
+                                           "Deployed " + artifact + " on " + nodeId + durationSuffix + nodeReadySuffix,
+                                           buildCompletedMetadata(artifact, nodeId, durationMs)));
     }
 
     private void handleDeploymentFailed(String trackingKey, String artifact, String nodeId, NodeArtifactValue value) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
         var reason = value.failureReason().or("unknown");
-        buffer.add(ClusterEvent.clusterEvent(EventType.DEPLOYMENT_FAILED,
-                                             Severity.WARNING,
-                                             "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
-                                             buildFailedMetadata(artifact, nodeId, reason, durationMs)));
+        buffer.add(new DeploymentFailed(eventIdAllocator.next(),
+                                        Instant.now(),
+                                        selfNode,
+                                        Severity.WARNING,
+                                        "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
+                                        buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
     public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.SLICE_FAILURE,
-                                             Severity.CRITICAL,
-                                             "All instances of " + event.artifact().asString() + ":" + event.method()
-                                                                                                                   .name() + " failed",
-                                             Map.of("artifact",
-                                                    event.artifact().asString(),
-                                                    "method",
-                                                    event.method().name(),
-                                                    "attemptedNodes",
-                                                    String.valueOf(event.attemptedNodes().size()))));
+        buffer.add(new SliceFailure(eventIdAllocator.next(),
+                                    Instant.now(),
+                                    selfNode,
+                                    Severity.CRITICAL,
+                                    "All instances of " + event.artifact().asString() + ":" + event.method().name() + " failed",
+                                    Map.of("artifact",
+                                           event.artifact().asString(),
+                                           "method",
+                                           event.method().name(),
+                                           "attemptedNodes",
+                                           String.valueOf(event.attemptedNodes().size()))));
     }
 
     public void onScaledUp(ScalingEvent.ScaledUp event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.SCALE_UP,
-                                             Severity.INFO,
-                                             event.artifact().asString() + " scaled up from " + event.previousInstances() + " to " + event.newInstances() + " instances",
-                                             Map.of("artifact",
-                                                    event.artifact().asString(),
-                                                    "previousInstances",
-                                                    String.valueOf(event.previousInstances()),
-                                                    "newInstances",
-                                                    String.valueOf(event.newInstances()))));
+        buffer.add(new ScaleUp(eventIdAllocator.next(),
+                               Instant.now(),
+                               selfNode,
+                               Severity.INFO,
+                               event.artifact().asString() + " scaled up from " + event.previousInstances() + " to " + event.newInstances() + " instances",
+                               Map.of("artifact",
+                                      event.artifact().asString(),
+                                      "previousInstances",
+                                      String.valueOf(event.previousInstances()),
+                                      "newInstances",
+                                      String.valueOf(event.newInstances()))));
     }
 
     public void onScaledDown(ScalingEvent.ScaledDown event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.SCALE_DOWN,
-                                             Severity.INFO,
-                                             event.artifact().asString() + " scaled down from " + event.previousInstances() + " to " + event.newInstances() + " instances",
-                                             Map.of("artifact",
-                                                    event.artifact().asString(),
-                                                    "previousInstances",
-                                                    String.valueOf(event.previousInstances()),
-                                                    "newInstances",
-                                                    String.valueOf(event.newInstances()))));
+        buffer.add(new ScaleDown(eventIdAllocator.next(),
+                                 Instant.now(),
+                                 selfNode,
+                                 Severity.INFO,
+                                 event.artifact().asString() + " scaled down from " + event.previousInstances() + " to " + event.newInstances() + " instances",
+                                 Map.of("artifact",
+                                        event.artifact().asString(),
+                                        "previousInstances",
+                                        String.valueOf(event.previousInstances()),
+                                        "newInstances",
+                                        String.valueOf(event.newInstances()))));
     }
 
     public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
-        var direction = event.currentInstances() <event.desiredInstances()
+        var direction = event.currentInstances() < event.desiredInstances()
                        ? "up"
                        : "down";
-        var eventType = event.currentInstances() <event.desiredInstances()
-                       ? EventType.SCALE_UP
-                       : EventType.SCALE_DOWN;
-        buffer.add(ClusterEvent.clusterEvent(eventType,
-                                             Severity.INFO,
-                                             "Reconciliation: " + event.artifact().asString() + " adjusted " + direction + " from " + event.currentInstances() + " to " + event.desiredInstances() + " instances",
-                                             Map.of("artifact",
-                                                    event.artifact().asString(),
-                                                    "previousInstances",
-                                                    String.valueOf(event.currentInstances()),
-                                                    "desiredInstances",
-                                                    String.valueOf(event.desiredInstances()),
-                                                    "trigger",
-                                                    "reconciliation")));
+        var summary = "Reconciliation: " + event.artifact().asString() + " adjusted " + direction + " from "
+                      + event.currentInstances() + " to " + event.desiredInstances() + " instances";
+        var details = Map.of("artifact",
+                             event.artifact().asString(),
+                             "previousInstances",
+                             String.valueOf(event.currentInstances()),
+                             "desiredInstances",
+                             String.valueOf(event.desiredInstances()),
+                             "trigger",
+                             "reconciliation");
+        var event2 = event.currentInstances() < event.desiredInstances()
+                     ? new ScaleUp(eventIdAllocator.next(), Instant.now(), selfNode, Severity.INFO, summary, details)
+                     : (ClusterEvent) new ScaleDown(eventIdAllocator.next(), Instant.now(), selfNode, Severity.INFO, summary, details);
+        buffer.add(event2);
     }
 
     public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.CONNECTION_ESTABLISHED,
+        buffer.add(new ConnectionEstablished(eventIdAllocator.next(),
+                                             Instant.now(),
+                                             selfNode,
                                              Severity.INFO,
                                              "Connected to node " + event.nodeId().id(),
-                                             Map.of("nodeId",
-                                                    event.nodeId().id())));
+                                             Map.of("nodeId", event.nodeId().id())));
     }
 
     public void onAccessDenied(OperationalEvent.AccessDenied event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.ACCESS_DENIED,
-                                             Severity.WARNING,
-                                             "Access denied for " + event.principal() + " on " + event.method() + " " + event.path(),
-                                             Map.of("principal",
-                                                    event.principal(),
-                                                    "method",
-                                                    event.method(),
-                                                    "path",
-                                                    event.path(),
-                                                    "actualRole",
-                                                    event.actualRole(),
-                                                    "requiredRole",
-                                                    event.requiredRole())));
+        buffer.add(new AccessDenied(eventIdAllocator.next(),
+                                    Instant.now(),
+                                    selfNode,
+                                    Severity.WARNING,
+                                    "Access denied for " + event.principal() + " on " + event.method() + " " + event.path(),
+                                    Map.of("principal",
+                                           event.principal(),
+                                           "method",
+                                           event.method(),
+                                           "path",
+                                           event.path(),
+                                           "actualRole",
+                                           event.actualRole(),
+                                           "requiredRole",
+                                           event.requiredRole())));
     }
 
     public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LIFECYCLE_CHANGED,
-                                             Severity.INFO,
-                                             "Node " + event.nodeId() + " lifecycle: " + event.transition(),
-                                             Map.of("nodeId",
-                                                    event.nodeId(),
-                                                    "transition",
-                                                    event.transition(),
-                                                    "requestedBy",
-                                                    event.requestedBy())));
+        buffer.add(new NodeLifecycleChanged(eventIdAllocator.next(),
+                                            Instant.now(),
+                                            selfNode,
+                                            Severity.INFO,
+                                            "Node " + event.nodeId() + " lifecycle: " + event.transition(),
+                                            Map.of("nodeId",
+                                                   event.nodeId(),
+                                                   "transition",
+                                                   event.transition(),
+                                                   "requestedBy",
+                                                   event.requestedBy())));
     }
 
     public void onConfigChanged(OperationalEvent.ConfigChanged event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.CONFIG_CHANGED,
-                                             Severity.INFO,
-                                             "Config " + event.action() + ": " + event.key() + " (" + event.scope() + ")",
-                                             Map.of("key",
-                                                    event.key(),
-                                                    "scope",
-                                                    event.scope(),
-                                                    "action",
-                                                    event.action(),
-                                                    "requestedBy",
-                                                    event.requestedBy())));
+        buffer.add(new ConfigChanged(eventIdAllocator.next(),
+                                     Instant.now(),
+                                     selfNode,
+                                     Severity.INFO,
+                                     "Config " + event.action() + ": " + event.key() + " (" + event.scope() + ")",
+                                     Map.of("key",
+                                            event.key(),
+                                            "scope",
+                                            event.scope(),
+                                            "action",
+                                            event.action(),
+                                            "requestedBy",
+                                            event.requestedBy())));
     }
 
     public void onBackupCreated(OperationalEvent.BackupCreated event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.BACKUP_CREATED,
-                                             Severity.INFO,
-                                             "Backup created: " + event.commitId(),
-                                             Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
+        buffer.add(new BackupCreated(eventIdAllocator.next(),
+                                     Instant.now(),
+                                     selfNode,
+                                     Severity.INFO,
+                                     "Backup created: " + event.commitId(),
+                                     Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
     public void onBackupRestored(OperationalEvent.BackupRestored event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.BACKUP_RESTORED,
-                                             Severity.WARNING,
-                                             "Backup restored: " + event.commitId(),
-                                             Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
+        buffer.add(new BackupRestored(eventIdAllocator.next(),
+                                      Instant.now(),
+                                      selfNode,
+                                      Severity.WARNING,
+                                      "Backup restored: " + event.commitId(),
+                                      Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
     public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.BLUEPRINT_DEPLOYED,
-                                             Severity.INFO,
-                                             "Blueprint deployed: " + event.artifactCoords(),
-                                             Map.of("artifactCoords",
-                                                    event.artifactCoords(),
-                                                    "requestedBy",
-                                                    event.requestedBy())));
+        buffer.add(new BlueprintDeployed(eventIdAllocator.next(),
+                                         Instant.now(),
+                                         selfNode,
+                                         Severity.INFO,
+                                         "Blueprint deployed: " + event.artifactCoords(),
+                                         Map.of("artifactCoords",
+                                                event.artifactCoords(),
+                                                "requestedBy",
+                                                event.requestedBy())));
     }
 
     public void onBlueprintDeleted(OperationalEvent.BlueprintDeleted event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.BLUEPRINT_DELETED,
-                                             Severity.INFO,
-                                             "Blueprint deleted: " + event.artifactId(),
-                                             Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
+        buffer.add(new BlueprintDeleted(eventIdAllocator.next(),
+                                        Instant.now(),
+                                        selfNode,
+                                        Severity.INFO,
+                                        "Blueprint deleted: " + event.artifactId(),
+                                        Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
     }
 
     public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.GENERATION_CHANGED,
-                                             Severity.INFO,
-                                             "Generation epoch advanced " + event.oldEpoch() + " -> " + event.newEpoch() + " (" + event.reason() + ")",
-                                             Map.of("oldEpoch",
-                                                    event.oldEpoch(),
-                                                    "newEpoch",
-                                                    event.newEpoch(),
-                                                    "reason",
-                                                    event.reason())));
+        buffer.add(new GenerationChanged(eventIdAllocator.next(),
+                                         Instant.now(),
+                                         selfNode,
+                                         Severity.INFO,
+                                         "Generation epoch advanced " + event.oldEpoch() + " -> " + event.newEpoch() + " (" + event.reason() + ")",
+                                         Map.of("oldEpoch",
+                                                event.oldEpoch(),
+                                                "newEpoch",
+                                                event.newEpoch(),
+                                                "reason",
+                                                event.reason())));
     }
 
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.CONNECTION_FAILED,
-                                             Severity.WARNING,
-                                             "Connection to node " + event.nodeId().id() + " failed: " + event.cause()
-                                                                                                                    .message(),
-                                             Map.of("nodeId",
-                                                    event.nodeId().id(),
-                                                    "cause",
-                                                    event.cause().message())));
+        buffer.add(new ConnectionFailed(eventIdAllocator.next(),
+                                        Instant.now(),
+                                        selfNode,
+                                        Severity.WARNING,
+                                        "Connection to node " + event.nodeId().id() + " failed: " + event.cause().message(),
+                                        Map.of("nodeId",
+                                               event.nodeId().id(),
+                                               "cause",
+                                               event.cause().message())));
     }
 
     private Option<Long> computeAndRemoveDuration(String trackingKey) {

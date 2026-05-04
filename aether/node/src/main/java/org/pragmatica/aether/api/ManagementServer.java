@@ -583,9 +583,14 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     @SuppressWarnings("JBCT-PAT-01") private static void appendEventJson(StringBuilder sb, ClusterEvent event) {
-        sb.append("{\"timestamp\":\"").append(event.timestamp())
+        sb.append("{\"id\":{\"sequence\":").append(event.id().sequence())
+                 .append(",\"nodeId\":\"").append(escapeJson(event.id().nodeId().id()))
+                 .append("\"}");
+        sb.append(",\"timestamp\":\"").append(event.timestamp())
                  .append("\"");
-        sb.append(",\"type\":\"").append(event.type().name())
+        sb.append(",\"sourceNode\":\"").append(escapeJson(event.sourceNode().id()))
+                 .append("\"");
+        sb.append(",\"type\":\"").append(eventTypeTag(event))
                  .append("\"");
         sb.append(",\"severity\":\"").append(event.severity().name())
                  .append("\"");
@@ -602,6 +607,42 @@ class ManagementServerImpl implements ManagementServer {
             firstDetail = false;
         }
         sb.append("}}");
+    }
+
+    /// Per-variant string tag for the JSON `type` field. Closed-set variants emit their legacy
+    /// SCREAMING_SNAKE_CASE name for backward JSON compatibility; {@link ExtendedEvent} variants
+    /// emit their `discriminator()`.
+    @SuppressWarnings("JBCT-PAT-01") private static String eventTypeTag(ClusterEvent event) {
+        return switch (event) {
+            case ClusterEvent.NodeJoined ignored -> "NODE_JOINED";
+            case ClusterEvent.NodeLeft ignored -> "NODE_LEFT";
+            case ClusterEvent.NodeFailed ignored -> "NODE_FAILED";
+            case ClusterEvent.LeaderElected ignored -> "LEADER_ELECTED";
+            case ClusterEvent.LeaderLost ignored -> "LEADER_LOST";
+            case ClusterEvent.QuorumEstablished ignored -> "QUORUM_ESTABLISHED";
+            case ClusterEvent.QuorumLost ignored -> "QUORUM_LOST";
+            case ClusterEvent.DeploymentStarted ignored -> "DEPLOYMENT_STARTED";
+            case ClusterEvent.DeploymentCompleted ignored -> "DEPLOYMENT_COMPLETED";
+            case ClusterEvent.DeploymentFailed ignored -> "DEPLOYMENT_FAILED";
+            case ClusterEvent.ScaleUp ignored -> "SCALE_UP";
+            case ClusterEvent.ScaleDown ignored -> "SCALE_DOWN";
+            case ClusterEvent.SliceFailure ignored -> "SLICE_FAILURE";
+            case ClusterEvent.ConnectionEstablished ignored -> "CONNECTION_ESTABLISHED";
+            case ClusterEvent.ConnectionFailed ignored -> "CONNECTION_FAILED";
+            case ClusterEvent.CommunityScaleRequest ignored -> "COMMUNITY_SCALE_REQUEST";
+            case ClusterEvent.CommunityMetricsSnapshot ignored -> "COMMUNITY_METRICS_SNAPSHOT";
+            case ClusterEvent.AccessDenied ignored -> "ACCESS_DENIED";
+            case ClusterEvent.NodeLifecycleChanged ignored -> "NODE_LIFECYCLE_CHANGED";
+            case ClusterEvent.ConfigChanged ignored -> "CONFIG_CHANGED";
+            case ClusterEvent.BackupCreated ignored -> "BACKUP_CREATED";
+            case ClusterEvent.BackupRestored ignored -> "BACKUP_RESTORED";
+            case ClusterEvent.BlueprintDeployed ignored -> "BLUEPRINT_DEPLOYED";
+            case ClusterEvent.BlueprintDeleted ignored -> "BLUEPRINT_DELETED";
+            case ClusterEvent.GenerationChanged ignored -> "GENERATION_CHANGED";
+            case ClusterEvent.StreamRegistered ignored -> "STREAM_REGISTERED";
+            case ClusterEvent.StreamDeleted ignored -> "STREAM_DELETED";
+            case ExtendedEvent ext -> ext.discriminator();
+        };
     }
 
     @SuppressWarnings("JBCT-PAT-01") private void handleRequest(RequestContext ctx, ResponseWriter response) {
