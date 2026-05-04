@@ -5,6 +5,8 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
+import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifactParser;
@@ -56,6 +58,20 @@ public interface BlueprintService {
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
     Result<Blueprint> validate(String dsl);
+
+    /// Validate the structural blueprint DSL and (if present) the resources.toml stream
+    /// declarations as a single combined gate. Returns the parsed [Blueprint] together with the
+    /// validated stream-resource map and any non-blocking warnings. Failures are aggregated via
+    /// [StreamResourceValidator] (spec §15.1.1) so the operator sees every error in one pass.
+    Result<ValidatedBlueprint> validateBlueprint(String dsl, Option<String> resourcesConfig);
+
+    /// Combined validation result returned by [#validateBlueprint(String, Option)].
+    record ValidatedBlueprint(Blueprint blueprint, ValidatedStreamResources streamResources) {
+        public static ValidatedBlueprint validatedBlueprint(Blueprint blueprint,
+                                                            ValidatedStreamResources streamResources) {
+            return new ValidatedBlueprint(blueprint, streamResources);
+        }
+    }
 
     Cause ARTIFACT_STORE_NOT_CONFIGURED = Causes.cause("ArtifactStore not configured");
 
@@ -187,16 +203,38 @@ public interface BlueprintService {
         return BlueprintParser.parse(dsl);
     }
 
+    @Override public Result<ValidatedBlueprint> validateBlueprint(String dsl, Option<String> resourcesConfig) {
+        return BlueprintParser.parse(dsl)
+                              .flatMap(blueprint -> StreamResourceValidator.validate(resourcesConfig,
+                                                                                       blueprint.id().artifact())
+                                                                            .map(validated -> ValidatedBlueprint
+                                                                                    .validatedBlueprint(blueprint,
+                                                                                                          validated)));
+    }
+
     private Promise<ExpandedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
                                                               String artifactCoords) {
         return BlueprintExpander.expand(blueprintArtifact.blueprint(),
                                         repository).flatMap(expanded -> applyResourcesConfig(expanded,
                                                                                              blueprintArtifact.resourcesConfig()))
+                                       .flatMap(expanded -> runStreamResourceGate(expanded,
+                                                                                    blueprintArtifact.resourcesConfig()))
                                        .flatMap(this::validatePubSub)
                                        .flatMap(expanded -> storeAllInSingleBatch(expanded,
                                                                                   blueprintArtifact.resourcesConfig(),
                                                                                   blueprintArtifact.schemaMigrations(),
                                                                                   artifactCoords));
+    }
+
+    /// Runtime gate per spec §15.1: synchronous, atomic, all-failures-aggregated stream-resource
+    /// validation that must pass **before** any cluster state mutation. On failure the deploy
+    /// short-circuits with a structured cause that the route handler maps to HTTP 422.
+    private Promise<ExpandedBlueprint> runStreamResourceGate(ExpandedBlueprint expanded,
+                                                              Option<String> resourcesConfig) {
+        return StreamResourceValidator.validate(resourcesConfig,
+                                                  expanded.id().artifact())
+                                       .map(_ -> expanded)
+                                       .async();
     }
 
     private Promise<ExpandedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,

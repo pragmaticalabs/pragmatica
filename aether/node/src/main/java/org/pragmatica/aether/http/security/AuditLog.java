@@ -90,6 +90,13 @@ import org.slf4j.LoggerFactory;
         AUDIT.info("BLUEPRINT_DELETED blueprintId={}", blueprintId);
     }
 
+    /// Spec §15.1.2: emitted by the deploy route when stream-resource validation rejects a
+    /// blueprint. `blueprintCoords` is the requested artifact coordinate; `summary` is a short
+    /// description of the failure (count of errors or message text).
+    public static void blueprintDeploymentRejected(String blueprintCoords, String summary) {
+        AUDIT.warn("BLUEPRINT_DEPLOYMENT_REJECTED blueprint={} reason={}", blueprintCoords, summary);
+    }
+
     public static void schemaManualRetry(String datasource) {
         AUDIT.info("SCHEMA_MANUAL_RETRY datasource={}", datasource);
     }

@@ -23,7 +23,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.pragmatica.lang.Option.option;
@@ -50,6 +52,10 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
     String ROLE_CONSUMER = "consumer";
 
+    /// Slice declares both producer and consumer bindings for the same stream alias (spec §11.1.2).
+    /// Treated as producer for version-defaulting and the producer-rejects-latest rule.
+    String ROLE_BOTH = "both";
+
     static Result<Map<String, StreamConfig>> parse(String toml) {
         return option(toml).filter(s -> !s.isBlank())
                      .map(StreamConfigParser::parseStreamToml)
@@ -67,9 +73,62 @@ import static org.pragmatica.lang.utils.Causes.cause;
     /// the spec §11.1 shortcut form and `version` is defaulted from `role` (or producer-assumed when
     /// `role` is also omitted, pending Wave 3 slice-binding inference).
     static Result<Map<String, StreamResource>> parseResources(String toml) {
+        return parseResources(toml, Map.of());
+    }
+
+    /// Parse `[streams.*]` sections with per-alias **inferred role hints** (spec §11.1.2).
+    ///
+    /// `roleHints` maps a stream alias (e.g., `orders`) to its inferred role (`producer`,
+    /// `consumer`, `both`) — produced by the slice-processor from `StreamPublisher`/`StreamAccess`
+    /// parameter bindings on the slice's factory method. When a `[streams.X]` section omits the
+    /// explicit `role` field and `roleHints` carries an entry for `X`, the inferred role drives
+    /// default version selection per §11.1.1 and the producer-with-latest rejection per §11.1.3.
+    ///
+    /// `roleHints` of `"both"` is treated as producer for the version-default rule (the safer
+    /// choice — a stream the slice both writes and reads must pin) and the producer-rejects-latest
+    /// rule applies on the producer side.
+    ///
+    /// Behaviourally identical to [#parseResources(String)] when `roleHints` is empty.
+    static Result<Map<String, StreamResource>> parseResources(String toml, Map<String, String> roleHints) {
         return option(toml).filter(s -> !s.isBlank())
-                     .map(StreamConfigParser::parseResourceToml)
+                     .map(t -> parseResourceToml(t, roleHints))
                      .or(success(Map.of()));
+    }
+
+    /// Aggregating variant: every per-section failure is collected via [Result#allOf] rather than
+    /// short-circuiting at the first error. Used by [org.pragmatica.aether.deployment.validation.StreamResourceValidator]
+    /// to satisfy spec §15.1.1 "all-failures aggregation" — operators see every error in one pass.
+    ///
+    /// Returns [Result#failure] carrying a [org.pragmatica.lang.utils.Causes.CompositeCause]
+    /// when any section fails; [Result#success] with the parsed map otherwise.
+    static Result<Map<String, StreamResource>> parseResourcesAggregating(String toml,
+                                                                          Map<String, String> roleHints) {
+        if (toml == null || toml.isBlank()) {
+            return success(Map.of());
+        }
+        return TomlParser.parse(toml)
+                         .mapError(err -> cause("Stream config parse error: " + err.message()))
+                         .flatMap(doc -> aggregateStreamResources(doc, roleHints));
+    }
+
+    private static Result<Map<String, StreamResource>> aggregateStreamResources(TomlDocument doc,
+                                                                                 Map<String, String> roleHints) {
+        var perSection = new ArrayList<Result<Map.Entry<String, StreamResource>>>();
+        for (var sectionName : doc.sectionNames()) {
+            if (!isStreamSection(sectionName)) {continue;}
+            var streamName = sectionName.substring(STREAMS_PREFIX.length());
+            if (streamName.contains(".")) {continue;}
+            perSection.add(parseStreamResource(doc, sectionName, streamName, roleHints)
+                                   .map(res -> Map.entry(streamName, res)));
+        }
+        return Result.allOf(perSection)
+                     .map(StreamConfigParser::toOrderedMap);
+    }
+
+    private static Map<String, StreamResource> toOrderedMap(List<Map.Entry<String, StreamResource>> entries) {
+        var ordered = new LinkedHashMap<String, StreamResource>();
+        entries.forEach(entry -> ordered.put(entry.getKey(), entry.getValue()));
+        return Map.copyOf(ordered);
     }
 
     static Result<Map<String, ConsumerConfig>> parseConsumers(String toml, String streamName) {
@@ -83,28 +142,35 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                .map(StreamConfigParser::extractStreamConfigs);
     }
 
-    private static Result<Map<String, StreamResource>> parseResourceToml(String toml) {
+    private static Result<Map<String, StreamResource>> parseResourceToml(String toml,
+                                                                          Map<String, String> roleHints) {
         return TomlParser.parse(toml).mapError(err -> cause("Stream config parse error: " + err.message()))
-                               .flatMap(StreamConfigParser::extractStreamResources);
+                               .flatMap(doc -> extractStreamResources(doc, roleHints));
     }
 
-    private static Result<Map<String, StreamResource>> extractStreamResources(TomlDocument doc) {
+    private static Result<Map<String, StreamResource>> extractStreamResources(TomlDocument doc,
+                                                                               Map<String, String> roleHints) {
         var result = new LinkedHashMap<String, StreamResource>();
         for (var sectionName : doc.sectionNames()) {
             if (!isStreamSection(sectionName)) {continue;}
             var streamName = sectionName.substring(STREAMS_PREFIX.length());
             if (streamName.contains(".")) {continue;}  // skip sub-sections like streams.x.consumers.y
-            var parsed = parseStreamResource(doc, sectionName, streamName);
+            var parsed = parseStreamResource(doc, sectionName, streamName, roleHints);
             if (parsed.isFailure()) {return parsed.fold(Result::failure, _ -> success(Map.of()));}
             parsed.onSuccess(res -> result.put(streamName, res));
         }
         return success(Map.copyOf(result));
     }
 
-    private static Result<StreamResource> parseStreamResource(TomlDocument doc, String section, String streamName) {
+    private static Result<StreamResource> parseStreamResource(TomlDocument doc,
+                                                                String section,
+                                                                String streamName,
+                                                                Map<String, String> roleHints) {
         var sourceOpt = doc.getString(section, "source");
         var versionOpt = doc.getString(section, "version");
-        var roleOpt = doc.getString(section, "role");
+        var explicitRoleOpt = doc.getString(section, "role");
+        var hintOpt = option(roleHints.get(streamName));
+        var effectiveRoleOpt = explicitRoleOpt.isPresent() ? explicitRoleOpt : hintOpt;
 
         if (sourceOpt.isPresent() && versionOpt.isPresent()) {
             return Causes.cause("Stream resource '" + streamName + "' must not set both 'source' and 'version'").result();
@@ -114,11 +180,11 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                   source -> parseExternalResource(streamName, source));
         }
         // Spec §11.1.1: shortcut form — when `version` is omitted, default per role.
-        // Producer (explicit or, per Wave 2 scope, omitted role) → "1.0.0".
-        // Consumer (explicit) → "latest". Wave 3 will refine omitted-role inference from slice binding.
-        // TODO Wave 6: emit warning per spec §11.1.3 multi-version check
-        var resolvedVersion = versionOpt.or(defaultVersionForRole(roleOpt));
-        return parseOwnedResource(doc, section, streamName, resolvedVersion, roleOpt);
+        // Producer (explicit, inferred from manifest, or absent → producer-assumed) → "1.0.0".
+        // Consumer (explicit or inferred) → "latest". `both` inherits the producer default
+        // (the safer pin since a producer-side write requires an exact triplet anyway).
+        var resolvedVersion = versionOpt.or(defaultVersionForRole(effectiveRoleOpt));
+        return parseOwnedResource(doc, section, streamName, resolvedVersion, effectiveRoleOpt);
     }
 
     private static String defaultVersionForRole(Option<String> roleOpt) {
@@ -153,18 +219,20 @@ import static org.pragmatica.lang.utils.Causes.cause;
     }
 
     /// Spec §11.1.3: producer with `version = "latest"` (explicit, after defaulting) is a build-time
-    /// error. Producers must pin to an exact triplet for write determinism.
+    /// error. Producers must pin to an exact triplet for write determinism. The `both` role is
+    /// treated as a producer here — it implies the slice writes, which mandates an exact pin.
     private static Result<StreamVersionSpec> rejectProducerLatest(String streamName,
                                                                    StreamVersionSpec spec,
                                                                    Option<String> roleOpt) {
-        var isProducer = roleOpt.map(String::trim)
-                                .map(String::toLowerCase)
-                                .filter(ROLE_PRODUCER::equals)
-                                .isPresent();
-        if (isProducer && spec.isLatest()) {
+        var producesEvents = roleOpt.map(String::trim)
+                                    .map(String::toLowerCase)
+                                    .filter(role -> ROLE_PRODUCER.equals(role) || ROLE_BOTH.equals(role))
+                                    .isPresent();
+        if (producesEvents && spec.isLatest()) {
             return Causes.<Cause>cause(
-                    "Stream resource '" + streamName + "' has role 'producer' with version 'latest'; "
-                    + "producers must pin to an exact MAJOR.MINOR.PATCH triplet (spec §11.1.3)"
+                    "Stream resource '" + streamName + "' has role '" + roleOpt.or("producer")
+                    + "' with version 'latest'; producers must pin to an exact MAJOR.MINOR.PATCH triplet "
+                    + "(spec §11.1.3)"
             ).result();
         }
         return success(spec);

@@ -104,11 +104,22 @@ public sealed interface ManagementApiResponses {
 
     record BlueprintDeleteResponse(String status, String id){}
 
+    /// Spec §15.1.2: structured failure transport. `errors` is the canonical shape used by
+    /// `/api/blueprint/validate` and `/api/blueprint/deploy` — each entry is a `field` (offending
+    /// TOML section or coord), a stable `rule` tag, and a human-readable `message`. `warnings`
+    /// follows the same shape and is non-blocking. `legacyErrors` preserves the prior flat
+    /// `List<String>` body for clients that haven't migrated yet (deprecated; will be removed
+    /// after RC1).
     record BlueprintValidationResponse(boolean valid,
                                        String id,
                                        int sliceCount,
-                                       List<String> errors,
-                                       List<String> warnings){}
+                                       List<ValidationFailureInfo> errors,
+                                       List<ValidationWarningInfo> warnings,
+                                       List<String> legacyErrors){}
+
+    record ValidationFailureInfo(String field, String rule, String message){}
+
+    record ValidationWarningInfo(String field, String rule, String message){}
 
     record MetricsFullResponse(Map<String, Map<String, Double>> load,
                                Map<String, List<DeploymentMetrics>> deployments){}

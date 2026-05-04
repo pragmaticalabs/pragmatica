@@ -7,6 +7,9 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
+import org.pragmatica.aether.deployment.validation.StreamValidationFailures;
+import org.pragmatica.aether.deployment.validation.StreamValidationWarning;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -25,6 +28,8 @@ import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.routing.HttpError;
+import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -209,8 +214,10 @@ public final class SliceRoutes implements RouteSource {
                                                                    expanded.loadOrder().size()))
                             .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
                                                                           r.slices()))
+                            .onFailure(cause -> auditDeployFailure(request.artifact(), cause))
                             .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
-                                                         cause.message()));
+                                                         cause.message()))
+                            .mapError(SliceRoutes::elevateValidationStatus);
     }
 
     private Promise<BlueprintResponse> handleBlueprintPublish(BlueprintDeployRequest request) {
@@ -224,7 +231,27 @@ public final class SliceRoutes implements RouteSource {
                             .onSuccess(r -> log.info("Blueprint {} published (no security overrides applied)",
                                                      r.blueprint()))
                             .onFailure(cause -> log.warn("Blueprint artifact publish failed: {}",
-                                                         cause.message()));
+                                                         cause.message()))
+                            .mapError(SliceRoutes::elevateValidationStatus);
+    }
+
+    /// Spec §15.1.2: stream-resource validation failures map to HTTP 422
+    /// (Unprocessable Entity) — the request was syntactically OK but failed semantic checks.
+    /// Other failures propagate as-is and default to 500 in `ManagementRouter`.
+    private static Cause elevateValidationStatus(Cause cause) {
+        if (cause instanceof StreamValidationFailures) {
+            return HttpError.httpError(HttpStatus.UNPROCESSABLE_ENTITY, cause);
+        }
+        return cause;
+    }
+
+    /// AuditLog rejection — principal context is captured by the HTTP authentication layer; here
+    /// we record the blueprint identifier and the failure summary per spec §15.1.2.
+    private static void auditDeployFailure(String coords, Cause cause) {
+        var summary = cause instanceof StreamValidationFailures failures
+                     ? failures.failures().size() + " stream-resource error(s)"
+                     : cause.message();
+        AuditLog.blueprintDeploymentRejected(coords, summary);
     }
 
     private void pushSecurityOverrides(ExpandedBlueprint expanded) {
@@ -347,27 +374,73 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<BlueprintValidationResponse> handleValidateBlueprint(String body) {
-        var warnings = BlueprintParser.detectUnrecognizedSections(body);
+        var legacyWarnings = BlueprintParser.detectUnrecognizedSections(body);
         return Promise.success(nodeSupplier.get().blueprintService()
-                                               .validate(body)
-                                               .fold(cause -> failedValidationResponse(cause, warnings),
-                                                     blueprint -> successValidationResponse(blueprint, warnings)));
+                                               .validateBlueprint(body, Option.none())
+                                               .fold(cause -> failedValidationResponse(cause, legacyWarnings),
+                                                     validated -> successValidationResponse(validated.blueprint(),
+                                                                                              validated.streamResources()
+                                                                                                       .warnings(),
+                                                                                              legacyWarnings)));
     }
 
-    private static BlueprintValidationResponse failedValidationResponse(Cause cause, List<String> warnings) {
+    private static BlueprintValidationResponse failedValidationResponse(Cause cause, List<String> legacyWarnings) {
+        var failures = flattenValidationFailures(cause);
+        var failureInfos = failures.stream()
+                                   .map(failure -> new ValidationFailureInfo(failure.field(),
+                                                                              failure.rule(),
+                                                                              failure.message()))
+                                   .toList();
+        var warningInfos = warningsOf(cause);
         return new BlueprintValidationResponse(false,
                                                "",
                                                0,
-                                               List.of(cause.message()),
-                                               warnings);
+                                               failureInfos,
+                                               warningInfos,
+                                               failureInfos.isEmpty()
+                                              ? List.of(cause.message())
+                                              : List.of());
     }
 
-    private static BlueprintValidationResponse successValidationResponse(Blueprint blueprint, List<String> warnings) {
+    private static BlueprintValidationResponse successValidationResponse(Blueprint blueprint,
+                                                                          List<StreamValidationWarning> streamWarnings,
+                                                                          List<String> legacyWarnings) {
+        var warningInfos = streamWarnings.stream()
+                                          .map(warning -> new ValidationWarningInfo(warning.field(),
+                                                                                      warning.rule(),
+                                                                                      warning.message()))
+                                          .toList();
+        var combinedLegacyWarnings = combineLegacyWarnings(streamWarnings, legacyWarnings);
         return new BlueprintValidationResponse(true,
                                                blueprint.id().asString(),
                                                blueprint.slices().size(),
                                                List.of(),
-                                               warnings);
+                                               warningInfos,
+                                               combinedLegacyWarnings);
+    }
+
+    private static List<String> combineLegacyWarnings(List<StreamValidationWarning> streamWarnings,
+                                                       List<String> legacyWarnings) {
+        if (streamWarnings.isEmpty()) {return legacyWarnings;}
+        var result = new java.util.ArrayList<String>(legacyWarnings);
+        streamWarnings.forEach(warning -> result.add(warning.message()));
+        return List.copyOf(result);
+    }
+
+    private static List<StreamValidationFailure> flattenValidationFailures(Cause cause) {
+        if (cause instanceof StreamValidationFailures failures) {return failures.failures();}
+        return List.of();
+    }
+
+    private static List<ValidationWarningInfo> warningsOf(Cause cause) {
+        if (cause instanceof StreamValidationFailures failures) {
+            return failures.warnings().stream()
+                                       .map(warning -> new ValidationWarningInfo(warning.field(),
+                                                                                  warning.rule(),
+                                                                                  warning.message()))
+                                       .toList();
+        }
+        return List.of();
     }
 
     private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances, Option<String> placement) {
