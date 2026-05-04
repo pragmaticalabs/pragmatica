@@ -1,6 +1,6 @@
 # Aether Feature Catalog
 
-Comprehensive inventory of all Aether distributed runtime capabilities.
+Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 
 **Status legend:**
 - **Battle-tested** — Proven through multi-node E2E tests with failure injection (node kills, partitions, leader failovers)

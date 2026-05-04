@@ -1,16 +1,16 @@
 # Pragmatica
 
-A monorepo for building reliable Java backends with functional programming patterns and a distributed runtime.
+A monorepo for building reliable Java backends with functional programming patterns and a unified application runtime.
 
 ## What's Inside
 
-**[Pragmatica Lite Core](core/README.md)** — Functional primitives for Java: `Result<T>`, `Option<T>`, `Promise<T>`. No exceptions, no nulls, composable error handling.
+**[Pragmatica Core](core/README.md)** — Functional primitives for Java: `Result<T>`, `Option<T>`, `Promise<T>`. No exceptions, no nulls, composable error handling.
 
-**[Pragmatica Lite Integrations](integrations/)** — Ready-made integrations: PostgreSQL (async + JDBC + jOOQ), HTTP server/client, serialization (Kryo, Fury), consensus protocols, distributed storage, messaging, metrics.
+**[Pragmatica Integrations](integrations/)** — Ready-made integrations: PostgreSQL (async + JDBC + jOOQ), HTTP server/client, serialization (Kryo, Fury), consensus protocols, distributed storage, messaging, metrics.
 
 **[JBCT Tools](jbct/README.md)** — CLI and Maven plugin for Java Backend Coding Technology: code formatting, linting, slice annotation processing, project scaffolding.
 
-**[Aether Runtime](aether/README.md)** — Distributed runtime for Java. Deploy services as slices, scale transparently, no microservices boilerplate. Consensus-based state, automatic topology management, built-in observability.
+**[Aether Runtime](aether/README.md)** — Unified Application Runtime for Java. Deploy services as slices, scale transparently, no microservices boilerplate. Consensus-based state, automatic topology management, built-in observability.
 
 ## Prerequisites
 

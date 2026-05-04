@@ -1054,5 +1054,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 Historical changelogs for individual projects:
 
-- [Pragmatica Lite CHANGELOG](core/CHANGELOG.md)
+- [Pragmatica Core CHANGELOG](core/CHANGELOG.md)
 - [JBCT CHANGELOG](jbct/CHANGELOG.md)

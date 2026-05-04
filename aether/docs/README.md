@@ -1,6 +1,6 @@
 # Aether Documentation
 
-Central hub for all Aether distributed runtime documentation.
+Central hub for all Aether Unified Application Runtime documentation.
 
 ## Architecture
 

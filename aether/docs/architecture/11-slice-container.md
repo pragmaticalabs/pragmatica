@@ -8,7 +8,7 @@ This document describes ClassLoader isolation, dependency materialization, and s
 graph TB
     subgraph JVM["JVM ClassLoader Hierarchy"]
         System["System ClassLoader"]
-        Shared["SharedLibraryClassLoader<br/>Pragmatica Lite core,<br/>common dependencies"]
+        Shared["SharedLibraryClassLoader<br/>Pragmatica Core core,<br/>common dependencies"]
 
         SCL1["SliceClassLoader A<br/>(child-first)"]
         SCL2["SliceClassLoader B<br/>(child-first)"]
@@ -44,7 +44,7 @@ This means two slices can use different versions of the same library without con
 ### SharedLibraryClassLoader
 
 Loaded once, shared across all slices:
-- Pragmatica Lite core (`Result`, `Option`, `Promise`)
+- Pragmatica Core core (`Result`, `Option`, `Promise`)
 - Slice API interfaces
 - Common serialization libraries
 
