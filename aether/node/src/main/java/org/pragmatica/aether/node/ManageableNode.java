@@ -82,10 +82,10 @@ public interface ManageableNode {
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
-    /// Stream namespacing facade. Default returns a disabled service (no-op snapshot/lookup).
-    /// Implementations override when the `streamNamespacesEnabled` flag is on.
+    /// Stream namespacing facade. Default returns an in-memory service. Implementations may
+    /// override to provide a registry backed by the cluster KV-Store.
     default StreamNamespacesService streamNamespacesService() {
-        return StreamNamespacesService.disabled();
+        return StreamNamespacesService.inMemory();
     }
     TaskAssignmentCoordinator taskAssignmentCoordinator();
     TaskGroupAssignmentRegistry taskGroupAssignmentRegistry();

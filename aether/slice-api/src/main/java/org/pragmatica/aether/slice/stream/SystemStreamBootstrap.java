@@ -20,7 +20,8 @@ import static org.pragmatica.lang.Result.success;
 /// lifetime (spec §6.1, §8.1). Registration is idempotent: streams already present are skipped
 /// so bootstrap survives restarts where the registry state is preserved.
 ///
-/// Invoked from the node startup path when the `streamNamespacesEnabled` feature flag is on.
+/// Invoked unconditionally from the node startup path; per the event-stream-namespaces spec
+/// (RC1-mandatory) there is no feature flag gating system-stream registration.
 public final class SystemStreamBootstrap {
     private final StreamRegistry registry;
     private final RetentionPolicy defaultRetention;

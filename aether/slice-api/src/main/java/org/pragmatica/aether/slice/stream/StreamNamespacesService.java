@@ -12,84 +12,45 @@ import java.util.List;
 
 /// Facade for the stream-namespacing subsystem.
 ///
-/// Owns a [StreamRegistry], a [SystemStreamBootstrap], and the current [StreamNamespacesConfig].
-/// When the feature flag is disabled the service returns empty snapshots and
-/// [StreamRegistry.StreamRegistryError.General.NOT_FOUND] for lookups — same observable shape as
-/// an empty cluster, so callers (HTTP routes, CLI) can treat the no-op path uniformly.
-///
-/// Intended to be a singleton per node. Node startup:
-///  1. Constructs the service with the configured registry and feature flag.
-///  2. If enabled, calls [#bootstrap()] to register system streams.
-///  3. Exposes the service to the management-API layer for read-only listing.
+/// Owns a [StreamRegistry] and a [SystemStreamBootstrap]. Per the event-stream-namespaces spec
+/// (RC1-mandatory), the service runs unconditionally — there is no enable/disable flag. Node
+/// startup constructs the service, calls [#bootstrap()] to register system streams, and exposes
+/// the service to the management-API layer for read-only listing.
 public final class StreamNamespacesService {
-    private final StreamNamespacesConfig config;
     private final StreamRegistry registry;
     private final SystemStreamBootstrap bootstrap;
 
-    public StreamNamespacesService(StreamNamespacesConfig config,
-                                    StreamRegistry registry,
-                                    SystemStreamBootstrap bootstrap) {
-        this.config = config;
+    public StreamNamespacesService(StreamRegistry registry, SystemStreamBootstrap bootstrap) {
         this.registry = registry;
         this.bootstrap = bootstrap;
     }
 
-    public static StreamNamespacesService disabled() {
+    public static StreamNamespacesService inMemory() {
         var registry = new InMemoryStreamRegistry();
-        return new StreamNamespacesService(StreamNamespacesConfig.DISABLED,
-                                            registry,
-                                            new SystemStreamBootstrap(registry));
-    }
-
-    public static StreamNamespacesService enabledInMemory() {
-        var registry = new InMemoryStreamRegistry();
-        return new StreamNamespacesService(StreamNamespacesConfig.ENABLED,
-                                            registry,
-                                            new SystemStreamBootstrap(registry));
-    }
-
-    public StreamNamespacesConfig config() {
-        return config;
-    }
-
-    public boolean enabled() {
-        return config.enabled();
+        return new StreamNamespacesService(registry, new SystemStreamBootstrap(registry));
     }
 
     public StreamRegistry registry() {
         return registry;
     }
 
-    /// Run system-stream bootstrap. No-op when the feature flag is disabled.
+    /// Run system-stream bootstrap.
     public Result<List<StreamRegistryEntry>> bootstrap() {
-        if (!config.enabled()) {
-            return Result.success(List.of());
-        }
         return bootstrap.bootstrap();
     }
 
-    /// Read-only listing used by the HTTP route. Empty when the flag is off.
+    /// Read-only listing used by the HTTP route.
     public List<StreamRegistryEntry> snapshot() {
-        if (!config.enabled()) {
-            return List.of();
-        }
         return registry.snapshot();
     }
 
-    /// Read-only lookup by exact address used by the HTTP route. Empty when the flag is off.
+    /// Read-only lookup by exact address used by the HTTP route.
     public Option<StreamRegistryEntry> lookup(StreamAddress address) {
-        if (!config.enabled()) {
-            return Option.none();
-        }
         return registry.lookup(address);
     }
 
-    /// Read-only resolve used by the HTTP route. Returns
-    /// [StreamRegistry.StreamRegistryError.General.NOT_FOUND] when the flag is off.
+    /// Read-only resolve used by the HTTP route.
     public Result<StreamRegistryEntry> resolve(String namespace, String stream, StreamVersionSpec spec) {
-        if (!config.enabled()) {
-            return StreamRegistry.StreamRegistryError.General.NOT_FOUND.result();
-        }
         return registry.resolve(namespace, stream, spec);
     }
 }

@@ -24,8 +24,7 @@ import java.util.stream.Stream;
 /// - `GET /api/stream-namespaces` — snapshot of all registered streams.
 /// - `GET /api/stream-namespaces/{namespace}/{stream}/{version}` — exact lookup.
 ///
-/// When the `streamNamespacesEnabled` flag is off the facade returns empty snapshots / NOT_FOUND,
-/// so the routes behave as if the registry were empty — no special case in clients. System
+/// Per the event-stream-namespaces spec (RC1-mandatory), the facade is always active. System
 /// namespace admin-gating (spec §10) is applied at the HTTP auth layer, not at the route handler.
 public final class StreamNamespacesRoutes implements RouteSource {
     private final StreamNamespacesService service;
