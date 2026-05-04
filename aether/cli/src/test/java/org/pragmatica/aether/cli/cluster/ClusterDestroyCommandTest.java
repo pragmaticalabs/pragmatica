@@ -9,6 +9,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.aether.cli.cluster.CreatedResource.ProvisionedVm;
 import org.pragmatica.lang.Cause;
@@ -16,12 +17,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+
+import picocli.CommandLine;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -170,6 +175,103 @@ class ClusterDestroyCommandTest {
 
             assertTrue(ok);
             assertEquals(CLUSTER_NAME, capturedName.get());
+        }
+    }
+
+    @Nested
+    class ClusterOverrideValidation {
+
+        private PrintStream originalErr;
+
+        private ByteArrayOutputStream errCapture;
+
+        @BeforeEach
+        void redirectErr() {
+            originalErr = System.err;
+            errCapture = new ByteArrayOutputStream();
+            System.setErr(new PrintStream(errCapture));
+        }
+
+        @AfterEach
+        void restoreErr() {
+            System.setErr(originalErr);
+        }
+
+        @Test
+        void destroy_invalidClusterOverrideWithSpecialChars_returnsUsageExitCode() {
+            var command = new ClusterDestroyCommand();
+            command.setClusterNameOverride("INVALID@NAME");
+
+            var exitCode = command.call();
+
+            assertEquals(ExitCode.USAGE, exitCode);
+            assertTrue(errCapture.toString().contains("Invalid --cluster value"),
+                       "Expected validation error in stderr, got: " + errCapture);
+        }
+
+        @Test
+        void destroy_invalidClusterOverrideStartingWithDigit_returnsUsageExitCode() {
+            var command = new ClusterDestroyCommand();
+            command.setClusterNameOverride("9bad-name");
+
+            var exitCode = command.call();
+
+            assertEquals(ExitCode.USAGE, exitCode);
+        }
+
+        @Test
+        void destroy_invalidClusterOverrideUppercase_returnsUsageExitCode() {
+            var command = new ClusterDestroyCommand();
+            command.setClusterNameOverride("UpperCase");
+
+            var exitCode = command.call();
+
+            assertEquals(ExitCode.USAGE, exitCode);
+        }
+
+        @Test
+        void destroy_clusterOverrideParsedFromCli() {
+            var command = new ClusterDestroyCommand();
+            new CommandLine(command).parseArgs("--cluster", "my-cluster", "--yes", "--keep-resources");
+
+            assertTrue(command.cleanupCloudResources("my-cluster"),
+                       "Override + --keep-resources should compose: cleanup short-circuits to ok");
+        }
+
+        @Test
+        void destroy_clusterOverrideAndKeepResourcesCompose() {
+            var loaderCalls = new AtomicInteger(0);
+            ClusterDestroyCommand.stateLoader = name -> {
+                loaderCalls.incrementAndGet();
+                return some(stateWithVms(2));
+            };
+            ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
+
+            var command = new ClusterDestroyCommand();
+            new CommandLine(command).parseArgs("--cluster", "other-cluster", "--keep-resources", "--yes");
+
+            var ok = command.cleanupCloudResources("other-cluster");
+
+            assertTrue(ok);
+            assertEquals(0, loaderCalls.get(), "--keep-resources must short-circuit before loader is consulted");
+        }
+
+        @Test
+        void destroy_clusterOverrideRoutesNameToStateLoader() {
+            var capturedName = new AtomicReference<String>();
+            ClusterDestroyCommand.stateLoader = name -> {
+                capturedName.set(name);
+                return none();
+            };
+            ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
+
+            var command = new ClusterDestroyCommand();
+            new CommandLine(command).parseArgs("--cluster", "named-cluster", "--yes");
+
+            command.cleanupCloudResources("named-cluster");
+
+            assertEquals("named-cluster", capturedName.get(),
+                         "Override name must be routed to BootstrapStatePersistence loader");
         }
     }
 

@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -31,6 +32,8 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
 
     private static final int DRAIN_TIMEOUT_SECONDS = 120;
 
+    private static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
+
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     static Function<String, org.pragmatica.lang.Option<BootstrapState>> stateLoader = BootstrapStatePersistence::load;
@@ -41,18 +44,47 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
 
     @Option(names = "--keep-resources", description = "Skip cloud resource termination (registry only)") private boolean keepResources;
 
+    @Option(names = "--cluster", description = "Override active cluster — destroy named cluster instead (CLI > active-context)") private String clusterNameOverride;
+
     @Contract void setKeepResources(boolean value) {
         this.keepResources = value;
     }
 
+    @Contract void setClusterNameOverride(String value) {
+        this.clusterNameOverride = value;
+    }
+
     @Override public Integer call() {
+        if (!isOverrideAcceptable()) {
+            System.err.println("Invalid --cluster value: '" + clusterNameOverride + "': must match ^[a-z][a-z0-9-]{0,62}$");
+            return ExitCode.USAGE;
+        }
         return ClusterRegistry.load().flatMap(this::executeDestroy)
                                    .fold(ClusterDestroyCommand::onFailure, v -> v);
     }
 
+    private boolean isOverrideAcceptable() {
+        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return true;}
+        return CLUSTER_NAME_PATTERN.matcher(clusterNameOverride).matches();
+    }
+
     private Result<Integer> executeDestroy(ClusterRegistry registry) {
-        return registry.current().toResult(ClusterHttpClient.HttpError.NO_ACTIVE_CLUSTER)
-                               .flatMap(entry -> destroyCluster(registry, entry));
+        return resolveTarget(registry).flatMap(entry -> destroyCluster(registry, entry));
+    }
+
+    private Result<ClusterRegistry.ClusterEntry> resolveTarget(ClusterRegistry registry) {
+        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return registry.current()
+                                                                                                  .toResult(ClusterHttpClient.HttpError.NO_ACTIVE_CLUSTER);}
+        return Result.success(findOrSynthesizeEntry(registry, clusterNameOverride));
+    }
+
+    private static ClusterRegistry.ClusterEntry findOrSynthesizeEntry(ClusterRegistry registry, String name) {
+        return registry.entries().stream()
+                               .filter(e -> e.name().equals(name))
+                               .findFirst()
+                               .orElseGet(() -> new ClusterRegistry.ClusterEntry(name,
+                                                                                 "",
+                                                                                 org.pragmatica.lang.Option.none()));
     }
 
     private Result<Integer> destroyCluster(ClusterRegistry registry, ClusterRegistry.ClusterEntry entry) {
@@ -60,7 +92,13 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
             System.out.println("Aborted.");
             return Result.success(ExitCode.SUCCESS);
         }
+        applyEndpointOverride(entry);
         return performDestruction(registry, entry);
+    }
+
+    private static void applyEndpointOverride(ClusterRegistry.ClusterEntry entry) {
+        if (entry.endpoint() == null || entry.endpoint().isBlank()) {return;}
+        ClusterHttpClient.setEndpointOverride(entry.endpoint());
     }
 
     private Result<Integer> performDestruction(ClusterRegistry registry, ClusterRegistry.ClusterEntry entry) {
@@ -170,7 +208,13 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
     }
 
     private static Result<ClusterRegistry> removeRegistryEntry(ClusterRegistry registry, String name) {
+        if (!registryContains(registry, name)) {return Result.success(registry);}
         return registry.remove(name).flatMap(updated -> updated.save().map(_ -> updated));
+    }
+
+    private static boolean registryContains(ClusterRegistry registry, String name) {
+        return registry.entries().stream()
+                               .anyMatch(e -> e.name().equals(name));
     }
 
     private static int printSummary(String clusterName,
