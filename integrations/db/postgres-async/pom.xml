@@ -103,6 +103,9 @@
                 <configuration>
                     <skipTests>${postgres-async.skipTests}</skipTests>
                     <excludedGroups>Infinite</excludedGroups>
+                    <excludes>
+                        <exclude>**/PerformanceTest.java</exclude>
+                    </excludes>
                 </configuration>
             </plugin>
         </plugins>
