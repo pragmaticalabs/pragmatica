@@ -244,16 +244,18 @@ import picocli.CommandLine.Option;
                   : tls.toLowerCase();
         return switch (mode){
             case "auto" -> Result.success(new TlsAnswers.AutoGenerate());
-            case "env" -> {
-                if (tlsCertEnv == null) {yield new ClusterInitError.MissingField("--tls-cert-env (--tls=env)").result();}
-                if (tlsKeyEnv == null) {yield new ClusterInitError.MissingField("--tls-key-env (--tls=env)").result();}
-                yield InputValidators.validateEnvVarName(tlsCertEnv)
-                                                        .flatMap(certOk -> InputValidators.validateEnvVarName(tlsKeyEnv)
-                                                                                                             .map(keyOk -> new TlsAnswers.Manual(certOk,
-                                                                                                                                                 keyOk)));
-            }
+            case "env" -> buildTlsFromEnv();
             default -> new ClusterInitError.InvalidValue("--tls", mode, "expected 'auto' or 'env'").result();
         };
+    }
+
+    private Result<TlsAnswers> buildTlsFromEnv() {
+        if (tlsCertEnv == null) {return new ClusterInitError.MissingField("--tls-cert-env (--tls=env)").result();}
+        if (tlsKeyEnv == null) {return new ClusterInitError.MissingField("--tls-key-env (--tls=env)").result();}
+        return InputValidators.validateEnvVarName(tlsCertEnv)
+                                                 .flatMap(certOk -> InputValidators.validateEnvVarName(tlsKeyEnv)
+                                                                                                      .map(keyOk -> new TlsAnswers.Manual(certOk,
+                                                                                                                                          keyOk)));
     }
 
     private Result<SecretAnswers> buildSecret(SourceType t) {
@@ -263,12 +265,14 @@ import picocli.CommandLine.Option;
                   : secret.toLowerCase();
         return switch (mode){
             case "auto" -> Result.success(new SecretAnswers.AutoGenerate());
-            case "env" -> {
-                if (secretEnv == null) {yield new ClusterInitError.MissingField("--secret-env (--secret=env)").result();}
-                yield InputValidators.validateEnvVarName(secretEnv).map(SecretAnswers.FromEnv::new);
-            }
+            case "env" -> buildSecretFromEnv();
             default -> new ClusterInitError.InvalidValue("--secret", mode, "expected 'auto' or 'env'").result();
         };
+    }
+
+    private Result<SecretAnswers> buildSecretFromEnv() {
+        if (secretEnv == null) {return new ClusterInitError.MissingField("--secret-env (--secret=env)").result();}
+        return InputValidators.validateEnvVarName(secretEnv).map(SecretAnswers.FromEnv::new);
     }
 
     private static Result<SourceType> parseTarget(String raw) {

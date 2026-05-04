@@ -427,14 +427,19 @@ public class ClusterConfigWizard {
             var trimmed = part.trim();
             if (trimmed.isEmpty()) {continue;}
             var validation = InputValidators.validateHostnameOrIp(trimmed);
-            if (!validation.isSuccess()) {return validation.fold(cause -> ((ClusterInitError) cause).result(),
-                                                                 _ -> Result.success(List.of()));}
-            validation.onSuccess(validated::add);
+            var stepOutcome = validation.fold(cause -> ((ClusterInitError) cause).<List<String>>result(),
+                                              host -> appendHost(validated, host));
+            if (!stepOutcome.isSuccess()) {return stepOutcome;}
         }
         if (validated.isEmpty()) {return new ClusterInitError.InvalidValue("hosts",
                                                                            raw,
                                                                            "must contain at least one host").result();}
         return Result.success(List.copyOf(validated));
+    }
+
+    private static Result<List<String>> appendHost(ArrayList<String> validated, String host) {
+        validated.add(host);
+        return Result.success(validated);
     }
 
     private static Path expandHome(String raw) {
