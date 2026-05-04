@@ -327,6 +327,7 @@ remote_scp() {
 # Environment type and cloud access
 # ---------------------------------------------------------------------------
 ENV_TYPE="${ENV_TYPE:-docker}"
+export ENV_TYPE
 CLOUD_MODE="${CLOUD_MODE:-false}"   # backward compat: true maps to ENV_TYPE=cloud
 if [ "$CLOUD_MODE" = "true" ]; then ENV_TYPE="cloud"; fi
 # BASTION_IP is retained for backward-compat env templates but ignored under

@@ -84,8 +84,8 @@ detect_capabilities() {
     # Persistence: check if PostgreSQL is reachable. PG_URL (postgres://user:pass@host:port/db)
     # is the canonical source — cloud runs source it from /tmp/aether-test-pg.env, docker/remote
     # set it via deploy scripts. PG_HOST/PG_PORT remain as escape hatches for ad-hoc setups.
-    local pg_host="${PG_HOST}"
-    local pg_port="${PG_PORT}"
+    local pg_host="${PG_HOST:-}"
+    local pg_port="${PG_PORT:-}"
     if [ -z "$pg_host" ] && [ -n "${PG_URL:-}" ]; then
         # Strip scheme + creds, then split host:port/...
         local hostport="${PG_URL#*@}"

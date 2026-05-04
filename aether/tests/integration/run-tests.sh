@@ -598,6 +598,19 @@ if [ "$SKIP_DEPLOY" = false ]; then
                 else
                     log_warn "Could not resolve Cluster A public IP; falling back to default ${CLUSTER_A_MGMT}"
                 fi
+                # Source the bootstrap-generated API key (RBAC Tier 2 default = VIEWER, so all auth
+                # is now mandatory). Default API_KEY in common.sh is `aether-integration-test-key`,
+                # the docker hardcoded value — useless against a fresh cloud cluster.
+                cluster_a_key_file="${HOME}/.aether/clusters/${CLUSTER_A_NAME}/api-key"
+                if [ -f "$cluster_a_key_file" ]; then
+                    API_KEY=$(cat "$cluster_a_key_file" | tr -d '\n')
+                    export AETHER_API_KEY="$API_KEY"
+                    export ADMIN_API_KEY="$API_KEY"
+                    export OPERATOR_API_KEY="$API_KEY"
+                    log_info "Cluster A API key sourced from ${cluster_a_key_file}"
+                else
+                    log_warn "Cluster A API key file not found at ${cluster_a_key_file} — auth will fail"
+                fi
             else
                 log_info "Skipping Cluster A bootstrap (no A-suites selected)"
             fi
@@ -611,6 +624,16 @@ if [ "$SKIP_DEPLOY" = false ]; then
                     log_info "Cluster B endpoints: mgmt=${CLUSTER_B_MGMT} app=${CLUSTER_B_APP_DIRECT}"
                 else
                     log_warn "Could not resolve Cluster B public IP; falling back to default ${CLUSTER_B_MGMT}"
+                fi
+                # Source the bootstrap-generated API key for cluster B (only takes effect if no
+                # cluster A is also bootstrapping, since both can't share a single AETHER_API_KEY).
+                cluster_b_key_file="${HOME}/.aether/clusters/${CLUSTER_B_NAME}/api-key"
+                if [ -f "$cluster_b_key_file" ] && [ ${#A_SUITES[@]} -eq 0 ]; then
+                    API_KEY=$(cat "$cluster_b_key_file" | tr -d '\n')
+                    export AETHER_API_KEY="$API_KEY"
+                    export ADMIN_API_KEY="$API_KEY"
+                    export OPERATOR_API_KEY="$API_KEY"
+                    log_info "Cluster B API key sourced from ${cluster_b_key_file}"
                 fi
             else
                 log_info "Skipping Cluster B bootstrap (no B-suites selected)"
