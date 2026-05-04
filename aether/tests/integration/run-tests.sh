@@ -579,11 +579,31 @@ if [ "$SKIP_DEPLOY" = false ]; then
             log_step "Bootstrapping cloud clusters"
             if [ ${#A_SUITES[@]} -gt 0 ]; then
                 aether cluster bootstrap "${SCRIPT_DIR}/env/cloud-hetzner.toml" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
+                # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
+                # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
+                # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
+                cluster_a_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+                if [ -n "$cluster_a_ip" ]; then
+                    CLUSTER_A_MGMT="http://${cluster_a_ip}:8080"
+                    CLUSTER_A_APP_DIRECT="http://${cluster_a_ip}:8070"
+                    log_info "Cluster A endpoints: mgmt=${CLUSTER_A_MGMT} app=${CLUSTER_A_APP_DIRECT}"
+                else
+                    log_warn "Could not resolve Cluster A public IP; falling back to default ${CLUSTER_A_MGMT}"
+                fi
             else
                 log_info "Skipping Cluster A bootstrap (no A-suites selected)"
             fi
             if [ ${#B_SUITES[@]} -gt 0 ]; then
                 aether cluster bootstrap "${SCRIPT_DIR}/env/cloud-hetzner-b.toml" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 300
+                # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
+                cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+                if [ -n "$cluster_b_ip" ]; then
+                    CLUSTER_B_MGMT="http://${cluster_b_ip}:8080"
+                    CLUSTER_B_APP_DIRECT="http://${cluster_b_ip}:8070"
+                    log_info "Cluster B endpoints: mgmt=${CLUSTER_B_MGMT} app=${CLUSTER_B_APP_DIRECT}"
+                else
+                    log_warn "Could not resolve Cluster B public IP; falling back to default ${CLUSTER_B_MGMT}"
+                fi
             else
                 log_info "Skipping Cluster B bootstrap (no B-suites selected)"
             fi
