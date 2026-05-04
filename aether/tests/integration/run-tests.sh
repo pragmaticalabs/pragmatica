@@ -731,8 +731,10 @@ fi
 # --- Step 11: Results ---
 TOTAL_DURATION=$(( $(date +%s) - START_TIME ))
 log_info "Total duration: ${TOTAL_DURATION}s"
+set +e
 print_results "$RESULTS_FILE"
 FINAL_RESULT=$?
+set -e
 
 # --- Step 12: Teardown ---
 if [ "$SKIP_TEARDOWN" = false ]; then
@@ -741,5 +743,7 @@ fi
 
 # Cleanup temp files
 rm -f "$RESULTS_FILE" "$TIMINGS_FILE"
+
+exit "$FINAL_RESULT"
 
 exit $FINAL_RESULT

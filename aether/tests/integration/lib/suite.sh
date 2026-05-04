@@ -81,14 +81,26 @@ detect_capabilities() {
         docker|remote) export CAP_NETWORK_PARTITION=true ;;
     esac
 
-    # Persistence: check if PostgreSQL is reachable
+    # Persistence: check if PostgreSQL is reachable. PG_URL (postgres://user:pass@host:port/db)
+    # is the canonical source — cloud runs source it from /tmp/aether-test-pg.env, docker/remote
+    # set it via deploy scripts. PG_HOST/PG_PORT remain as escape hatches for ad-hoc setups.
+    local pg_host="${PG_HOST}"
+    local pg_port="${PG_PORT}"
+    if [ -z "$pg_host" ] && [ -n "${PG_URL:-}" ]; then
+        # Strip scheme + creds, then split host:port/...
+        local hostport="${PG_URL#*@}"
+        hostport="${hostport%%/*}"
+        pg_host="${hostport%%:*}"
+        [ -z "$pg_port" ] && pg_port="${hostport##*:}"
+    fi
+    pg_host="${pg_host:-${TARGET_HOST:-localhost}}"
+    pg_port="${pg_port:-5432}"
     if command -v pg_isready &>/dev/null; then
-        if pg_isready -h "${PG_HOST:-${TARGET_HOST:-localhost}}" -p "${PG_PORT:-5432}" -U forge -q 2>/dev/null; then
+        if pg_isready -h "$pg_host" -p "$pg_port" -U forge -q 2>/dev/null; then
             export CAP_PERSISTENCE=true
         fi
     else
-        # Fallback: try TCP connect
-        if timeout 3 bash -c "echo >/dev/tcp/${PG_HOST:-${TARGET_HOST:-localhost}}/${PG_PORT:-5432}" 2>/dev/null; then
+        if timeout 3 bash -c "echo >/dev/tcp/${pg_host}/${pg_port}" 2>/dev/null; then
             export CAP_PERSISTENCE=true
         fi
     fi

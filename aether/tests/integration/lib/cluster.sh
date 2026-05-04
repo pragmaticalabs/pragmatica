@@ -933,18 +933,25 @@ task_group_node() {
 reassign_task_group() {
     # TaskAssignmentCoordinator is leader-bound, so we must hit the leader directly.
     local group="$1" target="$2"
-    local leader
+    local leader leader_url
     leader=$(cluster_leader)
     if [ -z "$leader" ] || [ "$leader" = "none" ]; then
         log_warn "No leader available for reassign" >&2
         return 1
     fi
-    local node_num
-    node_num=$(echo "$leader" | sed 's/node-//')
-    local port=$((MGMT_PORT + node_num - 1))
+    if [ "$ENV_TYPE" = "cloud" ]; then
+        local leader_ip
+        leader_ip=$(cloud_public_ip "$leader") || return 1
+        leader_url="http://${leader_ip}:${MGMT_PORT}"
+    else
+        local node_num
+        node_num=$(echo "$leader" | sed 's/node-//')
+        local port=$((MGMT_PORT + node_num - 1))
+        leader_url="http://${TARGET_HOST}:${port}"
+    fi
     curl -sf -X PUT -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
         -d "{\"targetNode\":\"${target}\"}" \
-        "http://${TARGET_HOST}:${port}/api/cluster/tasks/reassign/${group}"
+        "${leader_url}/api/cluster/tasks/reassign/${group}"
 }
 
 wait_for_all_tasks_active() {
