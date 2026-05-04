@@ -13,6 +13,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import tools.jackson.databind.JsonNode;
@@ -36,11 +37,14 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECY
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
-        return ClusterHttpClient.post(NODE_DRAIN,
-                                      List.of(nodeId),
-                                      "{}").flatMap(MAPPER::readTree)
-                                     .fold(ClusterDrainCommand::onFailure, this::onDrainInitiated);
+        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.post(NODE_DRAIN,
+                                                                                  List.of(nodeId),
+                                                                                  "{}"))
+                                           .flatMap(MAPPER::readTree)
+                                           .fold(ClusterDrainCommand::onFailure, this::onDrainInitiated);
     }
 
     private int onDrainInitiated(JsonNode root) {

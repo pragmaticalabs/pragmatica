@@ -13,6 +13,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_MIGRATE;
@@ -32,9 +33,12 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_MIG
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
-        return validateStrategy().flatMap(this::sendMigrateRequest)
-                               .fold(ClusterMigrateCommand::onFailure, this::onSuccess);
+        return clusterTarget.applyOverrides().flatMap(_ -> validateStrategy())
+                                           .flatMap(this::sendMigrateRequest)
+                                           .fold(ClusterMigrateCommand::onFailure, this::onSuccess);
     }
 
     private Result<String> validateStrategy() {

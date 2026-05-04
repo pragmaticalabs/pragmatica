@@ -58,9 +58,7 @@ public record ClusterRegistry(Path registryPath, Option<String> currentContext, 
         }
     }
 
-    static ClusterRegistry clusterRegistry(Path path,
-                                                                           Option<String> context,
-                                                                           List<ClusterEntry> entries) {
+    static ClusterRegistry clusterRegistry(Path path, Option<String> context, List<ClusterEntry> entries) {
         return new ClusterRegistry(path, context, entries);
     }
 

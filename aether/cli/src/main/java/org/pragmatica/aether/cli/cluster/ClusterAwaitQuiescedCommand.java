@@ -13,6 +13,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_AWAIT_QUIESCED;
@@ -21,17 +22,19 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_AWA
 @Command(name = "await-quiesced", description = "Wait until cluster reaches the given epoch and quiesces") @SuppressWarnings("JBCT-RET-01") class ClusterAwaitQuiescedCommand implements Callable<Integer> {
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Option(names = "--epoch", description = "Required epoch in T:C form (e.g. 7:142)", required = true) private String epoch;
 
     @Option(names = "--timeout", description = "Timeout (default 30s, max 120s)", defaultValue = "30s") private String timeout;
 
     @Override public Integer call() {
         var query = "epoch=" + epoch + "&timeout=" + timeout;
-        return ClusterHttpClient.post(CLUSTER_AWAIT_QUIESCED,
-                                      List.of(),
-                                      query,
-                                      "{}")
-        .fold(ClusterAwaitQuiescedCommand::onFailure, this::onSuccess);
+        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.post(CLUSTER_AWAIT_QUIESCED,
+                                                                                  List.of(),
+                                                                                  query,
+                                                                                  "{}"))
+                                           .fold(ClusterAwaitQuiescedCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {

@@ -15,6 +15,7 @@ import java.util.regex.Pattern;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
@@ -31,10 +32,13 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_UPG
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
-        return validateVersion().flatMap(this::fetchCurrentConfig)
-                              .flatMap(this::initiateUpgrade)
-                              .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
+        return clusterTarget.applyOverrides().flatMap(_ -> validateVersion())
+                                           .flatMap(this::fetchCurrentConfig)
+                                           .flatMap(this::initiateUpgrade)
+                                           .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
     }
 
     private Result<String> validateVersion() {

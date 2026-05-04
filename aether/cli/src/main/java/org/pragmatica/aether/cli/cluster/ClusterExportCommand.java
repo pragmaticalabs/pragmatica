@@ -14,6 +14,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
@@ -28,9 +29,12 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
-        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(MAPPER::readTree)
-                                      .fold(ClusterExportCommand::onFailure, this::onSuccess);
+        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_CONFIG_GET))
+                                           .flatMap(MAPPER::readTree)
+                                           .fold(ClusterExportCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(JsonNode root) {

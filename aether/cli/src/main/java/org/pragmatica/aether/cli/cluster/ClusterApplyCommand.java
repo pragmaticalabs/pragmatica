@@ -18,6 +18,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import tools.jackson.databind.JsonNode;
@@ -43,7 +44,14 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
+        return clusterTarget.applyOverrides().map(_ -> dispatch())
+                                           .fold(ClusterApplyCommand::onFailure, v -> v);
+    }
+
+    private int dispatch() {
         if (resume) {return handleResume();}
         if (rollback) {return handleRollback();}
         return readConfigFile().flatMap(this::executeApply).fold(ClusterApplyCommand::onFailure, v -> v);

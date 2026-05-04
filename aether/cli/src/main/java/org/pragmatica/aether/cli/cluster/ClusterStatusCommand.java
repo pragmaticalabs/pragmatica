@@ -12,6 +12,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_STATUS;
 
@@ -19,8 +20,11 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 @Command(name = "status", description = "Show cluster status") @SuppressWarnings("JBCT-RET-01") class ClusterStatusCommand implements Callable<Integer> {
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
-        return ClusterHttpClient.fetch(CLUSTER_CONFIG_STATUS).fold(ClusterStatusCommand::onFailure, this::onSuccess);
+        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_CONFIG_STATUS))
+                                           .fold(ClusterStatusCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {

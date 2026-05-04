@@ -15,6 +15,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TOPOLOGY;
 
@@ -31,8 +32,11 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TOP
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
-        return ClusterHttpClient.fetch(CLUSTER_TOPOLOGY).fold(ClusterTopologyCommand::onFailure, this::onSuccess);
+        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_TOPOLOGY))
+                                           .fold(ClusterTopologyCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {

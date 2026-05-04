@@ -36,12 +36,12 @@ import static org.pragmatica.lang.Result.success;
     }
 
     public static ApplyState applyState(String clusterName,
-                                                                        String configHash,
-                                                                        String startedAt,
-                                                                        int currentWaveIndex,
-                                                                        List<WaveStatus> waves,
-                                                                        List<CreatedResource> createdResources,
-                                                                        List<String> destroyedNodeIds) {
+                                        String configHash,
+                                        String startedAt,
+                                        int currentWaveIndex,
+                                        List<WaveStatus> waves,
+                                        List<CreatedResource> createdResources,
+                                        List<String> destroyedNodeIds) {
         return new ApplyState(clusterName,
                               configHash,
                               startedAt,

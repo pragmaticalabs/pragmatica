@@ -6,24 +6,12 @@ package org.pragmatica.aether.cli.cluster.init;
 
 import org.pragmatica.lang.Result;
 
-/// Topology split: core nodes (consensus quorum) and worker nodes.
-///
-/// Invariants enforced via the parse factory:
-/// - core >= 3 (consensus quorum minimum)
-/// - core is odd (Rabia requires odd quorum)
-/// - worker >= 0
-public record CoreWorkerSplit(int core, int worker) {
 
+public record CoreWorkerSplit(int core, int worker) {
     public static Result<CoreWorkerSplit> coreWorkerSplit(int core, int worker) {
-        if (core < 3) {
-            return new ClusterInitError.InvalidTopology("core must be >= 3, got " + core).result();
-        }
-        if (core % 2 == 0) {
-            return new ClusterInitError.InvalidTopology("core must be odd, got " + core).result();
-        }
-        if (worker < 0) {
-            return new ClusterInitError.InvalidTopology("worker must be >= 0, got " + worker).result();
-        }
+        if (core <3) {return new ClusterInitError.InvalidTopology("core must be >= 3, got " + core).result();}
+        if (core % 2 == 0) {return new ClusterInitError.InvalidTopology("core must be odd, got " + core).result();}
+        if (worker <0) {return new ClusterInitError.InvalidTopology("worker must be >= 0, got " + worker).result();}
         return Result.success(new CoreWorkerSplit(core, worker));
     }
 

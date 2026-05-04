@@ -14,6 +14,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
@@ -29,8 +30,11 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
-        return sendRevokeRequest().fold(ClusterRevokeKeyCommand::onFailure, this::onSuccess);
+        return clusterTarget.applyOverrides().flatMap(_ -> sendRevokeRequest())
+                                           .fold(ClusterRevokeKeyCommand::onFailure, this::onSuccess);
     }
 
     private Result<String> sendRevokeRequest() {

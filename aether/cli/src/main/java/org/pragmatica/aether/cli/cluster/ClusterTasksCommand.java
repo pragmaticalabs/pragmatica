@@ -17,6 +17,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TASKS_LIST;
@@ -33,8 +34,11 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TAS
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
-        return ClusterHttpClient.fetch(CLUSTER_TASKS_LIST).fold(ClusterTasksCommand::onFailure, this::onSuccess);
+        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_TASKS_LIST))
+                                           .fold(ClusterTasksCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {
@@ -53,9 +57,12 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TAS
 
         @CommandLine.ParentCommand private ClusterTasksCommand parent;
 
+        @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
         @Override public Integer call() {
-            return validateInputs().flatMap(this::sendReassignRequest)
-                                 .fold(ReassignCommand::onFailure, this::onSuccess);
+            return clusterTarget.applyOverrides().flatMap(_ -> validateInputs())
+                                               .flatMap(this::sendReassignRequest)
+                                               .fold(ReassignCommand::onFailure, this::onSuccess);
         }
 
         private Result<String> validateInputs() {

@@ -14,6 +14,7 @@ import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
@@ -36,13 +37,16 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_SCA
 
     @CommandLine.ParentCommand private ClusterCommand parent;
 
+    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
     @Override public Integer call() {
-        return resolveEffective().flatMap(pair -> validateCount(pair.count(),
-                                                                pair.role()).flatMap(this::fetchConfigVersion)
-                                                               .flatMap(version -> sendScaleRequest(version,
-                                                                                                    pair.count(),
-                                                                                                    pair.role())))
-                               .fold(ClusterScaleCommand::onFailure, this::onSuccess);
+        return clusterTarget.applyOverrides().flatMap(_ -> resolveEffective())
+                                           .flatMap(pair -> validateCount(pair.count(),
+                                                                          pair.role()).flatMap(this::fetchConfigVersion)
+                                                                         .flatMap(version -> sendScaleRequest(version,
+                                                                                                              pair.count(),
+                                                                                                              pair.role())))
+                                           .fold(ClusterScaleCommand::onFailure, this::onSuccess);
     }
 
     private Result<EffectiveScale> resolveEffective() {

@@ -4,13 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
-/// Firewall preset selection for the wizard.
-///
-/// - STANDARD: all 4 ports open from any source. Reasonable default for non-public clusters.
-/// - RESTRICTIVE: management/app from admin CIDR; cluster/SWIM from internal CIDR.
-/// - OPEN: no rules emitted; cloud provider security group / firewall left wide open.
-///   Loud warning surfaced.
-/// - CUSTOM: operator supplies rules one-by-one; no preset applied.
 public enum FirewallPreset {
     STANDARD,
     RESTRICTIVE,
