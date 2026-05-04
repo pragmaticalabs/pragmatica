@@ -169,7 +169,7 @@ non-sealed interface ExtendedEvent extends ClusterEvent {
 }
 ```
 
-The v1.0.0 closed-set count is **26 variants**: the existing 24 framework event types plus `STREAM_REGISTERED` and `STREAM_DELETED` introduced by this spec.
+The v1.0.0 closed-set count is **27 variants**: the existing 25 framework event types plus `STREAM_REGISTERED` and `STREAM_DELETED` introduced by this spec.
 
 #### 6.4.2. Consumer pattern
 
@@ -179,7 +179,7 @@ Consumers exhaust the sealed parent. Java's pattern matching enforces that every
 switch (event) {
     case NodeJoined nj          -> handleNodeJoined(nj);
     case DeploymentCompleted dc -> handleDeploymentCompleted(dc);
-    /* ... all 24 closed cases ... */
+    /* ... all 25 closed cases ... */
     case StreamRegistered sr    -> handleStreamRegistered(sr);
     case StreamDeleted sd       -> handleStreamDeleted(sd);
     case ExtendedEvent ext      -> handleExtension(ext);  // registry dispatch, log, or no-op
@@ -646,7 +646,7 @@ Failures are reported through three channels, all derived from the same composit
   - Reads → `ALL_AUTHENTICATED`, writes → `OPERATOR_AND_ABOVE`, stream-version DELETE → `ADMIN_ONLY` override in `RoutePermissionRegistry`.
   - System-namespace HTTP writes return `405 Method Not Allowed` regardless of role.
   - SSE + WebSocket tail subscription protocols.
-- `system:cluster-events:1.0.0` registered at framework bootstrap with the v1.0.0 schema locked per §6.4 (sealed `ClusterEvent` + non-sealed `ExtendedEvent`; 26-variant closed set including `STREAM_REGISTERED`/`STREAM_DELETED`).
+- `system:cluster-events:1.0.0` registered at framework bootstrap with the v1.0.0 schema locked per §6.4 (sealed `ClusterEvent` + non-sealed `ExtendedEvent`; 27-variant closed set including `STREAM_REGISTERED`/`STREAM_DELETED`).
 - Per-node `RingBuffer<ClusterEvent>` replaced by subscription to `system:cluster-events:1.0.0`.
 - `aether stream` CLI commands per §8.6: `list`, `show`, `tail`, `delete --force`, `group create`, `group delete --force`.
 - Build-time + runtime validation atomic with all-failures aggregation via `Result.all(...)`; error transport via API response, CLI stderr, AuditLog (§15.1).
