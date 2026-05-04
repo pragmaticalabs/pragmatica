@@ -23,6 +23,9 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface BootstrapPhaseFormation {
     record unused() implements BootstrapPhaseFormation{}
 
+    long STORE_RETRY_BUDGET_MS = 60_000L;
+    long STORE_RETRY_INTERVAL_MS = 2_000L;
+
     static Result<BootstrapContext> execute(BootstrapContext ctx) {
         ClusterBootstrapOrchestrator.logPhase(CLUSTER_FORMATION, "Establishing cluster quorum");
         var apiKey = ClusterBootstrapOrchestrator.generateApiKey();
@@ -44,17 +47,17 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
                                                                          managementPort,
                                                                          quorumTimeoutMs,
                                                                          requiredCores))
-                            .map(_ -> finalizeClusterFormation(ctx, apiKey));
+                            .flatMap(_ -> finalizeClusterFormation(ctx, apiKey));
     }
 
-    private static BootstrapContext finalizeClusterFormation(BootstrapContext ctx, String apiKey) {
+    private static Result<BootstrapContext> finalizeClusterFormation(BootstrapContext ctx, String apiKey) {
         var updatedCtx = ctx.withApiKey(apiKey);
-        storeClusterConfig(updatedCtx);
-        storeApiKey(updatedCtx, apiKey);
-        persistApiKeyFile(ctx.config().cluster()
-                                    .name(),
-                          apiKey);
-        return updatedCtx;
+        return storeClusterConfig(updatedCtx)
+            .flatMap(_ -> storeApiKey(updatedCtx, apiKey))
+            .map(_ -> {
+                persistApiKeyFile(ctx.config().cluster().name(), apiKey);
+                return updatedCtx;
+            });
     }
 
     @Contract private static void persistApiKeyFile(String clusterName, String apiKey) {
@@ -132,25 +135,58 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
         return new BootstrapError.QuorumNotEstablished(0, requiredCores).result();
     }
 
-    @Contract private static void storeClusterConfig(BootstrapContext ctx) {
-        if (ctx.addresses().isEmpty()) {return;}
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> storeClusterConfig(BootstrapContext ctx) {
+        if (ctx.addresses().isEmpty()) {return Result.unitResult();}
         var endpoint = buildManagementEndpoint(ctx);
         var configJson = buildConfigJson(ctx.rawTomlContent());
-        var result = ClusterBootstrapOrchestrator.httpPost(endpoint + "/api/cluster/config", configJson);
-        var _ = result.onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"))
-                                .onFailure(cause -> System.err.println("  Warning: failed to store config: " + cause.message()));
+        return retryFormationPost(endpoint + "/api/cluster/config", configJson, "cluster config")
+            .onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
     }
 
-    @Contract private static void storeApiKey(BootstrapContext ctx, String apiKey) {
-        if (ctx.addresses().isEmpty()) {return;}
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> storeApiKey(BootstrapContext ctx, String apiKey) {
+        if (ctx.addresses().isEmpty()) {return Result.unitResult();}
         var endpoint = buildManagementEndpoint(ctx);
         var keyHash = KvStoreApiKeyHasher.hashKey(apiKey);
         var keyId = "ak_" + keyHash.substring(0, 8);
         var keyJson = "{\"keyId\":\"" + keyId + "\",\"keyHash\":\"" + keyHash + "\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
-        var result = ClusterBootstrapOrchestrator.httpPost(endpoint + "/api/cluster/keys", keyJson);
-        var _ = result.onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
-                                                        keyId))
-        .onFailure(cause -> System.err.println("  Warning: failed to store API key: " + cause.message()));
+        return retryFormationPost(endpoint + "/api/cluster/keys", keyJson, "API key")
+            .onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n", keyId));
+    }
+
+    // The leader's NodeLifecycle FSM races with the quorum-established signal — Phase 6 detects
+    // ready=200 from /health/ready as soon as enough peers are connected, but the leader's
+    // single-writer KV path (used by `cluster config` + `cluster keys`) requires the leader's
+    // own NodeLifecycle to be ACTIVE. The gap is typically a few seconds; retry with a budget.
+    private static Result<Unit> retryFormationPost(String url, String body, String operation) {
+        var deadline = System.currentTimeMillis() + STORE_RETRY_BUDGET_MS;
+        var start = System.currentTimeMillis();
+        var attempts = 0;
+        var lastError = "no attempts made";
+        while (System.currentTimeMillis() < deadline) {
+            attempts++;
+            var result = ClusterBootstrapOrchestrator.httpPost(url, body);
+            if (result.isSuccess()) {
+                if (attempts > 1) {
+                    System.out.printf("  %s store succeeded on attempt %d (%dms)%n",
+                                      operation, attempts, System.currentTimeMillis() - start);
+                }
+                return Result.unitResult();
+            }
+            lastError = extractFailureMessage(result);
+            if (attempts == 1 || attempts % 5 == 0) {
+                System.out.printf("  Waiting for %s store (attempt %d): %s%n",
+                                  operation, attempts, lastError);
+            }
+            ClusterBootstrapOrchestrator.sleepQuietly(STORE_RETRY_INTERVAL_MS);
+        }
+        return new BootstrapError.FormationWriteFailed(operation,
+                                                       attempts,
+                                                       System.currentTimeMillis() - start,
+                                                       lastError).result();
+    }
+
+    private static String extractFailureMessage(Result<String> result) {
+        return result.fold(cause -> cause.message(), _ -> "");
     }
 
     private static String buildManagementEndpoint(BootstrapContext ctx) {

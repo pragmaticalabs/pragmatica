@@ -457,5 +457,12 @@ import static org.pragmatica.lang.Result.success;
                 return "Quorum not established: " + healthy + "/" + required + " nodes healthy";
             }
         }
+
+        record FormationWriteFailed(String operation, int attempts, long elapsedMs, String lastError) implements BootstrapError {
+            @Override public String message() {
+                return "Cluster formation write failed: " + operation
+                       + " (after " + attempts + " attempts over " + (elapsedMs / 1000) + "s) — " + lastError;
+            }
+        }
     }
 }

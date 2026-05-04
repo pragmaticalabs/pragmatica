@@ -468,8 +468,8 @@ teardown() {
             # `aether cluster destroy` has no --cluster flag (only operates on the active cluster).
             # Use cloud-reaper.sh which filters by `aether-cluster` label — works regardless of
             # bootstrap-state.json existence, idempotent, exits 0 if nothing to destroy.
-            [ ${#A_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
-            [ ${#B_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/tools/cloud-reaper.sh" --cluster "$CLUSTER_B_NAME" --destroy --force 2>&1 | tail -3 || true)
+            [ ${#A_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
+            [ ${#B_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_B_NAME" --destroy --force 2>&1 | tail -3 || true)
             ;;
     esac
 }
@@ -571,6 +571,11 @@ fi
 # --- Compute selected suites early so cluster bootstrap can be skipped per-cluster ---
 A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
 B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
+
+# Install EXIT trap so teardown runs even when later steps fail (set -e exit, errors,
+# unbound variables). Without this, any failure between Step 2 and Step 11 leaks
+# bootstrapped clusters — on cloud, that is real €/hour cost.
+trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT
 
 # --- Step 2: Deploy clusters ---
 PROVISION_START=$(date +%s)
@@ -736,12 +741,7 @@ print_results "$RESULTS_FILE"
 FINAL_RESULT=$?
 set -e
 
-# --- Step 12: Teardown ---
-if [ "$SKIP_TEARDOWN" = false ]; then
-    teardown
-fi
-
-# Cleanup temp files
+# Cleanup temp files (teardown runs from EXIT trap installed earlier)
 rm -f "$RESULTS_FILE" "$TIMINGS_FILE"
 
 exit "$FINAL_RESULT"
