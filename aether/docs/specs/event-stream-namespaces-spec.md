@@ -411,13 +411,13 @@ role    = "producer"            # "producer" | "consumer"
 
 #### 11.1.2. Role inference from slice binding
 
-When `role` is omitted, the slice-processor inspects how the resource is bound in slice code:
+When `role` is omitted, the slice-processor inspects how the resource is bound in slice code. Bindings are made via `@ResourceQualifier(type = ..., config = "streams.X")` on factory-method parameters; the parameter's resource-interface type determines the role:
 
-- A constructor parameter typed as `StreamPublisher<T>` (or any subtype/wrapper) → **producer**.
-- A method bound via a consumer annotation (e.g., `@OnEvent`) or a parameter typed as `StreamSubscriber` → **consumer**.
-- Both bindings present in the same slice → **both roles**.
+- A parameter typed `StreamPublisher<T>` bound via `@ResourceQualifier(type = StreamPublisher.class, config = "streams.X")` → **producer** for stream `X`.
+- A parameter typed `StreamAccess<T>` bound via `@ResourceQualifier(type = StreamAccess.class, config = "streams.X")` → **consumer** for stream `X`.
+- Both bindings present in the same slice for the same `streams.X` → **both roles**.
 
-Inference is **strict**: ambiguous bindings (e.g., a `StreamPublisher<T>` parameter on a method also annotated as a consumer) are a build-time error citing the offending site.
+Ambiguity is **impossible by construction**: the parameter's declared resource-interface type is the binding anchor, and `StreamPublisher` and `StreamAccess` are disjoint interfaces in `aether/slice-api`. There is no consumer-side method-level annotation in RC1 (the future declarative `@StreamConsumer` pattern referenced in `in-memory-streams-spec.md` is not part of this spec's scope).
 
 #### 11.1.3. Validation rules
 
