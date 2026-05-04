@@ -140,6 +140,31 @@ class StreamAddressTest {
         }
 
         @Test
+        void rejectsSystemDotPrefix() {
+            assertThat(errorOf(validateAppNamespace("system.audit"))).isEqualTo(General.NAMESPACE_RESERVED_FOR_APPS);
+            assertThat(errorOf(validateAppNamespace("system.cluster-events"))).isEqualTo(General.NAMESPACE_RESERVED_FOR_APPS);
+        }
+
+        @Test
+        void rejectsSystemDotPrefixCaseInsensitive() {
+            assertThat(errorOf(validateAppNamespace("System.audit"))).isEqualTo(General.NAMESPACE_RESERVED_FOR_APPS);
+            assertThat(errorOf(validateAppNamespace("SYSTEM.foo"))).isEqualTo(General.NAMESPACE_RESERVED_FOR_APPS);
+        }
+
+        @Test
+        void acceptsNonSystemFirstSegment() {
+            assertThat(validateAppNamespace("systems.foo").isSuccess()).isTrue();
+            assertThat(validateAppNamespace("systemic.thing").isSuccess()).isTrue();
+        }
+
+        @Test
+        void rejectsUppercaseInNamespace() {
+            assertThat(errorOf(validateAppNamespace("Com.Example.foo"))).isEqualTo(General.NAMESPACE_INVALID);
+            assertThat(errorOf(validateAppNamespace("com.Example"))).isEqualTo(General.NAMESPACE_INVALID);
+            assertThat(errorOf(validateAppNamespace("CamelCase"))).isEqualTo(General.NAMESPACE_INVALID);
+        }
+
+        @Test
         void rejectsEmpty() {
             assertThat(errorOf(validateAppNamespace(""))).isEqualTo(General.NAMESPACE_INVALID);
         }

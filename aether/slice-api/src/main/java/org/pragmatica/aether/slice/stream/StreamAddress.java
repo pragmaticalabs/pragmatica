@@ -27,7 +27,7 @@ import static org.pragmatica.lang.Result.success;
 
     public static final Set<String> RESERVED_STREAM_NAMES = Set.of("latest");
 
-    private static final Pattern NAMESPACE_PATTERN = Pattern.compile("[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}");
+    private static final Pattern NAMESPACE_PATTERN = Pattern.compile("[a-z0-9][a-z0-9._-]{0,127}");
 
     private static final Pattern STREAM_PATTERN = Pattern.compile("[a-z][a-z0-9-]{0,63}");
 
@@ -37,7 +37,7 @@ import static org.pragmatica.lang.Result.success;
             BLANK_VALUE("Stream address cannot be blank"),
             WRONG_FORMAT("Stream address must match namespace:stream:version"),
             NAMESPACE_INVALID("Stream namespace contains invalid characters or is empty"),
-            NAMESPACE_RESERVED_FOR_APPS("Namespace 'system' is reserved for framework use"),
+            NAMESPACE_RESERVED_FOR_APPS("Namespace 'system' (and any 'system.*' prefix) is reserved for framework use"),
             STREAM_NAME_INVALID("Stream name must be kebab-case (lowercase, no leading/trailing/double hyphen)"),
             STREAM_NAME_RESERVED("Stream name is reserved");
             private final String message;
@@ -84,20 +84,27 @@ import static org.pragmatica.lang.Result.success;
     }
 
     /// Namespace validation used by both address parsing and jbct blueprint build-time checks.
-    /// Rejects the reserved `system` namespace when called via an app context (see
-    /// {@link #systemNamespace()} for framework-internal construction).
+    /// Rejects the reserved `system` namespace (and any `system.*` prefix) when called via an app
+    /// context (see {@link #systemNamespace()} for framework-internal construction). The reserved
+    /// check is case-insensitive and runs before the lowercase-charset check so that operators
+    /// using `SYSTEM` or `System.audit` get the more informative "reserved" diagnostic.
     public static Result<String> validateAppNamespace(String namespace) {
-        return validateNamespace(namespace)
-                .flatMap(n -> isReservedNamespace(n)
-                        ? StreamAddressError.General.NAMESPACE_RESERVED_FOR_APPS.result()
-                        : success(n));
+        if (isReservedNamespace(namespace)) {
+            return StreamAddressError.General.NAMESPACE_RESERVED_FOR_APPS.result();
+        }
+        return validateNamespace(namespace);
     }
 
     public static boolean isReservedNamespace(String namespace) {
         if (namespace == null) {
             return false;
         }
-        return RESERVED_NAMESPACES.stream().anyMatch(r -> r.equalsIgnoreCase(namespace));
+        if (RESERVED_NAMESPACES.stream().anyMatch(r -> r.equalsIgnoreCase(namespace))) {
+            return true;
+        }
+        var dot = namespace.indexOf('.');
+        var firstSegment = dot < 0 ? namespace : namespace.substring(0, dot);
+        return RESERVED_NAMESPACES.stream().anyMatch(r -> r.equalsIgnoreCase(firstSegment));
     }
 
     /// Framework-only construction path that accepts the reserved `system` namespace.
