@@ -158,7 +158,8 @@ public class ManifestGenerator {
                           .publisherMessageType()
                           .onPresent(mt -> props.setProperty(pubPrefix + "messageType", mt));
             }
-            // Stream publisher metadata
+            // Stream publisher metadata (spec §11.1.2: role inferred as "producer" from
+            // StreamPublisher<T> binding type)
             var streamPublishers = model.dependencies()
                                         .stream()
                                         .filter(DependencyModel::isStreamPublisher)
@@ -171,8 +172,10 @@ public class ManifestGenerator {
                   .onPresent(rq -> props.setProperty(spPrefix + "config", rq.configSection()));
                 sp.streamEventType()
                   .onPresent(et -> props.setProperty(spPrefix + "eventType", et));
+                props.setProperty(spPrefix + "role", "producer");
             }
-            // Stream access metadata
+            // Stream access metadata (spec §11.1.2: role inferred as "consumer" from
+            // StreamAccess<T> binding type)
             var streamAccessDeps = model.dependencies()
                                         .stream()
                                         .filter(DependencyModel::isStreamAccess)
@@ -185,6 +188,7 @@ public class ManifestGenerator {
                   .onPresent(rq -> props.setProperty(saPrefix + "config", rq.configSection()));
                 sa.streamEventType()
                   .onPresent(et -> props.setProperty(saPrefix + "eventType", et));
+                props.setProperty(saPrefix + "role", "consumer");
             }
             // Stream event codec classes (union of all stream event types)
             var streamEventTypes = collectStreamEventTypes(model);

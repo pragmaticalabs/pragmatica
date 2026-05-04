@@ -35,8 +35,18 @@ public record SliceManifest(String sliceName,
                             String configFile,
                             List<ResourceConfigRef> resourceConfigRefs) {
 
-    /// A config section reference from a @ResourceQualifier annotation.
-    public record ResourceConfigRef(String resourceType, String configSection) {}
+    /// A config section reference from a `@ResourceQualifier` annotation.
+    ///
+    /// `role` is populated for stream-typed resources only (spec §11.1.2): `producer` for
+    /// `StreamPublisher<T>` parameter bindings, `consumer` for `StreamAccess<T>` parameter
+    /// bindings, `both` when the same `streams.X` config is bound by both interfaces in the same
+    /// slice. Non-stream resources (`SqlConnector`, `HttpClient`, etc.) carry [Option#none].
+    public record ResourceConfigRef(String resourceType, String configSection, Option<String> role) {
+        /// Construct a non-stream ref (no role classification).
+        public ResourceConfigRef(String resourceType, String configSection) {
+            this(resourceType, configSection, Option.none());
+        }
+    }
     public SliceManifest {
         implClasses = List.copyOf(implClasses);
         requestClasses = List.copyOf(requestClasses);
@@ -149,24 +159,55 @@ public record SliceManifest(String sliceName,
 
     private static List<ResourceConfigRef> parseResourceConfigRefs(Properties props) {
         var refs = new ArrayList<ResourceConfigRef>();
-        parseIndexedConfigRefs(props, "resources.count", "resource.", "type", refs);
-        parseIndexedConfigRefs(props, "publish.topics.count", "publish.topic.", "messageType", refs);
-        parseIndexedConfigRefs(props, "stream.publishers.count", "stream.publisher.", "eventType", refs);
-        parseIndexedConfigRefs(props, "stream.access.count", "stream.access.", "eventType", refs);
-        parseIndexedConfigRefs(props, "reactive.count", "reactive.", "category", refs);
-        return refs;
+        parseIndexedConfigRefs(props, "resources.count", "resource.", "type", Option.none(), refs);
+        parseIndexedConfigRefs(props, "publish.topics.count", "publish.topic.", "messageType", Option.none(), refs);
+        parseIndexedConfigRefs(props, "stream.publishers.count", "stream.publisher.", "eventType",
+                               Option.some("producer"), refs);
+        parseIndexedConfigRefs(props, "stream.access.count", "stream.access.", "eventType",
+                               Option.some("consumer"), refs);
+        parseIndexedConfigRefs(props, "reactive.count", "reactive.", "category", Option.none(), refs);
+        return mergeStreamRoles(refs);
     }
 
     private static void parseIndexedConfigRefs(Properties props, String countKey, String prefix,
-                                               String typeKey, List<ResourceConfigRef> refs) {
+                                               String typeKey, Option<String> defaultRole,
+                                               List<ResourceConfigRef> refs) {
         var count = parseCount(props.getProperty(countKey, "0")).or(0);
         for (int i = 0; i < count; i++) {
             var config = props.getProperty(prefix + i + ".config");
             var type = props.getProperty(prefix + i + "." + typeKey, prefix.replace(".", ""));
             if (config != null && !config.isEmpty()) {
-                refs.add(new ResourceConfigRef(type, config));
+                var explicitRole = Option.option(props.getProperty(prefix + i + ".role"))
+                                          .filter(s -> !s.isEmpty());
+                refs.add(new ResourceConfigRef(type, config, explicitRole.orElse(defaultRole)));
             }
         }
+    }
+
+    /// Spec §11.1.2: when the same `streams.X` config section is bound by both a `StreamPublisher`
+    /// and a `StreamAccess` parameter on the same slice, the inferred role is `both`. The reader
+    /// detects this by collapsing same-config entries that carry different `producer`/`consumer`
+    /// roles into a single `both` entry. Non-stream entries pass through untouched.
+    private static List<ResourceConfigRef> mergeStreamRoles(List<ResourceConfigRef> refs) {
+        var rolesByConfig = new java.util.LinkedHashMap<String, java.util.Set<String>>();
+        for (var ref : refs) {
+            ref.role().onPresent(role -> rolesByConfig.computeIfAbsent(ref.configSection(),
+                                                                       _ -> new java.util.LinkedHashSet<>())
+                                                       .add(role));
+        }
+        return refs.stream()
+                   .map(ref -> ref.role()
+                                  .map(_ -> reclassifyRole(ref, rolesByConfig.get(ref.configSection())))
+                                  .or(ref))
+                   .toList();
+    }
+
+    private static ResourceConfigRef reclassifyRole(ResourceConfigRef ref, java.util.Set<String> rolesForConfig) {
+        if (rolesForConfig == null || rolesForConfig.size() <= 1) {return ref;}
+        if (rolesForConfig.contains("producer") && rolesForConfig.contains("consumer")) {
+            return new ResourceConfigRef(ref.resourceType(), ref.configSection(), Option.some("both"));
+        }
+        return ref;
     }
 
     private static List<String> parseList(String value) {

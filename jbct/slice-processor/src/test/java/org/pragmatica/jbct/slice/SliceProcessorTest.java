@@ -2362,6 +2362,8 @@ class SliceProcessorTest {
         assertThat(manifestContent).contains("stream.publishers.count=1");
         assertThat(manifestContent).contains("stream.publisher.0.config=streams.order-events");
         assertThat(manifestContent).contains("stream.publisher.0.eventType=test.dto.OrderEvent");
+        // Spec §11.1.2: role inferred from StreamPublisher binding type → producer
+        assertThat(manifestContent).contains("stream.publisher.0.role=producer");
 
         // Verify stream subscription via reactive bindings
         assertThat(manifestContent).contains("reactive.count=1");
@@ -2373,6 +2375,213 @@ class SliceProcessorTest {
 
         // Verify stream event classes
         assertThat(manifestContent).contains("stream.event.classes=test.dto.OrderEvent");
+    }
+
+    // ========== Spec §11.1.2: Stream Role Inference Tests ==========
+
+    @Test
+    void should_infer_producer_role_for_stream_publisher_binding() throws Exception {
+        var orderStream = JavaFileObjects.forSourceString("test.annotation.OrderStream",
+                                                          """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamPublisher.class, config = "streams.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface OrderStream {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String id) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.ProducerSlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderStream;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface ProducerSlice {
+                Promise<String> place(String id);
+                static ProducerSlice producerSlice(@OrderStream StreamPublisher<OrderEvent> stream) { return null; }
+            }
+            """);
+        var sources = streamSources();
+        sources.add(orderStream);
+        sources.add(orderEvent);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/ProducerSlice.manifest");
+        assertThat(manifestFile.isPresent()).isTrue();
+        var manifestContent = manifestFile.get().getCharContent(false).toString();
+
+        assertThat(manifestContent).contains("stream.publisher.0.role=producer");
+        assertThat(manifestContent).doesNotContain("stream.access.0.role=");
+    }
+
+    @Test
+    void should_infer_consumer_role_for_stream_access_binding() throws Exception {
+        var orderAccess = JavaFileObjects.forSourceString("test.annotation.OrderStreamAccess",
+                                                          """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamAccess.class, config = "streams.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface OrderStreamAccess {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String id) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.ConsumerSlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderStreamAccess;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface ConsumerSlice {
+                Promise<String> read(String id);
+                static ConsumerSlice consumerSlice(@OrderStreamAccess StreamAccess<OrderEvent> access) { return null; }
+            }
+            """);
+        var sources = streamSources();
+        sources.add(orderAccess);
+        sources.add(orderEvent);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/ConsumerSlice.manifest");
+        assertThat(manifestFile.isPresent()).isTrue();
+        var manifestContent = manifestFile.get().getCharContent(false).toString();
+
+        assertThat(manifestContent).contains("stream.access.0.role=consumer");
+        assertThat(manifestContent).doesNotContain("stream.publisher.0.role=");
+    }
+
+    @Test
+    void should_emit_both_role_when_publisher_and_access_share_config() throws Exception {
+        var orderStream = JavaFileObjects.forSourceString("test.annotation.OrderStream",
+                                                          """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamPublisher.class, config = "streams.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface OrderStream {}
+            """);
+        var orderAccess = JavaFileObjects.forSourceString("test.annotation.OrderStreamAccess",
+                                                          """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamAccess.class, config = "streams.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface OrderStreamAccess {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String id) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.BothSlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderStream;
+            import test.annotation.OrderStreamAccess;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface BothSlice {
+                Promise<String> work(String id);
+                static BothSlice bothSlice(@OrderStream StreamPublisher<OrderEvent> producer,
+                                           @OrderStreamAccess StreamAccess<OrderEvent> consumer) { return null; }
+            }
+            """);
+        var sources = streamSources();
+        sources.add(orderStream);
+        sources.add(orderAccess);
+        sources.add(orderEvent);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/BothSlice.manifest");
+        assertThat(manifestFile.isPresent()).isTrue();
+        var manifestContent = manifestFile.get().getCharContent(false).toString();
+
+        // Generator emits the per-binding role; the manifest reader merges into "both" at load
+        // time. Verify both role markers are present in raw manifest text — the role merging is
+        // a SliceManifest concern covered by a separate test.
+        assertThat(manifestContent).contains("stream.publisher.0.role=producer");
+        assertThat(manifestContent).contains("stream.access.0.role=consumer");
+    }
+
+    @Test
+    void should_omit_role_field_for_non_stream_resources() throws Exception {
+        var dbConnector = JavaFileObjects.forSourceString("test.infra.DatabaseConnector",
+                                                           """
+            package test.infra;
+            public interface DatabaseConnector {}
+            """);
+        var qualifier = JavaFileObjects.forSourceString("test.annotation.PrimaryDb",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import test.infra.DatabaseConnector;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = DatabaseConnector.class, config = "database.primary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface PrimaryDb {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.DbSlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.PrimaryDb;
+            import test.infra.DatabaseConnector;
+            @Slice
+            public interface DbSlice {
+                Promise<String> query(String id);
+                static DbSlice dbSlice(@PrimaryDb DatabaseConnector db) { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(dbConnector);
+        sources.add(qualifier);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/DbSlice.manifest");
+        assertThat(manifestFile.isPresent()).isTrue();
+        var manifestContent = manifestFile.get().getCharContent(false).toString();
+
+        assertThat(manifestContent).contains("resource.0.config=database.primary");
+        assertThat(manifestContent).doesNotContain("resource.0.role=");
     }
 
     // ========== ConfigurationSection Tests ==========
