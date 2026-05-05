@@ -359,6 +359,14 @@ wait_for_node_count() {
 # membership including JOINING peers (overlay-only, not host-port-mapped).
 wait_for_node_count_fast() {
     local expected="$1" timeout="${2:-120}"
+    # The fast poll picks an endpoint by hopping ports on a single host — Docker-only
+    # by construction. On cloud, each node has its own VM IP, so port-hop never finds
+    # a candidate and last_count stays '?'. Fall through to the slow, cloud-aware
+    # `wait_for_node_count` instead of producing a misleading FAIL log every run.
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        wait_for_node_count "$expected" "$timeout"
+        return $?
+    fi
     local deadline=$(($(date +%s) + timeout))
     local last_count="?"
     log_info "Waiting for: ${expected} nodes (timeout: ${timeout}s, fast poll)"

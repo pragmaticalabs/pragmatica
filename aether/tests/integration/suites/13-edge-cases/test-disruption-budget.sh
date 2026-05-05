@@ -22,7 +22,11 @@ test_cluster_ready() {
 }
 
 test_drain_first_node_allowed() {
-    local node1="node-5"
+    # node-5 is the docker-style fixture id; on cloud it maps to ${CLOUD_SOURCE_NAME}-core-4.
+    # The runtime stores NodeLifecycleKey under the actual node id, so the drain endpoint
+    # path parameter must use the translated form or it returns 500 (no such lifecycle).
+    local node1
+    node1=$(to_node_id "node-5")
     log_info "Draining first node: ${node1}"
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node1}" -X POST -H "X-API-Key: ${API_KEY}")
@@ -37,7 +41,8 @@ test_drain_first_node_allowed() {
 }
 
 test_drain_second_node_allowed() {
-    local node2="node-4"
+    local node2
+    node2=$(to_node_id "node-4")
     log_info "Draining second node: ${node2}"
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
@@ -52,7 +57,8 @@ test_drain_second_node_allowed() {
 }
 
 test_drain_beyond_budget_rejected() {
-    local node3="node-3"
+    local node3
+    node3=$(to_node_id "node-3")
     log_info "Attempting to drain third node (should be rejected by budget): ${node3}"
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")

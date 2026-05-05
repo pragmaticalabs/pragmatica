@@ -385,6 +385,29 @@ CLOUD_TIMEOUT_MULTIPLIER="${CLOUD_TIMEOUT_MULTIPLIER:-1}"
 # to the bootstrap form via this prefix when looking up public IPs.
 CLOUD_SOURCE_NAME="${CLOUD_SOURCE_NAME:-hetzner-eu}"
 
+# Translate a friendly Docker-style node id (node-N, 1-based) into the actual
+# node id stored under NodeLifecycleKey at the runtime. On Docker, node ids ARE
+# `node-N` so the input passes through unchanged. On cloud, runtime ids carry
+# the bootstrap source prefix: `node-1` → `${CLOUD_SOURCE_NAME}-core-0`, etc.
+#
+# Use this whenever a test calls a management endpoint that takes a node-id path
+# parameter (e.g. /api/node/drain/<id>, /api/node/lifecycle/<id>). Test helpers
+# that go through SSH (cloud_ssh / kill_node) already translate internally; use
+# this only when the node id reaches the runtime as-is.
+to_node_id() {
+    local node_id="$1"
+    if [ "${CLOUD_MODE:-false}" != "true" ]; then
+        echo "$node_id"
+        return 0
+    fi
+    if [[ "$node_id" =~ ^node-([0-9]+)$ ]]; then
+        local idx=$((${BASH_REMATCH[1]} - 1))
+        echo "${CLOUD_SOURCE_NAME}-core-${idx}"
+        return 0
+    fi
+    echo "$node_id"
+}
+
 # cloud_public_ip <node-id> — print the public IP of <node-id> by reading the
 # bootstrap-state.json that `aether cluster bootstrap` writes under
 # ~/.aether/clusters/<BOOTSTRAP_CLUSTER_NAME>/.
