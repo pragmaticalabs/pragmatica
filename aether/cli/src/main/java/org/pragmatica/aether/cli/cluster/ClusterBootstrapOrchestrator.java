@@ -267,6 +267,15 @@ import static org.pragmatica.lang.Result.success;
         return ClusterHttpClient.postDirect(url, body);
     }
 
+    /// Variant used by `BootstrapPhaseFormation` to authenticate against clusters that
+    /// pre-configure a static API key in `[source.X.node_config.app-http].api_keys`.
+    /// Without this header, formation POSTs to `/api/cluster/config` and `/api/cluster/keys`
+    /// fail with HTTP 401 because the leader's `configValidator` reports configured
+    /// credentials are required, but no keys are in KV-Store yet.
+    static Result<String> httpPost(String url, String body, Option<String> apiKey) {
+        return ClusterHttpClient.postDirect(url, body, apiKey);
+    }
+
     static Result<String> httpGet(String url) {
         return ClusterHttpClient.getDirect(url);
     }

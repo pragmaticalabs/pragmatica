@@ -178,9 +178,20 @@ public sealed interface ClusterHttpClient {
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> postDirect(String url, String jsonBody) {
+        return postDirect(url, jsonBody, Option.empty());
+    }
+
+    /// Variant that attaches an `X-API-Key` header when present. Used by bootstrap
+    /// formation POSTs against clusters whose per-node `[app-http] api_keys = [...]`
+    /// pre-configures a static key — the leader's `configValidator` accepts that key
+    /// even before any keys land in KV-Store, breaking the bootstrap chicken-and-egg.
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> postDirect(String url,
+                                                                                        String jsonBody,
+                                                                                        Option<String> apiKey) {
         var builder = HttpRequest.newBuilder().uri(URI.create(url))
                                             .header("Content-Type", "application/json")
                                             .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+        apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
         return HTTP_OPS.sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);

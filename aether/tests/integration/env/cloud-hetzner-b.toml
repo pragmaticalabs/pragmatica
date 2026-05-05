@@ -59,10 +59,20 @@ provisioning_timeout = "60s"
 
 [source.hetzner-eu.node_config.app-http]
 # Cluster B runs 05-security tests which assert that unauthenticated requests are
-# rejected — keep API_KEY mode with the static test key configured. Bootstrap can
-# auth using the same key (configured key validator passes before KV check).
+# rejected — keep API_KEY mode with the static test key configured. The bootstrap
+# CLI uses this same key to authenticate formation POSTs (see
+# BootstrapPhaseFormation.extractConfiguredApiKey).
 enabled = true
-api_keys = ["aether-integration-test-key"]
+security_mode = "API_KEY"
+
+# Rich-syntax key entry — ADMIN role required because formation POSTs hit
+# /api/cluster/config and /api/cluster/keys, both gated on ADMIN.
+# Simple `api_keys = [...]` defaults to VIEWER (per ApiKeyEntry.defaultEntry)
+# and would yield HTTP 403 during bootstrap.
+[source.hetzner-eu.node_config.app-http.api-keys.aether-integration-test-key]
+name = "integration-test"
+roles = ["service"]
+authorization_role = "ADMIN"
 
 [runtime.default]
 type = "container"

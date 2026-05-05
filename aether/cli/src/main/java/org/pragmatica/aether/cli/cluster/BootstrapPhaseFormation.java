@@ -6,8 +6,10 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -139,7 +141,8 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
         if (ctx.addresses().isEmpty()) {return Result.unitResult();}
         var endpoint = buildManagementEndpoint(ctx);
         var configJson = buildConfigJson(ctx.rawTomlContent());
-        return retryFormationPost(endpoint + "/api/cluster/config", configJson, "cluster config")
+        var configuredKey = extractConfiguredApiKey(ctx.config());
+        return retryFormationPost(endpoint + "/api/cluster/config", configJson, "cluster config", configuredKey)
             .onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
     }
 
@@ -149,22 +152,66 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
         var keyHash = KvStoreApiKeyHasher.hashKey(apiKey);
         var keyId = "ak_" + keyHash.substring(0, 8);
         var keyJson = "{\"keyId\":\"" + keyId + "\",\"keyHash\":\"" + keyHash + "\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
-        return retryFormationPost(endpoint + "/api/cluster/keys", keyJson, "API key")
+        var configuredKey = extractConfiguredApiKey(ctx.config());
+        return retryFormationPost(endpoint + "/api/cluster/keys", keyJson, "API key", configuredKey)
             .onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n", keyId));
+    }
+
+    /// Pulls the static API key the bootstrap CLI uses to authenticate `/api/cluster/config`
+    /// and `/api/cluster/keys` POSTs against the leader. Looks under
+    /// `[source.X.node_config.app-http]` in the bootstrap TOML.
+    ///
+    /// Lookup order:
+    ///   1. Rich syntax: `[source.X.node_config.app-http.api-keys.<keyValue>]` with
+    ///      `authorization_role = "ADMIN"` — preferred for bootstrap, since formation
+    ///      POSTs require ADMIN privilege.
+    ///   2. Simple syntax: `api_keys = [...]` — defaults to VIEWER role (per
+    ///      `ApiKeyEntry.defaultEntry`); used only if no ADMIN-role rich key is configured.
+    ///      The leader will reject formation POSTs from a VIEWER key with HTTP 403, so
+    ///      this fallback exists only for clusters that don't gate the management API.
+    ///
+    /// Returns `Option.empty()` for clusters with no static API keys configured —
+    /// those run with `security_mode = "NONE"` and formation POSTs proceed unauthenticated.
+    private static Option<String> extractConfiguredApiKey(ClusterBootstrapConfig config) {
+        return findAdminKey(config).orElse(() -> findFirstSimpleKey(config));
+    }
+
+    private static Option<String> findAdminKey(ClusterBootstrapConfig config) {
+        var prefix = "app-http.api-keys.";
+        return Option.from(config.sources().values()
+                                         .stream()
+                                         .flatMap(source -> source.nodeConfig().stream())
+                                         .flatMap(doc -> doc.sectionNames().stream()
+                                                              .filter(name -> name.startsWith(prefix))
+                                                              .filter(name -> "ADMIN".equalsIgnoreCase(doc.getString(name, "authorization_role")
+                                                                                                                                .or("")))
+                                                              .map(name -> name.substring(prefix.length())))
+                                         .findFirst());
+    }
+
+    private static Option<String> findFirstSimpleKey(ClusterBootstrapConfig config) {
+        return Option.from(config.sources().values()
+                                         .stream()
+                                         .flatMap(source -> source.nodeConfig()
+                                                                  .flatMap(doc -> doc.getStringList("app-http", "api_keys"))
+                                                                  .filter(keys -> !keys.isEmpty())
+                                                                  .map(java.util.List::getFirst)
+                                                                  .stream())
+                                         .findFirst());
     }
 
     // The leader's NodeLifecycle FSM races with the quorum-established signal — Phase 6 detects
     // ready=200 from /health/ready as soon as enough peers are connected, but the leader's
     // single-writer KV path (used by `cluster config` + `cluster keys`) requires the leader's
     // own NodeLifecycle to be ACTIVE. The gap is typically a few seconds; retry with a budget.
-    private static Result<Unit> retryFormationPost(String url, String body, String operation) {
+    private static Result<Unit> retryFormationPost(String url, String body, String operation, Option<String> apiKey) {
         var deadline = System.currentTimeMillis() + STORE_RETRY_BUDGET_MS;
         var start = System.currentTimeMillis();
         var attempts = 0;
         var lastError = "no attempts made";
         while (System.currentTimeMillis() < deadline) {
             attempts++;
-            var result = ClusterBootstrapOrchestrator.httpPost(url, body);
+            var result = ClusterBootstrapOrchestrator.httpPost(url, body, apiKey);
             if (result.isSuccess()) {
                 if (attempts > 1) {
                     System.out.printf("  %s store succeeded on attempt %d (%dms)%n",
