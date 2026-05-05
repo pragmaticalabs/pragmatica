@@ -131,6 +131,7 @@ import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.config.BackupConfig;
+import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
@@ -222,7 +223,7 @@ import org.slf4j.LoggerFactory;
 public interface AetherNode extends ManageableNode {
     Logger LOG = LoggerFactory.getLogger(AetherNode.class);
 
-    String VERSION = "1.0.0-rc1";
+    String VERSION = BuildInfo.version();
 
     NodeId self();
     Promise<Unit> start();

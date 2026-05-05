@@ -5,6 +5,7 @@
 package org.pragmatica.aether.cli;
 
 import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.config.toml.TomlDocument;
@@ -53,7 +54,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, version = "Aether 1.0.0-alpha", description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.NodeCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.NodeSlicesCommand.class, AetherCli.RoutesCommand.class, AetherCli.NodeRoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.NodeCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.NodeSlicesCommand.class, AetherCli.RoutesCommand.class, AetherCli.NodeRoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)") private String nodeAddress;
@@ -225,7 +226,7 @@ import static org.pragmatica.lang.Option.some;
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"}) private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v1.0.0-alpha - Connected to " + nodeAddress);
+        System.out.println("Aether v" + BuildInfo.current().displayString() + " - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {

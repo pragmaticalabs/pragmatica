@@ -102,6 +102,10 @@
         </dependency>
     </dependencies>
 
+    <properties>
+        <maven.build.timestamp.format>yyyy-MM-dd'T'HH:mm:ss'Z'</maven.build.timestamp.format>
+    </properties>
+
     <build>
         <plugins>
             <plugin>
@@ -112,7 +116,11 @@
                     <archive>
                         <manifest>
                             <mainClass>org.pragmatica.aether.cli.AetherCli</mainClass>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
                         </manifest>
+                        <manifestEntries>
+                            <Implementation-Build-Date>${maven.build.timestamp}</Implementation-Build-Date>
+                        </manifestEntries>
                     </archive>
                 </configuration>
             </plugin>
@@ -130,6 +138,10 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>org.pragmatica.aether.cli.AetherCli</mainClass>
+                                    <manifestEntries>
+                                        <Implementation-Version>${project.version}</Implementation-Version>
+                                        <Implementation-Build-Date>${maven.build.timestamp}</Implementation-Build-Date>
+                                    </manifestEntries>
                                 </transformer>
                                 <!-- Concatenate META-INF/services/* across all shaded jars so SPI-loaded
                                      EnvironmentIntegrationFactory implementations (docker/hetzner/aws/gcp/azure)
