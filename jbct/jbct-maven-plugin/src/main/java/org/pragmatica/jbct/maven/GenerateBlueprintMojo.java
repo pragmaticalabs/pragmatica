@@ -612,6 +612,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
             archiver.addFile(blueprintFile, "META-INF/" + BLUEPRINT_TOML);
             addOptionalResourcesToml(archiver);
+            addSliceManifests(archiver);
             addOptionalSchemaFiles(archiver);
 
             var mavenArchiver = new MavenArchiver();
@@ -626,6 +627,28 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         } catch (Exception e) {
             throw new MojoExecutionException("Failed to create blueprint JAR", e);
         }
+    }
+
+    /// Spec event-stream-namespaces §11.1.2: bundle every locally generated slice manifest into
+    /// the blueprint JAR under `META-INF/slice/` so the deploy-time `StreamResourceValidator`
+    /// can read role hints (`producer`/`consumer`/`both`) without remote slice-JAR fetches.
+    /// External slice-only dependencies are excluded because they aren't available on disk
+    /// at packaging time — the validator treats missing hints as legacy/unhinted (Wave 1
+    /// producer-default still applies), which matches RC1 behaviour.
+    private void addSliceManifests(JarArchiver archiver) {
+        var manifestDir = new File(classesDirectory, "META-INF/slice");
+        if (!manifestDir.exists()) {
+            return;
+        }
+        var manifestFiles = manifestDir.listFiles((d, n) -> n.endsWith(".manifest"));
+        if (manifestFiles == null || manifestFiles.length == 0) {
+            return;
+        }
+        for (var file : manifestFiles) {
+            archiver.addFile(file, "META-INF/slice/" + file.getName());
+            getLog().debug("Added slice manifest to blueprint JAR: " + file.getName());
+        }
+        getLog().info("Added " + manifestFiles.length + " slice manifest(s) to blueprint JAR");
     }
 
     private void addOptionalResourcesToml(JarArchiver archiver) {

@@ -218,7 +218,8 @@ public interface BlueprintService {
                                         repository).flatMap(expanded -> applyResourcesConfig(expanded,
                                                                                              blueprintArtifact.resourcesConfig()))
                                        .flatMap(expanded -> runStreamResourceGate(expanded,
-                                                                                    blueprintArtifact.resourcesConfig()))
+                                                                                    blueprintArtifact.resourcesConfig(),
+                                                                                    blueprintArtifact.roleHints()))
                                        .flatMap(this::validatePubSub)
                                        .flatMap(expanded -> storeAllInSingleBatch(expanded,
                                                                                   blueprintArtifact.resourcesConfig(),
@@ -229,10 +230,17 @@ public interface BlueprintService {
     /// Runtime gate per spec §15.1: synchronous, atomic, all-failures-aggregated stream-resource
     /// validation that must pass **before** any cluster state mutation. On failure the deploy
     /// short-circuits with a structured cause that the route handler maps to HTTP 422.
+    ///
+    /// `roleHints` (spec §11.1.2) is the alias→role map aggregated from the blueprint artifact's
+    /// bundled slice manifests by [BlueprintArtifactParser]. Empty when the artifact ships no
+    /// slice manifests (legacy DSL path / pre-Wave-3 blueprint JARs) — the validator then
+    /// behaves identically to its no-hints overload.
     private Promise<ExpandedBlueprint> runStreamResourceGate(ExpandedBlueprint expanded,
-                                                              Option<String> resourcesConfig) {
+                                                              Option<String> resourcesConfig,
+                                                              Map<String, String> roleHints) {
         return StreamResourceValidator.validate(resourcesConfig,
-                                                  expanded.id().artifact())
+                                                  expanded.id().artifact(),
+                                                  roleHints)
                                        .map(_ -> expanded)
                                        .async();
     }
