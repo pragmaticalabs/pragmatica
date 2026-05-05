@@ -76,9 +76,11 @@ detect_capabilities() {
     export CAP_NETWORK_PARTITION=false
     export CAP_PERSISTENCE=false
 
-    # Network partition: docker/remote/cloud — bootstrap now provisions VM containers
-    # with `--cap-add NET_ADMIN`, so iptables manipulation works on cloud too.
-    # See BootstrapPhaseDeploy.buildRestartCommand and UserDataTemplate.appendContainerRun.
+    # Network partition: docker/remote/cloud. Despite the capability name,
+    # the existing 12-network sub-tests use kill_node + /api/events polling, no
+    # iptables. They work on cloud out of the box. If iptables-based tests are
+    # added later, gate them on a finer capability and add NET_ADMIN to a
+    # test-only deploy mode (don't widen production container privileges).
     case "$env_type" in
         docker|remote|cloud) export CAP_NETWORK_PARTITION=true ;;
     esac

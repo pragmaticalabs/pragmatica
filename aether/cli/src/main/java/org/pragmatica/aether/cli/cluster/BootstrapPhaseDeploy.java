@@ -284,11 +284,7 @@ import static org.pragmatica.lang.Result.success;
                                       int managementPort,
                                       String peers,
                                       String clusterSecret) {
-        // --cap-add NET_ADMIN is required so integration tests (12-network) can manipulate
-        // iptables inside the node container to simulate partitions. The host's iptables
-        // would equally work since we run --network host, but tests SSH into the node and
-        // exec iptables via `docker exec`, which requires the capability inside the container.
-        return "docker rm -f aether-node 2>/dev/null || true" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " --cap-add NET_ADMIN" + " -l aether-cluster=" + clusterName + " -l aether-node-id=" + nodeId + " -l aether-role=core" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + " -e PEERS=\"" + peers + "\"" + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " " + image;
+        return "docker rm -f aether-node 2>/dev/null || true" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -l aether-cluster=" + clusterName + " -l aether-node-id=" + nodeId + " -l aether-role=core" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + " -e PEERS=\"" + peers + "\"" + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " " + image;
     }
 
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
@@ -479,7 +475,7 @@ import static org.pragmatica.lang.Result.success;
         var peersEnv = peers.isEmpty()
                       ? ""
                       : " -e PEERS=\"" + peers + "\"";
-        var startCommand = "mkdir -p /opt/aether/config" + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " --cap-add NET_ADMIN" + " -l aether-cluster=" + clusterName + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + peersEnv + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " ghcr.io/pragmaticalabs/aether-node:latest";
+        var startCommand = "mkdir -p /opt/aether/config" + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -l aether-cluster=" + clusterName + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + peersEnv + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " ghcr.io/pragmaticalabs/aether-node:latest";
         return RemoteCommandRunner.ssh(host, startCommand, sshConfig).mapToUnit();
     }
 
