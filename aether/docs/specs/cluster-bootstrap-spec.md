@@ -265,6 +265,8 @@ Variable resolution is **two-phase**. The CLI produces two artifacts stored in t
 
 **REQ-4.2.6**: `config_hash` (§13 resume state) is computed from the config template, ensuring that environment changes (different API token value) do not invalidate resume, while structural changes (different field or placeholder reference) do.
 
+**REQ-4.2.7** (cloud credential propagation): For sources of `type = "cloud"`, the CLI-resolved value of `credentials` MUST be written into each node's per-node TOML overlay under `[cloud.credentials].api_token` so the consensus leader can authenticate with the cloud provider when auto-provisioning nodes during runtime `/api/cluster/scale` operations. The literal token (not the `${env:...}` placeholder) is distributed to every cluster node, because any core node may become the consensus leader after failover and the leader is the sole caller of `ComputeProvider.provision()`. Operators MUST treat the cluster's per-node TOML files as containing the cloud project's full-access credential and protect them accordingly (see [`reference/cloud-integration.md` § Credential Propagation to Nodes](../reference/cloud-integration.md#credential-propagation-to-nodes)). For deployments that cannot accept this propagation model, defer cloud auto-scaling and use external orchestration to call `/api/cluster/scale` only after manually provisioning nodes — or wait for the secrets-provider runtime resolution path (RC2; see issue tracking the investigation).
+
 ### 4.3 Resolution Pipeline
 
 ```

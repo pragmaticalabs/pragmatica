@@ -5,6 +5,8 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.config.toml.TomlDocument;
@@ -31,6 +33,8 @@ public interface BootstrapOverlayGenerator {
                                 Option<String> clusterSecret) {
         var fixed = Stream.of(Option.some(clusterSection(config)),
                               Option.some(clusterPortsSection(config)),
+                              cloudSection(source),
+                              cloudCredentialsSection(source),
                               sourceSpecificSection(config, source, nodeIndex, apiKey, dockerGid),
                               tlsSection(source, clusterSecret))
         .flatMap(Option::stream);
@@ -92,9 +96,30 @@ public interface BootstrapOverlayGenerator {
 
     private static Section cloudComputeSection(SourceProfile source) {
         var values = new LinkedHashMap<String, Object>();
-        source.provider().onPresent(provider -> values.put("provider", provider.value()));
         source.region().onPresent(region -> values.put("region", region));
+        coreInstanceType(source).onPresent(serverType -> values.put("server_type", serverType));
         return Section.section("cloud.compute", values);
+    }
+
+    /// Top-level `[cloud]` section. Required for `ConfigLoader.populateCloudConfig` to
+    /// build a `CloudConfig` at runtime — without it, `lifecycleManager.isCloudManaged()`
+    /// returns false and CTM cannot auto-provision new nodes during scale-up.
+    private static Option<Section> cloudSection(SourceProfile source) {
+        if (source.type() != SourceType.CLOUD) {return Option.empty();}
+        return source.provider().map(provider -> Section.section("cloud", Map.of("provider", provider.value())));
+    }
+
+    /// `[cloud.credentials]` section carrying the API token from the bootstrap config.
+    /// Required so the runtime ComputeProvider can authenticate with the cloud API
+    /// when it provisions new VMs after a `/api/cluster/scale` request.
+    private static Option<Section> cloudCredentialsSection(SourceProfile source) {
+        if (source.type() != SourceType.CLOUD) {return Option.empty();}
+        return source.credentials().filter(token -> !token.isBlank())
+                                 .map(token -> Section.section("cloud.credentials", Map.of("api_token", token)));
+    }
+
+    private static Option<String> coreInstanceType(SourceProfile source) {
+        return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::instanceType);
     }
 
     private static Option<Section> tlsSection(SourceProfile source, Option<String> clusterSecret) {

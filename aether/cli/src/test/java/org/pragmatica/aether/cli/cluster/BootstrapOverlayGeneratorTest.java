@@ -159,9 +159,83 @@ class BootstrapOverlayGeneratorTest {
                                                     empty(),
                                                     some("seed-secret"));
 
-        assertEquals("hetzner", doc.getString("cloud.compute", "provider").unwrap());
+        // Top-level [cloud] provider is what ConfigLoader.populateCloudConfig reads.
+        // Without it, lifecycleManager.isCloudManaged() is false and runtime auto-scale fails.
+        assertEquals("hetzner", doc.getString("cloud", "provider").unwrap());
+        assertTrue(doc.getString("cloud.compute", "provider").isEmpty(),
+                   "provider belongs in [cloud], not [cloud.compute]");
         assertEquals("eu-central", doc.getString("cloud.compute", "region").unwrap());
         assertEquals("seed-secret", doc.getString("tls", "cluster_secret").unwrap());
+    }
+
+    @Test
+    void overlay_cloudPropagatesCredentialsForRuntimeAutoScale() {
+        var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "prod-cluster"
+                version = "1.0.0"
+
+                [source.eu-1]
+                type = "cloud"
+                provider = "hetzner"
+                region = "eu-central"
+                credentials = "secret-token"
+
+                [source.eu-1.core]
+                count = 3
+                instance_type = "cx33"
+                """;
+        var config = ClusterBootstrapConfigParser.parse(toml).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"));
+
+        assertEquals("secret-token", doc.getString("cloud.credentials", "api_token").unwrap(),
+                     "cloud.credentials.api_token must propagate so runtime CTM can authenticate when " +
+                     "auto-provisioning new nodes during /api/cluster/scale");
+        assertEquals("cx33", doc.getString("cloud.compute", "server_type").unwrap(),
+                     "cloud.compute.server_type must come from the CORE role's instance_type");
+    }
+
+    @Test
+    void overlay_cloudOmitsCredentialsWhenAbsent() {
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var source = config.sources().get("eu-1");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    some("seed-secret"));
+
+        assertFalse(doc.hasSection("cloud.credentials"));
+    }
+
+    @Test
+    void overlay_dockerOmitsTopLevelCloudSection() {
+        // Docker source-type defaults (aether-docker.toml) supply `[cloud] provider = "docker"`,
+        // so the overlay must NOT emit a top-level [cloud] for docker — the source-type default is authoritative.
+        var config = ClusterBootstrapConfigParser.parse(DOCKER_BASE).unwrap();
+        var source = config.sources().get("dev");
+
+        var doc = BootstrapOverlayGenerator.overlay(config,
+                                                    source,
+                                                    0,
+                                                    empty(),
+                                                    empty(),
+                                                    empty());
+
+        assertFalse(doc.hasSection("cloud"),
+                    "docker overlay must not emit top-level [cloud] — comes from aether-docker.toml default");
+        assertFalse(doc.hasSection("cloud.credentials"));
     }
 
     @Test
