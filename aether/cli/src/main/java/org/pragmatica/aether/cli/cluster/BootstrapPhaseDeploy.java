@@ -147,6 +147,9 @@ import static org.pragmatica.lang.Result.success;
         var mgmtPort = ctx.config().operations()
                                  .ports()
                                  .management();
+        var scheme = ctx.config().operations().tls().autoGenerate()
+                  ? "https"
+                  : "http";
         var timeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations()
                                                                                .timeouts()
                                                                                .healthCheck());
@@ -154,7 +157,7 @@ import static org.pragmatica.lang.Result.success;
                           sourceName,
                           sourceNodes.size(),
                           timeoutMs / 1000);
-        return waitForCloudInit(sourceNodes, mgmtPort, timeoutMs, healthCheck, sourceName);
+        return waitForCloudInit(sourceNodes, mgmtPort, scheme, timeoutMs, healthCheck, sourceName);
     }
 
     @SuppressWarnings("JBCT-EX-01") private static Result<Unit> restartNodesWithFinalPeers(BootstrapContext ctx,
@@ -336,13 +339,14 @@ import static org.pragmatica.lang.Result.success;
 
     @SuppressWarnings("JBCT-EX-01") private static Result<Unit> waitForCloudInit(List<ProvisionedNode> nodes,
                                                                                  int mgmtPort,
+                                                                                 String scheme,
                                                                                  long timeoutMs,
                                                                                  Fn1<Result<String>, String> healthCheck,
                                                                                  String sourceName) {
         var deadline = System.currentTimeMillis() + timeoutMs;
         var unreachable = new ArrayList<>(nodes);
         while (System.currentTimeMillis() <deadline && !unreachable.isEmpty()) {
-            unreachable.removeIf(node -> isHealthy(node, mgmtPort, healthCheck));
+            unreachable.removeIf(node -> isHealthy(node, mgmtPort, scheme, healthCheck));
             if (unreachable.isEmpty()) {break;}
             ClusterBootstrapOrchestrator.sleepQuietly(ClusterBootstrapOrchestrator.POLL_INTERVAL_MS);
         }
@@ -357,8 +361,8 @@ import static org.pragmatica.lang.Result.success;
         return Result.unitResult();
     }
 
-    private static boolean isHealthy(ProvisionedNode node, int mgmtPort, Fn1<Result<String>, String> healthCheck) {
-        var url = "http://" + node.publicIp() + ":" + mgmtPort + "/health/live";
+    private static boolean isHealthy(ProvisionedNode node, int mgmtPort, String scheme, Fn1<Result<String>, String> healthCheck) {
+        var url = scheme + "://" + node.publicIp() + ":" + mgmtPort + "/health/live";
         return healthCheck.apply(url).isSuccess();
     }
 
