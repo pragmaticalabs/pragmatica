@@ -369,6 +369,9 @@ ENV_TYPE="${ENV_TYPE:-docker}"
 export ENV_TYPE
 CLOUD_MODE="${CLOUD_MODE:-false}"   # backward compat: true maps to ENV_TYPE=cloud
 if [ "$CLOUD_MODE" = "true" ]; then ENV_TYPE="cloud"; fi
+# Sync the reverse direction: kill_node, start_node, etc. still branch on CLOUD_MODE.
+if [ "$ENV_TYPE" = "cloud" ]; then CLOUD_MODE="true"; fi
+export CLOUD_MODE
 # BASTION_IP is retained for backward-compat env templates but ignored under
 # Option A (direct public-IP addressing). Bastion-via-private-network is Option B.
 BASTION_IP="${BASTION_IP:-}"

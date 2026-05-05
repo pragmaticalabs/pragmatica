@@ -58,8 +58,11 @@ provision_stability_window = "5s"
 provisioning_timeout = "60s"
 
 [source.hetzner-eu.node_config.app-http]
+# Cluster B runs 05-security tests which assert that unauthenticated requests are
+# rejected — keep API_KEY mode with the static test key configured. Bootstrap can
+# auth using the same key (configured key validator passes before KV check).
 enabled = true
-security_mode = "NONE"
+api_keys = ["aether-integration-test-key"]
 
 [runtime.default]
 type = "container"
