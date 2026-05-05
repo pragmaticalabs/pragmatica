@@ -264,4 +264,49 @@ class RoutePermissionRegistryTest {
             assertThat(RoutePermissionRegistry.resolve("PUT", "/api/some-resource/123")).isEqualTo(ADMIN_ONLY);
         }
     }
+
+    /// Spec event-stream-namespaces §12 — DELETE on a stream version is force-purge and requires
+    /// ADMIN. The /groups/{group} DELETE remains OPERATOR_AND_ABOVE because removing a durable
+    /// consumer group is reversible by re-creation.
+    @Nested
+    class StreamRoutePermissions {
+        @Test
+        void getOnStreamMetadata_isAllAuthenticated() {
+            assertThat(RoutePermissionRegistry.resolve("GET", "/api/streams/com.example.app/orders/1.0.0"))
+                .isEqualTo(ALL_AUTHENTICATED);
+        }
+
+        @Test
+        void postPublish_isOperatorAndAbove() {
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/streams/com.example.app/orders/1.0.0/publish"))
+                .isEqualTo(OPERATOR_AND_ABOVE);
+        }
+
+        @Test
+        void postGroupCreate_isOperatorAndAbove() {
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/streams/com.example.app/orders/1.0.0/groups"))
+                .isEqualTo(OPERATOR_AND_ABOVE);
+        }
+
+        @Test
+        void deleteStreamVersion_isAdminOnly() {
+            assertThat(RoutePermissionRegistry.resolve("DELETE", "/api/streams/com.example.app/orders/1.0.0"))
+                .isEqualTo(ADMIN_ONLY);
+        }
+
+        @Test
+        void deleteGroup_isOperatorAndAbove() {
+            assertThat(RoutePermissionRegistry.resolve("DELETE",
+                                                       "/api/streams/com.example.app/orders/1.0.0/groups/g1"))
+                .isEqualTo(OPERATOR_AND_ABOVE);
+        }
+
+        @Test
+        void deleteOnStreamRoot_doesNotMatchPattern() {
+            // /api/streams alone is not a stream version path; falls through to OPERATOR default
+            // (any /api/streams DELETE is still under the OPERATOR prefix).
+            assertThat(RoutePermissionRegistry.resolve("DELETE", "/api/streams"))
+                .isEqualTo(OPERATOR_AND_ABOVE);
+        }
+    }
 }

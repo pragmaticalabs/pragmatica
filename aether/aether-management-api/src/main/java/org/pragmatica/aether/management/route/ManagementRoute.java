@@ -11,6 +11,8 @@ import org.pragmatica.lang.Result;
 import java.util.Arrays;
 import java.util.List;
 
+import static org.pragmatica.aether.management.route.PathSegment.literal;
+import static org.pragmatica.aether.management.route.PathSegment.param;
 import static org.pragmatica.aether.management.route.RouteTarget.ANY;
 import static org.pragmatica.aether.management.route.RouteTarget.LEADER;
 import static org.pragmatica.aether.management.route.RouteTarget.LOCAL;
@@ -105,19 +107,65 @@ public enum ManagementRoute {
     STORAGE_SNAPSHOT(POST, "/api/storage/snapshot", List.of("name"), taskGroup(STORAGE)),
     CLUSTER_STORAGE_LIST(GET, "/api/cluster/storage", List.of(), ANY),
     CLUSTER_STORAGE_GET(GET, "/api/cluster/storage", List.of("name"), ANY),
-    STREAM_CREATE(POST, "/api/streams", List.of(), taskGroup(STREAMING)),
-    STREAM_LIST(GET, "/api/streams", List.of(), taskGroup(STREAMING)),
-    STREAM_GET(GET, "/api/streams", List.of("streamName"), taskGroup(STREAMING)),
-    STREAM_PARTITION(GET, "/api/streams", List.of("streamName", "partition"), taskGroup(STREAMING)),
-    STREAM_PUBLISH(POST, "/api/streams/publish", List.of("streamName"), taskGroup(STREAMING)),
-    STREAM_DELETE(DELETE, "/api/streams", List.of("streamName"), taskGroup(STREAMING)),
-    STREAM_CONSUMERS(GET, "/api/streams/consumers", List.of("streamName"), taskGroup(STREAMING)),
-    STREAM_READ(GET, "/api/streams/read", List.of("streamName", "partition"), taskGroup(STREAMING)),
-    CONSUMER_GROUP_JOIN(POST, "/api/streams/groups/join", List.of(), taskGroup(STREAMING)),
-    CONSUMER_GROUP_LEAVE(POST, "/api/streams/groups/leave", List.of(), taskGroup(STREAMING)),
-    CONSUMER_GROUP_STATUS(GET, "/api/streams/groups", List.of("groupId"), taskGroup(STREAMING)),
+
+    // === Stream namespacing surface — spec event-stream-namespaces §12 ===
+    // Read routes (ALL_AUTHENTICATED — GET resolves to ALL_AUTHENTICATED in RoutePermissionRegistry)
+    STREAMS_LIST(GET, "/api/streams", List.of(), taskGroup(STREAMING)),
+    STREAMS_VERSIONS_LIST(GET,
+                          "/api/streams",
+                          taskGroup(STREAMING),
+                          List.of(param("namespace"), param("stream"))),
+    STREAMS_LATEST(GET,
+                   "/api/streams",
+                   taskGroup(STREAMING),
+                   List.of(param("namespace"), param("stream"), literal("latest"))),
+    STREAMS_METADATA(GET,
+                     "/api/streams",
+                     taskGroup(STREAMING),
+                     List.of(param("namespace"), param("stream"), param("version"))),
+    STREAMS_TAIL(GET,
+                 "/api/streams",
+                 taskGroup(STREAMING),
+                 List.of(param("namespace"), param("stream"), param("version"), literal("tail"))),
+    STREAMS_GROUPS_LIST(GET,
+                        "/api/streams",
+                        taskGroup(STREAMING),
+                        List.of(param("namespace"), param("stream"), param("version"), literal("groups"))),
+    // Write routes (OPERATOR_AND_ABOVE by default for /api/streams prefix)
+    STREAMS_PUBLISH(POST,
+                    "/api/streams",
+                    taskGroup(STREAMING),
+                    List.of(param("namespace"), param("stream"), param("version"), literal("publish"))),
+    STREAMS_PUBLISH_BATCH(POST,
+                          "/api/streams",
+                          taskGroup(STREAMING),
+                          List.of(param("namespace"),
+                                  param("stream"),
+                                  param("version"),
+                                  literal("publish-batch"))),
+    STREAMS_GROUP_CREATE(POST,
+                         "/api/streams",
+                         taskGroup(STREAMING),
+                         List.of(param("namespace"), param("stream"), param("version"), literal("groups"))),
+    STREAMS_GROUP_DELETE(DELETE,
+                         "/api/streams",
+                         taskGroup(STREAMING),
+                         List.of(param("namespace"),
+                                 param("stream"),
+                                 param("version"),
+                                 literal("groups"),
+                                 param("group"))),
+    // Destructive route — per-path admin override in RoutePermissionRegistry
+    STREAMS_DELETE(DELETE,
+                   "/api/streams",
+                   taskGroup(STREAMING),
+                   List.of(param("namespace"), param("stream"), param("version"))),
+
     STREAM_NAMESPACES_LIST(GET, "/api/stream-namespaces", List.of(), LOCAL),
-    STREAM_NAMESPACES_GET(GET, "/api/stream-namespaces", List.of("namespace", "stream", "version"), LOCAL),
+    STREAM_NAMESPACES_GET(GET,
+                          "/api/stream-namespaces",
+                          LOCAL,
+                          List.of(param("namespace"), param("stream"), param("version"))),
     SCHEDULED_TASKS_LIST(GET, "/api/scheduled-tasks", List.of(), ANY),
     SCHEDULED_TASKS_BY_SECTION(GET, "/api/scheduled-tasks", List.of("section"), ANY),
     SCHEDULED_TASK_STATE(GET, "/api/scheduled-tasks/state", List.of("section", "artifact", "methodName"), ANY),
@@ -182,37 +230,76 @@ public enum ManagementRoute {
     OBSERVABILITY_DEPTH_GET(GET, "/api/observability/depth", List.of(), ANY),
     OBSERVABILITY_DEPTH_SET(POST, "/api/observability/depth", List.of(), ANY),
     OBSERVABILITY_DEPTH_DELETE(DELETE, "/api/observability/depth", List.of("artifact", "methodName"), ANY);
+
     private final HttpMethod method;
     private final String prefix;
+    private final List<PathSegment> segments;
     private final List<String> paramNames;
     private final RouteTarget target;
+
+    /// Backward-compatible constructor — list of parameter names interpreted as tail params.
+    /// Java erasure means a separate `List<PathSegment>` overload would collide with this one,
+    /// so the path-template form uses a different argument order (target before segments).
     ManagementRoute(HttpMethod method, String prefix, List<String> paramNames, RouteTarget target) {
         this.method = method;
         this.prefix = prefix;
         this.paramNames = List.copyOf(paramNames);
+        this.segments = paramNames.stream()
+                                  .map(PathSegment::param)
+                                  .toList();
         this.target = target;
     }
+
+    /// Path-template constructor — interleaved literals + parameters after the prefix.
+    /// Argument order intentionally differs from the legacy constructor (target before segments)
+    /// so that List.of(param("x"), literal("y")) call sites pick this overload despite type erasure.
+    ManagementRoute(HttpMethod method, String prefix, RouteTarget target, List<PathSegment> segments) {
+        this.method = method;
+        this.prefix = prefix;
+        this.segments = List.copyOf(segments);
+        this.paramNames = segments.stream()
+                                  .filter(PathSegment::isParam)
+                                  .map(PathSegment::text)
+                                  .toList();
+        this.target = target;
+    }
+
     public HttpMethod method() {
         return method;
     }
+
     public String prefix() {
         return prefix;
     }
+
+    public List<PathSegment> segments() {
+        return segments;
+    }
+
     public List<String> paramNames() {
         return paramNames;
     }
+
     public int paramCount() {
         return paramNames.size();
     }
+
+    public int segmentCount() {
+        return segments.size();
+    }
+
     public RouteTarget target() {
         return target;
     }
+
     public Result<String> assemble(List<String> values) {
         return RouteAssembler.assemble(this, values);
     }
+
     public Result<String> assemble(String... values) {
         return assemble(Arrays.asList(values));
     }
+
     public static Result<MatchedRoute> match(HttpMethod method, String path) {
         return RouteMatcher.shared().match(method, path);
     }

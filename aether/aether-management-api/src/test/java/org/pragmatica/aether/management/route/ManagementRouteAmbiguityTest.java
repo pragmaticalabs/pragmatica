@@ -29,7 +29,11 @@ class ManagementRouteAmbiguityTest {
     void allRoutesHaveUniqueSignature() {
         var seen = new HashMap<String, ManagementRoute>();
         for (var r : ManagementRoute.values()) {
-            var key = r.method() + " " + r.prefix() + " #" + r.paramCount();
+            var sig = new StringBuilder();
+            for (var seg : r.segments()) {
+                sig.append('/').append(seg.isParam() ? "*" : seg.text());
+            }
+            var key = r.method() + " " + r.prefix() + " " + sig;
             var prev = seen.put(key, r);
             assertThat(prev)
                     .as("Duplicate signature %s between %s and %s", key, prev, r)

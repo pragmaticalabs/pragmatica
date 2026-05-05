@@ -29,9 +29,12 @@ class MatchedRouteTest {
 
     @Test
     void matchedRoute_withMultipleValues_preservesOrder() {
-        var matched = MatchedRoute.matchedRoute(ManagementRoute.STREAM_READ, List.of("orders", "5"));
-        assertThat(matched.param("streamName").or((String) null)).isEqualTo("orders");
-        assertThat(matched.param("partition").or((String) null)).isEqualTo("5");
+        // Spec event-stream-namespaces §12 STREAMS_METADATA — params: namespace, stream, version
+        var matched = MatchedRoute.matchedRoute(ManagementRoute.STREAMS_METADATA,
+                                                List.of("com.example.app", "orders", "1.0.0"));
+        assertThat(matched.param("namespace").or((String) null)).isEqualTo("com.example.app");
+        assertThat(matched.param("stream").or((String) null)).isEqualTo("orders");
+        assertThat(matched.param("version").or((String) null)).isEqualTo("1.0.0");
     }
 
     @Test
@@ -42,7 +45,8 @@ class MatchedRouteTest {
 
     @Test
     void matchedRoute_paramsAreImmutable() {
-        var matched = MatchedRoute.matchedRoute(ManagementRoute.STREAM_READ, List.of("a", "b"));
+        var matched = MatchedRoute.matchedRoute(ManagementRoute.STREAMS_METADATA,
+                                                List.of("com.example", "orders", "1.0.0"));
         org.junit.jupiter.api.Assertions.assertThrows(UnsupportedOperationException.class,
                                                       () -> matched.params().put("x", "y"));
     }

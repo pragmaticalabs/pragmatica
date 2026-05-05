@@ -31,14 +31,31 @@ class RouteAssemblerTest {
 
     @Test
     void assemble_multipleParams_appendsInOrder() {
-        var path = ManagementRoute.STREAM_READ.assemble("orders", "3");
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/streams/read/orders/3"));
+        // Spec event-stream-namespaces §12 — STREAMS_METADATA: GET /api/streams/{ns}/{stream}/{version}
+        var path = ManagementRoute.STREAMS_METADATA.assemble("com.example.app", "orders", "1.0.0");
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/streams/com.example.app/orders/1.0.0"));
+        assertThat(path.isSuccess()).isTrue();
+    }
+
+    @Test
+    void assemble_pathTemplateWithLiteralSuffix() {
+        // Spec event-stream-namespaces §12 — STREAMS_PUBLISH: literal `publish` after three params.
+        var path = ManagementRoute.STREAMS_PUBLISH.assemble("com.example.app", "orders", "1.0.0");
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/streams/com.example.app/orders/1.0.0/publish"));
+        assertThat(path.isSuccess()).isTrue();
+    }
+
+    @Test
+    void assemble_pathTemplateWithInterleavedLiteralAndParam() {
+        // Spec event-stream-namespaces §12 — STREAMS_GROUP_DELETE has `groups` literal between
+        // version and group params.
+        var path = ManagementRoute.STREAMS_GROUP_DELETE.assemble("com.example.app", "orders", "1.0.0", "g1");
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/streams/com.example.app/orders/1.0.0/groups/g1"));
         assertThat(path.isSuccess()).isTrue();
     }
 
     @Test
     void assemble_urlEncodesSegments() {
-        // `/` is preserved so callers can pass pre-joined path fragments (e.g. Maven group paths).
         var path = ManagementRoute.DEPLOY_STATUS.assemble("a b/c");
         path.onSuccess(p -> assertThat(p).isEqualTo("/api/deploy/a%20b/c"));
         assertThat(path.isSuccess()).isTrue();
@@ -64,10 +81,12 @@ class RouteAssemblerTest {
     void roundTrip_assembleThenMatch_preservesParams() {
         var matcher = RouteMatcher.shared();
         for (var route : ManagementRoute.values()) {
-            // Generate plausible string values for each param: "v0", "v1", ...
             var values = new ArrayList<String>(route.paramCount());
             for (int i = 0; i < route.paramCount(); i++) {
-                values.add("val" + i);
+                // Use safe per-param values to avoid colliding with reserved literal segments
+                // (e.g. "latest" which is also the STREAMS_LATEST literal). We pick a value that
+                // includes a digit to avoid collision and stays URL-safe.
+                values.add("v" + i + "x");
             }
             var assembled = route.assemble(values);
             assertThat(assembled.isSuccess())
@@ -84,7 +103,7 @@ class RouteAssemblerTest {
                             .isEqualTo(route);
                     for (int i = 0; i < route.paramCount(); i++) {
                         var name = route.paramNames().get(i);
-                        var expected = "val" + i;
+                        var expected = "v" + i + "x";
                         assertThat(m.param(name).or((String) null))
                                 .as("param %s mismatch for %s", name, route.name())
                                 .isEqualTo(expected);

@@ -47,18 +47,47 @@ class RouteMatcherTest {
 
     @Test
     void match_returnsRoute_forMultipleParams() {
-        var result = matcher.match(GET, "/api/streams/orders/4");
+        // Spec event-stream-namespaces §12 — STREAMS_METADATA: GET /api/streams/{ns}/{stream}/{version}
+        var result = matcher.match(GET, "/api/streams/com.example.app/orders/1.0.0");
         assertThat(result.isSuccess()).isTrue();
         result.onSuccess(matched -> {
-            assertThat(matched.route()).isEqualTo(ManagementRoute.STREAM_PARTITION);
-            assertThat(matched.param("streamName").or((String) null)).isEqualTo("orders");
-            assertThat(matched.param("partition").or((String) null)).isEqualTo("4");
+            assertThat(matched.route()).isEqualTo(ManagementRoute.STREAMS_METADATA);
+            assertThat(matched.param("namespace").or((String) null)).isEqualTo("com.example.app");
+            assertThat(matched.param("stream").or((String) null)).isEqualTo("orders");
+            assertThat(matched.param("version").or((String) null)).isEqualTo("1.0.0");
+        });
+    }
+
+    @Test
+    void match_streamLatest_takesPriorityOver_streamMetadata() {
+        // /api/streams/{ns}/{stream}/latest must beat /api/streams/{ns}/{stream}/{version}
+        // because the literal segment is more specific than a parameter.
+        var result = matcher.match(GET, "/api/streams/com.example.app/orders/latest");
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(matched -> assertThat(matched.route()).isEqualTo(ManagementRoute.STREAMS_LATEST));
+    }
+
+    @Test
+    void match_streamPublish_pathTemplate() {
+        // POST /api/streams/{ns}/{stream}/{version}/publish
+        var result = matcher.match(POST, "/api/streams/com.example.app/orders/1.0.0/publish");
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(matched -> assertThat(matched.route()).isEqualTo(ManagementRoute.STREAMS_PUBLISH));
+    }
+
+    @Test
+    void match_streamGroupDelete_interleavedLiteralAndParam() {
+        // DELETE /api/streams/{ns}/{stream}/{version}/groups/{group}
+        var result = matcher.match(DELETE, "/api/streams/com.example.app/orders/1.0.0/groups/g1");
+        assertThat(result.isSuccess()).isTrue();
+        result.onSuccess(matched -> {
+            assertThat(matched.route()).isEqualTo(ManagementRoute.STREAMS_GROUP_DELETE);
+            assertThat(matched.param("group").or((String) null)).isEqualTo("g1");
         });
     }
 
     @Test
     void match_longestPrefixWins_overSpecificThanGeneric() {
-        // /api/deploy/promote/{id} (specific) must win over /api/deploy/{id} (general)
         var promote = matcher.match(POST, "/api/deploy/promote/dep-1");
         assertThat(promote.isSuccess()).isTrue();
         promote.onSuccess(matched -> {
@@ -145,10 +174,6 @@ class RouteMatcherTest {
 
     @Test
     void build_throwsOnAmbiguousRoutes() {
-        // Synthetic test: build a tiny matcher with two intentionally-conflicting "fake" routes
-        // by re-using two existing enum values that share signature would be impossible (the
-        // shared() instance proves it). Instead, we verify that build() rejects duplicates by
-        // calling it with values() twice over.
         var routes = ManagementRoute.values();
         var doubled = new ManagementRoute[routes.length * 2];
         System.arraycopy(routes, 0, doubled, 0, routes.length);
@@ -160,7 +185,6 @@ class RouteMatcherTest {
     @Test
     void match_acceptsAllStandardMethods() {
         for (var method : HttpMethod.values()) {
-            // Just verify no NPE — most will return NoMatch
             var result = matcher.match(method, "/api/status");
             assertThat(result).isNotNull();
         }

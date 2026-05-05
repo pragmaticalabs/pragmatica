@@ -40,8 +40,8 @@ import org.pragmatica.aether.api.routes.SchemaRoutes;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
+import org.pragmatica.aether.api.routes.StreamApiRoutes;
 import org.pragmatica.aether.api.routes.StreamNamespacesRoutes;
-import org.pragmatica.aether.api.routes.StreamRoutes;
 import org.pragmatica.aether.api.routes.TaskRoutes;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
@@ -279,9 +279,10 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get().backupService(),
                                                    nodeSupplier));
         routeSources.add(SchemaRoutes.schemaRoutes(nodeSupplier));
-        routeSources.add(StreamRoutes.streamRoutes(nodeSupplier,
-                                                   nodeSupplier.get().consumerGroupCoordinator(),
-                                                   nodeSupplier.get().consumerGroupRegistry()));
+        routeSources.add(StreamApiRoutes.streamApiRoutes(nodeSupplier,
+                                                         nodeSupplier.get().streamNamespacesService(),
+                                                         nodeSupplier.get().consumerGroupCoordinator(),
+                                                         nodeSupplier.get().consumerGroupRegistry()));
         routeSources.add(StreamNamespacesRoutes.streamNamespacesRoutes(nodeSupplier.get().streamNamespacesService()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
@@ -661,6 +662,15 @@ class ManagementServerImpl implements ManagementServer {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
+        // E2: spec event-stream-namespaces §6.1, §12.2 — any HTTP write to /api/streams/system/*
+        // returns 405 regardless of authenticated role. Short-circuits before security to make
+        // the closed-write principle a system-wide invariant rather than a role-policy outcome.
+        if (isSystemNamespaceWrite(methodName, path)) {
+            instrumented.error(HttpStatus.METHOD_NOT_ALLOWED,
+                               "HTTP writes to system:* streams are not permitted (closed-write principle)");
+            recordRequestMetrics(methodName, path, instrumented, startTime);
+            return;
+        }
         if (securityEnabled && !validateManagementSecurity(ctx, instrumented, path, method)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
@@ -856,6 +866,19 @@ class ManagementServerImpl implements ManagementServer {
                                                                             Serializer ser) {
         var serverCtx = ForwardedRequestContext.forwardedRequestContext(context);
         var responseCapture = ForwardedResponseWriter.forwardedResponseWriter();
+        // E2: enforce 405 for system:* writes on forwarded requests as well.
+        if (isSystemNamespaceWrite(context.method(), context.path())) {
+            responseCapture.error(HttpStatus.METHOD_NOT_ALLOWED,
+                                  "HTTP writes to system:* streams are not permitted (closed-write principle)");
+            responseCapture.completion().onSuccess(responseData -> sendManagementForwardSuccess(network,
+                                                                                                 request,
+                                                                                                 ser,
+                                                                                                 responseData))
+                                       .onFailure(cause -> sendManagementForwardError(network,
+                                                                                       request,
+                                                                                       cause.message()));
+            return;
+        }
         if (securityEnabled) {
             var method = Result.lift(Causes::fromThrowable,
                                      () -> HttpMethod.valueOf(context.method().toUpperCase()))
@@ -938,6 +961,26 @@ class ManagementServerImpl implements ManagementServer {
 
     private static boolean isDashboardPath(String path) {
         return "/".equals(path) || "/index.html".equals(path) || path.startsWith("/css/") || path.startsWith("/js/") || path.startsWith("/vendor/") || path.endsWith(".ico");
+    }
+
+    /// True iff the request is a write (POST/PUT/PATCH/DELETE) targeting `/api/streams/system/*`.
+    /// Used to enforce spec event-stream-namespaces §6.1 / §12.2: HTTP writes to system streams
+    /// return 405 regardless of authenticated role.
+    static boolean isSystemNamespaceWrite(String method, String path) {
+        if (!isWriteMethod(method)) {return false;}
+        if (path == null) {return false;}
+        var clean = stripQueryString(path);
+        return clean.startsWith("/api/streams/system/") || clean.equals("/api/streams/system");
+    }
+
+    private static boolean isWriteMethod(String method) {
+        return "POST".equalsIgnoreCase(method) || "PUT".equalsIgnoreCase(method)
+                || "PATCH".equalsIgnoreCase(method) || "DELETE".equalsIgnoreCase(method);
+    }
+
+    private static String stripQueryString(String path) {
+        var idx = path.indexOf('?');
+        return idx < 0 ? path : path.substring(0, idx);
     }
 
     @SuppressWarnings("JBCT-PAT-01") private boolean handleProbeRequest(String path, ResponseWriter response) {

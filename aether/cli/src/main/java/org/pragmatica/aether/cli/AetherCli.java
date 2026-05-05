@@ -34,7 +34,6 @@ import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -2299,11 +2298,23 @@ import static org.pragmatica.lang.Option.some;
             CommandLine.usage(this, System.out);
         }
 
+        // Stream-address parsing for the CLI: per spec event-stream-namespaces §3 the canonical form
+        // is `<namespace>:<stream>:<version>`. Wave 4A migrated CLI to the path-based API; the full
+        // command set (group create/delete, tail, etc.) lands in Wave 4B.
+        private static String[] parseAddress(String raw) {
+            var parts = raw.split(":", -1);
+            if (parts.length != 3) {
+                throw new IllegalArgumentException(
+                    "Stream address must be 'namespace:stream:version' (e.g. com.example.app:orders:1.0.0), got: " + raw);
+            }
+            return parts;
+        }
+
         @Command(name = "list", description = "List all streams") static class ListCommand implements Callable<Integer> {
             @CommandLine.ParentCommand private StreamCommand streamParent;
 
             @Override public Integer call() {
-                var response = streamParent.parent.fetch(STREAM_LIST);
+                var response = streamParent.parent.fetch(STREAMS_LIST);
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }
         }
@@ -2311,10 +2322,11 @@ import static org.pragmatica.lang.Option.some;
         @Command(name = "status", description = "Show stream details") static class StatusCommand implements Callable<Integer> {
             @CommandLine.ParentCommand private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name") private String name;
+            @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
 
             @Override public Integer call() {
-                var response = streamParent.parent.fetch(STREAM_GET, List.of(name));
+                var parts = parseAddress(address);
+                var response = streamParent.parent.fetch(STREAMS_METADATA, List.of(parts[0], parts[1], parts[2]));
                 return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
             }
         }
@@ -2322,17 +2334,19 @@ import static org.pragmatica.lang.Option.some;
         @Command(name = "publish", description = "Publish a message to a stream") static class PublishCommand implements Callable<Integer> {
             @CommandLine.ParentCommand private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name") private String name;
+            @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
 
             @Parameters(index = "1", description = "Message content") private String message;
 
             @Override public Integer call() {
-                var encoded = Base64.getEncoder().encodeToString(message.getBytes());
-                var body = "{\"data\":\"" + encoded + "\"}";
-                var response = streamParent.parent.post(STREAM_PUBLISH, List.of(name), body);
+                var parts = parseAddress(address);
+                var body = "{\"data\":\"" + message.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
+                var response = streamParent.parent.post(STREAMS_PUBLISH,
+                                                        List.of(parts[0], parts[1], parts[2]),
+                                                        body);
                 return OutputFormatter.printAction(response,
                                                    streamParent.parent.outputOptions(),
-                                                   "Published to stream " + name);
+                                                   "Published to stream " + address);
             }
         }
     }

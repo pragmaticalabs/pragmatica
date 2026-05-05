@@ -20,12 +20,13 @@ import static org.pragmatica.aether.management.route.ManagementRoute.SCHEDULED_T
 import static org.pragmatica.aether.management.route.ManagementRoute.SCHEDULED_TASK_STATE;
 import static org.pragmatica.aether.management.route.ManagementRoute.SCHEDULED_TASK_TRIGGER;
 import static org.pragmatica.aether.management.route.ManagementRoute.STORAGE_SNAPSHOT;
-import static org.pragmatica.aether.management.route.ManagementRoute.STREAM_PUBLISH;
-import static org.pragmatica.aether.management.route.ManagementRoute.STREAM_READ;
+import static org.pragmatica.aether.management.route.ManagementRoute.STREAMS_METADATA;
+import static org.pragmatica.aether.management.route.ManagementRoute.STREAMS_PUBLISH;
 
 
-/// Verifies all routes from the plan's "Path Rearrangement" table have the new shape:
-/// fixed prefix segments first, all path parameters at the tail.
+/// Verifies all routes from the plan's "Path Rearrangement" table have the expected shape:
+/// fixed prefix segments first, parameter segments at well-defined positions described by
+/// the path template (literals interleaved with params per spec event-stream-namespaces §12).
 class PathRearrangementTest {
 
     @Test
@@ -65,15 +66,21 @@ class PathRearrangementTest {
     }
 
     @Test
-    void streamPublish_paramAtTail() {
-        assertThat(STREAM_PUBLISH.prefix()).isEqualTo("/api/streams/publish");
-        assertThat(STREAM_PUBLISH.paramNames()).containsExactly("streamName");
+    void streamsMetadata_threeParamsAfterPrefix() {
+        // Spec event-stream-namespaces §12 — STREAMS_METADATA: GET /api/streams/{ns}/{stream}/{version}
+        assertThat(STREAMS_METADATA.prefix()).isEqualTo("/api/streams");
+        assertThat(STREAMS_METADATA.paramNames()).containsExactly("namespace", "stream", "version");
     }
 
     @Test
-    void streamRead_paramsAtTail() {
-        assertThat(STREAM_READ.prefix()).isEqualTo("/api/streams/read");
-        assertThat(STREAM_READ.paramNames()).containsExactly("streamName", "partition");
+    void streamsPublish_threeParamsThenLiteral() {
+        // Spec event-stream-namespaces §12 — STREAMS_PUBLISH: POST /api/streams/{ns}/{stream}/{version}/publish
+        // Literal "publish" appears after the three params (interleaved path template).
+        assertThat(STREAMS_PUBLISH.prefix()).isEqualTo("/api/streams");
+        assertThat(STREAMS_PUBLISH.paramNames()).containsExactly("namespace", "stream", "version");
+        var lastSegment = STREAMS_PUBLISH.segments().get(STREAMS_PUBLISH.segments().size() - 1);
+        assertThat(lastSegment.isParam()).isFalse();
+        assertThat(lastSegment.text()).isEqualTo("publish");
     }
 
     @Test
@@ -105,11 +112,11 @@ class PathRearrangementTest {
     }
 
     @Test
-    void allRoutes_obeyTailParamsInvariant() {
-        // No prefix may itself contain placeholder syntax (e.g. {id}).
+    void allRoutes_haveLiteralOnlyPrefix() {
+        // Prefixes hold only literal segments; parameters belong in the path template (segments()).
         for (var r : ManagementRoute.values()) {
             assertThat(r.prefix())
-                    .as("Route %s prefix must not contain '{' (parameters belong at tail)", r.name())
+                    .as("Route %s prefix must not contain '{' (parameters belong in the segments template)", r.name())
                     .doesNotContain("{");
         }
     }
