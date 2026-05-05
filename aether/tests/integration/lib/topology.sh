@@ -27,17 +27,38 @@ topology_now() {
 # Usage: topology_events_since "$baseline"
 topology_events_since() {
     local since="${1:-}"
-    local base_port="${MGMT_PORT:-5150}"
     local count="${NODE_COUNT:-5}"
     local merged=""
-    local i port url events inner
-    for i in $(seq 0 $((count - 1))); do
-        port=$((base_port + i))
-        url="http://${TARGET_HOST}:${port}/api/events"
+    local i base_url url events inner
+
+    # Build the per-node base URL list. Two conventions:
+    #   - docker/remote: every node shares TARGET_HOST, mgmt ports stack at MGMT_PORT+i
+    #   - cloud:         each node has its own VM public IP at the fixed CLOUD_MGMT_PORT
+    # Without the cloud branch, this loop hits non-existent ports on TARGET_HOST and
+    # the merged result is empty → SWIM-departure waits time out without ever seeing
+    # events that the cluster did emit.
+    local base_urls=()
+    if [ "${CLOUD_MODE:-false}" = "true" ] && command -v cloud_public_ip >/dev/null 2>&1; then
+        local mgmt_port="${CLOUD_MGMT_PORT:-8080}"
+        for i in $(seq 0 $((count - 1))); do
+            local node_ip
+            node_ip=$(cloud_public_ip "node-$((i + 1))" 2>/dev/null) || continue
+            [ -z "$node_ip" ] && continue
+            base_urls+=("http://${node_ip}:${mgmt_port}")
+        done
+    else
+        local base_port="${MGMT_PORT:-5150}"
+        for i in $(seq 0 $((count - 1))); do
+            base_urls+=("http://${TARGET_HOST}:$((base_port + i))")
+        done
+    fi
+
+    for base_url in "${base_urls[@]}"; do
+        url="${base_url}/api/events"
         if [ -n "$since" ]; then
             url="${url}?since=${since}"
         fi
-        events=$(curl -sf -m 3 -H "X-API-Key: ${API_KEY}" "$url" 2>/dev/null) || continue
+        events=$(curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "$url" 2>/dev/null) || continue
         if [ -z "$events" ] || [ "$events" = "[]" ]; then
             continue
         fi
