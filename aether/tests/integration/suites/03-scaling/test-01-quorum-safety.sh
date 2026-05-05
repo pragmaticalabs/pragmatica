@@ -19,9 +19,30 @@ test_initial_state() {
     assert_ge "$count" "3" "Initial: at least 3 nodes"
 }
 
-# Scale rejection tests use direct core node for proper 4xx error codes
+# Scale rejection tests hit the leader directly so the validator returns a proper 4xx.
+# Two URL conventions:
+#   - docker:  per-node mgmt ports are stacked at ${TARGET_HOST}:${MGMT_PORT}+${i}
+#   - cloud:   each node has its own public IP; mgmt port is fixed (CLOUD_MGMT_PORT)
 direct_scale_status() {
     local body="$1"
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        local leader leader_ip
+        leader=$(cluster_leader)
+        if [ -z "$leader" ] || [ "$leader" = "none" ]; then
+            echo "000"
+            return 0
+        fi
+        leader_ip=$(cloud_public_ip "$leader" 2>/dev/null) || { echo "000"; return 0; }
+        local port="${CLOUD_MGMT_PORT:-8080}"
+        local status
+        status=$(http_status "http://${leader_ip}:${port}/api/cluster/scale" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$body")
+        echo "${status:-000}"
+        return 0
+    fi
     local base_port="${MGMT_PORT}"
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
