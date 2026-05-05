@@ -16,6 +16,10 @@
     <name>JBCT Parser</name>
     <description>Java 25 PEG parser with CST output for JBCT tools</description>
 
+    <properties>
+        <peglib.maven.plugin.version>0.4.2</peglib.maven.plugin.version>
+    </properties>
+
     <dependencies>
         <!-- Pragmatica Lite Core -->
         <dependency>
@@ -33,4 +37,35 @@
             <artifactId>assertj-core</artifactId>
         </dependency>
     </dependencies>
+
+    <profiles>
+        <profile>
+            <id>generate-parser</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.pragmatica-lite</groupId>
+                        <artifactId>peglib-maven-plugin</artifactId>
+                        <version>${peglib.maven.plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>generate-java25-parser</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>generate</goal>
+                                </goals>
+                                <configuration>
+                                    <grammarFile>${project.basedir}/src/main/resources/grammars/java25.peg</grammarFile>
+                                    <outputDirectory>${project.basedir}/src/main/java</outputDirectory>
+                                    <packageName>org.pragmatica.jbct.parser</packageName>
+                                    <className>Java25Parser</className>
+                                    <errorReporting>ADVANCED</errorReporting>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
