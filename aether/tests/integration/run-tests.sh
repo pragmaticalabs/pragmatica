@@ -236,7 +236,7 @@ run_suite() {
     # Set cluster-specific endpoints. App-HTTP fallback points to the node-1
     # direct app port (8070/8080 per compose), not the mgmt port — slice routes
     # are only served on the app HTTP listener.
-    local cluster_endpoint lb_app lb_mgmt cluster_id node_base mgmt_scheme
+    local cluster_endpoint lb_app lb_mgmt cluster_id node_base
     if [ "$target_cluster" = "a" ]; then
         cluster_endpoint="$CLUSTER_A_MGMT"
         lb_app="${CLUSTER_A_LB_APP:-$CLUSTER_A_APP_DIRECT}"
@@ -244,7 +244,6 @@ run_suite() {
         cluster_id="a"
         # Cluster A is non-destructive — no witness; node-1 mgmt (5150) doubles as entry point.
         node_base="5150"
-        mgmt_scheme="http"
     else
         cluster_endpoint="$CLUSTER_B_MGMT"
         lb_app="${CLUSTER_B_LB_APP:-$CLUSTER_B_APP_DIRECT}"
@@ -252,14 +251,7 @@ run_suite() {
         cluster_id="b"
         # Core nodes 5160–5164; node-1 is pinned entry point (never killed).
         node_base="5160"
-        # Cluster B has [operations.tls] auto_generate = true on cloud — its mgmt
-        # API serves HTTPS with a self-signed cert from a cluster-derived CA.
-        # Tests use curl -k and `aether --tls-skip-verify` (see lib/common.sh).
-        mgmt_scheme="${CLUSTER_B_MGMT_SCHEME:-${ENV_TYPE}}"
-        if [ "$mgmt_scheme" = "cloud" ]; then mgmt_scheme="https"; fi
-        if [ "$mgmt_scheme" = "docker" ] || [ "$mgmt_scheme" = "remote" ]; then mgmt_scheme="http"; fi
     fi
-    export MGMT_SCHEME="$mgmt_scheme"
 
     # Export for the suite scripts
     export CLUSTER_ENDPOINT="$lb_mgmt"
@@ -624,10 +616,7 @@ if [ "$SKIP_DEPLOY" = false ]; then
                 # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
                 cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
                 if [ -n "$cluster_b_ip" ]; then
-                    # Cluster B has [operations.tls] auto_generate = true on cloud (so cert-rotation
-                    # tests can actually exercise rotation). Its mgmt API speaks HTTPS with a
-                    # self-signed cert; app HTTP (8070) stays plain HTTP.
-                    CLUSTER_B_MGMT="https://${cluster_b_ip}:8080"
+                    CLUSTER_B_MGMT="http://${cluster_b_ip}:8080"
                     CLUSTER_B_APP_DIRECT="http://${cluster_b_ip}:8070"
                     log_info "Cluster B endpoints: mgmt=${CLUSTER_B_MGMT} app=${CLUSTER_B_APP_DIRECT}"
                 else

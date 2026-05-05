@@ -61,8 +61,11 @@ test_rotation_under_load() {
     # config — see cloud-hetzner-b.toml) there's no event to disrupt traffic, and
     # baseline cloud connection-noise (~10% transient drops at low RPS over a
     # 60-second window) would trip a 5% threshold without anything having happened.
+    #
+    # Real cert-rotation E2E coverage on a TLS-enabled fixture is tracked in #209.
+    # CertificateRenewalScheduler unit tests exercise the rotation logic itself.
     if [ "$rotation_triggered" = "false" ]; then
-        log_pass "No rotation triggered (TLS not configured) — assertion vacuously satisfied (load result: ${result})"
+        log_pass "No rotation triggered (TLS not configured) — assertion vacuously satisfied (load result: ${result}). See #209 for real coverage."
         return 0
     fi
     assert_error_rate_below "$result" "$MAX_ERROR_RATE" "Error rate during cert rotation < ${MAX_ERROR_RATE}%"

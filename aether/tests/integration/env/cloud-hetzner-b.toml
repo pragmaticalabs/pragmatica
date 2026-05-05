@@ -39,11 +39,11 @@ type = "manual"
 [operations]
 
 [operations.tls]
-# Enabled so 05-security/test-cert-rotation actually exercises rotation under load
-# (was vacuously skipped when this was false). Bootstrap CLI uses
-# `ClusterHttpClient.enableTlsSkipVerify()` to accept the cluster-derived self-signed
-# CA; integration tests use curl with `-k` (see lib/common.sh and run-tests.sh).
-auto_generate = true
+# Disabled for integration testing — mgmt API uses plain HTTP for curl/wget health
+# checks. Cluster QUIC transport still uses TLS via auto-generated [tls].cluster_secret.
+# The cert-rotation test runs against a TLS-disabled cluster and gets a vacuous PASS;
+# real cert-rotation E2E coverage tracked in #209 (RC2).
+auto_generate = false
 
 [operations.ports]
 cluster = 6000
