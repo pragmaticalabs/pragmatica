@@ -92,9 +92,12 @@ topology_count_other_node_events() {
 #
 # Caller may pass either fixture form (node-N) or runtime form (source-role-N).
 # Events carry the runtime form, so we translate before matching on cloud.
+# Timeout is scaled by TIMEOUT_SCALE (3 on cloud) so SWIM detection has enough
+# headroom on Hetzner — VMs see ~50-150ms inter-node latency vs docker localhost.
 wait_for_node_departure() {
     local node_id="$1" baseline="$2" timeout="${3:-60}"
     node_id=$(to_node_id "$node_id")
+    timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
         local events
