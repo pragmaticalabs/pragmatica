@@ -728,8 +728,13 @@ kill_node() {
     fi
     log_info "Killing node: ${node_id}"
     if [ "$CLOUD_MODE" = "true" ]; then
-        # Cloud: each VM runs a single container named "aether-node"
-        cloud_ssh "$node_id" "docker kill aether-node" 2>/dev/null
+        # Cloud: each VM runs a single container named "aether-node". The container
+        # is launched with `--restart unless-stopped` so a plain `docker kill` is
+        # auto-restarted within ~2s, which is faster than SWIM's failure-detection
+        # threshold — peers never observe the gap, no NODE_LEFT/NODE_FAILED events
+        # are emitted, and tests waiting for those events time out. Disable the
+        # restart policy first so the kill is authoritative; start_node re-enables.
+        cloud_ssh "$node_id" "docker update --restart=no aether-node >/dev/null 2>&1; docker kill aether-node" 2>/dev/null
     else
         local name
         name=$(_docker_container_name "$node_id")
@@ -746,7 +751,8 @@ start_node() {
     local node_id="$1"
     log_info "Starting node: ${node_id}"
     if [ "$CLOUD_MODE" = "true" ]; then
-        cloud_ssh "$node_id" "docker start aether-node" 2>/dev/null
+        # Re-enable the restart policy that kill_node disabled, then start.
+        cloud_ssh "$node_id" "docker update --restart=unless-stopped aether-node >/dev/null 2>&1; docker start aether-node" 2>/dev/null
     else
         local name
         name=$(_docker_container_name "$node_id")
