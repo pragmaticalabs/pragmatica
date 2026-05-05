@@ -15,8 +15,16 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -27,7 +35,31 @@ import static org.pragmatica.lang.Option.option;
 public sealed interface ClusterHttpClient {
     record unused() implements ClusterHttpClient{}
 
-    HttpOperations HTTP_OPS = JdkHttpOperations.jdkHttpOperations();
+    AtomicReference<HttpOperations> HTTP_OPS_REF = new AtomicReference<>(JdkHttpOperations.jdkHttpOperations());
+
+    /// Replace the underlying HTTP client with one that accepts self-signed TLS
+    /// certificates. Used during bootstrap when the cluster's management HTTP
+    /// server is configured with `[operations.tls] auto_generate = true` — the
+    /// cert is signed by a cluster-derived CA the operator machine doesn't trust
+    /// by default. Idempotent; calling twice has no extra effect.
+    @Contract @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"}) static void enableTlsSkipVerify() {
+        try {
+            var trustAll = new TrustManager[]{new TrustAllManager()};
+            var sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, trustAll, new SecureRandom());
+            var client = HttpClient.newBuilder().sslContext(sslContext)
+                                            .build();
+            HTTP_OPS_REF.set(JdkHttpOperations.jdkHttpOperations(client));
+        } catch (NoSuchAlgorithmException | KeyManagementException e) {
+            System.err.println("Warning: failed to enable TLS skip-verify in ClusterHttpClient: " + e.getMessage());
+        }
+    }
+
+    final class TrustAllManager implements X509TrustManager {
+        @Contract @Override public void checkClientTrusted(X509Certificate[] chain, String authType) {}
+        @Contract @Override public void checkServerTrusted(X509Certificate[] chain, String authType) {}
+        @Override public X509Certificate[] getAcceptedIssuers() {return new X509Certificate[0];}
+    }
 
     Duration DEFAULT_REQUEST_TIMEOUT = TimeSpan.timeSpan(130).seconds()
                                                         .duration();
@@ -122,7 +154,7 @@ public sealed interface ClusterHttpClient {
                                             .GET();
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
-        return HTTP_OPS.sendString(builder.build()).await()
+        return HTTP_OPS_REF.get().sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }
 
@@ -136,7 +168,7 @@ public sealed interface ClusterHttpClient {
                                             .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
-        return HTTP_OPS.sendString(builder.build()).await()
+        return HTTP_OPS_REF.get().sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }
 
@@ -150,7 +182,7 @@ public sealed interface ClusterHttpClient {
                                             .PUT(HttpRequest.BodyPublishers.ofString(jsonBody));
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
-        return HTTP_OPS.sendString(builder.build()).await()
+        return HTTP_OPS_REF.get().sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }
 
@@ -173,7 +205,7 @@ public sealed interface ClusterHttpClient {
         var builder = HttpRequest.newBuilder().uri(URI.create(url))
                                             .GET();
         applyTimeout(builder);
-        return HTTP_OPS.sendString(builder.build()).await()
+        return HTTP_OPS_REF.get().sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }
 
@@ -193,7 +225,7 @@ public sealed interface ClusterHttpClient {
                                             .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
-        return HTTP_OPS.sendString(builder.build()).await()
+        return HTTP_OPS_REF.get().sendString(builder.build()).await()
                                   .flatMap(ClusterHttpClient::extractBody);
     }
 

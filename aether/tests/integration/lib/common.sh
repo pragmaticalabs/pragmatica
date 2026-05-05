@@ -52,7 +52,7 @@ NODE_COUNT="${NODE_COUNT:-5}"
 aether_failover() {
     local timeout="${AETHER_CLI_TIMEOUT:-5}"
     local host_port="${MGMT_ENTRY_POINT#http://}"
-    if ! curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
+    if ! curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
         # Failover: probe alternate live core endpoints.
         # docker/remote: nodes share TARGET_HOST with sequential mgmt ports (MGMT_PORT+0..N-1).
         # cloud: each node has its own VM public IP; resolve via cloud_public_ip per node-id.
@@ -61,7 +61,7 @@ aether_failover() {
                 local node_ip
                 node_ip=$(cloud_public_ip "node-$((n+1))" 2>/dev/null || echo "")
                 [ -z "$node_ip" ] && continue
-                if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "http://${node_ip}:${MGMT_PORT}/health/live" >/dev/null 2>&1; then
+                if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME}://${node_ip}:${MGMT_PORT}/health/live" >/dev/null 2>&1; then
                     host_port="${node_ip}:${MGMT_PORT}"
                     break
                 fi
@@ -70,14 +70,18 @@ aether_failover() {
             local base_port="${MGMT_PORT}"
             for i in $(seq 0 $((NODE_COUNT - 1))); do
                 local port=$((base_port + i))
-                if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1; then
+                if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1; then
                     host_port="${TARGET_HOST}:${port}"
                     break
                 fi
             done
         fi
     fi
-    aether -c "${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" "$@"
+    local cli_tls_flag=""
+    if [ "${MGMT_SCHEME}" = "https" ]; then
+        cli_tls_flag="--tls-skip-verify"
+    fi
+    aether -c "${MGMT_SCHEME}://${host_port}" --api-key "${API_KEY}" "--request-timeout=${timeout}" ${cli_tls_flag} "$@"
 }
 
 # Query a CLI command and extract a single field (--format value --field)
@@ -114,7 +118,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC}  $1"; }
 # CLUSTER_ENDPOINT when it's up; rotates once to any live core node when the pinned
 # endpoint is dead (e.g., during chaos-suite recovery where the pinned node was killed).
 _resolve_live_endpoint() {
-    if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
+    if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
         echo "${CLUSTER_ENDPOINT}"
         return 0
     fi
@@ -122,7 +126,7 @@ _resolve_live_endpoint() {
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
         local endpoint="http://${TARGET_HOST}:${port}"
-        if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+        if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
             echo "${endpoint}"
             return 0
         fi
@@ -159,10 +163,10 @@ _api_call() {
     local method="$1" url="$2" body="${3:-}"
     local response status body_only
     if [ -n "$body" ]; then
-        response=$(curl -s -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        response=$(curl -sk -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
             -d "$body" -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     else
-        response=$(curl -s -X "$method" -H "X-API-Key: ${API_KEY}" \
+        response=$(curl -sk -X "$method" -H "X-API-Key: ${API_KEY}" \
             -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     fi
     status=$(printf '%s' "$response" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | sed 's/__API_HTTP_STATUS://;s/__//')
@@ -177,7 +181,7 @@ _api_call() {
 
 api_delete() {
     local path="$1"
-    curl -sf -X DELETE -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
+    curl -sfk -X DELETE -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
 }
 
 # Per-node HTTP helpers — for legitimate per-node state queries.
@@ -188,13 +192,13 @@ api_delete() {
 node_api_get() {
     local offset="$1" path="$2"
     local port=$((MGMT_PORT + offset))
-    curl -sf -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}"
+    curl -sfk -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}"
 }
 
 node_api_post() {
     local offset="$1" path="$2" body="${3:-"{}"}"
     local port=$((MGMT_PORT + offset))
-    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+    curl -sfk -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
         -d "$body" "http://${TARGET_HOST}:${port}${path}"
 }
 
@@ -212,20 +216,20 @@ direct_api_post() {
 # HTTP helpers — app HTTP (port 8070)
 app_get() {
     local path="$1"
-    curl -sf -H "X-API-Key: ${API_KEY}" "${APP_ENDPOINT}${path}"
+    curl -sfk -H "X-API-Key: ${API_KEY}" "${APP_ENDPOINT}${path}"
 }
 
 app_post() {
     local path="$1"
     local body="${2:-"{}"}"
-    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+    curl -sfk -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
         -d "$body" "${APP_ENDPOINT}${path}"
 }
 
 # Raw curl (no -f) — returns status code
 http_status() {
     local url="$1"; shift
-    curl -s -o /dev/null -w "%{http_code}" "$@" "$url"
+    curl -sk -o /dev/null -w "%{http_code}" "$@" "$url"
 }
 
 # ---------------------------------------------------------------------------
@@ -306,7 +310,7 @@ assert_contains() {
 assert_http_status() {
     local url="$1" expected="$2" desc="$3"; shift 3
     local status
-    status=$(curl -s -o /dev/null -w "%{http_code}" "$@" "$url")
+    status=$(curl -sk -o /dev/null -w "%{http_code}" "$@" "$url")
     assert_eq "$status" "$expected" "$desc"
 }
 
@@ -384,6 +388,11 @@ CLOUD_TIMEOUT_MULTIPLIER="${CLOUD_TIMEOUT_MULTIPLIER:-1}"
 # `hetzner-eu-core-0`); the test harness uses friendly `node-N` IDs and translates
 # to the bootstrap form via this prefix when looking up public IPs.
 CLOUD_SOURCE_NAME="${CLOUD_SOURCE_NAME:-hetzner-eu}"
+
+# Management API URL scheme. Defaults to http; switched to https by run-tests.sh
+# when the cluster's bootstrap config has [operations.tls] auto_generate = true
+# (cluster B in cloud mode).
+MGMT_SCHEME="${MGMT_SCHEME:-http}"
 
 # Translate a friendly Docker-style node id (node-N, 1-based) into the actual
 # node id stored under NodeLifecycleKey at the runtime. On Docker, node ids ARE

@@ -185,7 +185,7 @@ wait_for_all_nodes_ready() {
         local still_pending=()
         for port in "${pending[@]}"; do
             local body
-            body=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
+            body=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
                         "http://${TARGET_HOST}:${port}/health/ready" 2>/dev/null) || {
                 still_pending+=("$port")
                 continue
@@ -211,7 +211,7 @@ wait_for_all_nodes_ready() {
         # all we know is "not ready" — useless for nailing down the actual bug.
         for port in "${pending[@]}"; do
             local diag
-            diag=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
+            diag=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
                         "http://${TARGET_HOST}:${port}/health/ready" 2>&1 \
                         || echo '<no response or non-2xx>')
             log_warn "wait_for_all_nodes_ready: port=${port} body=${diag}"
@@ -229,7 +229,7 @@ rotate_mgmt_entry_point() {
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
         local endpoint="http://${TARGET_HOST}:${port}"
-        if curl -sf -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+        if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
             export MGMT_ENTRY_POINT="$endpoint"
             export CLUSTER_ENDPOINT="$endpoint"
             log_info "Rotated MGMT_ENTRY_POINT to ${endpoint}" >&2
@@ -297,7 +297,7 @@ discover_endpoints() {
     # Validate reachability — the LB endpoint is reported with the internal cluster
     # hostname, which is unreachable from the test host. Fall back to direct access.
     # Connection-level probe only; the CLI can't bypass DNS failures.
-    if [ -n "$LB_MGMT_ENDPOINT" ] && ! curl -sf -m 3 -H "X-API-Key: ${API_KEY}" "${LB_MGMT_ENDPOINT}/health/live" >/dev/null 2>&1; then
+    if [ -n "$LB_MGMT_ENDPOINT" ] && ! curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "${LB_MGMT_ENDPOINT}/health/live" >/dev/null 2>&1; then
         LB_APP_ENDPOINT=""
         LB_MGMT_ENDPOINT=""
     fi
@@ -314,7 +314,7 @@ wait_for_lb_ready() {
     local endpoint="$1"
     local timeout="${2:-120}"
     wait_for "LB ready at ${endpoint}" \
-        "curl -sf ${endpoint}/health/live >/dev/null 2>&1" \
+        "curl -sfk ${endpoint}/health/live >/dev/null 2>&1" \
         "$timeout"
 }
 
@@ -328,7 +328,7 @@ wait_for_cluster() {
 # Wait for cluster using direct node access (before LB is available)
 wait_for_cluster_direct() {
     wait_for "cluster healthy (direct)" \
-        "[ \$(json_value \"\$(curl -sf -H 'X-API-Key: ${API_KEY}' http://${TARGET_HOST}:${MGMT_PORT}/api/health 2>/dev/null)\" connectedPeers 2>/dev/null || echo 0) -ge 2 ]" \
+        "[ \$(json_value \"\$(curl -sfk -H 'X-API-Key: ${API_KEY}' http://${TARGET_HOST}:${MGMT_PORT}/api/health 2>/dev/null)\" connectedPeers 2>/dev/null || echo 0) -ge 2 ]" \
         "${1:-120}"
 }
 
@@ -376,14 +376,14 @@ wait_for_node_count_fast() {
         for i in $(seq 0 $((NODE_COUNT - 1))); do
             local port=$((base_port + i))
             local candidate="http://${TARGET_HOST}:${port}"
-            if curl -sf -m 1 -H "X-API-Key: ${API_KEY}" "${candidate}/health/live" >/dev/null 2>&1; then
+            if curl -sfk -m 1 -H "X-API-Key: ${API_KEY}" "${candidate}/health/live" >/dev/null 2>&1; then
                 endpoint="${candidate}"
                 break
             fi
         done
         if [ -n "$endpoint" ]; then
             local gen
-            gen=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
+            gen=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
                         "${endpoint}/api/cluster/generation" 2>/dev/null) || gen=""
             local desired members observed=0
             if [ -n "$gen" ]; then
@@ -404,7 +404,7 @@ wait_for_node_count_fast() {
                 # Fallback to topology.coreCount for cold-boot cases where the
                 # generation snapshot has not yet been projected to KV.
                 local body
-                body=$(curl -sf -m 2 -H "X-API-Key: ${API_KEY}" \
+                body=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
                             "${endpoint}/api/cluster/topology" 2>/dev/null) || body=""
                 if [ -n "$body" ]; then
                     observed=$(printf '%s' "$body" \
@@ -602,7 +602,7 @@ deploy_blueprint_file() {
     log_info "Deploying blueprint file: ${filepath}" >&2
     local content
     content=$(cat "$filepath")
-    curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/toml" \
+    curl -sfk -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/toml" \
         -d "$content" "${CLUSTER_ENDPOINT}/api/blueprint"
 }
 
@@ -842,7 +842,7 @@ leader_api_post() {
         local leader_ip
         leader_ip=$(cloud_node_ip "$leader")
         # Use SSH tunnel for the request
-        cloud_ssh "$leader" "curl -sf -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '${body}' http://localhost:8080${path}" 2>/dev/null
+        cloud_ssh "$leader" "curl -sfk -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '${body}' http://localhost:8080${path}" 2>/dev/null
         return
     fi
     local leader
@@ -860,7 +860,7 @@ leader_api_post() {
     if [[ "$leader" =~ ^node-([0-9]+)$ ]]; then
         local node_num="${BASH_REMATCH[1]}"
         local port=$((MGMT_PORT + node_num - 1))
-        curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        curl -sfk -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
             -d "$body" "http://${TARGET_HOST}:${port}${path}"
         return
     fi
@@ -1133,7 +1133,7 @@ wait_for_node_count_on() {
     local timeout="${3:-120}"
 
     wait_for "${expected} nodes on ${endpoint}" \
-        "[ \$(json_value \"\$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" coreCount 2>/dev/null || echo 0) -ge ${expected} ]" \
+        "[ \$(json_value \"\$(curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" coreCount 2>/dev/null || echo 0) -ge ${expected} ]" \
         "$timeout"
 }
 
@@ -1143,6 +1143,6 @@ wait_for_leader_on() {
     local timeout="${2:-30}"
 
     wait_for "leader elected on ${endpoint}" \
-        "json_contains \"\$(curl -sf -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" role ACTIVE" \
+        "json_contains \"\$(curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" role ACTIVE" \
         "$timeout"
 }

@@ -36,6 +36,7 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
         var managementPort = ctx.config().operations()
                                        .ports()
                                        .management();
+        var scheme = managementScheme(ctx);
         var healthTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations()
                                                                                      .timeouts()
                                                                                      .healthCheck());
@@ -45,11 +46,20 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
         var requiredCores = ctx.config().derivedCoreCount();
         return waitForHealth(ctx.addresses(),
                              managementPort,
-                             healthTimeoutMs).flatMap(_ -> waitForQuorum(ctx.addresses(),
-                                                                         managementPort,
-                                                                         quorumTimeoutMs,
-                                                                         requiredCores))
+                             healthTimeoutMs,
+                             scheme).flatMap(_ -> waitForQuorum(ctx.addresses(),
+                                                                managementPort,
+                                                                quorumTimeoutMs,
+                                                                requiredCores,
+                                                                scheme))
                             .flatMap(_ -> finalizeClusterFormation(ctx, apiKey));
+    }
+
+    private static String managementScheme(BootstrapContext ctx) {
+        return ctx.config().operations().tls()
+                                       .autoGenerate()
+                  ? "https"
+                  : "http";
     }
 
     private static Result<BootstrapContext> finalizeClusterFormation(BootstrapContext ctx, String apiKey) {
@@ -80,14 +90,16 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
 
     @SuppressWarnings("JBCT-EX-01") private static Result<Unit> waitForHealth(List<NodeAddress> addresses,
                                                                               int managementPort,
-                                                                              long timeoutMs) {
+                                                                              long timeoutMs,
+                                                                              String scheme) {
         if (addresses.isEmpty()) {return Result.unitResult();}
         System.out.printf("  Waiting for %d node(s) to become healthy (timeout: %ds)%n",
                           addresses.size(),
                           timeoutMs / 1000);
         var promises = addresses.stream().map(addr -> pollSingleNodeHealth(addr.publicIp(),
                                                                            managementPort,
-                                                                           timeoutMs))
+                                                                           timeoutMs,
+                                                                           scheme))
                                        .toList();
         var results = Promise.allOf(promises).await();
         return results.flatMap(BootstrapPhaseFormation::checkAllHealthy);
@@ -99,9 +111,9 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
         return Result.unitResult();
     }
 
-    private static Promise<Unit> pollSingleNodeHealth(String ip, int port, long timeoutMs) {
+    private static Promise<Unit> pollSingleNodeHealth(String ip, int port, long timeoutMs, String scheme) {
         return Promise.promise(resolver -> {
-                                   var url = "http://" + ip + ":" + port + "/health/live";
+                                   var url = scheme + "://" + ip + ":" + port + "/health/live";
                                    var deadline = System.currentTimeMillis() + timeoutMs;
                                    while (System.currentTimeMillis() <deadline) {
                                        if (ClusterBootstrapOrchestrator.httpGet(url).isSuccess()) {
@@ -117,10 +129,11 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
     @SuppressWarnings("JBCT-EX-01") private static Result<Unit> waitForQuorum(List<NodeAddress> addresses,
                                                                               int managementPort,
                                                                               long timeoutMs,
-                                                                              int requiredCores) {
+                                                                              int requiredCores,
+                                                                              String scheme) {
         if (addresses.isEmpty()) {return Result.unitResult();}
         var endpoint = addresses.getFirst().publicIp();
-        var url = "http://" + endpoint + ":" + managementPort + "/health/ready";
+        var url = scheme + "://" + endpoint + ":" + managementPort + "/health/ready";
         System.out.printf("  Waiting for quorum at %s (need %d core(s), timeout: %ds)%n",
                           url,
                           requiredCores,
@@ -242,7 +255,12 @@ import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION
                              .management();
         var ip = ctx.addresses().getFirst()
                               .publicIp();
-        return "http://" + ip + ":" + port;
+        var scheme = ctx.config().operations()
+                                .tls()
+                                .autoGenerate()
+                          ? "https"
+                          : "http";
+        return scheme + "://" + ip + ":" + port;
     }
 
     static String buildConfigJson(String rawTomlContent) {

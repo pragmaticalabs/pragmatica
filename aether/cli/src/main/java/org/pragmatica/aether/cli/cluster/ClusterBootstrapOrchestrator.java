@@ -77,8 +77,20 @@ import static org.pragmatica.lang.Result.success;
                                              List<SshPublicKey> sshPublicKeys,
                                              boolean keepOnFailure,
                                              String rawTomlContent) {
+        configureClusterHttpClient(config);
         if (resume) {return resumeBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);}
         return freshBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
+    }
+
+    /// When the cluster is configured with `[operations.tls] auto_generate = true`,
+    /// the leader's management HTTP server boots with TLS bound. Bootstrap formation
+    /// POSTs hit https://leader-ip:port/api/cluster/config, with a cert signed by a
+    /// cluster-derived CA the operator machine doesn't trust. Skip TLS verification
+    /// for those calls — the cluster_secret-derived chain is the actual root of trust.
+    @Contract private static void configureClusterHttpClient(ClusterBootstrapConfig config) {
+        if (config.operations().tls().autoGenerate()) {
+            ClusterHttpClient.enableTlsSkipVerify();
+        }
     }
 
     private static Result<BootstrapResult> freshBootstrap(ClusterBootstrapConfig config,
