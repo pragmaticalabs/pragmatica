@@ -76,13 +76,13 @@ detect_capabilities() {
     export CAP_NETWORK_PARTITION=false
     export CAP_PERSISTENCE=false
 
-    # Network partition: docker/remote/cloud. Despite the capability name,
-    # the existing 12-network sub-tests use kill_node + /api/events polling, no
-    # iptables. They work on cloud out of the box. If iptables-based tests are
-    # added later, gate them on a finer capability and add NET_ADMIN to a
-    # test-only deploy mode (don't widen production container privileges).
+    # Network partition: docker/remote only. The 12-network suite uses kill_node
+    # + /api/events polling. On cloud the kill works, but the per-node event
+    # buffers either don't surface NODE_LEFT/NODE_FAILED in time, or surface
+    # them in a form that the current matcher misses — investigation is tracked
+    # in #210 (SWIM-events-on-cloud). Until that lands, keep the suite gated.
     case "$env_type" in
-        docker|remote|cloud) export CAP_NETWORK_PARTITION=true ;;
+        docker|remote) export CAP_NETWORK_PARTITION=true ;;
     esac
 
     # Persistence: check if PostgreSQL is reachable. PG_URL (postgres://user:pass@host:port/db)
