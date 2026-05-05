@@ -25,7 +25,8 @@
     </modules>
 
     <properties>
-        <peglib.version>0.2.2</peglib.version>
+        <peglib.version>0.4.2</peglib.version>
+        <peglib.maven.plugin.version>0.4.2</peglib.maven.plugin.version>
     </properties>
 
     <dependencyManagement>
