@@ -89,8 +89,12 @@ topology_count_other_node_events() {
 # Wait until a NODE_LEFT or NODE_FAILED event is observed for the given node
 # since the supplied baseline. Returns 0 on success, 1 on timeout.
 # Usage: wait_for_node_departure node-3 "$baseline" 60
+#
+# Caller may pass either fixture form (node-N) or runtime form (source-role-N).
+# Events carry the runtime form, so we translate before matching on cloud.
 wait_for_node_departure() {
     local node_id="$1" baseline="$2" timeout="${3:-60}"
+    node_id=$(to_node_id "$node_id")
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
         local events
@@ -114,6 +118,7 @@ wait_for_node_departure() {
 # Usage: wait_for_replacement_of node-3 "$baseline" 120
 wait_for_replacement_of() {
     local killed_id="$1" baseline="$2" timeout="${3:-120}"
+    killed_id=$(to_node_id "$killed_id")
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
         local events

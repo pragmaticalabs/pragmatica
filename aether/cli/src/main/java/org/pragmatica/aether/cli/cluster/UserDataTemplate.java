@@ -208,6 +208,9 @@ sealed interface UserDataTemplate {
         sb.append("    --name aether-node \\\n");
         sb.append("    --restart unless-stopped \\\n");
         sb.append("    --network host \\\n");
+        // NET_ADMIN: integration tests (12-network) manipulate iptables inside the
+        // container to simulate partitions; on cloud the unprivileged shell can't.
+        sb.append("    --cap-add NET_ADMIN \\\n");
         sb.append("    -l aether-cluster=").append(clusterName)
                  .append(" \\\n");
         sb.append("    -l aether-node-id=").append(nodeId)

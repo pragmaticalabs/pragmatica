@@ -76,9 +76,11 @@ detect_capabilities() {
     export CAP_NETWORK_PARTITION=false
     export CAP_PERSISTENCE=false
 
-    # Network partition: docker/remote only (iptables)
+    # Network partition: docker/remote/cloud — bootstrap now provisions VM containers
+    # with `--cap-add NET_ADMIN`, so iptables manipulation works on cloud too.
+    # See BootstrapPhaseDeploy.buildRestartCommand and UserDataTemplate.appendContainerRun.
     case "$env_type" in
-        docker|remote) export CAP_NETWORK_PARTITION=true ;;
+        docker|remote|cloud) export CAP_NETWORK_PARTITION=true ;;
     esac
 
     # Persistence: check if PostgreSQL is reachable. PG_URL (postgres://user:pass@host:port/db)
