@@ -1,7 +1,9 @@
 prefix = "/api/kv"
 
 [security]
-default = "authenticated"
+# Test fixture: public routes so integration tests can hit /api/kv without auth setup.
+# Production slices should default to "authenticated" or stronger.
+default = "public"
 override_policy = "strengthen_only"
 
 [routes]

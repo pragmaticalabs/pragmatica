@@ -515,6 +515,24 @@ slices_total_instances() {
     echo "${count:-0}"
 }
 
+# slice_owner_for <blueprint-coords> — print the nodeId of any node hosting an ACTIVE
+# instance of any slice belonging to <blueprint-coords>. Empty stdout if none found.
+# Used by 08-resources tests on cloud to retarget APP_ENDPOINT from the (possibly-non-
+# hosting) default node-1 to a node that actually has the slice.
+slice_owner_for() {
+    local coords="$1"
+    # blueprint coords are groupId:artifactId:version; the slice artifact ids share the
+    # groupId:artifactId prefix, so match on it. Newlines per JSON object then grep.
+    local prefix="${coords%:*}"
+    cluster_slices \
+        | tr '{' '\n' \
+        | grep "\"artifact\"[[:space:]]*:[[:space:]]*\"${prefix}" \
+        | grep '"state"[[:space:]]*:[[:space:]]*"ACTIVE"' \
+        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/.*"nodeId"[[:space:]]*:[[:space:]]*"//; s/"$//' \
+        | head -1
+}
+
 slices_active_instances() {
     local slices
     slices=$(cluster_slices)
@@ -954,16 +972,18 @@ reassign_task_group() {
     if [ "$ENV_TYPE" = "cloud" ]; then
         local leader_ip
         leader_ip=$(cloud_public_ip "$leader") || return 1
-        leader_url="http://${leader_ip}:${MGMT_PORT}"
+        # Cloud uses fixed mgmt port 8080 on each VM (no per-node offset). The exported
+        # MGMT_PORT is docker-specific (5150 / 5160 host-mapped), unusable on cloud.
+        leader_url="http://${leader_ip}:${CLOUD_MGMT_PORT:-8080}"
     else
         local node_num
         node_num=$(echo "$leader" | sed 's/node-//')
         local port=$((MGMT_PORT + node_num - 1))
         leader_url="http://${TARGET_HOST}:${port}"
     fi
-    curl -sf -X PUT -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-        -d "{\"targetNode\":\"${target}\"}" \
-        "${leader_url}/api/cluster/tasks/reassign/${group}"
+    # Use _api_call so HTTP errors (NOT_LEADER, INVALID_NODE, etc.) surface as warnings
+    # on stderr instead of being silently swallowed by curl -sf.
+    _api_call PUT "${leader_url}/api/cluster/tasks/reassign/${group}" "{\"targetNode\":\"${target}\"}"
 }
 
 wait_for_all_tasks_active() {

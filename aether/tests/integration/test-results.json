@@ -1,12 +1,12 @@
 [
   {"suite":"00-smoke","status":"passed","pass":2,"fail":0,"duration":11},
-  {"suite":"07-cluster-mgmt","status":"passed","pass":4,"fail":0,"duration":23},
-  {"suite":"09-artifacts","status":"passed","pass":3,"fail":0,"duration":217},
+  {"suite":"07-cluster-mgmt","status":"passed","pass":4,"fail":0,"duration":26},
+  {"suite":"09-artifacts","status":"passed","pass":3,"fail":0,"duration":22},
   {"suite":"10-database","status":"passed","pass":3,"fail":0,"duration":20},
-  {"suite":"11-observability","status":"passed","pass":5,"fail":0,"duration":23},
+  {"suite":"08-resources","status":"failed","pass":4,"fail":1,"duration":78},
   {"suite":"14-storage","status":"passed","pass":2,"fail":0,"duration":6},
-  {"suite":"06-deployment","status":"failed","pass":3,"fail":2,"duration":335},
-  {"suite":"08-resources","status":"failed","pass":4,"fail":1,"duration":371},
-  {"suite":"04-streaming","status":"passed","pass":4,"fail":0,"duration":397},
-  {"suite":"15-delegation","status":"failed","pass":0,"fail":2,"duration":270}
+  {"suite":"11-observability","status":"passed","pass":5,"fail":0,"duration":25},
+  {"suite":"04-streaming","status":"passed","pass":4,"fail":0,"duration":140},
+  {"suite":"06-deployment","status":"passed","pass":5,"fail":0,"duration":143},
+  {"suite":"15-delegation","status":"passed","pass":2,"fail":0,"duration":436}
 ]
