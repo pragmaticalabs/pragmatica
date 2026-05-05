@@ -53,7 +53,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.NodeCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.NodeSlicesCommand.class, AetherCli.RoutesCommand.class, AetherCli.NodeRoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.NodeCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.NodeSlicesCommand.class, AetherCli.RoutesCommand.class, AetherCli.NodeRoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)") private String nodeAddress;
@@ -326,7 +326,7 @@ import static org.pragmatica.lang.Option.some;
         return assembleOr(route, params, path -> rawPut(path, content, contentType));
     }
 
-    @SuppressWarnings("JBCT-UTIL-01") String delete(ManagementRoute route, List<String> params) {
+    @SuppressWarnings("JBCT-UTIL-01") public String delete(ManagementRoute route, List<String> params) {
         return assembleOr(route, params, this::rawDelete);
     }
 
@@ -2287,66 +2287,6 @@ import static org.pragmatica.lang.Option.some;
                 return OutputFormatter.printAction(response,
                                                    abParent.parent.outputOptions(),
                                                    "A/B test " + testId + " concluded with winner: " + winner);
-            }
-        }
-    }
-
-    @Command(name = "stream", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class}) static class StreamCommand implements Runnable {
-        @CommandLine.ParentCommand private AetherCli parent;
-
-        @Contract@Override public void run() {
-            CommandLine.usage(this, System.out);
-        }
-
-        // Stream-address parsing for the CLI: per spec event-stream-namespaces §3 the canonical form
-        // is `<namespace>:<stream>:<version>`. Wave 4A migrated CLI to the path-based API; the full
-        // command set (group create/delete, tail, etc.) lands in Wave 4B.
-        private static String[] parseAddress(String raw) {
-            var parts = raw.split(":", -1);
-            if (parts.length != 3) {
-                throw new IllegalArgumentException(
-                    "Stream address must be 'namespace:stream:version' (e.g. com.example.app:orders:1.0.0), got: " + raw);
-            }
-            return parts;
-        }
-
-        @Command(name = "list", description = "List all streams") static class ListCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand private StreamCommand streamParent;
-
-            @Override public Integer call() {
-                var response = streamParent.parent.fetch(STREAMS_LIST);
-                return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "status", description = "Show stream details") static class StatusCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand private StreamCommand streamParent;
-
-            @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
-
-            @Override public Integer call() {
-                var parts = parseAddress(address);
-                var response = streamParent.parent.fetch(STREAMS_METADATA, List.of(parts[0], parts[1], parts[2]));
-                return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "publish", description = "Publish a message to a stream") static class PublishCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand private StreamCommand streamParent;
-
-            @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
-
-            @Parameters(index = "1", description = "Message content") private String message;
-
-            @Override public Integer call() {
-                var parts = parseAddress(address);
-                var body = "{\"data\":\"" + message.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
-                var response = streamParent.parent.post(STREAMS_PUBLISH,
-                                                        List.of(parts[0], parts[1], parts[2]),
-                                                        body);
-                return OutputFormatter.printAction(response,
-                                                   streamParent.parent.outputOptions(),
-                                                   "Published to stream " + address);
             }
         }
     }
