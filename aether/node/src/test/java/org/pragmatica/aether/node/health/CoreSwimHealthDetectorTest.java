@@ -30,9 +30,13 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
+import org.pragmatica.swim.SwimObservation;
+
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -135,6 +139,68 @@ class CoreSwimHealthDetectorTest {
             detector.onMemberSuspect(member);
 
             assertThat(disconnectNotifications).isEmpty();
+        }
+    }
+
+    /// Regression: observation listeners registered BEFORE SWIM reaches Running
+    /// must still be attached to the live SwimProtocol once it is created.
+    /// The previous body of `addObservationListener` did
+    ///     `protocol().onPresent(p -> p.addObservationListener(consumer))`
+    /// which silently dropped the listener when `protocol()` was empty (the
+    /// case at AetherNode init time, before `QuorumStateNotification` arrives).
+    /// Both `healthReconciler::onSwimObservation` and
+    /// `eventAggregator::onSwimObservation` were registered through this hole,
+    /// so neither one received any observations and the cluster events ring
+    /// buffer never recorded `NODE_FAILED`/`NODE_LEFT` on cloud.
+    @Nested
+    class ObservationListenerPreRegistration {
+        @Test
+        void listenerAttachedBeforeStart_isInvokedByLiveProtocol() throws InterruptedException {
+            var router = MessageRouter.mutable();
+            var nodeA = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap());
+            var nodeB = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("127.0.0.2", 9001).unwrap());
+            var topologyConfig = new TopologyConfig(SELF, 2, timeSpan(1).seconds(), timeSpan(10).seconds(),
+                                                    List.of(nodeA, nodeB));
+            Serializer serializer = Mockito.mock(Serializer.class);
+            Deserializer deserializer = Mockito.mock(Deserializer.class);
+            var freshDetector = CoreSwimHealthDetector.coreSwimHealthDetector(router, topologyConfig,
+                                                                              serializer, deserializer);
+
+            var received = new CopyOnWriteArrayList<SwimObservation>();
+            Consumer<SwimObservation> listener = received::add;
+
+            // Register BEFORE start() — the production-equivalent of an AetherNode
+            // init-time `swimHealthDetector.addObservationListener(...)` call before
+            // QuorumStateNotification arrives.
+            freshDetector.addObservationListener(listener);
+
+            // Drive through the production start() path, which constructs a real
+            // SwimProtocol via createAndStartProtocol → seedAndWrap. The fix in
+            // seedAndWrap re-attaches every pending listener to the freshly-created
+            // protocol.
+            freshDetector.start(org.pragmatica.lang.Option.none(), GossipEncryptor.none()).await();
+
+            // Wait briefly for the async dispatch chain to land Running.
+            for (int i = 0; i < 50; i++) {
+                if (freshDetector.lifecycleState() instanceof org.pragmatica.aether.node.health.fsm.SwimHealthState.Running) {
+                    break;
+                }
+                Thread.sleep(20);
+            }
+
+            // Inject a membership-update gossip simulating peer-A reporting itself ALIVE.
+            // This drives applyNewAliveMember → recordHealthyAndEmit → HealthyObserved.
+            var protocol = ((org.pragmatica.aether.node.health.fsm.SwimHealthState.Running) freshDetector.lifecycleState()).swim();
+            var membershipUpdate = SwimMessage.MembershipUpdate.membershipUpdate(
+                    PEER_A, MemberState.ALIVE, 1L,
+                    new InetSocketAddress("127.0.0.2", 9101));
+            // Wrap in piggybacked Ack so the protocol consumes it.
+            var ack = SwimMessage.Ack.ack(PEER_A, 1L, java.util.List.of(membershipUpdate));
+            protocol.onMessage(new InetSocketAddress("127.0.0.2", 9101), ack);
+
+            assertThat(received).as("HealthyObserved must reach a listener registered BEFORE start()")
+                                .anyMatch(o -> o instanceof SwimObservation.HealthyObserved h
+                                               && h.peer().equals(PEER_A));
         }
     }
 }

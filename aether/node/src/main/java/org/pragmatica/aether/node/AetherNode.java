@@ -2188,11 +2188,19 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                               msg -> httpRouteRegistry.evictNode(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, eventAggregator::onNodeAdded));
-        // NODE_LEFT / NODE_FAILED events come from local SWIM observations
-        // (eventAggregator::onSwimObservation, wired alongside healthReconciler in this same builder)
-        // rather than from leader-broadcast topology messages, which previously dropped silently on
-        // cloud whenever the leader took longer than the test window to cross SWIM faulty timeout.
-        // Lifecycle KV writes (DRAINING / DECOMMISSIONED) still emit via onNodeLifecyclePut.
+        // NODE_LEFT / NODE_FAILED ring-buffer entries come from THREE redundant paths:
+        //   1. Local SWIM observation (eventAggregator::onSwimObservation) — every node
+        //      records what it witnessed locally; no leader bottleneck.
+        //   2. Leader-broadcast TopologyChangeNotification.NodeRemoved / NodeDown — the
+        //      same signal CTM uses to provision replacements; reliable on cloud since
+        //      CTM observably picks it up within the auto-heal window.
+        //   3. KV-replicated NodeLifecycleKey transitions (eventAggregator::onNodeLifecyclePut) —
+        //      DRAINING / DECOMMISSIONED edges captured on every follower.
+        // Whichever fires first surfaces the event in /api/events.
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              eventAggregator::onNodeRemoved));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
+                                              eventAggregator::onNodeDown));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));

@@ -106,6 +106,23 @@ import java.util.function.IntSupplier;
         }
     }
 
+    /// Belt-and-suspenders for the SWIM-observation path: when the leader broadcasts
+    /// `TopologyChangeNotification.NodeRemoved`/`NodeDown` (the same signal CTM
+    /// uses to provision a replacement), every node records `NODE_LEFT`/`NODE_FAILED`.
+    /// `onSwimObservation` (above) is the local-witness path; this is the
+    /// leader-broadcast path. Either firing is sufficient to surface the event in
+    /// `/api/events`. The redundancy makes the ring buffer resilient to gaps in
+    /// either path on cloud where SWIM detection latency or QUIC's `helloTimeout × 3`
+    /// suppression of `DisconnectNode` may delay the local-witness signal beyond
+    /// the test window.
+    @Contract public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
+        bufferNodeLeftEvent(event.nodeId().id(), event.topology().size());
+    }
+
+    @Contract public void onNodeDown(TopologyChangeNotification.NodeDown event) {
+        bufferNodeFailedEvent(event.nodeId().id(), clusterSizeSupplier.getAsInt());
+    }
+
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
         var nodeId = put.cause().key()
                               .nodeId();
