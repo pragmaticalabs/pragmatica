@@ -734,7 +734,18 @@ kill_node() {
         # threshold — peers never observe the gap, no NODE_LEFT/NODE_FAILED events
         # are emitted, and tests waiting for those events time out. Disable the
         # restart policy first so the kill is authoritative; start_node re-enables.
-        cloud_ssh "$node_id" "docker update --restart=no aether-node >/dev/null 2>&1; docker kill aether-node" 2>/dev/null
+        # Stderr is captured (NOT discarded — silent stderr is a trap) so a docker
+        # permission-denied or SSH failure aborts the test loudly instead of
+        # producing the previous symptom: container survives, cluster sees no
+        # failure, NODE_FAILED events never appear, test fails with no signal of
+        # what went wrong.
+        local kill_out
+        kill_out=$(cloud_ssh "$node_id" "set -e; docker update --restart=no aether-node >/dev/null; docker kill aether-node" 2>&1)
+        local kill_rc=$?
+        if [ $kill_rc -ne 0 ]; then
+            log_fail "kill_node: cloud kill of '${node_id}' failed (rc=${kill_rc}): ${kill_out}"
+            return $kill_rc
+        fi
     else
         local name
         name=$(_docker_container_name "$node_id")
@@ -752,7 +763,16 @@ start_node() {
     log_info "Starting node: ${node_id}"
     if [ "$CLOUD_MODE" = "true" ]; then
         # Re-enable the restart policy that kill_node disabled, then start.
-        cloud_ssh "$node_id" "docker update --restart=unless-stopped aether-node >/dev/null 2>&1; docker start aether-node" 2>/dev/null
+        # Same reasoning as kill_node: capture stderr so a docker / SSH failure
+        # surfaces in the test output instead of leaving the container stopped
+        # and a downstream "wait for 5 nodes" timing out cryptically.
+        local start_out
+        start_out=$(cloud_ssh "$node_id" "set -e; docker update --restart=unless-stopped aether-node >/dev/null; docker start aether-node" 2>&1)
+        local start_rc=$?
+        if [ $start_rc -ne 0 ]; then
+            log_fail "start_node: cloud start of '${node_id}' failed (rc=${start_rc}): ${start_out}"
+            return $start_rc
+        fi
     else
         local name
         name=$(_docker_container_name "$node_id")

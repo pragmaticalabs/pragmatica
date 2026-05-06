@@ -499,13 +499,20 @@ cloud_node_ip() {
 # Resolves the IP from bootstrap-state.json via cloud_public_ip; fails fast if the
 # state file is absent so callers see the real cause instead of a misleading
 # "ssh: name resolution" or "Connection refused".
+#
+# **User defaults to `root`** (configurable via CLOUD_SSH_USER) because cloud
+# bootstrap installs Docker after creating the unprivileged `aether` user, so
+# `aether` is not in the docker group and `docker ps` fails with permission
+# denied. cloud-init runs as root and has full docker access. This matches the
+# bootstrap-side default (handover 2026-04-12 §163: "Cloud sources now default
+# to root for the SSH-back commands").
 cloud_ssh() {
     local node_id="$1"; shift
     local target_ip
     target_ip=$(cloud_public_ip "$node_id") || return $?
     ssh "${SSH_OPTS[@]}" \
         -i "${AETHER_SSH_KEY}" \
-        "${AETHER_SSH_USER}@${target_ip}" "$@"
+        "${CLOUD_SSH_USER:-root}@${target_ip}" "$@"
 }
 
 # ---------------------------------------------------------------------------
