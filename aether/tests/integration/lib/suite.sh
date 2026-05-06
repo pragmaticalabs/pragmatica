@@ -76,13 +76,12 @@ detect_capabilities() {
     export CAP_NETWORK_PARTITION=false
     export CAP_PERSISTENCE=false
 
-    # Network partition: docker/remote only. The 12-network suite uses kill_node
-    # + /api/events polling. On cloud the kill works, but the per-node event
-    # buffers either don't surface NODE_LEFT/NODE_FAILED in time, or surface
-    # them in a form that the current matcher misses — investigation is tracked
-    # in #210 (SWIM-events-on-cloud). Until that lands, keep the suite gated.
+    # Network partition: enabled on docker/remote/cloud. The 12-network suite
+    # uses kill_node + /api/events polling. NODE_FAILED/NODE_LEFT are emitted
+    # from local SWIM observation on every node (not leader-gated), so cloud
+    # works the same as docker/remote.
     case "$env_type" in
-        docker|remote) export CAP_NETWORK_PARTITION=true ;;
+        docker|remote|cloud) export CAP_NETWORK_PARTITION=true ;;
     esac
 
     # Persistence: check if PostgreSQL is reachable. PG_URL (postgres://user:pass@host:port/db)
