@@ -12,6 +12,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
@@ -34,6 +35,21 @@ import org.slf4j.LoggerFactory;
 /// `cluster.apply(...)` call. The {@link #acquireReference} / {@link #releaseReference} entry
 /// points exposed on the [StreamRegistry] interface are convenience wrappers used by callers that
 /// own the consensus round directly (system-stream bootstrap, durable consumer-group create/delete).
+///
+/// **Concurrency contract for the convenience wrappers** — `acquireReference` and
+/// `releaseReference` are best-effort optimistic. They read the entry from the local KV snapshot,
+/// compute the next refcount value, and submit the resulting [KVCommand.Put] via consensus. The
+/// returned [Promise] resolves with the **predicted** entry only after `cluster.apply(...)` commits;
+/// failures from apply propagate as the Promise's failure. The lack of a CAS-style consensus
+/// command means two concurrent acquire/release calls on the same address can race in the snapshot
+/// read and produce a non-monotonic refcount (last-writer-wins on the put). Callers that need
+/// strict refcount monotonicity must use the FSM piggyback path: build the put via
+/// [#acquireCommand] / [#releaseCommand] and submit it inside the same consensus round as the
+/// owning slice-state write — that round is serialized by Rabia, eliminating the read-side race.
+/// The consensus subsystem currently exposes only `Put`/`Get`/`Remove` ([KVCommand]) — there is no
+/// `Cas` / `ConditionalPut` primitive (verified Wave 6A; tracked separately if a CAS variant is
+/// added later, both convenience methods can be hardened to fail-on-mismatch with a one-line
+/// change).
 ///
 /// The implementation collapses the spec's `stream-meta:{addr}` and `stream-refs:{addr}` into a
 /// single [StreamRegistryKey] / [StreamRegistryValue] pair so each refcount mutation is one
@@ -107,40 +123,43 @@ public final class KvBackedStreamRegistry implements StreamRegistry {
         };
     }
 
-    @Override public Result<StreamRegistryEntry> acquireReference(StreamAddress address) {
-        var existing = readEntry(address);
-        if (existing.isEmpty()) {
-            return StreamRegistryError.General.NOT_FOUND.result();
-        }
-        var incremented = existing.map(StreamRegistryEntry::incrementRef).unwrap();
-        cluster.apply(List.of(new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
-                                                  StreamRegistryValue.streamRegistryValue(incremented))))
-               .onFailure(cause -> log.warn("Stream registry acquireReference({}) consensus apply failed: {}",
-                                            address.asString(),
-                                            cause.message()));
-        return Result.success(incremented);
+    @Override public Promise<StreamRegistryEntry> acquireReference(StreamAddress address) {
+        return readEntry(address)
+                .async(StreamRegistryError.General.NOT_FOUND)
+                .map(StreamRegistryEntry::incrementRef)
+                .flatMap(incremented -> applyAcquire(address, incremented));
     }
 
-    @Override public Result<ReleaseOutcome> releaseReference(StreamAddress address) {
-        var existing = readEntry(address);
-        if (existing.isEmpty()) {
-            return StreamRegistryError.General.NOT_FOUND.result();
-        }
-        var entry = existing.unwrap();
+    private Promise<StreamRegistryEntry> applyAcquire(StreamAddress address, StreamRegistryEntry incremented) {
+        return cluster.<Object>apply(List.of(new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
+                                                                 StreamRegistryValue.streamRegistryValue(incremented))))
+                      .onFailure(cause -> log.warn("Stream registry acquireReference({}) consensus apply failed: {}",
+                                                   address.asString(),
+                                                   cause.message()))
+                      .map(_ -> incremented);
+    }
+
+    @Override public Promise<ReleaseOutcome> releaseReference(StreamAddress address) {
+        return readEntry(address)
+                .async(StreamRegistryError.General.NOT_FOUND)
+                .flatMap(entry -> applyRelease(address, entry));
+    }
+
+    private Promise<ReleaseOutcome> applyRelease(StreamAddress address, StreamRegistryEntry entry) {
         if (entry.refCount() <= 1) {
-            cluster.apply(List.of(new KVCommand.Remove<>(StreamRegistryKey.streamRegistryKey(address))))
-                   .onFailure(cause -> log.warn("Stream registry releaseReference({}) consensus apply failed: {}",
-                                                address.asString(),
-                                                cause.message()));
-            return Result.success(new ReleaseOutcome(entry.decrementRef(), true));
+            return cluster.<Object>apply(List.of(new KVCommand.Remove<>(StreamRegistryKey.streamRegistryKey(address))))
+                          .onFailure(cause -> log.warn("Stream registry releaseReference({}) consensus apply failed: {}",
+                                                       address.asString(),
+                                                       cause.message()))
+                          .map(_ -> new ReleaseOutcome(entry.decrementRef(), true));
         }
         var decremented = entry.decrementRef();
-        cluster.apply(List.of(new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
-                                                  StreamRegistryValue.streamRegistryValue(decremented))))
-               .onFailure(cause -> log.warn("Stream registry releaseReference({}) consensus apply failed: {}",
-                                            address.asString(),
-                                            cause.message()));
-        return Result.success(new ReleaseOutcome(decremented, false));
+        return cluster.<Object>apply(List.of(new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
+                                                                 StreamRegistryValue.streamRegistryValue(decremented))))
+                      .onFailure(cause -> log.warn("Stream registry releaseReference({}) consensus apply failed: {}",
+                                                   address.asString(),
+                                                   cause.message()))
+                      .map(_ -> new ReleaseOutcome(decremented, false));
     }
 
     @Override public List<StreamRegistryEntry> snapshot() {

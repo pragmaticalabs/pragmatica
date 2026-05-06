@@ -6,6 +6,7 @@ package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.util.List;
@@ -60,11 +61,20 @@ public interface StreamRegistry {
     Result<StreamRegistryEntry> resolve(String namespace, String stream, StreamVersionSpec spec);
 
     /// Increment the reference count for the entry at the given address. Fails if no entry exists.
-    Result<StreamRegistryEntry> acquireReference(StreamAddress address);
+    ///
+    /// Returns [Promise] because consensus-backed implementations must wait for the cluster to
+    /// commit the refcount mutation before reporting success — the prior `Result` signature was a
+    /// fire-and-forget prediction that could mislead callers when the apply call failed mid-round
+    /// (TOCTOU race + silent consensus failure). For in-memory implementations the returned promise
+    /// is already resolved.
+    Promise<StreamRegistryEntry> acquireReference(StreamAddress address);
 
     /// Decrement the reference count for the entry at the given address. When the count reaches
     /// zero the entry is removed. Fails if no entry exists or the count is already zero.
-    Result<ReleaseOutcome> releaseReference(StreamAddress address);
+    ///
+    /// Returns [Promise] for the same reason as [#acquireReference] — consensus-backed
+    /// implementations must observe the apply outcome before reporting `removed`.
+    Promise<ReleaseOutcome> releaseReference(StreamAddress address);
 
     /// Snapshot of all registered entries in undefined order.
     List<StreamRegistryEntry> snapshot();

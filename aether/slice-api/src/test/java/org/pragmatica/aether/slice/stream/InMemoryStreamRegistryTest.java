@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.stream.StreamRegistry.StreamRegistryError.General;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.time.Instant;
@@ -23,6 +24,10 @@ class InMemoryStreamRegistryTest {
 
     private static Cause errorOf(Result<?> result) {
         return result.fold(c -> c, _ -> null);
+    }
+
+    private static Cause errorOf(Promise<?> promise) {
+        return errorOf(promise.await());
     }
 
     private static StreamAddress addr(String s) {
@@ -158,7 +163,7 @@ class InMemoryStreamRegistryTest {
             var address = addr("system:cluster-events:1.0.0");
             registry.register(frameworkEntry(address));
 
-            var after = registry.acquireReference(address).unwrap();
+            var after = registry.acquireReference(address).await().unwrap();
 
             assertThat(after.refCount()).isEqualTo(2);
             assertThat(registry.lookup(address).unwrap().refCount()).isEqualTo(2);
@@ -176,7 +181,7 @@ class InMemoryStreamRegistryTest {
             var address = addr("system:cluster-events:1.0.0");
             registry.register(frameworkEntry(address));
 
-            var outcome = registry.releaseReference(address).unwrap();
+            var outcome = registry.releaseReference(address).await().unwrap();
 
             assertThat(outcome.removed()).isTrue();
             assertThat(registry.lookup(address).isEmpty()).isTrue();
@@ -186,9 +191,9 @@ class InMemoryStreamRegistryTest {
         void releaseAboveOneKeepsEntry() {
             var address = addr("system:cluster-events:1.0.0");
             registry.register(frameworkEntry(address));
-            registry.acquireReference(address);
+            registry.acquireReference(address).await();
 
-            var outcome = registry.releaseReference(address).unwrap();
+            var outcome = registry.releaseReference(address).await().unwrap();
 
             assertThat(outcome.removed()).isFalse();
             assertThat(outcome.entry().refCount()).isEqualTo(1);

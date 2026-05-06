@@ -5,6 +5,7 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.util.Comparator;
@@ -47,28 +48,28 @@ public final class InMemoryStreamRegistry implements StreamRegistry {
         };
     }
 
-    @Override public Result<StreamRegistryEntry> acquireReference(StreamAddress address) {
+    @Override public Promise<StreamRegistryEntry> acquireReference(StreamAddress address) {
         var updated = entries.computeIfPresent(address, (_, entry) -> entry.incrementRef());
         if (updated == null) {
-            return StreamRegistryError.General.NOT_FOUND.result();
+            return StreamRegistryError.General.NOT_FOUND.promise();
         }
-        return success(updated);
+        return Promise.success(updated);
     }
 
-    @Override public Result<ReleaseOutcome> releaseReference(StreamAddress address) {
+    @Override public Promise<ReleaseOutcome> releaseReference(StreamAddress address) {
         var current = entries.get(address);
         if (current == null) {
-            return StreamRegistryError.General.NOT_FOUND.result();
+            return StreamRegistryError.General.NOT_FOUND.promise();
         }
         if (current.refCount() <= 1) {
             entries.remove(address, current);
-            return success(new ReleaseOutcome(current.decrementRef(), true));
+            return Promise.success(new ReleaseOutcome(current.decrementRef(), true));
         }
         var updated = entries.computeIfPresent(address, (_, e) -> e.decrementRef());
         if (updated == null) {
-            return StreamRegistryError.General.NOT_FOUND.result();
+            return StreamRegistryError.General.NOT_FOUND.promise();
         }
-        return success(new ReleaseOutcome(updated, false));
+        return Promise.success(new ReleaseOutcome(updated, false));
     }
 
     @Override public List<StreamRegistryEntry> snapshot() {

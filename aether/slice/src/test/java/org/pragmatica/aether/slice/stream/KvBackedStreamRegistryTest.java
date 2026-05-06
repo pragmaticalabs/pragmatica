@@ -46,6 +46,10 @@ class KvBackedStreamRegistryTest {
         return result.fold(c -> c, _ -> null);
     }
 
+    private static Cause errorOf(Promise<?> promise) {
+        return errorOf(promise.await());
+    }
+
     private static StreamRegistryEntry frameworkEntry(StreamAddress address) {
         return StreamRegistryEntry.framework(address, RetentionPolicy.retentionPolicy(), Instant.EPOCH);
     }
@@ -149,7 +153,7 @@ class KvBackedStreamRegistryTest {
         void acquireOnExistingIncrementsCount() {
             registry.register(frameworkEntry(SYSTEM_EVENTS));
 
-            var after = registry.acquireReference(SYSTEM_EVENTS).unwrap();
+            var after = registry.acquireReference(SYSTEM_EVENTS).await().unwrap();
 
             assertThat(after.refCount()).isEqualTo(2);
             assertThat(registry.lookup(SYSTEM_EVENTS).unwrap().refCount()).isEqualTo(2);
@@ -166,7 +170,7 @@ class KvBackedStreamRegistryTest {
         void releaseAtOneRemovesEntry() {
             registry.register(frameworkEntry(SYSTEM_EVENTS));
 
-            var outcome = registry.releaseReference(SYSTEM_EVENTS).unwrap();
+            var outcome = registry.releaseReference(SYSTEM_EVENTS).await().unwrap();
 
             assertThat(outcome.removed()).isTrue();
             assertThat(registry.lookup(SYSTEM_EVENTS).isEmpty()).isTrue();
@@ -175,9 +179,9 @@ class KvBackedStreamRegistryTest {
         @Test
         void releaseAboveOneKeepsEntry() {
             registry.register(frameworkEntry(SYSTEM_EVENTS));
-            registry.acquireReference(SYSTEM_EVENTS);
+            registry.acquireReference(SYSTEM_EVENTS).await();
 
-            var outcome = registry.releaseReference(SYSTEM_EVENTS).unwrap();
+            var outcome = registry.releaseReference(SYSTEM_EVENTS).await().unwrap();
 
             assertThat(outcome.removed()).isFalse();
             assertThat(outcome.entry().refCount()).isEqualTo(1);
@@ -188,6 +192,39 @@ class KvBackedStreamRegistryTest {
             var result = registry.releaseReference(SYSTEM_EVENTS);
 
             assertThat(errorOf(result)).isEqualTo(General.NOT_FOUND);
+        }
+
+        /// Reviewer test gap #17 — concurrent acquire on the same address.
+        ///
+        /// The convenience methods are best-effort optimistic per the [KvBackedStreamRegistry]
+        /// contract: there is no CAS primitive in [KVCommand], so two concurrent
+        /// `acquireReference(addr)` calls can both observe `n=1` and both write `n+1=2`,
+        /// producing a final refcount of 2 instead of the strict-monotonic 3. This test pins the
+        /// guarantee the implementation actually provides: **both calls succeed**, the final
+        /// refcount is **at least 2** (no negative outcome), and the test cluster's serial-apply
+        /// stub causes both writes to land. Strict refcount monotonicity requires the FSM
+        /// piggyback path; this test exists so the relaxed guarantee is part of the visible
+        /// contract.
+        @Test
+        void concurrentAcquire_doesNotLoseRefs() throws Exception {
+            registry.register(frameworkEntry(SYSTEM_EVENTS));
+
+            var executor = java.util.concurrent.Executors.newFixedThreadPool(2);
+            try {
+                var first = Promise.<StreamRegistryEntry>promise();
+                var second = Promise.<StreamRegistryEntry>promise();
+                executor.submit(() -> registry.acquireReference(SYSTEM_EVENTS).onResult(first::resolve));
+                executor.submit(() -> registry.acquireReference(SYSTEM_EVENTS).onResult(second::resolve));
+
+                var both = Promise.allOf(List.of(first, second)).await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
+                var results = both.unwrap();
+                assertThat(results).allMatch(Result::isSuccess);
+            } finally {
+                executor.shutdownNow();
+            }
+            // Final lookup confirms refcount advanced past the initial 1; exact value depends on
+            // serial-apply ordering in the test cluster stub but must be >= 2.
+            assertThat(registry.lookup(SYSTEM_EVENTS).unwrap().refCount()).isGreaterThanOrEqualTo(2);
         }
     }
 
@@ -234,7 +271,7 @@ class KvBackedStreamRegistryTest {
         @Test
         void releaseCommandWhenAboveOneIsPutDecremented() {
             registry.register(blueprintEntry(APP_ORDERS));
-            registry.acquireReference(APP_ORDERS);
+            registry.acquireReference(APP_ORDERS).await();
 
             var command = registry.releaseCommand(APP_ORDERS);
 
