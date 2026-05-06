@@ -35,6 +35,8 @@ import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.TransportObservation;
 
 import java.net.InetSocketAddress;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -57,6 +59,12 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     private final SwimHealthContext context;
     private final SwimConfig swimConfig;
+
+    /// Observation listeners registered via [#addObservationListener] before SWIM
+    /// has reached the Running state. Re-attached to every freshly-started
+    /// SwimProtocol in [#seedAndWrap], so registrations made during AetherNode
+    /// init (when `protocol()` is empty) survive across SWIM start/restart cycles.
+    private final List<Consumer<SwimObservation>> pendingObservationListeners = new CopyOnWriteArrayList<>();
 
     private CoreSwimHealthDetector(SwimHealthContext context, SwimConfig swimConfig) {
         this.context = context;
@@ -237,6 +245,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     @Contract public void addObservationListener(Consumer<SwimObservation> consumer) {
+        pendingObservationListeners.add(consumer);
         protocol().onPresent(p -> p.addObservationListener(consumer));
     }
 
@@ -284,6 +293,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                        SwimTransport transport,
                                                        GossipEncryptor encryptor) {
         seedMembers(protocol);
+        pendingObservationListeners.forEach(protocol::addObservationListener);
         return new SwimHealthEvents.ProtocolReady(protocol, transport, encryptor);
     }
 
