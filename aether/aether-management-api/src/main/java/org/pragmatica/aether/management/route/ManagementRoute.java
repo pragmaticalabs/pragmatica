@@ -127,6 +127,13 @@ public enum ManagementRoute {
                  "/api/streams",
                  taskGroup(STREAMING),
                  List.of(param("namespace"), param("stream"), param("version"), literal("tail"))),
+    /// Polling-based paginated read endpoint for stream tail consumption (RC1).
+    /// SSE/WebSocket subscriptions on `/tail` are deferred to issue #212; `/events` is the
+    /// always-available polling fallback that ships with RC1 alongside the CLI tail loop.
+    STREAMS_EVENTS(GET,
+                   "/api/streams",
+                   taskGroup(STREAMING),
+                   List.of(param("namespace"), param("stream"), param("version"), literal("events"))),
     STREAMS_GROUPS_LIST(GET,
                         "/api/streams",
                         taskGroup(STREAMING),

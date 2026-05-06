@@ -26,6 +26,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -139,6 +140,18 @@ public final class StreamApiRoutes implements RouteSource {
 
     public record DeleteResponse(String address, String status) {}
 
+    /// Spec event-stream-namespaces §16: paginated polling read used by `aether stream tail` and
+    /// scripted operator polling. Each request returns events from `fromOffset` (inclusive) up to
+    /// `maxEvents` records; the `nextOffset` field tells the caller where to resume on the next
+    /// poll, and `hasMore` is `true` iff the page filled to `maxEvents` (meaning the producer
+    /// likely has more queued than fit in this page).
+    public record StreamEventsResponse(String address,
+                                       List<EventEntry> events,
+                                       long nextOffset,
+                                       boolean hasMore) {}
+
+    public record EventEntry(long offset, Instant timestamp, int partition, String payload) {}
+
     @Override public Stream<Route<?>> routes() {
         return Stream.of(
             // ---------- Read routes (ALL_AUTHENTICATED via GET) ----------
@@ -168,12 +181,21 @@ public final class StreamApiRoutes implements RouteSource {
                                       PathParameter.aString())
                             .toResult(this::listGroups)
                             .asJson(),
-            // ---------- Tail subscription (E5: SSE primary; WebSocket stub returns 501) ----------
+            // ---------- Tail subscription (Wave 6B: SSE/WebSocket deferred to issue #212) ----------
             ManagementRoutes.<StreamMetadataResponse>route(ManagementRoute.STREAMS_TAIL)
                             .withPath(PathParameter.aString(),
                                       PathParameter.aString(),
                                       PathParameter.aString())
-                            .toResult(this::tailNotImplemented)
+                            .toResult(this::tailDeferred)
+                            .asJson(),
+            // ---------- Polling-based paginated event read (Wave 6B; RC1) ----------
+            ManagementRoutes.<StreamEventsResponse>route(ManagementRoute.STREAMS_EVENTS)
+                            .withPath(PathParameter.aString(),
+                                      PathParameter.aString(),
+                                      PathParameter.aString())
+                            .withQuery(QueryParameter.aLong("fromOffset"),
+                                       QueryParameter.aInteger("maxEvents"))
+                            .toResult(this::streamEvents)
                             .asJson(),
             // ---------- Write routes (OPERATOR_AND_ABOVE for /api/streams) ----------
             ManagementRoutes.<PublishResponse>route(ManagementRoute.STREAMS_PUBLISH)
@@ -256,15 +278,68 @@ public final class StreamApiRoutes implements RouteSource {
                             .map(addr -> new GroupListResponse(addr.asString(), List.of()));
     }
 
-    /// E5 stub: Tail subscription. SSE was deferred to a separate Wave 4 sub-task because
-    /// implementing real SSE wire format end-to-end inside the existing ResponseWriter abstraction
-    /// requires substantial new infrastructure (chunked encoding, keep-alive, fan-out). The route
-    /// is registered so the surface is complete; it returns a clear "not implemented" diagnostic.
-    private Result<StreamMetadataResponse> tailNotImplemented(String namespace, String stream, String version) {
-        return Causes.cause("Tail subscription (SSE/WebSocket) is not yet implemented (RC1 Wave 4B follow-up). "
-                                    + "Use GET /api/streams/" + namespace + "/" + stream + "/" + version
-                                    + " for static metadata.").result();
+    /// Wave 6B: Tail subscription via SSE/WebSocket is deferred to issue #212 — the streaming
+    /// protocol layer requires chunked encoding, keep-alive, and fan-out infrastructure beyond the
+    /// scope of RC1. Operators polling for new events should use GET `/events?fromOffset=…` (which
+    /// is the always-available polling fallback that the `aether stream tail` CLI now drives).
+    private Result<StreamMetadataResponse> tailDeferred(String namespace, String stream, String version) {
+        return Causes.cause("Tail subscription via SSE/WebSocket is deferred to issue #212. "
+                                    + "For polling-based tail, use GET /api/streams/"
+                                    + namespace + "/" + stream + "/" + version
+                                    + "/events?fromOffset=N&maxEvents=K.").result();
     }
+
+    /// Spec event-stream-namespaces §16: paginated event read for polling-based tail subscription.
+    /// Resolves the address, verifies the registry entry exists (404 via [StreamRegistryError.General.NOT_FOUND]
+    /// otherwise), then drains events from partition 0 starting at `fromOffset`. Partition 0 is the
+    /// canonical write target for `STREAMS_PUBLISH`/`STREAMS_PUBLISH_BATCH` in this wave; multi-partition
+    /// reads are out of scope until partitioning is exposed to the public publish API.
+    private Result<StreamEventsResponse> streamEvents(String namespace,
+                                                      String stream,
+                                                      String version,
+                                                      Option<Long> fromOffset,
+                                                      Option<Integer> maxEvents) {
+        var offset = fromOffset.or(0L);
+        var limit = clampMaxEvents(maxEvents.or(DEFAULT_MAX_EVENTS));
+        return StreamAddress.streamAddress(namespace, stream, version)
+                            .flatMap(addr -> readEventsAtAddress(addr, offset, limit));
+    }
+
+    private Result<StreamEventsResponse> readEventsAtAddress(StreamAddress addr, long fromOffset, int maxEvents) {
+        var streamName = addr.asString();
+        return namespacesService.lookup(addr)
+                                .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)
+                                .flatMap(_ -> streamManager().readLocal(streamName, 0, fromOffset, maxEvents))
+                                .map(events -> buildEventsResponse(addr, events, fromOffset, maxEvents));
+    }
+
+    private static StreamEventsResponse buildEventsResponse(StreamAddress addr,
+                                                            List<org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent> events,
+                                                            long fromOffset,
+                                                            int maxEvents) {
+        var entries = events.stream().map(StreamApiRoutes::toEventEntry).toList();
+        var nextOffset = events.isEmpty()
+                ? fromOffset
+                : events.getLast().offset() + 1;
+        var hasMore = events.size() >= maxEvents;
+        return new StreamEventsResponse(addr.asString(), entries, nextOffset, hasMore);
+    }
+
+    private static EventEntry toEventEntry(org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent raw) {
+        return new EventEntry(raw.offset(),
+                              Instant.ofEpochMilli(raw.timestamp()),
+                              0,
+                              new String(raw.data(), StandardCharsets.UTF_8));
+    }
+
+    private static int clampMaxEvents(int requested) {
+        if (requested < 1) {return 1;}
+        if (requested > MAX_EVENTS_PER_PAGE) {return MAX_EVENTS_PER_PAGE;}
+        return requested;
+    }
+
+    private static final int DEFAULT_MAX_EVENTS = 100;
+    private static final int MAX_EVENTS_PER_PAGE = 1000;
 
     private Result<PublishResponse> publishEvent(String namespace,
                                                  String stream,
