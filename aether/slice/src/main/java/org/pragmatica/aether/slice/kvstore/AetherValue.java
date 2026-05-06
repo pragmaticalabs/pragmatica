@@ -15,6 +15,8 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
@@ -1439,6 +1441,52 @@ import static org.pragmatica.lang.Option.none;
 
         public SpokesmanValue withFailure(String reason) {
             return new SpokesmanValue(communities, assignedEpoch, assignedAt, version, SpokesmanStatus.FAILED, reason);
+        }
+    }
+
+    /// Per-blueprint resolved alias→`StreamAddress` map persisted at deploy time.
+    ///
+    /// Kept as `List<NamedAddress>` instead of `Map<String, StreamAddress>` so the compile-time
+    /// codec processor doesn't have to handle a `Map<K, V>` where `V` is a record-typed codec
+    /// element (only `Map<String, String>` is exercised by the processor today; List-of-record
+    /// is explicitly tested).
+    ///
+    /// Spec reference: event-stream-namespaces §8.5 (resolved address required for slice-time
+    /// refcount accounting).
+    record BlueprintStreamBindingsValue(List<NamedAddress> bindings) implements AetherValue {
+        public BlueprintStreamBindingsValue {
+            bindings = bindings == null ? List.of() : List.copyOf(bindings);
+        }
+
+        public static BlueprintStreamBindingsValue blueprintStreamBindingsValue(List<NamedAddress> bindings) {
+            return new BlueprintStreamBindingsValue(bindings);
+        }
+
+        public Option<StreamAddress> addressFor(String alias) {
+            return bindings.stream()
+                           .filter(b -> b.alias().equals(alias))
+                           .findFirst()
+                           .map(NamedAddress::address)
+                           .map(Option::some)
+                           .orElse(Option.none());
+        }
+
+        public record NamedAddress(String alias, StreamAddress address) {
+            public static NamedAddress namedAddress(String alias, StreamAddress address) {
+                return new NamedAddress(alias, address);
+            }
+        }
+    }
+
+    /// Consensus-replicated form of [StreamRegistryEntry].
+    ///
+    /// Single-key collapse of the spec's `stream-meta:{addr}` and `stream-refs:{addr}` (§7.1, §7.2)
+    /// — implementation choice for atomic refcount mutation in the same consensus round as the
+    /// SliceNodeValue update (§8.5). The conceptual separation in the spec is preserved at the
+    /// reader/writer API but the wire form is one record.
+    record StreamRegistryValue(StreamRegistryEntry entry) implements AetherValue {
+        public static StreamRegistryValue streamRegistryValue(StreamRegistryEntry entry) {
+            return new StreamRegistryValue(entry);
         }
     }
 }

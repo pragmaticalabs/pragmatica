@@ -170,6 +170,8 @@ import static org.pragmatica.lang.Result.success;
             case ProvisioningSlotKey _ -> "provisioning-slot";
             case GenerationSnapshotKey _ -> "generation-snapshot";
             case ClusterPhaseKey _ -> "cluster-phase";
+            case BlueprintStreamBindingsKey _ -> "blueprint-stream-bindings";
+            case StreamRegistryKey _ -> "stream-registry";
         };
     }
 
@@ -238,7 +240,25 @@ import static org.pragmatica.lang.Result.success;
             case ProvisioningSlotValue v -> serializeProvisioningSlot(v);
             case GenerationSnapshotValue _ -> "";
             case ClusterPhaseValue v -> v.phase().name();
+            case BlueprintStreamBindingsValue v -> serializeBlueprintStreamBindings(v);
+            case StreamRegistryValue v -> serializeStreamRegistry(v);
         };
+    }
+
+    private static String serializeBlueprintStreamBindings(BlueprintStreamBindingsValue v) {
+        var sb = new StringBuilder();
+        var first = true;
+        for (var binding : v.bindings()) {
+            if (!first) {sb.append(',');}
+            sb.append(binding.alias()).append('=').append(binding.address().asString());
+            first = false;
+        }
+        return sb.toString();
+    }
+
+    private static String serializeStreamRegistry(StreamRegistryValue v) {
+        var entry = v.entry();
+        return entry.address().asString() + "|" + entry.refCount() + "|" + entry.registeredAtEpochMillis() + "|" + entry.registeredBy().name();
     }
 
     private static String serializeProvisioningSlot(ProvisioningSlotValue v) {

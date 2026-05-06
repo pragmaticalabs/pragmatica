@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintArtifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifactParser;
 import org.pragmatica.aether.slice.blueprint.BlueprintExpander;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
@@ -20,12 +21,18 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintResourcesKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.stream.StreamResource;
+import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.topology.SliceTopology;
@@ -220,12 +227,19 @@ public interface BlueprintService {
                                        .flatMap(expanded -> runStreamResourceGate(expanded,
                                                                                     blueprintArtifact.resourcesConfig(),
                                                                                     blueprintArtifact.roleHints()))
-                                       .flatMap(this::validatePubSub)
-                                       .flatMap(expanded -> storeAllInSingleBatch(expanded,
-                                                                                  blueprintArtifact.resourcesConfig(),
-                                                                                  blueprintArtifact.schemaMigrations(),
-                                                                                  artifactCoords));
+                                       .flatMap(pair -> validatePubSub(pair.expanded()).map(_ -> pair))
+                                       .flatMap(pair -> storeAllInSingleBatch(pair.expanded(),
+                                                                              pair.validated(),
+                                                                              blueprintArtifact.resourcesConfig(),
+                                                                              blueprintArtifact.schemaMigrations(),
+                                                                              artifactCoords));
     }
+
+    /// Internal pair carrying the expanded blueprint together with the parsed-and-validated stream
+    /// resource map produced by [StreamResourceValidator]. The map is needed downstream by
+    /// [#storeAllInSingleBatch] to emit the per-blueprint alias→`StreamAddress` bindings (consumed
+    /// by the per-slice runtime FSM at ACTIVE-state transitions per spec §8.5).
+    private record ExpandedWithValidation(ExpandedBlueprint expanded, ValidatedStreamResources validated) {}
 
     /// Runtime gate per spec §15.1: synchronous, atomic, all-failures-aggregated stream-resource
     /// validation that must pass **before** any cluster state mutation. On failure the deploy
@@ -235,33 +249,77 @@ public interface BlueprintService {
     /// bundled slice manifests by [BlueprintArtifactParser]. Empty when the artifact ships no
     /// slice manifests (legacy DSL path / pre-Wave-3 blueprint JARs) — the validator then
     /// behaves identically to its no-hints overload.
-    private Promise<ExpandedBlueprint> runStreamResourceGate(ExpandedBlueprint expanded,
-                                                              Option<String> resourcesConfig,
-                                                              Map<String, String> roleHints) {
+    private Promise<ExpandedWithValidation> runStreamResourceGate(ExpandedBlueprint expanded,
+                                                                   Option<String> resourcesConfig,
+                                                                   Map<String, String> roleHints) {
         return StreamResourceValidator.validate(resourcesConfig,
                                                   expanded.id().artifact(),
                                                   roleHints)
-                                       .map(_ -> expanded)
+                                       .map(validated -> new ExpandedWithValidation(expanded, validated))
                                        .async();
     }
 
     private Promise<ExpandedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
+                                                             ValidatedStreamResources validated,
                                                              Option<String> resourcesConfig,
                                                              Map<String, List<MigrationEntry>> migrations,
                                                              String artifactCoords) {
-        var commands = buildAllCommands(expanded, resourcesConfig, migrations, artifactCoords);
+        var commands = buildAllCommands(expanded, validated, resourcesConfig, migrations, artifactCoords);
         return cluster.apply(commands).map(_ -> expanded);
     }
 
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
+                                                        ValidatedStreamResources validated,
                                                         Option<String> resourcesConfig,
                                                         Map<String, List<MigrationEntry>> migrations,
                                                         String artifactCoords) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
         commands.add(buildBlueprintPutCommand(expanded));
         resourcesConfig.onPresent(content -> commands.add(buildResourcesPutCommand(expanded, content)));
+        commands.add(buildStreamBindingsCommand(expanded, validated));
         if (!migrations.isEmpty()) {commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));}
         return commands;
+    }
+
+    /// Build the per-blueprint stream bindings put command (spec §8.5 prerequisite).
+    /// Emitted unconditionally for consistency — a blueprint with zero stream resources still gets
+    /// an empty bindings entry so the FSM lookup path can distinguish "missing blueprint" from
+    /// "blueprint with no streams" without ambiguity.
+    private static KVCommand<AetherKey> buildStreamBindingsCommand(ExpandedBlueprint expanded,
+                                                                    ValidatedStreamResources validated) {
+        return new Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(expanded.id()),
+                         BlueprintStreamBindingsValue.blueprintStreamBindingsValue(toNamedAddresses(expanded.id(), validated)));
+    }
+
+    private static List<NamedAddress> toNamedAddresses(BlueprintId blueprintId,
+                                                        ValidatedStreamResources validated) {
+        var namespace = BlueprintNamespace.deriveNamespace(blueprintId).or("");
+        var collected = new ArrayList<NamedAddress>();
+        validated.resources().forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource)
+                .onPresent(collected::add));
+        return List.copyOf(collected);
+    }
+
+    private static Option<NamedAddress> resolveBindingEntry(String namespace,
+                                                             String alias,
+                                                             StreamResource resource) {
+        return switch (resource) {
+            case StreamResource.Owned owned -> resolveOwnedAddress(namespace, alias, owned)
+                    .map(address -> NamedAddress.namedAddress(alias, address));
+            case StreamResource.External external -> Option.some(NamedAddress.namedAddress(alias, external.target()));
+        };
+    }
+
+    /// Owned-resource address resolution. The blueprint's derived namespace + the local alias +
+    /// the explicit version produce the fully-qualified address. `Latest` version specs (only valid
+    /// on consumer-only resources per spec §11) have no concrete address at deploy time — the
+    /// consumer resolves them at subscribe-time against the live registry, so they're omitted from
+    /// the bindings map.
+    private static Option<StreamAddress> resolveOwnedAddress(String namespace, String alias, StreamResource.Owned owned) {
+        return switch (owned.version()) {
+            case StreamVersionSpec.Exact exact -> StreamAddress.streamAddress(namespace, alias, exact.version()).option();
+            case StreamVersionSpec.Latest _ -> Option.none();
+        };
     }
 
     private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded) {

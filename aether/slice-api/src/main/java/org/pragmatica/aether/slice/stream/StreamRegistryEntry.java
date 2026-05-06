@@ -5,6 +5,7 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.serialization.Codec;
 
 import java.time.Instant;
 
@@ -18,34 +19,39 @@ import java.time.Instant;
 /// Reference counting (§8) determines lifecycle — when `refCount` reaches zero, the entry (and
 /// the stream it represents) is removed.
 ///
-/// No @Codec yet: the registry is in-memory for RC1; KV-backed storage comes with the consensus
-/// wiring PR, at which point this record (and the types it references) gets codecs added.
-public record StreamRegistryEntry(StreamAddress address,
+/// `registeredAt` is exposed as a millisecond epoch on the codec wire form
+/// (`registeredAtEpochMillis`) so the compile-time codec processor doesn't need a
+/// `java.time.Instant` codec; the API surface retains the [Instant] convenience accessor.
+@Codec public record StreamRegistryEntry(StreamAddress address,
                                           RetentionPolicy retention,
-                                          Instant registeredAt,
+                                          long registeredAtEpochMillis,
                                           RegisteredByKind registeredBy,
                                           int refCount) {
-    public enum RegisteredByKind {
+    @Codec public enum RegisteredByKind {
         /// Framework-internal streams (system namespace) registered at cluster bootstrap.
         FRAMEWORK,
         /// Application streams registered by blueprint deploy.
         BLUEPRINT
     }
 
+    public Instant registeredAt() {
+        return Instant.ofEpochMilli(registeredAtEpochMillis);
+    }
+
     public static StreamRegistryEntry framework(StreamAddress address,
                                                  RetentionPolicy retention,
                                                  Instant registeredAt) {
-        return new StreamRegistryEntry(address, retention, registeredAt, RegisteredByKind.FRAMEWORK, 1);
+        return new StreamRegistryEntry(address, retention, registeredAt.toEpochMilli(), RegisteredByKind.FRAMEWORK, 1);
     }
 
     public static StreamRegistryEntry blueprint(StreamAddress address,
                                                  RetentionPolicy retention,
                                                  Instant registeredAt) {
-        return new StreamRegistryEntry(address, retention, registeredAt, RegisteredByKind.BLUEPRINT, 1);
+        return new StreamRegistryEntry(address, retention, registeredAt.toEpochMilli(), RegisteredByKind.BLUEPRINT, 1);
     }
 
     public StreamRegistryEntry withRefCount(int newRefCount) {
-        return new StreamRegistryEntry(address, retention, registeredAt, registeredBy, newRefCount);
+        return new StreamRegistryEntry(address, retention, registeredAtEpochMillis, registeredBy, newRefCount);
     }
 
     public StreamRegistryEntry incrementRef() {

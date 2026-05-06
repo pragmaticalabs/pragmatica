@@ -26,17 +26,27 @@ import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.stream.StreamAddress;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.StreamNameConfig;
 import org.pragmatica.aether.resource.TopicConfig;
@@ -62,6 +72,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -282,6 +293,7 @@ import org.slf4j.LoggerFactory;
         private void forceCleanupSlice(SliceNodeKey sliceKey) {
             unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions)
                               .flatMap(this::unpublishStreamSubscriptions)
+                              .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
                               .flatMap(this::unpublishScheduledTasks)
                               .flatMap(this::unpublishHttpRoutes)
                               .withSuccess(this::unregisterSliceFromInvocation)
@@ -353,7 +365,7 @@ import org.slf4j.LoggerFactory;
                         .flatMap(this::publishScheduledTasks)
                         .flatMap(this::registerAndNotifyConfig)
                         .flatMap(this::publishRoutesIfPresent)
-                        .flatMap(key -> transitionTo(key, SliceState.ACTIVE))
+                        .flatMap(this::transitionToActiveWithStreamRefs)
                         .flatMap(this::publishEndpoints)
                         .timeout(ctx.activationChainTimeout())
                         .withFailure(cause -> handleActivationFailure(sliceKey, cause));
@@ -518,6 +530,7 @@ import org.slf4j.LoggerFactory;
             transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(this::unpublishEndpoints)
                         .flatMap(this::unpublishTopicSubscriptions)
                         .flatMap(this::unpublishStreamSubscriptions)
+                        .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
                         .flatMap(this::unpublishScheduledTasks)
                         .flatMap(this::unpublishHttpRoutes)
                         .withSuccess(this::unregisterSliceFromInvocation)
@@ -941,6 +954,7 @@ import org.slf4j.LoggerFactory;
             transitionTo(sliceKey, SliceState.UNLOADING).flatMap(this::unpublishEndpoints)
                         .flatMap(this::unpublishTopicSubscriptions)
                         .flatMap(this::unpublishStreamSubscriptions)
+                        .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
                         .flatMap(this::unpublishScheduledTasks)
                         .flatMap(this::unpublishHttpRoutes)
                         .withSuccess(this::unregisterSliceFromInvocation)
@@ -976,6 +990,215 @@ import org.slf4j.LoggerFactory;
 
         private Promise<SliceNodeKey> transitionTo(SliceNodeKey sliceKey, SliceState newState) {
             return updateSliceState(sliceKey, SliceNodeValue.sliceNodeValue(newState));
+        }
+
+        /// Spec event-stream-namespaces §8.5: piggyback per-stream refcount increments on the same
+        /// consensus round as the SliceNodeValue ACTIVE put, so the refcount mutation is
+        /// consensus-ordered relative to the slice state mutation.
+        private Promise<SliceNodeKey> transitionToActiveWithStreamRefs(SliceNodeKey sliceKey) {
+            var refCommands = buildStreamRefCommands(sliceKey, RefcountAction.ACQUIRE);
+            return updateSliceStateWithExtraCommands(sliceKey,
+                                                       SliceNodeValue.sliceNodeValue(SliceState.ACTIVE),
+                                                       refCommands);
+        }
+
+        /// Mirror of [#transitionToActiveWithStreamRefs] for transitions OUT of ACTIVE. Decrements
+        /// (or removes when refcount drops to zero) the per-stream refcount entries this slice
+        /// instance had been holding.
+        private Promise<Unit> releaseStreamReferences(SliceNodeKey sliceKey) {
+            var commands = buildStreamRefCommands(sliceKey, RefcountAction.RELEASE);
+            if (commands.isEmpty()) {return Promise.unitPromise();}
+            return applyWithRetry(commands, 0)
+                       .onSuccess(_ -> log.debug("Released {} stream refs for {}",
+                                                  commands.size(),
+                                                  sliceKey.artifact()))
+                       .onFailure(cause -> log.warn("Failed to release stream refs for {}: {}",
+                                                     sliceKey.artifact(),
+                                                     cause.message()));
+        }
+
+        private enum RefcountAction { ACQUIRE, RELEASE }
+
+        private List<KVCommand<AetherKey>> buildStreamRefCommands(SliceNodeKey sliceKey,
+                                                                    RefcountAction action) {
+            var artifact = sliceKey.artifact();
+            var loaded = findLoadedSlice(artifact);
+            if (loaded.isEmpty()) {return List.of();}
+            var slice = loaded.unwrap().slice();
+            var declarations = readStreamRoleDeclarationsFromManifest(slice);
+            if (declarations.isEmpty()) {return List.of();}
+            var bindings = lookupStreamBindings(sliceKey);
+            if (bindings.isEmpty()) {return List.of();}
+            var commands = new ArrayList<KVCommand<AetherKey>>();
+            for (var declaration : declarations) {
+                bindings.flatMap(b -> b.addressFor(declaration.alias()))
+                              .onPresent(address -> appendRefCommand(commands, address, action));
+            }
+            return List.copyOf(commands);
+        }
+
+        private void appendRefCommand(List<KVCommand<AetherKey>> sink,
+                                       StreamAddress address,
+                                       RefcountAction action) {
+            var current = readStreamRegistryEntry(address);
+            switch (action) {
+                case ACQUIRE -> sink.add(buildAcquireCommand(address, current));
+                case RELEASE -> current.onPresent(entry -> sink.add(buildReleaseCommand(address, entry)));
+            }
+        }
+
+        private KVCommand<AetherKey> buildAcquireCommand(StreamAddress address,
+                                                          Option<StreamRegistryEntry> current) {
+            var next = current.map(StreamRegistryEntry::incrementRef)
+                                     .or(StreamRegistryEntry.blueprint(address,
+                                                                          RetentionPolicy.retentionPolicy(),
+                                                                          Instant.ofEpochMilli(ctx.nowMs())));
+            return new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
+                                        StreamRegistryValue.streamRegistryValue(next));
+        }
+
+        private static KVCommand<AetherKey> buildReleaseCommand(StreamAddress address, StreamRegistryEntry entry) {
+            if (entry.refCount() <= 1) {
+                return new KVCommand.Remove<>(StreamRegistryKey.streamRegistryKey(address));
+            }
+            return new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
+                                        StreamRegistryValue.streamRegistryValue(entry.decrementRef()));
+        }
+
+        private Option<StreamRegistryEntry> readStreamRegistryEntry(StreamAddress address) {
+            return ctx.kvStore().get(StreamRegistryKey.streamRegistryKey(address))
+                              .filter(StreamRegistryValue.class::isInstance)
+                              .map(StreamRegistryValue.class::cast)
+                              .map(StreamRegistryValue::entry);
+        }
+
+        private Option<BlueprintStreamBindingsValue> lookupStreamBindings(SliceNodeKey sliceKey) {
+            return lookupOwningBlueprintId(sliceKey).flatMap(this::lookupBindingsFor);
+        }
+
+        private Option<BlueprintStreamBindingsValue> lookupBindingsFor(BlueprintId blueprintId) {
+            return ctx.kvStore().get(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprintId))
+                              .filter(BlueprintStreamBindingsValue.class::isInstance)
+                              .map(BlueprintStreamBindingsValue.class::cast);
+        }
+
+        private Option<BlueprintId> lookupOwningBlueprintId(SliceNodeKey sliceKey) {
+            return ctx.kvStore().get(SliceTargetKey.sliceTargetKey(sliceKey.artifact().base()))
+                              .filter(SliceTargetValue.class::isInstance)
+                              .map(SliceTargetValue.class::cast)
+                              .flatMap(SliceTargetValue::owningBlueprint);
+        }
+
+        /// Per-slice (alias, role) pair extracted from the slice manifest. The `role` field is
+        /// retained even though refcount accounting (§8.1) treats producer and consumer references
+        /// uniformly — future RBAC work (issue #205) will read it without a manifest reread.
+        private record StreamRoleDeclaration(String alias, @SuppressWarnings("unused") String role) {}
+
+        @SuppressWarnings("JBCT-EX-01") private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Slice slice) {
+            var result = new ArrayList<StreamRoleDeclaration>();
+            var classLoader = slice.getClass().getClassLoader();
+            for (var iface : slice.getClass().getInterfaces()) {
+                if (iface == Slice.class) {continue;}
+                var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+                appendStreamRoleDeclarations(classLoader, manifestPath, result);
+            }
+            return result;
+        }
+
+        @SuppressWarnings("JBCT-EX-01") private void appendStreamRoleDeclarations(ClassLoader classLoader,
+                                                                                    String manifestPath,
+                                                                                    List<StreamRoleDeclaration> sink) {
+            try (var is = classLoader.getResourceAsStream(manifestPath)) {
+                if (is == null) {return;}
+                var props = new Properties();
+                props.load(is);
+                appendRoleEntries(props, "stream.publisher.", "stream.publishers.count", "producer", sink);
+                appendRoleEntries(props, "stream.access.", "stream.access.count", "consumer", sink);
+            } catch (Exception e) {
+                log.debug("Could not read stream role declarations from manifest {}: {}", manifestPath, e.getMessage());
+            }
+        }
+
+        private static void appendRoleEntries(Properties props,
+                                               String prefix,
+                                               String countKey,
+                                               String defaultRole,
+                                               List<StreamRoleDeclaration> sink) {
+            int count = parseManifestCount(props.getProperty(countKey));
+            for (int i = 0; i < count; i++) {
+                var configSection = props.getProperty(prefix + i + ".config");
+                if (configSection == null || configSection.isEmpty()) {continue;}
+                var alias = aliasOf(configSection);
+                if (alias.isEmpty()) {continue;}
+                var role = props.getProperty(prefix + i + ".role", defaultRole);
+                sink.add(new StreamRoleDeclaration(alias, role));
+            }
+        }
+
+        private static int parseManifestCount(String raw) {
+            if (raw == null || raw.isEmpty()) {return 0;}
+            try { return Integer.parseInt(raw.trim()); } catch (NumberFormatException _) { return 0; }
+        }
+
+        private static String aliasOf(String configSection) {
+            var prefix = "streams.";
+            return configSection.startsWith(prefix)
+                  ? configSection.substring(prefix.length())
+                  : "";
+        }
+
+        private Promise<SliceNodeKey> updateSliceStateWithExtraCommands(SliceNodeKey sliceKey,
+                                                                         SliceNodeValue value,
+                                                                         List<KVCommand<AetherKey>> extraCommands) {
+            return updateSliceStateWithExtraCommandsAndRetry(sliceKey, value, extraCommands, 0);
+        }
+
+        private Promise<SliceNodeKey> updateSliceStateWithExtraCommandsAndRetry(SliceNodeKey sliceKey,
+                                                                                  SliceNodeValue value,
+                                                                                  List<KVCommand<AetherKey>> extraCommands,
+                                                                                  int attempt) {
+            log.debug("updateSliceStateWithExtraCommands: {} -> {} (attempt {}, +{} extras)",
+                      sliceKey,
+                      value.state(),
+                      attempt,
+                      extraCommands.size());
+            var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
+            var transitionedAt = value.state().isTransitional()
+                                ? ctx.nowMs()
+                                : 0L;
+            var nodeArtifactValue = value.state() == SliceState.FAILED
+                                   ? new NodeArtifactValue(SliceState.FAILED,
+                                                           value.failureReason(),
+                                                           value.fatal(),
+                                                           0,
+                                                           List.of(),
+                                                           0L)
+                                   : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
+            var commands = new ArrayList<KVCommand<AetherKey>>();
+            commands.add(new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue));
+            commands.addAll(extraCommands);
+            return ctx.cluster().apply(commands)
+                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
+                              .map(_ -> sliceKey)
+                              .onSuccess(_ -> log.debug("State+refs update succeeded: {} -> {}",
+                                                          sliceKey.artifact(),
+                                                          value.state()))
+                              .orElse(() -> retryConsensusBatch(sliceKey, value, extraCommands, attempt));
+        }
+
+        private Promise<SliceNodeKey> retryConsensusBatch(SliceNodeKey sliceKey,
+                                                            SliceNodeValue value,
+                                                            List<KVCommand<AetherKey>> extraCommands,
+                                                            int attempt) {
+            if (attempt >= CONSENSUS_MAX_RETRIES) {
+                log.warn("Consensus batch failed after {} retries for {} -> {}",
+                          CONSENSUS_MAX_RETRIES,
+                          sliceKey.artifact(),
+                          value.state());
+                return Causes.cause("Consensus batch timed out after " + CONSENSUS_MAX_RETRIES + " retries")
+                                   .promise();
+            }
+            return updateSliceStateWithExtraCommandsAndRetry(sliceKey, value, extraCommands, attempt + 1);
         }
 
         private Promise<SliceNodeKey> transitionToFailed(SliceNodeKey sliceKey, Cause cause) {

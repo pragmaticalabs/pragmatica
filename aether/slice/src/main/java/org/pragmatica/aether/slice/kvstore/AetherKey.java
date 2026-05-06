@@ -9,6 +9,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.stream.StreamAddress;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -1332,6 +1333,78 @@ import static org.pragmatica.lang.Result.success;
             var parts = content.split("/");
             if (parts.length != 3) {return CONSUMER_GROUP_KEY_FORMAT_ERROR.apply(key).result();}
             return Number.parseInt(parts[2]).map(partition -> new ConsumerGroupKey(parts[0], parts[1], partition));
+        }
+    }
+
+    Fn1<Cause, String> BLUEPRINT_STREAM_BINDINGS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint-stream-bindings key format: %s");
+
+    Fn1<Cause, String> STREAM_REGISTRY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-registry key format: %s");
+
+    /// Per-blueprint alias→StreamAddress map persisted at deploy time so per-slice runtime FSM
+    /// transitions (Active.handleActivating / handleDeactivating) can resolve the slice manifest's
+    /// `stream.publisher.<i>.config` / `stream.access.<i>.config` aliases into fully-qualified
+    /// `StreamAddress` values without re-running blueprint validation.
+    ///
+    /// Spec reference: event-stream-namespaces §8.5 (consensus-mediated refcount accounting requires
+    /// the resolved address per slice declaration).
+    record BlueprintStreamBindingsKey(BlueprintId blueprintId) implements AetherKey {
+        private static final String PREFIX = "blueprint-stream-bindings/";
+
+        @Override public String asString() {
+            return PREFIX + blueprintId.asString();
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static BlueprintStreamBindingsKey blueprintStreamBindingsKey(BlueprintId blueprintId) {
+            return new BlueprintStreamBindingsKey(blueprintId);
+        }
+
+        public static Result<BlueprintStreamBindingsKey> blueprintStreamBindingsKey(String key) {
+            if (!key.startsWith(PREFIX)) {return BLUEPRINT_STREAM_BINDINGS_KEY_FORMAT_ERROR.apply(key).result();}
+            var idPart = key.substring(PREFIX.length());
+            return BlueprintId.blueprintId(idPart).map(BlueprintStreamBindingsKey::new);
+        }
+    }
+
+    /// Per-stream registry entry persisted under `stream-registry/{namespace}/{stream}/{version}`.
+    ///
+    /// Carries the consensus-mediated reference count (§8.5) plus the metadata fields described
+    /// in spec §7.1. Folds `stream-meta:{addr}` and `stream-refs:{addr}` from the spec into a
+    /// single key/value pair so each refcount mutation is a single consensus command instead of
+    /// two — the spec separation is conceptual; the implementation collapses them for atomic
+    /// piggyback on the SliceNodeValue update.
+    record StreamRegistryKey(StreamAddress address) implements AetherKey {
+        private static final String PREFIX = "stream-registry/";
+
+        @Override public String asString() {
+            return PREFIX + address.namespace() + "/" + address.stream() + "/" + address.version().asString();
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static StreamRegistryKey streamRegistryKey(StreamAddress address) {
+            return new StreamRegistryKey(address);
+        }
+
+        public static Result<StreamRegistryKey> streamRegistryKey(String key) {
+            if (!key.startsWith(PREFIX)) {return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();}
+            var content = key.substring(PREFIX.length());
+            var firstSlash = content.indexOf('/');
+            if (firstSlash <= 0) {return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();}
+            var namespace = content.substring(0, firstSlash);
+            var rest = content.substring(firstSlash + 1);
+            var secondSlash = rest.indexOf('/');
+            if (secondSlash <= 0 || secondSlash == rest.length() - 1) {
+                return STREAM_REGISTRY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+            var stream = rest.substring(0, secondSlash);
+            var version = rest.substring(secondSlash + 1);
+            return StreamAddress.streamAddress(namespace, stream, version).map(StreamRegistryKey::new);
         }
     }
 }

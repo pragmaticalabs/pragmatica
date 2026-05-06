@@ -737,6 +737,15 @@ public interface AetherNode extends ManageableNode {
             @Override public void route(Message message) {
                 router.route(message);
             }
+
+            /// Spec event-stream-namespaces §8.5: production wiring uses the consensus-backed
+            /// registry. The default in [ManageableNode] returns an in-memory variant for tests
+            /// and fixtures.
+            @Override public org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService() {
+                var registry = org.pragmatica.aether.slice.stream.KvBackedStreamRegistry.kvBackedStreamRegistry(switchableCluster, kvStore);
+                return new org.pragmatica.aether.slice.stream.StreamNamespacesService(registry,
+                                                                                       new org.pragmatica.aether.slice.stream.SystemStreamBootstrap(registry));
+            }
         }
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode);
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
