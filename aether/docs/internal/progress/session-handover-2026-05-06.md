@@ -1,8 +1,8 @@
 # Session Handover — 2026-05-06
 
-**Branch:** `release-1.0.0-rc1`  ·  **HEAD:** `426164682`  ·  **Tag:** `v1.0.0-rc1-candidate` at `ca4acac92` (will be moved by `wrap-up`)
+**Branch:** `release-1.0.0-rc1`  ·  **HEAD:** `f7a6f6f2a` (pushed)  ·  **Tag:** `v1.0.0-rc1-candidate` at `f7a6f6f2a` (pushed, force-updated)
 
-Continuation of [`session-handover-2026-05-05.md`](session-handover-2026-05-05.md). Session started at the previous handover's `f957bc08e`. This session moved cloud Phase C from **10/15 PASS** to **13/15 PASS / 1 SKIP / 1 FAIL** by fixing runtime auto-scale wiring on Hetzner, bootstrap auth chicken-and-egg, and several test-infra cloud-awareness gaps. Three RC2 tickets filed for the genuine architectural shortcuts taken.
+Continuation of [`session-handover-2026-05-05.md`](session-handover-2026-05-05.md). Session started at the previous handover's `f957bc08e`. This session moved cloud Phase C from **10/15 PASS** to **13/15 PASS / 1 SKIP / 1 FAIL** by fixing runtime auto-scale wiring on Hetzner, bootstrap auth chicken-and-egg, and several test-infra cloud-awareness gaps. **Plus a post-wrap-up follow-up**: investigated #210 (12-network SWIM events on cloud), found leader-gated emission as the root cause, and landed a follow-up fix that emits NODE_FAILED/NODE_LEFT from local SWIM observation on every node — pending image republish to validate on cloud. Three RC2 tickets filed for the genuine architectural shortcuts taken.
 
 ---
 
@@ -28,15 +28,18 @@ Continuation of [`session-handover-2026-05-05.md`](session-handover-2026-05-05.m
 | 14-storage | PASS | (untouched) | ✓ |
 | 15-delegation | PASS | (untouched) | ✓ |
 
-**Score: 13 PASS / 1 SKIP / 1 FAIL** (vs yesterday's 10 PASS / 1 SKIP / 4 FAIL — **+3 suites green**).
+**Score: 13 PASS / 1 SKIP / 1 FAIL** at session-end. Post-wrap-up SWIM-observation fix should flip 12-network from SKIP to PASS once the new image republishes (build in flight at run `25418065926`) — projected 14 PASS / 1 FAIL (08-resources). Net delta from yesterday: **+3 suites green confirmed, +1 expected pending image**.
 
 **Hetzner spend:** ~€8 across the multi-iteration session (multiple bootstraps + 1 full Phase B+C + 3 targeted 12-network retests). Account clean at end (PG VM only).
 
 ---
 
-## 1 · Commits landed (14, all unpushed)
+## 1 · Commits landed (17, all pushed)
 
 ```
+f7a6f6f2a fix(events): emit NODE_FAILED/NODE_LEFT from local SWIM observation, not leader-gated topology broadcast
+8a2bea9ff docs: changelog entries for cloud auto-scale + bootstrap auth + manifest version + test-infra cloud-awareness
+28899581f docs: session handovers for 2026-05-05b and 2026-05-06
 426164682 revert(test-infra): 12-network back to docker/remote only — cloud SWIM events gap tracked in #210
 584d89748 fix(test-infra): disable cloud restart-policy before kill so SWIM can detect failure
 ebfe4409f fix(test-infra): topology_events_since cloud-aware; was port-hopping TARGET_HOST and missing all events on cloud
@@ -99,12 +102,27 @@ Tracked in: yesterday's handover §3a.
 
 ### 2b · 12-network — SWIM events on cloud (#210)
 
-After all three test-infra fixes (timeout, events-fetch, restart-policy), `NODE_LEFT/NODE_FAILED` events still don't appear in `/api/events` after `kill_node` on cloud. Cluster recovers (02-chaos still passes), so SWIM internal detection works — but the events stream doesn't surface the failure. Hypotheses to investigate:
-1. Events of type `NODE_LEFT/NODE_FAILED` may not be emitted on cloud at all (only `NODE_JOINED`, `LEADER_ELECTED`, etc. observed).
-2. Per-node event buffer scope — only certain nodes witness/emit, and the test's polling pattern misses them.
-3. `docker update --restart=no` via `cloud_ssh` may fail silently.
+**Post-wrap-up investigation + fix landed at `f7a6f6f2a` — pending cloud validation after image republish.**
 
-Reproduction harness in #210.
+Investigation traced the gap to **leader-gated event emission**, NOT a missing wire. Two paths in `ClusterEventAggregator`:
+
+- `onNodeRemoved(NodeRemoved)` — fires from `MessageRouter` on `TopologyChangeNotification.NodeRemoved`. The notification is leader-broadcast: `SwimHealthContext.routeFaulty` only invokes `routeDisconnect()` when `isLeaderSupplier.getAsBoolean()` is true. On a non-leader observer, no event is recorded.
+- `onNodeDown(NodeDown)` — same upstream gate (leader-only emission, all-nodes consumption).
+- `onNodeLifecyclePut(NodeLifecycleKey -> DECOMMISSIONED)` — KV-replicated, fires on every node, but the WRITE is leader-only via `HealthReconcilerImpl.handleAggregatedEdge` (`if (!isLeader()) return`).
+
+Net effect: every NODE_FAILED / NODE_LEFT path bottlenecks on the leader emitting + writing within the test window. On cloud Hetzner, the leader doesn't cross SWIM's faulty timeout fast enough (Hetzner inter-node RTT 50-150ms vs. ~0ms localhost), or `ClusterPhase` is still BOOTING and suppresses the DECOMMISSIONED write, or QUIC's `helloTimeout × 3` protection window suppresses `DisconnectNode`. The cluster auto-heals via CTM (which uses a different signal — membership view from KV), so other tests pass; but the events ring buffer never sees the failure.
+
+**Fix in `f7a6f6f2a`**:
+
+- Removed `onNodeRemoved` and `onNodeDown` listener wires from `AetherNode.java` MessageRouter (and the methods themselves from `ClusterEventAggregator`).
+- Added `onSwimObservation(SwimObservation)` method to `ClusterEventAggregator` that emits NODE_FAILED on `FaultyObserved` and NODE_LEFT on `DepartedObserved`.
+- Wired `swimHealthDetector.addObservationListener(eventAggregator::onSwimObservation)` at `AetherNode.java:1166` alongside the existing `healthReconciler::onSwimObservation` listener.
+
+Net semantics: each node records what IT witnessed via SWIM. No leader bottleneck. Lifecycle KV writes (DRAINING / DECOMMISSIONED) still emit via `onNodeLifecyclePut` (KV-replicated). Operator drain and SWIM-detected failure are now described by separate events with separate sources — no duplication, no single point of failure for observability.
+
+**Validation status:** pending. Cloud VMs pull `ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate` (published image). Tag `v1.0.0-rc1-candidate` was force-moved to `f7a6f6f2a`, triggering release workflow run `25418065926`. Once the new image is published (~30 min build + ghcr push), `./run-tests.sh --env cloud --suites 12 --skip-build` will re-run on the new image. Expected outcome: 12-network green on cloud → **14/15 PASS / 1 FAIL** (08-resources flaky slice routing remaining).
+
+If the new build fails for unrelated reasons OR the fix doesn't land 12-network green, fallback is to keep #210 open with the new investigation findings + proposed fix already in tree, deferring cloud validation to next session.
 
 ---
 
@@ -124,6 +142,10 @@ Reproduction harness in #210.
 - `aether/cli/src/main/java/org/pragmatica/aether/cli/AetherVersionProvider.java`
 - `aether/docs/internal/progress/session-handover-2026-05-05b.md` (mid-session)
 - `aether/docs/internal/progress/session-handover-2026-05-06.md` (this file)
+
+### Runtime — events ring buffer (post-wrap-up)
+- `aether/node/.../api/ClusterEventAggregator.java` — removed `onNodeRemoved` / `onNodeDown` (leader-gated paths); added `onSwimObservation(SwimObservation)` for local-witness NODE_FAILED / NODE_LEFT emission
+- `aether/node/.../node/AetherNode.java` — removed two `MessageRouter.Entry.route` wires for the deleted methods; added `swimHealthDetector.addObservationListener(eventAggregator::onSwimObservation)` next to existing healthReconciler listener
 
 ### Bootstrap / runtime CLI
 - `aether/cli/.../BootstrapOverlayGenerator.java` — `[cloud]` + `[cloud.credentials]` for cloud-type sources
