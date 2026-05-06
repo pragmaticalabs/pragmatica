@@ -23,6 +23,7 @@ import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.utility.RingBuffer;
 
 import java.time.Instant;
@@ -83,9 +84,26 @@ import java.util.function.IntSupplier;
                                                     String.valueOf(event.topology().size()))));
     }
 
-    public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
-        bufferNodeLeftEvent(event.nodeId().id(),
-                            event.topology().size());
+    /// SWIM-edge observation listener — local witness emit for peer health changes.
+    ///
+    /// `FaultyObserved` and `DepartedObserved` produce `NODE_FAILED` / `NODE_LEFT`
+    /// events on the OBSERVING node, not just the leader. This replaces the
+    /// previously leader-gated emission paths (`onNodeRemoved`, `onNodeDown`)
+    /// which depended on the leader emitting a `TopologyChangeNotification` —
+    /// a path that silently dropped events on cloud when the leader took longer
+    /// than the test window to cross SWIM's faulty timeout, write `DECOMMISSIONED`,
+    /// or broadcast `DisconnectNode`. SWIM observation is local and direct: each
+    /// surviving node records its own witness, the events ring buffer naturally
+    /// reflects what THIS node saw. Test harnesses union events across nodes,
+    /// so any single observer is sufficient.
+    @Contract public void onSwimObservation(SwimObservation observation) {
+        switch (observation) {
+            case SwimObservation.FaultyObserved faulty ->
+                    bufferNodeFailedEvent(faulty.peer().id(), clusterSizeSupplier.getAsInt());
+            case SwimObservation.DepartedObserved departed ->
+                    bufferNodeLeftEvent(departed.peer().id(), clusterSizeSupplier.getAsInt());
+            default -> {}
+        }
     }
 
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
@@ -136,14 +154,6 @@ import java.util.function.IntSupplier;
                                                     transition,
                                                     "requestedBy",
                                                     "HealthReconciler")));
-    }
-
-    public void onNodeDown(TopologyChangeNotification.NodeDown event) {
-        buffer.add(ClusterEvent.clusterEvent(EventType.NODE_FAILED,
-                                             Severity.CRITICAL,
-                                             "Node " + event.nodeId().id() + " failed",
-                                             Map.of("nodeId",
-                                                    event.nodeId().id())));
     }
 
     public void onLeaderChange(LeaderNotification.LeaderChange event) {

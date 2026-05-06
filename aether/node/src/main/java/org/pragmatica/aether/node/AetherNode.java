@@ -1164,6 +1164,10 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
         swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
+        // Local-witness emit for NODE_FAILED / NODE_LEFT — every node records what
+        // it observed, eliminating the leader-broadcast bottleneck that hid events
+        // on cloud when the leader hadn't crossed SWIM's faulty timeout yet.
+        swimHealthDetector.addObservationListener(eventAggregator::onSwimObservation);
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
@@ -2184,9 +2188,11 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                               msg -> httpRouteRegistry.evictNode(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, eventAggregator::onNodeAdded));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              eventAggregator::onNodeRemoved));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, eventAggregator::onNodeDown));
+        // NODE_LEFT / NODE_FAILED events come from local SWIM observations
+        // (eventAggregator::onSwimObservation, wired alongside healthReconciler in this same builder)
+        // rather than from leader-broadcast topology messages, which previously dropped silently on
+        // cloud whenever the leader took longer than the test window to cross SWIM faulty timeout.
+        // Lifecycle KV writes (DRAINING / DECOMMISSIONED) still emit via onNodeLifecyclePut.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
