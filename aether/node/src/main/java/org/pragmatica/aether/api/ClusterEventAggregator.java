@@ -99,9 +99,9 @@ import java.util.function.IntSupplier;
     @Contract public void onSwimObservation(SwimObservation observation) {
         switch (observation) {
             case SwimObservation.FaultyObserved faulty ->
-                    bufferNodeFailedEvent(faulty.peer().id(), clusterSizeSupplier.getAsInt());
+                    bufferNodeFailedEvent(faulty.peer().id(), clusterSizeSupplier.getAsInt(), "swim-observation");
             case SwimObservation.DepartedObserved departed ->
-                    bufferNodeLeftEvent(departed.peer().id(), clusterSizeSupplier.getAsInt());
+                    bufferNodeLeftEvent(departed.peer().id(), clusterSizeSupplier.getAsInt(), "swim-observation");
             default -> {}
         }
     }
@@ -111,16 +111,15 @@ import java.util.function.IntSupplier;
     /// uses to provision a replacement), every node records `NODE_LEFT`/`NODE_FAILED`.
     /// `onSwimObservation` (above) is the local-witness path; this is the
     /// leader-broadcast path. Either firing is sufficient to surface the event in
-    /// `/api/events`. The redundancy makes the ring buffer resilient to gaps in
-    /// either path on cloud where SWIM detection latency or QUIC's `helloTimeout × 3`
-    /// suppression of `DisconnectNode` may delay the local-witness signal beyond
-    /// the test window.
+    /// `/api/events`. Each emission tags itself with a `source` in the event details,
+    /// so operators can grep `/api/events` to see which path actually fired in any
+    /// given run — invaluable for diagnosing cloud-specific gaps.
     @Contract public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
-        bufferNodeLeftEvent(event.nodeId().id(), event.topology().size());
+        bufferNodeLeftEvent(event.nodeId().id(), event.topology().size(), "topology-broadcast");
     }
 
     @Contract public void onNodeDown(TopologyChangeNotification.NodeDown event) {
-        bufferNodeFailedEvent(event.nodeId().id(), clusterSizeSupplier.getAsInt());
+        bufferNodeFailedEvent(event.nodeId().id(), clusterSizeSupplier.getAsInt(), "topology-broadcast");
     }
 
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
@@ -138,22 +137,29 @@ import java.util.function.IntSupplier;
     }
 
     @Contract private void emitDecommissionEvent(String nodeId, NodeLifecycleState prior) {
-        if (prior == NodeLifecycleState.DRAINING) {bufferNodeLeftEvent(nodeId, clusterSizeSupplier.getAsInt());} else {bufferNodeFailedEvent(nodeId,
-                                                                                                                                             clusterSizeSupplier.getAsInt());}
+        if (prior == NodeLifecycleState.DRAINING) {
+            bufferNodeLeftEvent(nodeId, clusterSizeSupplier.getAsInt(), "lifecycle-kv");
+        } else {
+            bufferNodeFailedEvent(nodeId, clusterSizeSupplier.getAsInt(), "lifecycle-kv");
+        }
     }
 
-    @Contract private void bufferNodeLeftEvent(String nodeId, int clusterSize) {
+    @Contract private void bufferNodeLeftEvent(String nodeId, int clusterSize, String source) {
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LEFT,
                                              Severity.INFO,
                                              "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
-                                             Map.of("nodeId", nodeId, "clusterSize", String.valueOf(clusterSize))));
+                                             Map.of("nodeId", nodeId,
+                                                    "clusterSize", String.valueOf(clusterSize),
+                                                    "source", source)));
     }
 
-    @Contract private void bufferNodeFailedEvent(String nodeId, int clusterSize) {
+    @Contract private void bufferNodeFailedEvent(String nodeId, int clusterSize, String source) {
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_FAILED,
                                              Severity.CRITICAL,
                                              "Node " + nodeId + " failed (cluster size " + clusterSize + ")",
-                                             Map.of("nodeId", nodeId, "clusterSize", String.valueOf(clusterSize))));
+                                             Map.of("nodeId", nodeId,
+                                                    "clusterSize", String.valueOf(clusterSize),
+                                                    "source", source)));
     }
 
     @Contract private void bufferNodeLifecycleChangedEvent(String nodeId,
