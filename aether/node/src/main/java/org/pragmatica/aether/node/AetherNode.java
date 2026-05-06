@@ -1168,6 +1168,22 @@ public interface AetherNode extends ManageableNode {
         // it observed, eliminating the leader-broadcast bottleneck that hid events
         // on cloud when the leader hadn't crossed SWIM's faulty timeout yet.
         swimHealthDetector.addObservationListener(eventAggregator::onSwimObservation);
+        // Local QUIC eviction on FAULTY — every node disconnects its own stale link
+        // when SWIM observes the peer faulty, instead of waiting for the leader's
+        // local-only `routeDisconnect` (which only mutates the leader's PeerState).
+        // Without this hook, followers keep a CONNECTED PeerState whose underlying
+        // Netty channel is silently dead but `isActive()` reports true; future Hello
+        // from a restarted peer with the same NodeId returns AttachResult.DUPLICATE
+        // → connection.close → reconnection storm. With this hook, every node's
+        // PeerState transitions CONNECTED → EVICTED on FAULTY, so the next Hello
+        // from the restarted peer returns RECONNECTED → ConnectionEstablished →
+        // swim.markAlive → SWIM revives the peer.
+        var localNetwork = clusterNode.network();
+        swimHealthDetector.addObservationListener(observation -> {
+            if (observation instanceof org.pragmatica.swim.SwimObservation.FaultyObserved faulty) {
+                localNetwork.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(faulty.peer()));
+            }
+        });
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)

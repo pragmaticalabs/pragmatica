@@ -612,14 +612,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract private void handleDeficit(int actual, int desired) {
         var nowMs = nowMs();
-        var quicLive = observer.healthyActiveNodeCount();
-        if (quicLive >= desired) {
-            log.info("CTM: snapshot-derived deficit (actual={}, desired={}) but QUIC observer reports {} live peers — suppressing provisioning",
-                     actual,
-                     desired,
-                     quicLive);
-            return;
-        }
+        // Snapshot (`MembershipView` derived from leader-coordinated KV-Store atoms) is the
+        // authoritative source for cluster size — `actual` already filters by ON_DUTY +
+        // healthy. Cross-checking with `observer.healthyActiveNodeCount()` previously
+        // suppressed provisioning when the local QUIC view disagreed, but the local fallback
+        // (`nodeStatesById`) does NOT update health on SWIM FAULTY observation: it stays
+        // HEALTHY indefinitely until the QUIC transport itself produces a `DisconnectNode`,
+        // which is gated behind a `helloTimeout × 3` protection window. On cloud Hetzner that
+        // window can outlive the test, so the guard misfired and CTM never auto-healed —
+        // breaking 12-network suite-2 (`No NODE_JOINED for replacement`) and any operator
+        // expectation that snapshot deficit drives provisioning. Stability window below is
+        // the correct flap-absorber; the local QUIC count is not.
         if (!stabilityElapsed(nowMs)) {
             var elapsed = nowMs - realActualStableSinceMs.get();
             log.info("CTM: stability window not yet elapsed (elapsed={}ms, required={}ms, actual={}, desired={}); deferring provisioning dispatch",

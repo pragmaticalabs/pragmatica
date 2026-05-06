@@ -358,14 +358,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
-    @SuppressWarnings("JBCT-PAT-01") // Channel protection window check + authoritative remove + view change
+    @SuppressWarnings("JBCT-PAT-01") // Channel protection window check + soft-evict + view change
     public void disconnect(DisconnectNode disconnectNode) {
         var nodeId = disconnectNode.nodeId();
         var peer = peers.get(nodeId);
-        // SWIM-driven DisconnectNode is the authoritative "this peer is gone" signal.
-        // We must always propagate REMOVE to topology so the snapshot prunes the peer,
-        // even if the QUIC link is already torn down. Otherwise CTM-provisioned
-        // replacements that die mid-flight stay in coreNodes forever.
+        // SWIM-driven DisconnectNode is the authoritative "this peer is gone right now"
+        // signal. Topology projection is updated regardless of whether the local QUIC
+        // link is still up — otherwise a peer pruned by SWIM but with a still-alive
+        // (zombie) QUIC connection would stay in coreNodes forever.
         if (peer != null && peer.phase() == PeerState.Phase.CONNECTED) {
             var protectionNanos = topologyManager.helloTimeout().nanos() * 3;
             if (peer.phaseAgeNanos(System.nanoTime()) < protectionNanos) {
@@ -373,14 +373,24 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 return;
             }
         }
-        // Authoritative removal is idempotent; always fire. Drops the offline buffer.
+        // Soft-evict (CONNECTED → EVICTED), NOT authoritativeRemove (any → REMOVED).
+        // Reasoning: a previously-FAULTY peer can come back with the same NodeId — either
+        // because the operator restarted the same container (test harness pattern) or
+        // because Kubernetes/Docker auto-restarted the workload. REMOVED is terminal:
+        // every subsequent inbound Hello from that NodeId returns AttachResult.REJECTED,
+        // and we never re-promote the peer to ALIVE in SWIM, so a second FAULTY transition
+        // cannot fire (no edge), the events buffer stays silent, and CTM thinks the peer
+        // is "always" gone. EVICTED preserves the offline buffer + allows future Hello to
+        // return RECONNECTED, which routes ConnectionEstablished upstream → SWIM markAlive.
+        // Stuck-EVICTED peers are GCed to REMOVED via `expireEvicted` after TTL elapse —
+        // production decommission still reaches the terminal state on its own clock.
         if (peer != null) {
-            peer.authoritativeRemove(System.nanoTime())
+            peer.evict(System.nanoTime())
                 .onPresent(this::closeDroppedConnection);
         }
         // Channel-level writability backpressure queue is bytes-for-the-dead-channel; wipe.
         cleanupPeerQueues(nodeId);
-        // Datagram channel and reconnect-backoff slot follow the peer to the grave.
+        // Drop the per-peer ephemeral UDP socket; client opens a fresh one on reconnect.
         var clientRef = client;
         if (clientRef != null) {
             clientRef.closeDatagramChannel(nodeId);
