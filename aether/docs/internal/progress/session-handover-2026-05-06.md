@@ -188,7 +188,20 @@ If the new build fails for unrelated reasons OR the fix doesn't land 12-network 
 
 ---
 
-## 6 · Quick start for next session
+## 6 · First thing to do next session
+
+**Land #211 (release.yml ARM runner) BEFORE re-validating #210.** Reasoning: the cloud validation for the SWIM-observation fix at `f7a6f6f2a` requires republishing `ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1-candidate`. With QEMU emulation, the release workflow takes 30-45 min per attempt; with native ARM runners it drops to ~5 min. Two release-cycle attempts at the QEMU rate cost more wall-clock than landing #211 first.
+
+**Sequence:**
+
+1. **Land #211** — half-day PR, swap `runs-on: ubuntu-latest` → `runs-on: ubuntu-24.04-arm` in `build-linux-arm64-dist`, drop the QEMU setup step, drop the `docker run --platform linux/arm64 ...` wrapper. Verify the published archive is real arm64 (file headers / readelf on a binary).
+2. **Force-move tag** to current HEAD again to retrigger publish. Build should complete in ~5-8 min total wall-clock (was 30-45 min).
+3. **Run 12-network on cloud** — `./run-tests.sh --env cloud --suites 12 --skip-build`. Expected: 3p/0f after the SWIM-observation fix lands. Combined matrix becomes **14/15 PASS / 1 FAIL** (08-resources only).
+4. **Address 08-resources** to close the loop on 15/15. The flaky slice-routing on cloud — yesterday's handover §3a noted four different failure modes across runs. Likely a `wait_for_slices_active` semantic helper that polls until route is reachable on the targeted node, or wire `AppHttpServer` cross-node forwarding for slice routes on cloud.
+
+**Note:** the in-flight release builds (`25417195815`, `25418065926`) were canceled at session-end to avoid wasting CI cycles on the slow QEMU path. The fix code is committed at `f7a6f6f2a` and pushed; the candidate tag points there. Re-trigger publish AFTER landing #211.
+
+## 7 · Quick start for next session
 
 ```bash
 # Sanity
