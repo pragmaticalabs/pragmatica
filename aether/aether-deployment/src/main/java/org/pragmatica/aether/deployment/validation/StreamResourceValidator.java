@@ -13,7 +13,6 @@ import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Causes.CompositeCause;
 
 import java.util.ArrayList;
@@ -40,7 +39,7 @@ import java.util.Set;
 /// The HTTP route handler is responsible for translating that failure into a 422 response —
 /// the validator itself does not depend on `http-routing` so it stays reusable from the CLI / audit
 /// paths too (spec §15.1.2).
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public interface StreamResourceValidator {
+@SuppressWarnings("JBCT-SEQ-01") public sealed interface StreamResourceValidator {
     String RULE_NAMESPACE_RESERVED = "namespace-reserved";
 
     String RULE_RESOURCES_PARSE = "resources-toml-parse";
@@ -220,7 +219,7 @@ import java.util.Set;
         return StreamAddress.isReservedNamespace(namespace);
     }
 
-    @SuppressWarnings("unused") record unused() implements StreamResourceValidator {}
+    record unused() implements StreamResourceValidator {}
 
     /// Convenience constructor for the no-role-hints case (legacy DSL path / tests).
     static Result<ValidatedStreamResources> validate(Option<String> resourcesConfig, Artifact blueprintArtifact) {
@@ -259,7 +258,6 @@ import java.util.Set;
                                                                                  "stream-resource-invalid",
                                                                                  cause.message());
                 sink.putIfAbsent(fallback.field() + "::" + fallback.rule(), fallback);
-                Causes.cause(cause.message());
             }
         }
     }

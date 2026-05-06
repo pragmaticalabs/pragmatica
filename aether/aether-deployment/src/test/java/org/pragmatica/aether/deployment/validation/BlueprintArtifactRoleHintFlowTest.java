@@ -108,7 +108,8 @@ class BlueprintArtifactRoleHintFlowTest {
             }
             return bos.toByteArray();
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            fail("buildJar failed: " + e.getMessage());
+            return new byte[0];  // unreachable — fail() throws
         }
     }
 

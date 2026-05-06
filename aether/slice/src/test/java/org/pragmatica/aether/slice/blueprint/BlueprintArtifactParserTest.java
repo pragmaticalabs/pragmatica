@@ -185,7 +185,8 @@ class BlueprintArtifactParserTest {
                 }
                 return bos.toByteArray();
             } catch (Exception e) {
-                throw new RuntimeException(e);
+                fail("JarBuilder.build failed: " + e.getMessage());
+                return new byte[0];  // unreachable — fail() throws
             }
         }
 

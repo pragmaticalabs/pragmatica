@@ -1094,28 +1094,47 @@ import org.slf4j.LoggerFactory;
         /// uniformly — future RBAC work (issue #205) will read it without a manifest reread.
         private record StreamRoleDeclaration(String alias, @SuppressWarnings("unused") String role) {}
 
-        @SuppressWarnings("JBCT-EX-01") private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Slice slice) {
+        private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Slice slice) {
             var result = new ArrayList<StreamRoleDeclaration>();
             var classLoader = slice.getClass().getClassLoader();
             for (var iface : slice.getClass().getInterfaces()) {
                 if (iface == Slice.class) {continue;}
                 var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
-                appendStreamRoleDeclarations(classLoader, manifestPath, result);
+                loadManifestProperties(classLoader, manifestPath)
+                        .onSuccess(propsOpt -> propsOpt.onPresent(props -> {
+                            appendRoleEntries(props, "stream.publisher.", "stream.publishers.count", "producer", result);
+                            appendRoleEntries(props, "stream.access.", "stream.access.count", "consumer", result);
+                        }))
+                        .onFailure(cause -> log.debug("Could not read stream role declarations from manifest {}: {}",
+                                                      manifestPath, cause.message()));
             }
             return result;
         }
 
-        @SuppressWarnings("JBCT-EX-01") private void appendStreamRoleDeclarations(ClassLoader classLoader,
-                                                                                    String manifestPath,
-                                                                                    List<StreamRoleDeclaration> sink) {
+        /// Adapter Leaf: load a manifest properties file from the slice classloader. Wraps the
+        /// underlying [java.io.IOException] with a [ManifestLoadFailure] cause so the caller stays
+        /// in the [Result] monad. Absent resource → [Result#success] of [Option#none]; present →
+        /// `success(some(props))`; IO error → `failure`.
+        private static Result<Option<Properties>> loadManifestProperties(ClassLoader classLoader, String manifestPath) {
+            return Result.lift(ManifestLoadFailure::manifestLoadFailure, () -> readManifestPropertiesUnchecked(classLoader, manifestPath));
+        }
+
+        private static Option<Properties> readManifestPropertiesUnchecked(ClassLoader classLoader, String manifestPath) throws java.io.IOException {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                if (is == null) {return;}
+                if (is == null) {return Option.none();}
                 var props = new Properties();
                 props.load(is);
-                appendRoleEntries(props, "stream.publisher.", "stream.publishers.count", "producer", sink);
-                appendRoleEntries(props, "stream.access.", "stream.access.count", "consumer", sink);
-            } catch (Exception e) {
-                log.debug("Could not read stream role declarations from manifest {}: {}", manifestPath, e.getMessage());
+                return Option.some(props);
+            }
+        }
+
+        private record ManifestLoadFailure(Throwable cause) implements org.pragmatica.lang.Cause {
+            static ManifestLoadFailure manifestLoadFailure(Throwable cause) {
+                return new ManifestLoadFailure(cause);
+            }
+
+            @Override public String message() {
+                return "Manifest load failure: " + cause.getMessage();
             }
         }
 

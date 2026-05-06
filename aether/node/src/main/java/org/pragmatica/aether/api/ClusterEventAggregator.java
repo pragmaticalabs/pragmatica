@@ -78,7 +78,7 @@ import java.util.function.Supplier;
 /// `STREAM_REGISTERED` loop for `system:cluster-events` itself is prevented by
 /// {@link org.pragmatica.aether.slice.stream.StreamLifecycleEventPolicy#shouldEmit} — no ordering
 /// logic needed here.
-@SuppressWarnings("JBCT-RET-01") public final class ClusterEventAggregator {
+public final class ClusterEventAggregator {
     private static final Logger LOG = LoggerFactory.getLogger(ClusterEventAggregator.class);
 
     private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> -1;
@@ -156,10 +156,10 @@ import java.util.function.Supplier;
 
     /// Fire-and-forget publish into the system stream. If the publisher is not yet bound (bootstrap
     /// window), the event is logged at framework log level rather than dropped silently — same
-    /// philosophy as spec §13.3. The class-level `JBCT-RET-01` suppression covers the unobserved
-    /// `Promise<Unit>` here: aggregator is a sink with no upstream caller; the `on*` handlers are
-    /// MessageRouter callbacks whose contract is `void`.
-    private void emit(ClusterEvent event) {
+    /// philosophy as spec §13.3. `@Contract` covers the unobserved `Promise<Unit>` here: aggregator
+    /// is a sink with no upstream caller; the `on*` handlers are MessageRouter callbacks whose
+    /// contract is `void`.
+    @Contract private void emit(ClusterEvent event) {
         var publisher = publisherSupplier.get();
         if (publisher == null) {
             LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event);
@@ -178,7 +178,7 @@ import java.util.function.Supplier;
     ///
     /// For canonical-membership state-machines (CDM, CTM, etc.) that need consensus-driven
     /// decisions, see `MembershipDecision.NodeJoined` consumed elsewhere.
-    public void onPeerJoined(TransportObservation.PeerJoined event) {
+    @Contract public void onPeerJoined(TransportObservation.PeerJoined event) {
         nodeJoinTimes.put(event.nodeId().id(),
                           System.currentTimeMillis());
         emit(new NodeJoined(eventIdAllocator.next(),
@@ -265,7 +265,7 @@ import java.util.function.Supplier;
                                              "MembershipFsm")));
     }
 
-    public void onLeaderChange(LeaderNotification.LeaderChange event) {
+    @Contract public void onLeaderChange(LeaderNotification.LeaderChange event) {
         event.leaderId().onPresent(leaderId -> emit(new LeaderElected(eventIdAllocator.next(),
                                                                       Instant.now(),
                                                                       selfNode,
@@ -280,7 +280,7 @@ import java.util.function.Supplier;
                                                          Map.of())));
     }
 
-    public void onQuorumStateChange(QuorumStateNotification event) {
+    @Contract public void onQuorumStateChange(QuorumStateNotification event) {
         if (!event.advanceSequence(quorumSequence)) {return;}
         switch (event.state()){
             case ESTABLISHED -> emit(new QuorumEstablished(eventIdAllocator.next(),
@@ -298,7 +298,7 @@ import java.util.function.Supplier;
         }
     }
 
-    public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> event) {
+    @Contract public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> event) {
         var key = event.cause().key();
         var value = event.cause().value();
         var artifact = key.artifact().asString();
@@ -313,7 +313,7 @@ import java.util.function.Supplier;
         }
     }
 
-    private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
+    @Contract private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
         deploymentStartTimes.put(trackingKey, System.currentTimeMillis());
         emit(new DeploymentStarted(eventIdAllocator.next(),
                                    Instant.now(),
@@ -323,7 +323,7 @@ import java.util.function.Supplier;
                                    Map.of("artifact", artifact, "nodeId", nodeId)));
     }
 
-    private void handleDeploymentCompleted(String trackingKey, String artifact, String nodeId) {
+    @Contract private void handleDeploymentCompleted(String trackingKey, String artifact, String nodeId) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms)).or("");
         var nodeReadySuffix = buildNodeReadySuffix(nodeId);
@@ -335,7 +335,7 @@ import java.util.function.Supplier;
                                      buildCompletedMetadata(artifact, nodeId, durationMs)));
     }
 
-    private void handleDeploymentFailed(String trackingKey, String artifact, String nodeId, NodeArtifactValue value) {
+    @Contract private void handleDeploymentFailed(String trackingKey, String artifact, String nodeId, NodeArtifactValue value) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
         var reason = value.failureReason().or("unknown");
@@ -347,7 +347,7 @@ import java.util.function.Supplier;
                                   buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
-    public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
+    @Contract public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
         emit(new SliceFailure(eventIdAllocator.next(),
                               Instant.now(),
                               selfNode,
@@ -361,7 +361,7 @@ import java.util.function.Supplier;
                                      String.valueOf(event.attemptedNodes().size()))));
     }
 
-    public void onScaledUp(ScalingEvent.ScaledUp event) {
+    @Contract public void onScaledUp(ScalingEvent.ScaledUp event) {
         emit(new ScaleUp(eventIdAllocator.next(),
                          Instant.now(),
                          selfNode,
@@ -375,7 +375,7 @@ import java.util.function.Supplier;
                                 String.valueOf(event.newInstances()))));
     }
 
-    public void onScaledDown(ScalingEvent.ScaledDown event) {
+    @Contract public void onScaledDown(ScalingEvent.ScaledDown event) {
         emit(new ScaleDown(eventIdAllocator.next(),
                            Instant.now(),
                            selfNode,
@@ -389,7 +389,7 @@ import java.util.function.Supplier;
                                   String.valueOf(event.newInstances()))));
     }
 
-    public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
+    @Contract public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
         var direction = event.currentInstances() < event.desiredInstances()
                        ? "up"
                        : "down";
@@ -409,7 +409,7 @@ import java.util.function.Supplier;
         emit(event2);
     }
 
-    public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
+    @Contract public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
         emit(new ConnectionEstablished(eventIdAllocator.next(),
                                        Instant.now(),
                                        selfNode,
@@ -418,7 +418,7 @@ import java.util.function.Supplier;
                                        Map.of("nodeId", event.nodeId().id())));
     }
 
-    public void onAccessDenied(OperationalEvent.AccessDenied event) {
+    @Contract public void onAccessDenied(OperationalEvent.AccessDenied event) {
         emit(new AccessDenied(eventIdAllocator.next(),
                               Instant.now(),
                               selfNode,
@@ -436,7 +436,7 @@ import java.util.function.Supplier;
                                      event.requiredRole())));
     }
 
-    public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
+    @Contract public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
         emit(new NodeLifecycleChanged(eventIdAllocator.next(),
                                       Instant.now(),
                                       selfNode,
@@ -450,7 +450,7 @@ import java.util.function.Supplier;
                                              event.requestedBy())));
     }
 
-    public void onConfigChanged(OperationalEvent.ConfigChanged event) {
+    @Contract public void onConfigChanged(OperationalEvent.ConfigChanged event) {
         emit(new ConfigChanged(eventIdAllocator.next(),
                                Instant.now(),
                                selfNode,
@@ -466,7 +466,7 @@ import java.util.function.Supplier;
                                       event.requestedBy())));
     }
 
-    public void onBackupCreated(OperationalEvent.BackupCreated event) {
+    @Contract public void onBackupCreated(OperationalEvent.BackupCreated event) {
         emit(new BackupCreated(eventIdAllocator.next(),
                                Instant.now(),
                                selfNode,
@@ -475,7 +475,7 @@ import java.util.function.Supplier;
                                Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
-    public void onBackupRestored(OperationalEvent.BackupRestored event) {
+    @Contract public void onBackupRestored(OperationalEvent.BackupRestored event) {
         emit(new BackupRestored(eventIdAllocator.next(),
                                 Instant.now(),
                                 selfNode,
@@ -484,7 +484,7 @@ import java.util.function.Supplier;
                                 Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
-    public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
+    @Contract public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
         emit(new BlueprintDeployed(eventIdAllocator.next(),
                                    Instant.now(),
                                    selfNode,
@@ -496,7 +496,7 @@ import java.util.function.Supplier;
                                           event.requestedBy())));
     }
 
-    public void onBlueprintDeleted(OperationalEvent.BlueprintDeleted event) {
+    @Contract public void onBlueprintDeleted(OperationalEvent.BlueprintDeleted event) {
         emit(new BlueprintDeleted(eventIdAllocator.next(),
                                   Instant.now(),
                                   selfNode,
@@ -505,7 +505,7 @@ import java.util.function.Supplier;
                                   Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
     }
 
-    public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
+    @Contract public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
         emit(new GenerationChanged(eventIdAllocator.next(),
                                    Instant.now(),
                                    selfNode,
@@ -519,7 +519,7 @@ import java.util.function.Supplier;
                                           event.reason())));
     }
 
-    public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
+    @Contract public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
         emit(new ConnectionFailed(eventIdAllocator.next(),
                                   Instant.now(),
                                   selfNode,

@@ -1463,12 +1463,11 @@ import static org.pragmatica.lang.Option.none;
         }
 
         public Option<StreamAddress> addressFor(String alias) {
-            return bindings.stream()
-                           .filter(b -> b.alias().equals(alias))
-                           .findFirst()
-                           .map(NamedAddress::address)
-                           .map(Option::some)
-                           .orElse(Option.none());
+            return Option.option(bindings.stream()
+                                         .filter(b -> b.alias().equals(alias))
+                                         .findFirst()
+                                         .orElse(null))
+                         .map(NamedAddress::address);
         }
 
         public record NamedAddress(String alias, StreamAddress address) {
