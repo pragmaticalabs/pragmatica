@@ -2188,19 +2188,19 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                               msg -> httpRouteRegistry.evictNode(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, eventAggregator::onNodeAdded));
-        // NODE_LEFT / NODE_FAILED ring-buffer entries come from THREE redundant paths:
-        //   1. Local SWIM observation (eventAggregator::onSwimObservation) — every node
-        //      records what it witnessed locally; no leader bottleneck.
-        //   2. Leader-broadcast TopologyChangeNotification.NodeRemoved / NodeDown — the
-        //      same signal CTM uses to provision replacements; reliable on cloud since
-        //      CTM observably picks it up within the auto-heal window.
-        //   3. KV-replicated NodeLifecycleKey transitions (eventAggregator::onNodeLifecyclePut) —
-        //      DRAINING / DECOMMISSIONED edges captured on every follower.
-        // Whichever fires first surfaces the event in /api/events.
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              eventAggregator::onNodeRemoved));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                              eventAggregator::onNodeDown));
+        // NODE_FAILED / NODE_LEFT events emit from two paths:
+        //   1. Local SWIM observation (eventAggregator::onSwimObservation, wired alongside
+        //      healthReconciler in this same builder) — fires on every surviving node when
+        //      its local SWIM crosses the FAULTY/DEPARTED edge for a peer. Canonical signal
+        //      for abrupt failure.
+        //   2. KV-replicated NodeLifecycleKey transitions (eventAggregator::onNodeLifecyclePut) —
+        //      fires on every node when the leader writes DRAINING / DECOMMISSIONED.
+        //      Required for graceful-drain semantics (DRAINING → DECOMMISSIONED → NODE_LEFT).
+        // The previous leader-broadcast `TopologyChangeNotification.NodeRemoved/NodeDown`
+        // path was redundant with #1 (same NODE_FAILED/NODE_LEFT semantics, same triggering
+        // event, same broadcast latency on cloud per diagnostic at 2026-05-06). Removed
+        // to avoid duplicate buffer entries — see commit ddf90d221's diagnostic which
+        // confirmed swim-observation fires immediately on every node.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));

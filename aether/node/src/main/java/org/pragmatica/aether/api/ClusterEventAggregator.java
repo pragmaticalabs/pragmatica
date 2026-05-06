@@ -106,22 +106,6 @@ import java.util.function.IntSupplier;
         }
     }
 
-    /// Belt-and-suspenders for the SWIM-observation path: when the leader broadcasts
-    /// `TopologyChangeNotification.NodeRemoved`/`NodeDown` (the same signal CTM
-    /// uses to provision a replacement), every node records `NODE_LEFT`/`NODE_FAILED`.
-    /// `onSwimObservation` (above) is the local-witness path; this is the
-    /// leader-broadcast path. Either firing is sufficient to surface the event in
-    /// `/api/events`. Each emission tags itself with a `source` in the event details,
-    /// so operators can grep `/api/events` to see which path actually fired in any
-    /// given run — invaluable for diagnosing cloud-specific gaps.
-    @Contract public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
-        bufferNodeLeftEvent(event.nodeId().id(), event.topology().size(), "topology-broadcast");
-    }
-
-    @Contract public void onNodeDown(TopologyChangeNotification.NodeDown event) {
-        bufferNodeFailedEvent(event.nodeId().id(), clusterSizeSupplier.getAsInt(), "topology-broadcast");
-    }
-
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
         var nodeId = put.cause().key()
                               .nodeId();
