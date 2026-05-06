@@ -24,6 +24,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -224,6 +225,35 @@ class ClusterEventAggregatorTest {
 
         assertThat(backing).isEmpty();
         assertThat(readEvents(aggregator)).isEmpty();
+    }
+
+    /// Reviewer test gap #18 — deferred-binding lifecycle.
+    ///
+    /// During AetherNode bootstrap the aggregator is constructed before the local stream stack
+    /// exists, so its publisher/consumer suppliers can return `null` for an arbitrary window. Once
+    /// the stack binds, subsequent reads must see events that were published after the binding.
+    /// This test pins that lifecycle: while suppliers return `null` the first read is empty, then
+    /// after late-binding the suppliers a follow-up read returns the events published in the
+    /// post-binding window.
+    @Test
+    void events_returnsResults_afterDeferredBindingResolves() {
+        var publisherRef = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>();
+        var consumerRef = new AtomicReference<FrameworkStreamConsumer<ClusterEvent>>();
+        var aggregator = newAggregator(publisherRef::get, consumerRef::get);
+
+        // Pre-binding: emit is dropped, fetch returns empty.
+        aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
+        assertThat(readEvents(aggregator)).isEmpty();
+
+        // Bind both sides — same backing list and offset counter as the stub setUp uses.
+        publisherRef.set(publisher);
+        consumerRef.set(consumer);
+
+        // Post-binding: the new event lands in the stream and the next fetch surfaces it.
+        aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DRAINING));
+        var events = readEvents(aggregator);
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.NodeLifecycleChanged.class);
     }
 
     @Test

@@ -139,12 +139,22 @@ import static org.pragmatica.lang.Result.success;
         if (stream == null || !STREAM_PATTERN.matcher(stream).matches()) {
             return StreamAddressError.General.STREAM_NAME_INVALID.result();
         }
-        if (stream.endsWith("-") || stream.contains("--")) {
+        if (hasInvalidHyphenPlacement(stream)) {
             return StreamAddressError.General.STREAM_NAME_INVALID.result();
         }
         if (RESERVED_STREAM_NAMES.contains(stream)) {
             return StreamAddressError.General.STREAM_NAME_RESERVED.result();
         }
         return success(stream);
+    }
+
+    /// Spec §4.2 stream-name rule: kebab-case must not have a leading or trailing hyphen, and
+    /// must not contain a double hyphen. The `STREAM_PATTERN` regex (`[a-z][a-z0-9-]{0,63}`)
+    /// already forbids a leading hyphen because the first character must be `[a-z]`, but we keep
+    /// the explicit check here for symmetry with the `endsWith("-")` and `contains("--")`
+    /// branches — otherwise a future regex tweak (e.g., dropping the leading-letter constraint to
+    /// allow leading digits) would silently let leading hyphens through.
+    private static boolean hasInvalidHyphenPlacement(String stream) {
+        return stream.startsWith("-") || stream.endsWith("-") || stream.contains("--");
     }
 }

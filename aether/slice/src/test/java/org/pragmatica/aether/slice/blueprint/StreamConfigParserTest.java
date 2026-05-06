@@ -178,6 +178,25 @@ class StreamConfigParserTest {
             result.onFailure(cause -> assertThat(cause.message()).contains("producer")
                                                                     .contains("latest"));
         }
+
+        /// Reviewer test gap #20 — `role = "both"` is treated as producer for the
+        /// producer-rejects-latest rule (spec §11.1.3): a slice that both writes and reads must
+        /// pin the version exactly. Direct unit test on the parser; previously this rule was
+        /// only covered indirectly via the validator-level test.
+        @Test
+        void bothRole_withVersionLatest_isRejected() {
+            var toml = """
+                    [streams.orders]
+                    role = "both"
+                    version = "latest"
+                    """;
+
+            var result = parseResources(toml);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("both")
+                                                                    .contains("latest"));
+        }
     }
 
     @Nested

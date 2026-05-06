@@ -128,6 +128,13 @@ public final class ClusterEventAggregator {
     }
 
     /// Read all events currently buffered in the system stream's local partition.
+    ///
+    /// **Read-cost contract (Wave 6A reviewer note #5):** every invocation re-fetches from offset
+    /// `0` up to `FETCH_BATCH` events. This is intentional for RC1 — the dashboard / events route
+    /// is a low-frequency operator surface, and the partition is bounded by the system stream's
+    /// retention policy. If consumption frequency increases (e.g., a streaming UI subscribes via
+    /// poll), introduce a cached last-fetched-offset and switch to incremental reads — see the
+    /// follow-up tracked in the spec (event-stream-namespaces §13.4).
     public Promise<List<ClusterEvent>> events() {
         return consume(consumer -> consumer.fetch(0L, FETCH_BATCH).map(ClusterEventAggregator::extractPayloads));
     }

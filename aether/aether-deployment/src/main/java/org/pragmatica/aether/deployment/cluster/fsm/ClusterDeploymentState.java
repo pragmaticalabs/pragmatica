@@ -52,7 +52,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.StreamMetadataKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -69,7 +68,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -911,22 +909,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                               .or(true);
         }
 
+        // The collection hook stays in place because the call site at the cluster-deploy entry
+        // expects an empty list semantically (additive composition). The previous
+        // `buildStreamMetadataCommand` helper that emitted a `StreamMetadataKey/Value` pair is
+        // removed (Wave 6A) — namespace-aware refcount accounting now lives in
+        // `KvBackedStreamRegistry` and the `StreamRegistryKey/Value` flow. The
+        // `StreamMetadataKey/Value` types themselves are preserved because `KVStoreSerializer`
+        // wires them into its sealed-switch — removing them is a wider refactor (out of Wave 6A
+        // scope, tracked separately).
         @Contract private void collectStreamMetadataCommands(BlueprintId blueprintId,
                                                              List<KVCommand<AetherKey>> commands) {
             log.trace("Stream metadata collection hook for blueprint '{}'", blueprintId.asString());
-        }
-
-        @SuppressWarnings("unused") private KVCommand<AetherKey> buildStreamMetadataCommand(String streamName,
-                                                                                            BlueprintId blueprintId) {
-            var key = StreamMetadataKey.streamMetadataKey(streamName);
-            var value = StreamMetadataValue.streamMetadataValue(streamName,
-                                                                4,
-                                                                "count",
-                                                                "100000",
-                                                                "65536",
-                                                                "block",
-                                                                blueprintId.asString());
-            return new KVCommand.Put<>(key, value);
         }
 
         private Option<ExpandedBlueprint> capturePreviousBlueprint(ExpandedBlueprint expanded) {
