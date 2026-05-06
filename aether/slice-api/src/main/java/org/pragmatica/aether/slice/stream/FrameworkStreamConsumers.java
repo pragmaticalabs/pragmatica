@@ -5,8 +5,12 @@
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.StreamAccess;
+import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+
+import java.util.List;
+import java.util.function.Supplier;
 
 
 /// Sealed factory for {@link FrameworkStreamConsumer} instances (spec §6.1).
@@ -32,6 +36,20 @@ public sealed interface FrameworkStreamConsumers {
             return FrameworkStreamConsumerError.General.NOT_SYSTEM_NAMESPACE.result();
         }
         return Result.success(new SystemStreamConsumer<>(address, transport));
+    }
+
+    /// Test-only factory: construct a {@link FrameworkStreamConsumer} that returns the supplied
+    /// list of events on every `fetch(...)` call.
+    ///
+    /// Validates `address` is a system address — same invariant as the production factory. Use in
+    /// downstream tests that need to verify framework components consume from a system stream
+    /// without spinning up the full transport stack.
+    static <T> Result<FrameworkStreamConsumer<T>> testConsumer(StreamAddress address,
+                                                               Supplier<List<StreamEvent<T>>> fetchSupplier) {
+        if (!address.isSystem()) {
+            return FrameworkStreamConsumerError.General.NOT_SYSTEM_NAMESPACE.result();
+        }
+        return Result.success(new TestSystemStreamConsumer<>(address, fetchSupplier));
     }
 
     /// Failure cases for framework consumer construction.

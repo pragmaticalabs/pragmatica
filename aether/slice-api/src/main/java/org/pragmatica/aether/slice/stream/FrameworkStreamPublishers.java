@@ -8,6 +8,8 @@ import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
+import java.util.function.Consumer;
+
 
 /// Sealed factory for {@link FrameworkStreamPublisher} instances (spec §6.1).
 ///
@@ -32,6 +34,19 @@ public sealed interface FrameworkStreamPublishers {
             return FrameworkStreamPublisherError.General.NOT_SYSTEM_NAMESPACE.result();
         }
         return Result.success(new SystemStreamPublisher<>(address, transport));
+    }
+
+    /// Test-only factory: construct a {@link FrameworkStreamPublisher} that delegates every
+    /// `publish(T)` to a capture callback and returns success synchronously.
+    ///
+    /// Validates `address` is a system address — same invariant as the production factory. Use in
+    /// downstream tests that need to verify framework components publish into a system stream
+    /// without spinning up the full transport stack.
+    static <T> Result<FrameworkStreamPublisher<T>> testPublisher(StreamAddress address, Consumer<T> capture) {
+        if (!address.isSystem()) {
+            return FrameworkStreamPublisherError.General.NOT_SYSTEM_NAMESPACE.result();
+        }
+        return Result.success(new TestSystemStreamPublisher<>(address, capture));
     }
 
     /// Failure cases for framework publisher construction.

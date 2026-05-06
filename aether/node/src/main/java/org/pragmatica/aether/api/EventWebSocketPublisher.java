@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
@@ -23,7 +24,7 @@ import org.slf4j.LoggerFactory;
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
 
     private final EventWebSocketHandler handler;
-    private final Function<Instant, List<ClusterEvent>> eventsSinceProvider;
+    private final Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider;
     private final Function<List<ClusterEvent>, String> jsonSerializer;
     private final long intervalMs;
 
@@ -34,7 +35,7 @@ import org.slf4j.LoggerFactory;
     private final AtomicReference<Instant> lastBroadcast = new AtomicReference<>(Instant.EPOCH);
 
     private EventWebSocketPublisher(EventWebSocketHandler handler,
-                                    Function<Instant, List<ClusterEvent>> eventsSinceProvider,
+                                    Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider,
                                     Function<List<ClusterEvent>, String> jsonSerializer,
                                     long intervalMs) {
         this.handler = handler;
@@ -44,14 +45,14 @@ import org.slf4j.LoggerFactory;
     }
 
     public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                  Function<Instant, List<ClusterEvent>> eventsSinceProvider,
+                                                                  Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider,
                                                                   Function<List<ClusterEvent>, String> jsonSerializer,
                                                                   long intervalMs) {
         return new EventWebSocketPublisher(handler, eventsSinceProvider, jsonSerializer, intervalMs);
     }
 
     public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                  Function<Instant, List<ClusterEvent>> eventsSinceProvider,
+                                                                  Function<Instant, Promise<List<ClusterEvent>>> eventsSinceProvider,
                                                                   Function<List<ClusterEvent>, String> jsonSerializer) {
         return new EventWebSocketPublisher(handler, eventsSinceProvider, jsonSerializer, 1000);
     }
@@ -71,17 +72,18 @@ import org.slf4j.LoggerFactory;
 
     private void publish() {
         if (handler.connectedClients() == 0) {return;}
-        try {
-            var since = lastBroadcast.get();
-            var now = Instant.now();
-            var newEvents = eventsSinceProvider.apply(since);
-            if (!newEvents.isEmpty()) {
-                var json = jsonSerializer.apply(newEvents);
-                handler.broadcast(json);
-            }
-            lastBroadcast.set(now);
-        } catch (Exception e) {
-            log.error("Error publishing events via WebSocket", e);
+        var since = lastBroadcast.get();
+        var now = Instant.now();
+        Promise<?> ignored = eventsSinceProvider.apply(since)
+                                                .onSuccess(events -> broadcastIfPresent(events, now))
+                                                .onFailure(cause -> log.error("Error publishing events via WebSocket: {}", cause.message()));
+    }
+
+    private void broadcastIfPresent(List<ClusterEvent> newEvents, Instant now) {
+        if (!newEvents.isEmpty()) {
+            var json = jsonSerializer.apply(newEvents);
+            handler.broadcast(json);
         }
+        lastBroadcast.set(now);
     }
 }

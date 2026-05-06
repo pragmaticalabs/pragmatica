@@ -30,7 +30,12 @@ import java.util.List;
 ///
 /// Method shape mirrors {@link StreamPublisher}: a single `publish(T event)` returning
 /// `Promise<Unit>`, with a default `publishBatch(List<T>)` derived from it.
-public sealed interface FrameworkStreamPublisher<T> permits SystemStreamPublisher {
+///
+/// Permitted impls:
+///   - {@link SystemStreamPublisher} — production: delegates to a transport `StreamPublisher<T>`.
+///   - {@link TestSystemStreamPublisher} — test-only: delegates to a capture callback. Constructed
+///     via {@link FrameworkStreamPublishers#testPublisher(StreamAddress, java.util.function.Consumer)}.
+public sealed interface FrameworkStreamPublisher<T> permits SystemStreamPublisher, TestSystemStreamPublisher {
     Promise<Unit> publish(T event);
 
     default Promise<Unit> publishBatch(List<T> events) {

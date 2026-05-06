@@ -6,7 +6,6 @@ package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ClusterEventAggregator;
-import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
@@ -960,7 +959,17 @@ public interface AetherNode extends ManageableNode {
                                                                                               minuteAggregator);
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
         var eventIdAllocator = org.pragmatica.aether.api.EventIdAllocator.eventIdAllocator(config.self());
-        var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
+        // Spec §6.2 / Wave 5B-ii: aggregator publishes into system:cluster-events:1.0.0. Publisher
+        // and consumer are bound deferred (after streamPartitionManager is constructed below) via
+        // these AtomicReferences. During the bootstrap window the aggregator falls back to log-only
+        // emission. The self-referential STREAM_REGISTERED loop for `system:cluster-events` itself
+        // is prevented by StreamLifecycleEventPolicy.shouldEmit (Wave 3) — no ordering guard here.
+        var clusterEventsPublisherRef =
+                new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamPublisher<org.pragmatica.aether.api.ClusterEvent>>();
+        var clusterEventsConsumerRef =
+                new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamConsumer<org.pragmatica.aether.api.ClusterEvent>>();
+        var eventAggregator = ClusterEventAggregator.clusterEventAggregator(clusterEventsPublisherRef::get,
+                                                                            clusterEventsConsumerRef::get,
                                                                             config.self(),
                                                                             eventIdAllocator,
                                                                             clusterTopologyManager.observer()::clusterSize);
@@ -1391,6 +1400,13 @@ public interface AetherNode extends ManageableNode {
                                                                  streamPartitionManager::onStreamConfigRemove)
                                                        .build();
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
+        // Wave 5B-ii: bind the deferred FrameworkStreamPublisher/Consumer for cluster-events into
+        // the aggregator's suppliers (declared above, before streamPartitionManager existed).
+        bindClusterEventsTransport(streamPartitionManager,
+                                   serializer,
+                                   deserializer,
+                                   clusterEventsPublisherRef,
+                                   clusterEventsConsumerRef);
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
         var streamStorage = createStreamStorage(dhtClientOption);
@@ -2410,6 +2426,37 @@ public interface AetherNode extends ManageableNode {
             var value = (LeaderValue) notification.cause().value();
             leaderManager.onLeaderCommitted(value.leader());
         }
+    }
+
+    /// Wave 5B-ii: install the local typed transport for `system:cluster-events:1.0.0` into the
+    /// supplier-backed slots used by [ClusterEventAggregator]. Single-partition, default retention
+    /// (governed by `RetentionPolicy.retentionPolicy()`). Construction failures are logged at WARN
+    /// and leave the slots null — aggregator falls back to log-only emission rather than crashing
+    /// node startup over an observability path. Registry registration of the address itself is
+    /// handled separately by [org.pragmatica.aether.slice.stream.SystemStreamBootstrap].
+    private static void bindClusterEventsTransport(StreamPartitionManager partitionManager,
+                                                   org.pragmatica.serialization.Serializer serializer,
+                                                   org.pragmatica.serialization.Deserializer deserializer,
+                                                   java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamPublisher<org.pragmatica.aether.api.ClusterEvent>> publisherRef,
+                                                   java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamConsumer<org.pragmatica.aether.api.ClusterEvent>> consumerRef) {
+        var address = org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS;
+        var retention = org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy();
+        var log = LoggerFactory.getLogger(AetherNode.class);
+        org.pragmatica.aether.stream.SystemStreamFactories.<org.pragmatica.aether.api.ClusterEvent>systemStreamPublisher(address,
+                                                                                                                         partitionManager,
+                                                                                                                         serializer,
+                                                                                                                         1,
+                                                                                                                         retention)
+                .onSuccess(publisherRef::set)
+                .onFailure(cause -> log.warn("Failed to bind cluster-events publisher: {}", cause.message()));
+        org.pragmatica.aether.stream.SystemStreamFactories.<org.pragmatica.aether.api.ClusterEvent>systemStreamConsumer(address,
+                                                                                                                        partitionManager,
+                                                                                                                        serializer,
+                                                                                                                        deserializer,
+                                                                                                                        1,
+                                                                                                                        retention)
+                .onSuccess(consumerRef::set)
+                .onFailure(cause -> log.warn("Failed to bind cluster-events consumer: {}", cause.message()));
     }
 
     private static ObservabilityInterceptor createObservabilityInterceptor(AetherNodeConfig config,

@@ -214,27 +214,30 @@ class FrameworkStreamConsumerTest {
         }
 
         @Test
-        void frameworkStreamConsumer_permitsOnlyFrameworkRecord() {
+        void frameworkStreamConsumer_permitsOnlyFrameworkRecords() {
             var permitted = FrameworkStreamConsumer.class.getPermittedSubclasses();
 
-            assertThat(permitted).hasSize(1);
-            assertThat(permitted[0].getSimpleName()).isEqualTo("SystemStreamConsumer");
-            assertThat(permitted[0].getPackageName()).isEqualTo("org.pragmatica.aether.slice.stream");
+            assertThat(permitted).hasSize(2);
+            assertThat(permitted).extracting(Class::getSimpleName)
+                                 .containsExactlyInAnyOrder("SystemStreamConsumer", "TestSystemStreamConsumer");
+            assertThat(permitted).allSatisfy(c -> assertThat(c.getPackageName()).isEqualTo("org.pragmatica.aether.slice.stream"));
         }
 
         @Test
-        void permittedImplementation_isPackagePrivate() {
-            var permitted = FrameworkStreamConsumer.class.getPermittedSubclasses()[0];
-            var modifiers = permitted.getModifiers();
+        void permittedImplementations_arePackagePrivate() {
+            var permitted = FrameworkStreamConsumer.class.getPermittedSubclasses();
 
-            assertThat(java.lang.reflect.Modifier.isPublic(modifiers))
-                    .as("permitted impl must not be public — apps must not be able to reference it")
-                    .isFalse();
+            assertThat(permitted).allSatisfy(c -> assertThat(java.lang.reflect.Modifier.isPublic(c.getModifiers()))
+                    .as("permitted impl %s must not be public — apps must not be able to reference it", c.getSimpleName())
+                    .isFalse());
         }
 
         @Test
-        void cannotInstantiatePermittedImplementationViaReflection_withoutAccess() {
-            var permitted = FrameworkStreamConsumer.class.getPermittedSubclasses()[0];
+        void cannotInstantiateProductionPermittedImplementationViaReflection_withoutAccess() {
+            var permitted = java.util.Arrays.stream(FrameworkStreamConsumer.class.getPermittedSubclasses())
+                                            .filter(c -> c.getSimpleName().equals("SystemStreamConsumer"))
+                                            .findFirst()
+                                            .orElseThrow();
             var ctor = permitted.getDeclaredConstructors()[0];
 
             // setAccessible(false) is the default; without a setAccessible(true) bypass an external

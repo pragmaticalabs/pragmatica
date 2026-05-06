@@ -31,11 +31,14 @@ import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
+import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
@@ -45,21 +48,45 @@ import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.swim.SwimObservation;
-import org.pragmatica.utility.RingBuffer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 
 
+/// Aggregates cluster lifecycle events and publishes them into the
+/// `system:cluster-events:1.0.0` system stream (spec §6.2, Wave 5B-ii).
+///
+/// Replaces the prior in-memory `RingBuffer<ClusterEvent>` storage. Reads (`events()`,
+/// `eventsSince(Instant)`) go through a {@link FrameworkStreamConsumer} backed by the same stream.
+/// Retention is governed by the stream's retention policy, not by an aggregator-local capacity.
+///
+/// Publisher/consumer are provided as suppliers because in the AetherNode bootstrap the aggregator
+/// is constructed before the local stream stack exists. During the construction window (before the
+/// suppliers' targets are bound) any event handler that fires falls back to a framework-level
+/// log line — same philosophy as spec §13.3 (best-effort during bootstrap). The self-referential
+/// `STREAM_REGISTERED` loop for `system:cluster-events` itself is prevented by
+/// {@link org.pragmatica.aether.slice.stream.StreamLifecycleEventPolicy#shouldEmit} — no ordering
+/// logic needed here.
 @SuppressWarnings("JBCT-RET-01") public final class ClusterEventAggregator {
-    private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> - 1;
+    private static final Logger LOG = LoggerFactory.getLogger(ClusterEventAggregator.class);
 
-    private final RingBuffer<ClusterEvent> buffer;
+    private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> -1;
+
+    private static final int FETCH_BATCH = 1024;
+
+    private final Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier;
+    private final Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier;
     private final EventIdAllocator eventIdAllocator;
     private final NodeId selfNode;
 
@@ -73,35 +100,72 @@ import java.util.function.IntSupplier;
 
     private final IntSupplier clusterSizeSupplier;
 
-    private ClusterEventAggregator(ClusterEventAggregatorConfig config,
+    private ClusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
+                                   Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                    NodeId selfNode,
                                    EventIdAllocator eventIdAllocator,
                                    IntSupplier clusterSizeSupplier) {
-        this.buffer = RingBuffer.ringBuffer(config.maxEvents());
+        this.publisherSupplier = publisherSupplier;
+        this.consumerSupplier = consumerSupplier;
         this.selfNode = selfNode;
         this.eventIdAllocator = eventIdAllocator;
         this.clusterSizeSupplier = clusterSizeSupplier;
     }
 
-    public static ClusterEventAggregator clusterEventAggregator(ClusterEventAggregatorConfig config,
+    public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
+                                                                Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 NodeId selfNode,
                                                                 EventIdAllocator eventIdAllocator) {
-        return new ClusterEventAggregator(config, selfNode, eventIdAllocator, UNKNOWN_CLUSTER_SIZE);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, selfNode, eventIdAllocator, UNKNOWN_CLUSTER_SIZE);
     }
 
-    public static ClusterEventAggregator clusterEventAggregator(ClusterEventAggregatorConfig config,
+    public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
+                                                                Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 NodeId selfNode,
                                                                 EventIdAllocator eventIdAllocator,
                                                                 IntSupplier clusterSizeSupplier) {
-        return new ClusterEventAggregator(config, selfNode, eventIdAllocator, clusterSizeSupplier);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, selfNode, eventIdAllocator, clusterSizeSupplier);
     }
 
-    public List<ClusterEvent> events() {
-        return buffer.toList();
+    /// Read all events currently buffered in the system stream's local partition.
+    public Promise<List<ClusterEvent>> events() {
+        return consume(consumer -> consumer.fetch(0L, FETCH_BATCH).map(ClusterEventAggregator::extractPayloads));
     }
 
-    public List<ClusterEvent> eventsSince(Instant since) {
-        return buffer.filter(e -> e.timestamp().isAfter(since));
+    /// Read events whose timestamp is strictly after `since`.
+    public Promise<List<ClusterEvent>> eventsSince(Instant since) {
+        return events().map(events -> filterSince(events, since));
+    }
+
+    private static List<ClusterEvent> filterSince(List<ClusterEvent> events, Instant since) {
+        return events.stream().filter(e -> e.timestamp().isAfter(since)).toList();
+    }
+
+    private static List<ClusterEvent> extractPayloads(List<StreamEvent<ClusterEvent>> raw) {
+        return raw.stream().map(StreamEvent::payload).toList();
+    }
+
+    private Promise<List<ClusterEvent>> consume(Function<FrameworkStreamConsumer<ClusterEvent>, Promise<List<ClusterEvent>>> fn) {
+        var consumer = consumerSupplier.get();
+        if (consumer == null) {
+            LOG.debug("ClusterEventAggregator consumer not yet bound — returning empty");
+            return Promise.success(List.of());
+        }
+        return fn.apply(consumer);
+    }
+
+    /// Fire-and-forget publish into the system stream. If the publisher is not yet bound (bootstrap
+    /// window), the event is logged at framework log level rather than dropped silently — same
+    /// philosophy as spec §13.3. The class-level `JBCT-RET-01` suppression covers the unobserved
+    /// `Promise<Unit>` here: aggregator is a sink with no upstream caller; the `on*` handlers are
+    /// MessageRouter callbacks whose contract is `void`.
+    private void emit(ClusterEvent event) {
+        var publisher = publisherSupplier.get();
+        if (publisher == null) {
+            LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event);
+            return;
+        }
+        Promise<?> ignored = publisher.publish(event);
     }
 
     /// NODE_JOINED in the user-facing event stream represents transport-level visibility
@@ -117,15 +181,15 @@ import java.util.function.IntSupplier;
     public void onPeerJoined(TransportObservation.PeerJoined event) {
         nodeJoinTimes.put(event.nodeId().id(),
                           System.currentTimeMillis());
-        buffer.add(new NodeJoined(eventIdAllocator.next(),
-                                  Instant.now(),
-                                  selfNode,
-                                  Severity.INFO,
-                                  "Node " + event.nodeId().id() + " joined cluster (now " + event.topology().size() + " nodes)",
-                                  Map.of("nodeId",
-                                         event.nodeId().id(),
-                                         "clusterSize",
-                                         String.valueOf(event.topology().size()))));
+        emit(new NodeJoined(eventIdAllocator.next(),
+                            Instant.now(),
+                            selfNode,
+                            Severity.INFO,
+                            "Node " + event.nodeId().id() + " joined cluster (now " + event.topology().size() + " nodes)",
+                            Map.of("nodeId",
+                                   event.nodeId().id(),
+                                   "clusterSize",
+                                   String.valueOf(event.topology().size()))));
     }
 
     @Contract public void onSwimObservation(SwimObservation observation) {
@@ -161,25 +225,25 @@ import java.util.function.IntSupplier;
     }
 
     @Contract private void bufferNodeLeftEvent(String nodeId, int clusterSize, String source) {
-        buffer.add(new NodeLeft(eventIdAllocator.next(),
-                                Instant.now(),
-                                selfNode,
-                                Severity.INFO,
-                                "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
-                                Map.of("nodeId", nodeId,
-                                       "clusterSize", String.valueOf(clusterSize),
-                                       "source", source)));
+        emit(new NodeLeft(eventIdAllocator.next(),
+                          Instant.now(),
+                          selfNode,
+                          Severity.INFO,
+                          "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
+                          Map.of("nodeId", nodeId,
+                                 "clusterSize", String.valueOf(clusterSize),
+                                 "source", source)));
     }
 
     @Contract private void bufferNodeFailedEvent(String nodeId, int clusterSize, String source) {
-        buffer.add(new NodeFailed(eventIdAllocator.next(),
-                                  Instant.now(),
-                                  selfNode,
-                                  Severity.CRITICAL,
-                                  "Node " + nodeId + " failed (cluster size " + clusterSize + ")",
-                                  Map.of("nodeId", nodeId,
-                                         "clusterSize", String.valueOf(clusterSize),
-                                         "source", source)));
+        emit(new NodeFailed(eventIdAllocator.next(),
+                            Instant.now(),
+                            selfNode,
+                            Severity.CRITICAL,
+                            "Node " + nodeId + " failed (cluster size " + clusterSize + ")",
+                            Map.of("nodeId", nodeId,
+                                   "clusterSize", String.valueOf(clusterSize),
+                                   "source", source)));
     }
 
     @Contract private void bufferNodeLifecycleChangedEvent(String nodeId,
@@ -188,49 +252,49 @@ import java.util.function.IntSupplier;
         var transition = (prior == null
                           ? "NONE"
                           : prior.name()) + "->" + next.name();
-        buffer.add(new NodeLifecycleChanged(eventIdAllocator.next(),
-                                            Instant.now(),
-                                            selfNode,
-                                            Severity.INFO,
-                                            "Node " + nodeId + " lifecycle: " + transition,
-                                            Map.of("nodeId",
-                                                   nodeId,
-                                                   "transition",
-                                                   transition,
-                                                   "requestedBy",
-                                                   "MembershipFsm")));
+        emit(new NodeLifecycleChanged(eventIdAllocator.next(),
+                                      Instant.now(),
+                                      selfNode,
+                                      Severity.INFO,
+                                      "Node " + nodeId + " lifecycle: " + transition,
+                                      Map.of("nodeId",
+                                             nodeId,
+                                             "transition",
+                                             transition,
+                                             "requestedBy",
+                                             "MembershipFsm")));
     }
 
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
-        event.leaderId().onPresent(leaderId -> buffer.add(new LeaderElected(eventIdAllocator.next(),
-                                                                            Instant.now(),
-                                                                            selfNode,
-                                                                            Severity.INFO,
-                                                                            "Node " + leaderId.id() + " elected as leader",
-                                                                            Map.of("leaderId", leaderId.id()))))
-                      .onEmpty(() -> buffer.add(new LeaderLost(eventIdAllocator.next(),
-                                                               Instant.now(),
-                                                               selfNode,
-                                                               Severity.WARNING,
-                                                               "Leadership lost, election in progress",
-                                                               Map.of())));
+        event.leaderId().onPresent(leaderId -> emit(new LeaderElected(eventIdAllocator.next(),
+                                                                      Instant.now(),
+                                                                      selfNode,
+                                                                      Severity.INFO,
+                                                                      "Node " + leaderId.id() + " elected as leader",
+                                                                      Map.of("leaderId", leaderId.id()))))
+                      .onEmpty(() -> emit(new LeaderLost(eventIdAllocator.next(),
+                                                         Instant.now(),
+                                                         selfNode,
+                                                         Severity.WARNING,
+                                                         "Leadership lost, election in progress",
+                                                         Map.of())));
     }
 
     public void onQuorumStateChange(QuorumStateNotification event) {
         if (!event.advanceSequence(quorumSequence)) {return;}
         switch (event.state()){
-            case ESTABLISHED -> buffer.add(new QuorumEstablished(eventIdAllocator.next(),
-                                                                 Instant.now(),
-                                                                 selfNode,
-                                                                 Severity.INFO,
-                                                                 "Quorum established",
-                                                                 Map.of()));
-            case DISAPPEARED -> buffer.add(new QuorumLost(eventIdAllocator.next(),
-                                                          Instant.now(),
-                                                          selfNode,
-                                                          Severity.CRITICAL,
-                                                          "Quorum lost",
-                                                          Map.of()));
+            case ESTABLISHED -> emit(new QuorumEstablished(eventIdAllocator.next(),
+                                                           Instant.now(),
+                                                           selfNode,
+                                                           Severity.INFO,
+                                                           "Quorum established",
+                                                           Map.of()));
+            case DISAPPEARED -> emit(new QuorumLost(eventIdAllocator.next(),
+                                                    Instant.now(),
+                                                    selfNode,
+                                                    Severity.CRITICAL,
+                                                    "Quorum lost",
+                                                    Map.of()));
         }
     }
 
@@ -251,78 +315,78 @@ import java.util.function.IntSupplier;
 
     private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
         deploymentStartTimes.put(trackingKey, System.currentTimeMillis());
-        buffer.add(new DeploymentStarted(eventIdAllocator.next(),
-                                         Instant.now(),
-                                         selfNode,
-                                         Severity.INFO,
-                                         "Deploying " + artifact + " to " + nodeId,
-                                         Map.of("artifact", artifact, "nodeId", nodeId)));
+        emit(new DeploymentStarted(eventIdAllocator.next(),
+                                   Instant.now(),
+                                   selfNode,
+                                   Severity.INFO,
+                                   "Deploying " + artifact + " to " + nodeId,
+                                   Map.of("artifact", artifact, "nodeId", nodeId)));
     }
 
     private void handleDeploymentCompleted(String trackingKey, String artifact, String nodeId) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms)).or("");
         var nodeReadySuffix = buildNodeReadySuffix(nodeId);
-        buffer.add(new DeploymentCompleted(eventIdAllocator.next(),
-                                           Instant.now(),
-                                           selfNode,
-                                           Severity.INFO,
-                                           "Deployed " + artifact + " on " + nodeId + durationSuffix + nodeReadySuffix,
-                                           buildCompletedMetadata(artifact, nodeId, durationMs)));
+        emit(new DeploymentCompleted(eventIdAllocator.next(),
+                                     Instant.now(),
+                                     selfNode,
+                                     Severity.INFO,
+                                     "Deployed " + artifact + " on " + nodeId + durationSuffix + nodeReadySuffix,
+                                     buildCompletedMetadata(artifact, nodeId, durationMs)));
     }
 
     private void handleDeploymentFailed(String trackingKey, String artifact, String nodeId, NodeArtifactValue value) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
         var reason = value.failureReason().or("unknown");
-        buffer.add(new DeploymentFailed(eventIdAllocator.next(),
-                                        Instant.now(),
-                                        selfNode,
-                                        Severity.WARNING,
-                                        "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
-                                        buildFailedMetadata(artifact, nodeId, reason, durationMs)));
+        emit(new DeploymentFailed(eventIdAllocator.next(),
+                                  Instant.now(),
+                                  selfNode,
+                                  Severity.WARNING,
+                                  "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
+                                  buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
     public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
-        buffer.add(new SliceFailure(eventIdAllocator.next(),
-                                    Instant.now(),
-                                    selfNode,
-                                    Severity.CRITICAL,
-                                    "All instances of " + event.artifact().asString() + ":" + event.method().name() + " failed",
-                                    Map.of("artifact",
-                                           event.artifact().asString(),
-                                           "method",
-                                           event.method().name(),
-                                           "attemptedNodes",
-                                           String.valueOf(event.attemptedNodes().size()))));
+        emit(new SliceFailure(eventIdAllocator.next(),
+                              Instant.now(),
+                              selfNode,
+                              Severity.CRITICAL,
+                              "All instances of " + event.artifact().asString() + ":" + event.method().name() + " failed",
+                              Map.of("artifact",
+                                     event.artifact().asString(),
+                                     "method",
+                                     event.method().name(),
+                                     "attemptedNodes",
+                                     String.valueOf(event.attemptedNodes().size()))));
     }
 
     public void onScaledUp(ScalingEvent.ScaledUp event) {
-        buffer.add(new ScaleUp(eventIdAllocator.next(),
-                               Instant.now(),
-                               selfNode,
-                               Severity.INFO,
-                               event.artifact().asString() + " scaled up from " + event.previousInstances() + " to " + event.newInstances() + " instances",
-                               Map.of("artifact",
-                                      event.artifact().asString(),
-                                      "previousInstances",
-                                      String.valueOf(event.previousInstances()),
-                                      "newInstances",
-                                      String.valueOf(event.newInstances()))));
+        emit(new ScaleUp(eventIdAllocator.next(),
+                         Instant.now(),
+                         selfNode,
+                         Severity.INFO,
+                         event.artifact().asString() + " scaled up from " + event.previousInstances() + " to " + event.newInstances() + " instances",
+                         Map.of("artifact",
+                                event.artifact().asString(),
+                                "previousInstances",
+                                String.valueOf(event.previousInstances()),
+                                "newInstances",
+                                String.valueOf(event.newInstances()))));
     }
 
     public void onScaledDown(ScalingEvent.ScaledDown event) {
-        buffer.add(new ScaleDown(eventIdAllocator.next(),
-                                 Instant.now(),
-                                 selfNode,
-                                 Severity.INFO,
-                                 event.artifact().asString() + " scaled down from " + event.previousInstances() + " to " + event.newInstances() + " instances",
-                                 Map.of("artifact",
-                                        event.artifact().asString(),
-                                        "previousInstances",
-                                        String.valueOf(event.previousInstances()),
-                                        "newInstances",
-                                        String.valueOf(event.newInstances()))));
+        emit(new ScaleDown(eventIdAllocator.next(),
+                           Instant.now(),
+                           selfNode,
+                           Severity.INFO,
+                           event.artifact().asString() + " scaled down from " + event.previousInstances() + " to " + event.newInstances() + " instances",
+                           Map.of("artifact",
+                                  event.artifact().asString(),
+                                  "previousInstances",
+                                  String.valueOf(event.previousInstances()),
+                                  "newInstances",
+                                  String.valueOf(event.newInstances()))));
     }
 
     public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
@@ -342,129 +406,129 @@ import java.util.function.IntSupplier;
         var event2 = event.currentInstances() < event.desiredInstances()
                      ? new ScaleUp(eventIdAllocator.next(), Instant.now(), selfNode, Severity.INFO, summary, details)
                      : (ClusterEvent) new ScaleDown(eventIdAllocator.next(), Instant.now(), selfNode, Severity.INFO, summary, details);
-        buffer.add(event2);
+        emit(event2);
     }
 
     public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
-        buffer.add(new ConnectionEstablished(eventIdAllocator.next(),
-                                             Instant.now(),
-                                             selfNode,
-                                             Severity.INFO,
-                                             "Connected to node " + event.nodeId().id(),
-                                             Map.of("nodeId", event.nodeId().id())));
+        emit(new ConnectionEstablished(eventIdAllocator.next(),
+                                       Instant.now(),
+                                       selfNode,
+                                       Severity.INFO,
+                                       "Connected to node " + event.nodeId().id(),
+                                       Map.of("nodeId", event.nodeId().id())));
     }
 
     public void onAccessDenied(OperationalEvent.AccessDenied event) {
-        buffer.add(new AccessDenied(eventIdAllocator.next(),
-                                    Instant.now(),
-                                    selfNode,
-                                    Severity.WARNING,
-                                    "Access denied for " + event.principal() + " on " + event.method() + " " + event.path(),
-                                    Map.of("principal",
-                                           event.principal(),
-                                           "method",
-                                           event.method(),
-                                           "path",
-                                           event.path(),
-                                           "actualRole",
-                                           event.actualRole(),
-                                           "requiredRole",
-                                           event.requiredRole())));
+        emit(new AccessDenied(eventIdAllocator.next(),
+                              Instant.now(),
+                              selfNode,
+                              Severity.WARNING,
+                              "Access denied for " + event.principal() + " on " + event.method() + " " + event.path(),
+                              Map.of("principal",
+                                     event.principal(),
+                                     "method",
+                                     event.method(),
+                                     "path",
+                                     event.path(),
+                                     "actualRole",
+                                     event.actualRole(),
+                                     "requiredRole",
+                                     event.requiredRole())));
     }
 
     public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
-        buffer.add(new NodeLifecycleChanged(eventIdAllocator.next(),
-                                            Instant.now(),
-                                            selfNode,
-                                            Severity.INFO,
-                                            "Node " + event.nodeId() + " lifecycle: " + event.transition(),
-                                            Map.of("nodeId",
-                                                   event.nodeId(),
-                                                   "transition",
-                                                   event.transition(),
-                                                   "requestedBy",
-                                                   event.requestedBy())));
+        emit(new NodeLifecycleChanged(eventIdAllocator.next(),
+                                      Instant.now(),
+                                      selfNode,
+                                      Severity.INFO,
+                                      "Node " + event.nodeId() + " lifecycle: " + event.transition(),
+                                      Map.of("nodeId",
+                                             event.nodeId(),
+                                             "transition",
+                                             event.transition(),
+                                             "requestedBy",
+                                             event.requestedBy())));
     }
 
     public void onConfigChanged(OperationalEvent.ConfigChanged event) {
-        buffer.add(new ConfigChanged(eventIdAllocator.next(),
-                                     Instant.now(),
-                                     selfNode,
-                                     Severity.INFO,
-                                     "Config " + event.action() + ": " + event.key() + " (" + event.scope() + ")",
-                                     Map.of("key",
-                                            event.key(),
-                                            "scope",
-                                            event.scope(),
-                                            "action",
-                                            event.action(),
-                                            "requestedBy",
-                                            event.requestedBy())));
+        emit(new ConfigChanged(eventIdAllocator.next(),
+                               Instant.now(),
+                               selfNode,
+                               Severity.INFO,
+                               "Config " + event.action() + ": " + event.key() + " (" + event.scope() + ")",
+                               Map.of("key",
+                                      event.key(),
+                                      "scope",
+                                      event.scope(),
+                                      "action",
+                                      event.action(),
+                                      "requestedBy",
+                                      event.requestedBy())));
     }
 
     public void onBackupCreated(OperationalEvent.BackupCreated event) {
-        buffer.add(new BackupCreated(eventIdAllocator.next(),
-                                     Instant.now(),
-                                     selfNode,
-                                     Severity.INFO,
-                                     "Backup created: " + event.commitId(),
-                                     Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
+        emit(new BackupCreated(eventIdAllocator.next(),
+                               Instant.now(),
+                               selfNode,
+                               Severity.INFO,
+                               "Backup created: " + event.commitId(),
+                               Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
     public void onBackupRestored(OperationalEvent.BackupRestored event) {
-        buffer.add(new BackupRestored(eventIdAllocator.next(),
-                                      Instant.now(),
-                                      selfNode,
-                                      Severity.WARNING,
-                                      "Backup restored: " + event.commitId(),
-                                      Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
+        emit(new BackupRestored(eventIdAllocator.next(),
+                                Instant.now(),
+                                selfNode,
+                                Severity.WARNING,
+                                "Backup restored: " + event.commitId(),
+                                Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
     public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
-        buffer.add(new BlueprintDeployed(eventIdAllocator.next(),
-                                         Instant.now(),
-                                         selfNode,
-                                         Severity.INFO,
-                                         "Blueprint deployed: " + event.artifactCoords(),
-                                         Map.of("artifactCoords",
-                                                event.artifactCoords(),
-                                                "requestedBy",
-                                                event.requestedBy())));
+        emit(new BlueprintDeployed(eventIdAllocator.next(),
+                                   Instant.now(),
+                                   selfNode,
+                                   Severity.INFO,
+                                   "Blueprint deployed: " + event.artifactCoords(),
+                                   Map.of("artifactCoords",
+                                          event.artifactCoords(),
+                                          "requestedBy",
+                                          event.requestedBy())));
     }
 
     public void onBlueprintDeleted(OperationalEvent.BlueprintDeleted event) {
-        buffer.add(new BlueprintDeleted(eventIdAllocator.next(),
-                                        Instant.now(),
-                                        selfNode,
-                                        Severity.INFO,
-                                        "Blueprint deleted: " + event.artifactId(),
-                                        Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
+        emit(new BlueprintDeleted(eventIdAllocator.next(),
+                                  Instant.now(),
+                                  selfNode,
+                                  Severity.INFO,
+                                  "Blueprint deleted: " + event.artifactId(),
+                                  Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
     }
 
     public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
-        buffer.add(new GenerationChanged(eventIdAllocator.next(),
-                                         Instant.now(),
-                                         selfNode,
-                                         Severity.INFO,
-                                         "Generation epoch advanced " + event.oldEpoch() + " -> " + event.newEpoch() + " (" + event.reason() + ")",
-                                         Map.of("oldEpoch",
-                                                event.oldEpoch(),
-                                                "newEpoch",
-                                                event.newEpoch(),
-                                                "reason",
-                                                event.reason())));
+        emit(new GenerationChanged(eventIdAllocator.next(),
+                                   Instant.now(),
+                                   selfNode,
+                                   Severity.INFO,
+                                   "Generation epoch advanced " + event.oldEpoch() + " -> " + event.newEpoch() + " (" + event.reason() + ")",
+                                   Map.of("oldEpoch",
+                                          event.oldEpoch(),
+                                          "newEpoch",
+                                          event.newEpoch(),
+                                          "reason",
+                                          event.reason())));
     }
 
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
-        buffer.add(new ConnectionFailed(eventIdAllocator.next(),
-                                        Instant.now(),
-                                        selfNode,
-                                        Severity.WARNING,
-                                        "Connection to node " + event.nodeId().id() + " failed: " + event.cause().message(),
-                                        Map.of("nodeId",
-                                               event.nodeId().id(),
-                                               "cause",
-                                               event.cause().message())));
+        emit(new ConnectionFailed(eventIdAllocator.next(),
+                                  Instant.now(),
+                                  selfNode,
+                                  Severity.WARNING,
+                                  "Connection to node " + event.nodeId().id() + " failed: " + event.cause().message(),
+                                  Map.of("nodeId",
+                                         event.nodeId().id(),
+                                         "cause",
+                                         event.cause().message())));
     }
 
     private Option<Long> computeAndRemoveDuration(String trackingKey) {

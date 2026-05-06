@@ -32,7 +32,12 @@ import java.util.List;
 /// Method shape mirrors the read surface of {@link StreamAccess}: offset and partition+offset
 /// fetches, consumer-group offset commit/lookup, and metadata. Writes are intentionally absent —
 /// the framework writes via {@link FrameworkStreamPublisher} and reads via this SPI.
-public sealed interface FrameworkStreamConsumer<T> permits SystemStreamConsumer {
+///
+/// Permitted impls:
+///   - {@link SystemStreamConsumer} — production: delegates to a transport `StreamAccess<T>`.
+///   - {@link TestSystemStreamConsumer} — test-only: delegates to fetch/metadata callbacks.
+///     Constructed via {@link FrameworkStreamConsumers#testConsumer}.
+public sealed interface FrameworkStreamConsumer<T> permits SystemStreamConsumer, TestSystemStreamConsumer {
     Promise<List<StreamEvent<T>>> fetch(long fromOffset, int maxEvents);
 
     Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents);

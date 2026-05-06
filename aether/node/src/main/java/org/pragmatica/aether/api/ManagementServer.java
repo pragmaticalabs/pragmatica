@@ -245,6 +245,9 @@ class ManagementServerImpl implements ManagementServer {
                                                                                 since -> nodeSupplier.get().eventAggregator()
                                                                                                          .eventsSince(since),
                                                                                 ManagementServerImpl::buildEventsJson);
+        // eventsSince(since) now returns Promise<List<ClusterEvent>>; the EventWebSocketPublisher
+        // function-type was lifted accordingly in Wave 5B-ii. No method-reference change needed
+        // because lambda inference picks the new return type automatically.
         this.staticFileHandler = StaticFileHandler.staticFileHandler();
         this.observability = ObservabilityRegistry.prometheus();
         this.requestObserver = HttpRequestObserver.httpRequestObserver(observability);

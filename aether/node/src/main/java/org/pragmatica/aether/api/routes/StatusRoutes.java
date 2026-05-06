@@ -33,6 +33,7 @@ import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -71,16 +72,17 @@ public final class StatusRoutes implements RouteSource {
                                          .toJson(this::buildReadinessResponse),
                          ManagementRoutes.<List<ClusterEvent>>route(ManagementRoute.EVENTS)
                                          .<String>withQuery(QueryParameter.aString("since"))
-                                         .toValue(this::buildEventsResponse)
+                                         .to(this::buildEventsResponse)
                                          .asJson(),
                          ManagementRoutes.<CertificateStatusResponse>route(ManagementRoute.CERTIFICATE)
                                          .toJson(this::buildCertificateStatusResponse));
     }
 
-    private List<ClusterEvent> buildEventsResponse(Option<String> sinceParam) {
+    private Promise<List<ClusterEvent>> buildEventsResponse(Option<String> sinceParam) {
         var aggregator = nodeSupplier.get().eventAggregator();
-        return sinceParam.map(StatusRoutes::parseInstant).map(aggregator::eventsSince)
-                             .or(aggregator.events());
+        return sinceParam.map(StatusRoutes::parseInstant)
+                         .map(aggregator::eventsSince)
+                         .or(aggregator::events);
     }
 
     private static Instant parseInstant(String raw) {
