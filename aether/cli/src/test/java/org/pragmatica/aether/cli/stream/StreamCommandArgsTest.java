@@ -67,6 +67,53 @@ class StreamCommandArgsTest {
             var parsed = cmd.parseArgs("tail", "com.example.app:orders:1.0.0");
             assertThat(parsed.subcommand().commandSpec().name()).isEqualTo("tail");
         }
+
+        @Test
+        void tail_withInterval_parsesValue() {
+            var cmd = commandLine();
+            var parsed = cmd.parseArgs("tail", "com.example.app:orders:1.0.0", "--interval", "250");
+            assertThat(parsed.subcommand().commandSpec().name()).isEqualTo("tail");
+        }
+
+        @Test
+        void tail_withFromOffset_parsesValue() {
+            var cmd = commandLine();
+            var parsed = cmd.parseArgs("tail", "com.example.app:orders:1.0.0", "--from-offset", "42");
+            assertThat(parsed.subcommand().commandSpec().name()).isEqualTo("tail");
+        }
+
+        @Test
+        void tail_withMaxEvents_parsesValue() {
+            var cmd = commandLine();
+            var parsed = cmd.parseArgs("tail", "com.example.app:orders:1.0.0", "--max-events", "200");
+            assertThat(parsed.subcommand().commandSpec().name()).isEqualTo("tail");
+        }
+
+        @Test
+        void tail_withFollowDefault_parsesSuccessfully() {
+            var cmd = commandLine();
+            var parsed = cmd.parseArgs("tail", "com.example.app:orders:1.0.0", "--follow");
+            assertThat(parsed.subcommand().commandSpec().name()).isEqualTo("tail");
+        }
+
+        @Test
+        void tail_withNoFollow_parsesSuccessfully() {
+            var cmd = commandLine();
+            var parsed = cmd.parseArgs("tail", "com.example.app:orders:1.0.0", "--no-follow");
+            assertThat(parsed.subcommand().commandSpec().name()).isEqualTo("tail");
+        }
+
+        @Test
+        void tail_withAllFlags_parsesSuccessfully() {
+            var cmd = commandLine();
+            var parsed = cmd.parseArgs("tail",
+                                       "com.example.app:orders:1.0.0",
+                                       "--interval", "100",
+                                       "--from-offset", "10",
+                                       "--max-events", "50",
+                                       "--no-follow");
+            assertThat(parsed.subcommand().commandSpec().name()).isEqualTo("tail");
+        }
     }
 
     @Nested

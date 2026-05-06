@@ -73,15 +73,39 @@ public class StreamCommand implements Runnable {
         }
     }
 
-    @Command(name = "tail", description = "Tail events from a stream version (SSE; press Ctrl-C to stop)")
+    @Command(name = "tail",
+            description = "Tail events from a stream version via polling /events (press Ctrl-C to stop)")
     public static class TailCommand implements Callable<Integer> {
         @CommandLine.ParentCommand private StreamCommand streamParent;
 
         @Parameters(index = "0", description = "Stream address: namespace:stream:version") private String address;
 
+        @CommandLine.Option(names = "--interval",
+                description = "Polling interval in milliseconds (default: 500)",
+                defaultValue = "500") private long intervalMs;
+
+        @CommandLine.Option(names = "--from-offset",
+                description = "Initial offset to read from (default: 0 — start from beginning)",
+                defaultValue = "0") private long fromOffset;
+
+        @CommandLine.Option(names = "--max-events",
+                description = "Maximum events per poll page (default: 100, server-capped at 1000)",
+                defaultValue = "100") private int maxEvents;
+
+        @CommandLine.Option(names = "--follow",
+                description = "Keep polling for new events (default: true). Use --no-follow for one-shot.",
+                negatable = true,
+                defaultValue = "true") private boolean follow;
+
         @Override public Integer call() {
             return StreamAddressArg.parse(address)
-                    .fold(StreamCommand::handleAddressError, addr -> tailStream(addr, streamParent.parent()));
+                    .fold(StreamCommand::handleAddressError,
+                          addr -> tailStream(addr,
+                                             streamParent.parent(),
+                                             new StreamTailPoller.PollerOptions(fromOffset,
+                                                                                maxEvents,
+                                                                                follow,
+                                                                                intervalMs)));
         }
     }
 
@@ -164,19 +188,21 @@ public class StreamCommand implements Runnable {
         return renderQueryOrError(response, cli, "Failed to load stream metadata");
     }
 
-    private static int tailStream(StreamAddress addr, AetherCli cli) {
-        // SSE delegated to AetherCli.fetch — server-side handler is currently a stub (Wave 4A E5,
-        // returns a "not implemented" diagnostic). The CLI surface ships the route shape so the
-        // server can land real SSE without a CLI follow-up.
-        var response = cli.fetch(ManagementRoute.STREAMS_TAIL,
-                                 List.of(addr.namespace(), addr.stream(), addr.version().asString()));
-        var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to tail stream");
-        if (errorCode >= 0) {
-            return mapHttpErrorOrFallback(response, errorCode);
-        }
-        // Stub responds with metadata-shaped JSON; for now print one line and return success.
-        System.out.println(response);
-        return StreamExitCode.SUCCESS;
+    /// Polling-based tail (Wave 6B). SSE/WebSocket on `/tail` is deferred to issue #212; this
+    /// helper drives the polling loop against `/events`, printing each event payload on its own
+    /// stdout line. The HTTP `fetch` callback delegates to [AetherCli#fetch] with the assembled
+    /// route + query string so the wire-level concerns stay inside the existing CLI HTTP layer.
+    private static int tailStream(StreamAddress addr, AetherCli cli, StreamTailPoller.PollerOptions options) {
+        return StreamTailPoller.runTailLoop(addr,
+                                            options,
+                                            (a, query) -> cli.fetch(ManagementRoute.STREAMS_EVENTS,
+                                                                    List.of(a.namespace(),
+                                                                            a.stream(),
+                                                                            a.version().asString()),
+                                                                    query),
+                                            System.out,
+                                            System.err,
+                                            StreamTailPoller.Sleeper.REAL);
     }
 
     private static int deleteStreamWithConfirmation(StreamAddress addr, boolean force, AetherCli cli) {
