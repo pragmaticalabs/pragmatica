@@ -4,7 +4,7 @@
 **Depends on:** `streaming-spec.md`, `in-memory-streams-spec.md`, `rbac-spec.md`
 **Superseded by:** _(none)_
 **Companion to:** GitHub issue #165
-**Forward references:** GitHub issue #205 (fine-grained stream RBAC, deferred to on-demand)
+**Forward references:** GitHub issues #205 (fine-grained stream RBAC, deferred to on-demand), #212 (SSE + WebSocket tail subscription protocols, deferred to RC2)
 
 ---
 
@@ -240,6 +240,12 @@ stream-cursor:{namespace}:{stream}:{version}:{partition}:{consumerGroup}
 ### 7.3. Cursor entry
 
 Cursor keys extend the existing shape from `streaming-spec.md` by inserting the full address ahead of partition and consumer group. Every cursor is scoped to a specific `(namespace, stream, version)` triple — consumer groups are **not** shared across versions.
+
+### 7.4. Implementation note — `stream-meta` and `stream-refs` collapsed (RC1)
+
+The RC1 implementation collapses the conceptually distinct `stream-meta:{addr}` and `stream-refs:{addr}` keys into a single `StreamRegistryKey(StreamAddress)` → `StreamRegistryValue(metadata, refCount)` pair. This reduces refcount mutation cost from two consensus commands to one (acquire/release modify a single value rather than reading metadata and writing the refs entry separately).
+
+The spec text retains the conceptual separation for clarity. Future implementations may split if a use case emerges (e.g., metadata-only reads where the refcount churn would invalidate caches), but the RC1 collapse is the contract on disk.
 
 ## 8. Lifecycle — reference counting
 
@@ -560,13 +566,19 @@ Stream lifecycle events (`STREAM_REGISTERED`, `STREAM_DELETED`) follow strict or
 3. The event is published into its target event stream. The publish succeeds because the stream has not yet been torn down.
 4. The cluster proceeds with cleanup per §8.3: closes runtime resources, deletes data segments, deletes `stream-meta:{addr}`, `stream-refs:{addr}`, and all cursor entries.
 
-### 13.3. Bootstrap edge case
+### 13.3. System-stream lifecycle event filter (RC1)
 
-The very first registration of `system:cluster-events:1.0.0` itself has no pre-existing target event stream. The framework's implementation handles this by **logging the `STREAM_REGISTERED` event for `system:cluster-events:1.0.0` at the framework log level rather than publishing it into a stream**. This is an implementation note, not a spec requirement; subsequent registrations (including any future system event streams) follow the standard §13.1 flow with `system:cluster-events:1.0.0` as the target.
+Lifecycle events whose subject address is in the `system` namespace are **filtered to log-only emission** — they are recorded in the framework log but not published into `system:cluster-events:1.0.0`. This is broader than the strict bootstrap case below requires, but is simpler to reason about: operators inspecting `system:cluster-events:1.0.0` see lifecycle events for **application** streams only; system-stream lifecycle is observable only via framework logs.
+
+The filter is enforced by `StreamLifecycleEventPolicy.shouldEmit(address)`, which returns `false` for any system-namespace address.
+
+#### 13.3.1. Bootstrap necessity
+
+Even without the broader filter above, the very first registration of `system:cluster-events:1.0.0` itself would have no pre-existing target event stream. The bootstrap path therefore requires log-only emission for at least that single case. The RC1 implementation generalizes the rule to all system-stream lifecycle events for simplicity.
 
 ### 13.4. Application-stream lifecycle events
 
-Application-namespace stream lifecycle events follow the same ordering rules and are published normally to `system:cluster-events:1.0.0`. There is no special filter for app-stream events.
+Application-namespace stream lifecycle events follow the standard §13.1/§13.2 ordering rules and are published normally to `system:cluster-events:1.0.0`. The §13.3 filter does not apply to them.
 
 ## 14. Relationship to existing streaming specs
 
@@ -645,7 +657,7 @@ Failures are reported through three channels, all derived from the same composit
 - HTTP routes per §12.1 wired into `ManagementRoute` with role bindings:
   - Reads → `ALL_AUTHENTICATED`, writes → `OPERATOR_AND_ABOVE`, stream-version DELETE → `ADMIN_ONLY` override in `RoutePermissionRegistry`.
   - System-namespace HTTP writes return `405 Method Not Allowed` regardless of role.
-  - SSE + WebSocket tail subscription protocols.
+  - Polling-based tail subscription via paginated reads (the route + CLI work for RC1; SSE/WebSocket streaming protocols are deferred to issue #212).
 - `system:cluster-events:1.0.0` registered at framework bootstrap with the v1.0.0 schema locked per §6.4 (sealed `ClusterEvent` + non-sealed `ExtendedEvent`; 27-variant closed set including `STREAM_REGISTERED`/`STREAM_DELETED`).
 - Per-node `RingBuffer<ClusterEvent>` replaced by subscription to `system:cluster-events:1.0.0`.
 - `aether stream` CLI commands per §8.6: `list`, `show`, `tail`, `delete --force`, `group create`, `group delete --force`.
@@ -666,3 +678,4 @@ Failures are reported through three channels, all derived from the same composit
 |---|---|---|
 | 2026-04-22 | Initial draft | #165 design discussion |
 | 2026-05-04 | RC1 design walkthrough — 16 design items resolved. §3.2 namespace charset, §4.3 system.* prefix reservation + 128-char cap, §6 sealed-SPI write enforcement + open reads, new §6.4 cluster-events envelope schema with sealed `ClusterEvent` + `ExtendedEvent` extension hatch, §8.1 slice-ACTIVE-state refs, §8.5 immediate cleanup, §8.6 full CLI surface, §9.3 frozen-at-connect tails, §10 rewrite (open in RC1, no Principal threading, #205 forward reference), §11 shortcut defaults + role inference, §12 full HTTP route table with role bindings + system-write 405, §13 rewrite as ordering rule (no filter), §15.1 `Result.all(...)` aggregation. Acceptance checklist updated. Open question on cross-namespace RBAC promoted to issue #205 (on-demand). | RC1 design session |
+| 2026-05-07 | Implementation feedback edits: new §7.4 documents `stream-meta`/`stream-refs` collapse to single `StreamRegistryKey` (RC1 perf optimization), §13.3/§13.4 clarify the system-namespace lifecycle event filter is broader than just bootstrap (all system streams log-only), §16 acceptance checklist amended — tail subscription is polling-based for RC1; SSE/WebSocket protocols deferred to issue #212. | PR #187 implementation review |
