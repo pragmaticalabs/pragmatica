@@ -474,6 +474,8 @@ teardown() {
             # bootstrap-state.json existence, idempotent, exits 0 if nothing to destroy.
             [ ${#A_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
             [ ${#B_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_B_NAME" --destroy --force 2>&1 | tail -3 || true)
+            # Re-close PG firewall (5432 → denied) after cluster teardown.
+            "${REPO_ROOT}/../tools/pg-firewall.sh" close 2>&1 | tail -1 || true
             ;;
     esac
 }
@@ -580,6 +582,13 @@ B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
 # unbound variables). Without this, any failure between Step 2 and Step 11 leaks
 # bootstrapped clusters — on cloud, that is real €/hour cost.
 trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT
+
+# Open the Hetzner firewall guarding the PG VM for the duration of the cloud test
+# window. Closed again by teardown(). Skipped on docker/remote (those use the
+# in-cluster forge-postgres container, not the shared Hetzner PG VM).
+if [ "$ENV_TYPE" = "cloud" ]; then
+    "${REPO_ROOT}/../tools/pg-firewall.sh" open 2>&1 | tail -1
+fi
 
 # --- Step 2: Deploy clusters ---
 PROVISION_START=$(date +%s)
