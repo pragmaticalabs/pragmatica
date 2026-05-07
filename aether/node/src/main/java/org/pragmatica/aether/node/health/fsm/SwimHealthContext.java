@@ -174,14 +174,13 @@ public final class SwimHealthContext {
         };
     }
 
+    /// RC1-9 audit Step 3: the leader-only `routeDisconnect(peer)` and the
+    /// follower-for-dead-leader `routeDisconnect(peer)` are both gone. QUIC eviction
+    /// now flows via `TopologyChangeNotification.NodeRemoved` after the leader's
+    /// `HealthReconciler` writes `DECOMMISSIONED` and `TopologyObserver` publishes
+    /// the membership delta. The leader-side aggregation path
+    /// (`emitLeaderHint` + `bufferHealthObservation`) is preserved.
     @Contract public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
-        if (isLeaderSupplier.getAsBoolean()) {
-            routeDisconnect(peer);
-            emitLeaderHint(peer, HealthHint.FAULTY);
-            bufferHealthObservation(peer, HealthHint.FAULTY);
-            return;
-        }
-        if (currentLeader.filter(peer::equals).isPresent()) {routeDisconnect(peer);}
         emitLeaderHint(peer, HealthHint.FAULTY);
         bufferHealthObservation(peer, HealthHint.FAULTY);
     }

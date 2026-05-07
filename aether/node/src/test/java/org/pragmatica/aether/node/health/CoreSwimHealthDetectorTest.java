@@ -96,27 +96,32 @@ class CoreSwimHealthDetectorTest {
     @Nested
     class FaultyMember {
         @Test
-        void onMemberFaulty_routesDisconnectNode() throws InterruptedException {
+        void onMemberFaulty_doesNotRouteDisconnectNode() throws InterruptedException {
+            // RC1-9 audit Step 3: SWIM FAULTY no longer routes a local DisconnectNode.
+            // QUIC eviction flows post-consensus via TopologyChangeNotification.NodeRemoved
+            // after the leader's HealthReconciler writes DECOMMISSIONED and TopologyObserver
+            // fires the membership delta. The FAULTY observation still drives the
+            // leader-side aggregation path (emitLeaderHint + bufferHealthObservation).
             var faultyMember = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
                                                       new InetSocketAddress("127.0.0.2", 9002));
 
             detector.onMemberFaulty(faultyMember);
             Thread.sleep(100); // Allow async dispatch to complete
 
-            assertThat(disconnectNotifications).hasSize(1);
-            assertThat(disconnectNotifications.getFirst().nodeId()).isEqualTo(PEER_A);
+            assertThat(disconnectNotifications).isEmpty();
         }
     }
 
     @Nested
     class MemberLeft {
         @Test
-        void onMemberLeft_routesDisconnectNode() throws InterruptedException {
+        void onMemberLeft_doesNotRouteDisconnectNode() throws InterruptedException {
+            // RC1-9 audit Step 3: SWIM LEFT no longer routes a local DisconnectNode.
+            // Same rationale as FaultyMember above — eviction is membership-delta-driven.
             detector.onMemberLeft(PEER_B);
             Thread.sleep(100); // Allow async dispatch to complete
 
-            assertThat(disconnectNotifications).hasSize(1);
-            assertThat(disconnectNotifications.getFirst().nodeId()).isEqualTo(PEER_B);
+            assertThat(disconnectNotifications).isEmpty();
         }
     }
 

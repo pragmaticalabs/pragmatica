@@ -244,7 +244,12 @@ class SwimHealthFsmTest {
     @Nested
     class LeaderRouting {
         @Test
-        void follower_running_peerFaultyIsCurrentLeader_routesDisconnectLocally() throws InterruptedException {
+        void follower_running_peerFaultyIsCurrentLeader_doesNotRouteDisconnect() throws InterruptedException {
+            // RC1-9 audit Step 3: the follower-for-dead-leader `routeDisconnect` branch
+            // is gone. Eviction now flows post-consensus via TopologyChangeNotification.
+            // NodeRemoved after the leader (re-elected) writes DECOMMISSIONED. The FAULTY
+            // observation still drives the leader-side aggregation path (emitLeaderHint
+            // + bufferHealthObservation) so re-election can complete.
             buildHarness(false); // follower
             harness.dispatch(new SwimHealthEvents.StartRequested());
             harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(),
@@ -257,14 +262,9 @@ class SwimHealthFsmTest {
             routedDisconnects.clear();
 
             harness.dispatch(new SwimHealthEvents.PeerFaulty(faulty(PEER_A)));
-            // routeFaulty → routeDisconnect → routeAsync → Promise.async — give the executor
-            // a brief window to publish the DisconnectNode message before asserting (matches
-            // the Thread.sleep(100) pattern in CoreSwimReconnectTest).
             Thread.sleep(50);
 
-            // Must route DisconnectNode locally (follower + faulty-is-current-leader path).
-            assertThat(routedDisconnects).hasSize(1);
-            assertThat(routedDisconnects.getFirst().nodeId()).isEqualTo(PEER_A);
+            assertThat(routedDisconnects).isEmpty();
         }
 
         @Test

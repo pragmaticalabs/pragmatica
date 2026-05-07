@@ -1167,10 +1167,18 @@ public interface AetherNode extends ManageableNode {
                                                                                    rotatingEncryptor)));
         swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
         swimHealthDetector.addObservationListener(eventAggregator::onSwimObservation);
-        var localNetwork = clusterNode.network();
-        swimHealthDetector.addObservationListener(observation -> {
-                                                      if (observation instanceof org.pragmatica.swim.SwimObservation.FaultyObserved faulty) {localNetwork.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(faulty.peer()));}
-                                                  });
+        // RC1-9 audit Step 3: the SWIM-FAULTY-to-disconnect short-circuit lambda is
+        // gone. QUIC eviction now flows from `TopologyChangeNotification.NodeRemoved`
+        // (published by `TopologyObserver.publishMembershipDeltas` after the leader's
+        // `HealthReconciler` writes `DECOMMISSIONED` and the snapshot re-projects).
+        // The membership-delta-driven path is a single canonical edge instead of N+1
+        // fan-out across every survivor's local SWIM listener; eviction trades sub-ms
+        // local-SWIM latency for a Rabia round-trip + projection (~200-500ms cloud RTT).
+        var clusterNetworkRef = clusterNode.network();
+        allEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                                 (TopologyChangeNotification.NodeRemoved removed) ->
+                                                     clusterNetworkRef.disconnect(
+                                                         new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)

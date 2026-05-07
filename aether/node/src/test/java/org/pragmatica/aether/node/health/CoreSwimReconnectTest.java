@@ -97,32 +97,31 @@ class CoreSwimReconnectTest {
     @Nested
     class FaultyEmission {
         @Test
-        void singleFaulty_routesDisconnectOnly() throws InterruptedException {
-            // Per cluster-generation-spec §13.1: CoreSwimHealthDetector no longer emits
-            // any topology-mutation message on SWIM FAULTY. The authoritative
-            // NodeLifecycleKey = LEFT write now flows through HealthReconciler on the
-            // leader after consuming SwimHint + PingTimeout signals.
+        void singleFaulty_doesNotRouteDisconnect() throws InterruptedException {
+            // RC1-9 audit Step 3: SWIM FAULTY no longer routes a local DisconnectNode.
+            // Eviction now flows post-consensus via TopologyChangeNotification.NodeRemoved
+            // after the leader's HealthReconciler writes DECOMMISSIONED.
             var faultyMember = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
                                                      new InetSocketAddress("127.0.0.2", 9101));
 
             detector.onMemberFaulty(faultyMember);
             Thread.sleep(100);
 
-            assertThat(disconnectNotifications).hasSize(1);
-            assertThat(disconnectNotifications.getFirst().nodeId()).isEqualTo(PEER_A);
+            assertThat(disconnectNotifications).isEmpty();
         }
 
         @Test
-        void massFaulty_localDisconnectGuardStillRoutesDisconnectOnly() throws InterruptedException {
-            // Without a running SWIM protocol (members() empty), isLocalDisconnect returns
-            // false and the fault is allowed through. It must produce only a DisconnectNode.
+        void massFaulty_doesNotRouteDisconnect() throws InterruptedException {
+            // RC1-9 audit Step 3: same rationale as singleFaulty above. The
+            // local-disconnect guard logic no longer matters because there is no
+            // local routing of DisconnectNode on SWIM FAULTY at all.
             var faultyA = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
                                                 new InetSocketAddress("127.0.0.2", 9101));
 
             detector.onMemberFaulty(faultyA);
             Thread.sleep(100);
 
-            assertThat(disconnectNotifications).hasSize(1);
+            assertThat(disconnectNotifications).isEmpty();
         }
     }
 
