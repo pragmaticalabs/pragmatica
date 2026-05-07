@@ -142,12 +142,42 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return Map.of("aether-cluster", clusterLabel, "aether-role", "core");
     }
 
-    /// Merge defaults with caller-supplied tags. Caller wins on key conflict
-    /// (e.g. when bootstrap supplies a real cluster name in spec.tags()).
+    /// Hetzner label-key pattern: must start with a letter and contain only
+    /// `[a-zA-Z0-9_.-/]`, ≤63 chars total. Optional DNS-style prefix (`prefix/name`)
+    /// is allowed. Values must match `[a-zA-Z0-9_.-]*` (no colons, commas, spaces).
+    /// `:` and `,` get rejected with API 422 (`invalid input in field 'labels'`).
+    private static final java.util.regex.Pattern HETZNER_LABEL_KEY_RX =
+        java.util.regex.Pattern.compile("^[a-zA-Z]([a-zA-Z0-9_.-]*[a-zA-Z0-9])?(/[a-zA-Z0-9_.-]+)?$");
+    private static final java.util.regex.Pattern HETZNER_LABEL_VALUE_RX =
+        java.util.regex.Pattern.compile("^[a-zA-Z0-9_.-]*$");
+
+    /// Merge defaults with caller-supplied tags, dropping any whose key or value
+    /// would fail Hetzner's label validation. CTM's `provisionSingleNode` passes
+    /// Docker-runtime tags like `aether.peers = "nodeId:host:port,nodeId:host:port,..."`
+    /// — perfectly valid as Docker container env (the DockerComputeProvider
+    /// reads them at line 102-104), but Hetzner rejects the request with
+    /// HTTP 422 because the value contains `:` and `,` and exceeds 63 chars.
+    /// Caller-supplied tags that survive validation override the defaults
+    /// (e.g. bootstrap may supply a real cluster name).
+    /// On cloud the runtime peers list is delivered via cloud-init userData
+    /// (which the orchestrator already bakes into `buildCreateRequest`);
+    /// labels are reserved for stable, valid metadata only.
     private static Map<String, String> mergeLabels(Map<String, String> defaults, Map<String, String> overrides) {
         if (overrides.isEmpty()) {return defaults;}
         var merged = new HashMap<String, String>(defaults);
-        merged.putAll(overrides);
+        for (var entry : overrides.entrySet()) {
+            var key = entry.getKey();
+            var value = entry.getValue();
+            if (key == null || value == null
+                || key.length() > 63 || value.length() > 63
+                || !HETZNER_LABEL_KEY_RX.matcher(key).matches()
+                || !HETZNER_LABEL_VALUE_RX.matcher(value).matches()) {
+                log.debug("Dropping non-Hetzner-compatible label {}={} (caller is responsible for delivering this metadata via userData)",
+                          key, value);
+                continue;
+            }
+            merged.put(key, value);
+        }
         return Map.copyOf(merged);
     }
 
