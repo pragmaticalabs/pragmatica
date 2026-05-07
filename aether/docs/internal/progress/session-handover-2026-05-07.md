@@ -6,6 +6,8 @@ Continuation of [`session-handover-2026-05-06.md`](session-handover-2026-05-06.m
 
 Plus a **structural audit** of the membership/network layer was written, identifying the parallel-state-tracker pattern that has been exposing one cloud bug after another. The audit lays out an 8-step consolidation plan estimated at 5-7 days.
 
+**Per project owner's call, all backlog items in §4 — including the 8-step consolidation — are RC1-must-fix, not deferred.** Production-grade bar: real 15/15 with no known-bug debt at this level. Total RC1-day budget remaining: ~7-10 days. See §6 for ordered phases A–F.
+
 ---
 
 ## ⚡ TL;DR for next session
@@ -228,17 +230,21 @@ This is the **right RC2 target**, not RC1-day work. Each individual surface fix 
 
 ---
 
-## 4 · RC2 backlog (concrete, beyond the audit)
+## 4 · RC1 must-fix backlog (all promoted from RC2 — production-grade bar)
+
+Per project owner's standing call: "REAL 15/15 and production-grade code is THE actual goal. There is no pressure to ship incomplete product or product with known bugs at THIS level." All items below block RC1 — none are deferred.
 
 | # | Issue | Severity | Est |
 |---|---|---|---|
-| RC2-1 | **Membership state-tracker consolidation** (audit's 8-step plan) | High | 5-7 days |
-| RC2-2 | **`BootstrapCleanup` HTTP 401 on partial-failure path** — when bootstrap fails partway, the orchestrator's failure-cleanup tries to terminate provisioned VMs but gets 401-unauthorized. Result: 5 orphan VMs accumulate per failed run, eating Hetzner cx33 capacity. Encountered THREE times this session; each required manual destruction (with user authorization) of the orphans. Likely cause: cleanup path uses cluster_secret-encrypted credential from KV-Store, but bootstrap may have failed before KV was populated. Token fallback should be the env-supplied `HCLOUD_TOKEN`. | High | 0.5 day |
-| RC2-3 | **03-scaling cloud "PASS" needs revalidation** — yesterday's matrix shows it green on cloud, but `aether-node` had no Hetzner SPI bundled until today (`d2ba2cc58`), so `lifecycleManager.isCloudManaged()` was false → CTM couldn't provision. Either the test was lucky (timing flake), the matrix was wrong, or there's a code path that bypasses the SPI gate that I haven't traced. Re-run 03-scaling against d2ba2cc58 (or `29b7fed38`) on cloud with `--skip-teardown` and verify CTM actually provisioned 2 new VMs for the 5→7 scale. | Medium | 0.5 day |
-| RC2-4 | **`ObservationAggregator` is per-node, not cross-node** — spec §4.3 ("decision rule 1: k-of-n across nodes") is unimplemented. Per-node sliding window means leader writes DECOMMISSIONED on its own local SWIM evidence. (Captured in audit Step 7.) | Medium | 1-2 days |
-| RC2-5 | **`everSeenHealthy` cold-boot suppression too aggressive** — peer killed before its first successful Ping ack emits `UnknownObserved` instead of `FaultyObserved`. `HealthReconciler.aggregator` doesn't aggregate UnknownObserved → DECOMMISSIONED never written → CTM never provisions. (Captured in audit Step 6.) | Medium | 0.5 day |
-| RC2-6 | **TopologyObserver.NodeState.health is dead state** — set to HEALTHY on add, never updated on SWIM FAULTY. The `legacyHealthyActivePeerCount` fallback would lie if snapshot path were absent (cold-boot ~2s window). (Captured in audit Step 5.) | Medium | 0.5 day |
-| RC2-7 | **Test infra: `cluster_node_count` race with snapshot** — `cluster_node_count` reads the leader's snapshot via `/api/cluster/generation`, which lags KV writes. Test helpers may see stale counts during fast scale-up/scale-down. Not currently breaking 12-network but would surface under stress. | Low | 0.5 day |
+| RC1-1 | **Validate label-filter fix `29b7fed38` on cloud** — quick win. Run 12-network suite-2 against current HEAD, verify CTM successfully provisions a replacement (`provisioning 1 replacement(s)` + `provision succeeded` + new VM joins via SWIM). If 13/13, this single line clears. | High | 0.25 day |
+| RC1-2 | **`BootstrapCleanup` HTTP 401 on partial-failure path** — when bootstrap fails partway, the orchestrator's failure-cleanup tries to terminate provisioned VMs but gets 401-unauthorized. Result: 5 orphan VMs accumulate per failed run, eating Hetzner cx33 capacity. Encountered THREE times this session; each required manual destruction (with user authorization) of the orphans. Likely cause: cleanup path uses cluster_secret-encrypted credential from KV-Store, but bootstrap may have failed before KV was populated. Token fallback should be the env-supplied `HCLOUD_TOKEN`. | High | 0.5 day |
+| RC1-3 | **03-scaling cloud "PASS" needs revalidation** — yesterday's matrix shows it green on cloud, but `aether-node` had no Hetzner SPI bundled until today (`d2ba2cc58`), so `lifecycleManager.isCloudManaged()` was false → CTM couldn't provision. Either the test was lucky (timing flake), the matrix was wrong, or there's a code path that bypasses the SPI gate that I haven't traced. Re-run 03-scaling against `29b7fed38` on cloud with `--skip-teardown` and verify CTM actually provisioned 2 new VMs for the 5→7 scale. | Medium | 0.5 day |
+| RC1-4 | **08-resources flaky slice routing on cloud** — pre-existing flake from yesterday's matrix (was the only docker FAIL). On cloud APP_ENDPOINT hits node-1 directly but slice may not be hosted there (3 instances on 5 nodes). Either fix `wait_for_slices_active` to poll until route reachable on targeted node, OR wire `AppHttpServer` cross-node forwarding for slice routes on cloud. | Medium | 1-2 days |
+| RC1-5 | **`ObservationAggregator` is per-node, not cross-node** — spec §4.3 ("decision rule 1: k-of-n across nodes") is unimplemented. Per-node sliding window means leader writes DECOMMISSIONED on its own local SWIM evidence. Subsumed by audit Step 7 in RC1-9. | Medium | 1-2 days (subsumed) |
+| RC1-6 | **`everSeenHealthy` cold-boot suppression too aggressive** — peer killed before its first successful Ping ack emits `UnknownObserved` instead of `FaultyObserved`. `HealthReconciler.aggregator` doesn't aggregate UnknownObserved → DECOMMISSIONED never written → CTM never provisions. Subsumed by audit Step 6 in RC1-9. | Medium | 0.5 day (subsumed) |
+| RC1-7 | **TopologyObserver.NodeState.health is dead state** — set to HEALTHY on add, never updated on SWIM FAULTY. The `legacyHealthyActivePeerCount` fallback would lie if snapshot path were absent (cold-boot ~2s window). Subsumed by audit Step 5 in RC1-9. | Medium | 0.5 day (subsumed) |
+| RC1-8 | **Test infra: `cluster_node_count` race with snapshot** — `cluster_node_count` reads the leader's snapshot via `/api/cluster/generation`, which lags KV writes. Test helpers may see stale counts during fast scale-up/scale-down. Not currently breaking 12-network but would surface under stress. | Low | 0.5 day |
+| RC1-9 | **Membership state-tracker consolidation (audit's 8-step plan)** — single source of truth, eliminates the parallel-tracker amplification cascade that has been surfacing one cloud bug per session. Subsumes RC1-5/6/7 plus closes spec divergences D1–D7 in the audit. **The right load-bearing fix; everything else is patches at seams.** See `aether/docs/internal/audits/membership-state-tracker-audit-2026-05-07.md` for ordered Steps 1–8 with file:line touchpoints. | High | 5-7 days + 2-3 days remote-stabilization |
 
 ---
 
@@ -254,17 +260,46 @@ This is the **right RC2 target**, not RC1-day work. Each individual surface fix 
 
 ---
 
-## 6 · First thing to do next session
+## 6 · First things to do next session — RC1 ship-readiness
+
+Ordered for shipping discipline: shortest-path quick wins first to unblock the test signal, then fix the orphan-leak that has been silently capping our Hetzner capacity each session, then the structural consolidation that addresses the underlying parallel-tracker problem.
+
+### Phase A — Validate the in-flight fix (≈ 1 hour)
 
 1. **Power on PG VM** (`actions/poweron`).
-2. **Inventory check** — make sure no orphan VMs accumulated overnight (Hetzner doesn't auto-clean).
-3. **Run 12-network on cloud** with `--skip-teardown` so post-test inspection is possible.
-4. **If 13/13** → file structural audit as RC2 ticket, begin wrap-up. RC1 is ship-ready (modulo 08-resources, which is a separate flake).
-5. **If suite-2 wait_for_replacement_of still fails** → ssh leader, grep for `provisioning [0-9]+ replacement|Hetzner API error|provision succeeded`. Most likely outcomes:
-   - **Provision succeeds, NODE_JOINED for new ID fires** → 13/13.
-   - **Provision succeeds, but the new ID isn't in `core` topology** → CTM is provisioning extras instead of replacing. Look at `inFlightProvisions` size.
-   - **New API rejection** (e.g. `userData` validation) → another label-style filter problem on a different field.
-6. **Then handle RC2-2** (cleanup 401 on bootstrap failure) so future sessions don't accumulate orphans.
+2. **Inventory check** — destroy any orphan VMs that accumulated since session-end (Hetzner doesn't auto-clean; failed-bootstrap cleanup-401 path leaks them).
+3. **Run 12-network on cloud** with `--skip-teardown` so post-test inspection is possible against the current HEAD (`29b7fed38`, Hetzner label filter active).
+4. **If 13/13** (RC1-1 closes) → proceed to Phase B.
+5. **If suite-2 `wait_for_replacement_of` still fails** → ssh leader, grep `provisioning [0-9]+ replacement|Hetzner API error|provision succeeded`. Likely outcomes:
+   - Provision succeeds, NODE_JOINED for new ID fires → 13/13.
+   - Provision succeeds but new ID isn't in `core` topology → CTM is provisioning extras instead of replacing. Look at `inFlightProvisions` size.
+   - New API rejection (`userData` validation, etc.) → another label-style filter problem on a different field — fix and re-validate.
+
+### Phase B — Stabilize cloud testing infrastructure (RC1-2, RC1-3) (≈ 1 day)
+
+6. **RC1-2 — Fix `BootstrapCleanup` HTTP 401 on partial-failure path.** Each failed bootstrap leaks 5 VMs because the orchestrator's cleanup couldn't authenticate. This was hit 3× this session and required manual orphan destruction with explicit user authorization. Until this is fixed, Hetzner cx33-fsn1 capacity exhausts within a few failed runs. Likely cause: cleanup path uses cluster_secret-encrypted credential from KV-Store, but bootstrap may have failed before KV was populated; the env-supplied `HCLOUD_TOKEN` should be a fallback.
+7. **RC1-3 — Re-validate 03-scaling cloud "PASS"** against image `29b7fed38`. Yesterday's matrix says PASS but the SPI was missing until today, so `lifecycleManager.isCloudManaged()` returned false. Either the test was lucky or there's a code path I haven't traced.
+
+### Phase C — Address remaining test failures (RC1-4) (≈ 1-2 days)
+
+8. **RC1-4 — 08-resources flaky slice routing on cloud.** Either fix `wait_for_slices_active` to poll until route reachable on the targeted node, OR wire `AppHttpServer` cross-node forwarding for slice routes on cloud.
+
+### Phase D — Structural consolidation (RC1-9, subsumes RC1-5/6/7) (≈ 5-7 days)
+
+9. **RC1-9 — Implement the audit's 8-step membership state-tracker consolidation.** Single source of truth (`MembershipView`), pure projections elsewhere, cross-node quorum aggregation in `HealthReconciler`. See `aether/docs/internal/audits/membership-state-tracker-audit-2026-05-07.md` for the ordered steps with concrete file:line touchpoints. **HIGH-risk steps**: Step 2 (delete `processViewChange` upward emission — 15 receivers must already see the membership-delta path) and Step 7 (cross-node quorum aggregation).
+   - Closes RC1-5 (cross-node quorum, audit Step 7).
+   - Closes RC1-6 (phase-aware cold-boot suppression, audit Step 6).
+   - Closes RC1-7 (strip dead `NodeHealth` field, audit Step 5).
+   - Closes spec divergences D1–D7 in the audit.
+10. **Final 12-network + chaos + scaling on cloud** against the consolidated machine — must pass cleanly without per-session whack-a-mole.
+
+### Phase E — Polish (RC1-8) (≈ 0.5 day)
+
+11. **RC1-8 — Test infra `cluster_node_count` snapshot race.** Not currently breaking but surfaces under stress; tighten now or it'll bite during release-candidate stress testing.
+
+### Phase F — Ship
+
+12. Wrap up, changelog, feature catalog, move tag, push, merge to `main`, tag `v1.0.0-rc1`, publish to Maven Central.
 
 ---
 
@@ -272,7 +307,7 @@ This is the **right RC2 target**, not RC1-day work. Each individual surface fix 
 
 ```bash
 # Sanity
-git log --oneline f7a6f6f2a..HEAD          # 16 commits this session (plus 2 docs)
+git log --oneline f7a6f6f2a..HEAD          # 16+ commits this session (plus docs)
 git status --short                          # should be clean
 
 # Power up
@@ -282,15 +317,23 @@ curl -s -X POST -H "Authorization: Bearer $HCLOUD_TOKEN" \
 # After ~30s
 curl -s -H "Authorization: Bearer $HCLOUD_TOKEN" 'https://api.hetzner.cloud/v1/servers/128911684' | jq -r '.server.status'
 
-# Run 12-network
+# Inventory check (kill any orphans before running)
+curl -s -H "Authorization: Bearer $HCLOUD_TOKEN" 'https://api.hetzner.cloud/v1/servers' | \
+  jq -r '.servers[] | "\(.id)\t\(.name)\t\(.status)\t\(.labels)"'
+
+# Phase A: validate label-filter fix
 cd aether/tests/integration && source /tmp/aether-test-pg.env && \
   ./run-tests.sh --env cloud --suites 12 --skip-build --skip-teardown
 ```
 
-**Targets to attack in order:**
+**Targets to attack in order (RC1-day shipping discipline):**
 
-1. **12-network suite-2 `wait_for_replacement_of`** — validate `29b7fed38` end-to-end on cloud.
-2. **08-resources flaky slice routing on cloud** — pre-existing flake, last in path to a clean 15/15.
-3. **RC2-2** (cleanup 401) — easy win, prevents orphan accumulation.
+1. **RC1-1**: Validate label-filter fix end-to-end → ideally closes 12-network 13/13 in ~1 hour.
+2. **RC1-2**: Fix cleanup-401 (orphan leak) → unblocks all future cloud iterations.
+3. **RC1-3**: Re-validate 03-scaling on cloud.
+4. **RC1-4**: 08-resources flake.
+5. **RC1-9**: Membership state-tracker consolidation (the load-bearing structural fix).
+6. **RC1-8**: Test-infra `cluster_node_count` race.
+7. Wrap-up, tag, ship to Maven Central.
 
-**Follow-ups deferred to RC2:** the 8-step membership consolidation plan in the audit doc.
+Total RC1-day budget remaining: **~7-10 days** by the audit's estimate.
