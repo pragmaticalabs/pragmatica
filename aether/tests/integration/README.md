@@ -285,6 +285,7 @@ If omitted, the suite runs on cluster A (parallel, non-destructive).
 | retry loop around `deploy_blueprint` | single call; preceding barrier guarantees cluster is ready |
 | `restart_all_nodes` / `self_heal` in cleanup | `await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60` |
 | polling `cluster_node_count` after a kill | `await_generation_quiesced`, then assert count directly |
+| single-shot `cluster_node_count` after `scale_cluster` / `kill_node` | `cluster_node_count_quiesced` — flushes snapshot, returns count |
 
 See [`lib/generation.sh`](lib/generation.sh) for the full helper surface and [`aether/docs/specs/cluster-generation-spec.md`](../../docs/specs/cluster-generation-spec.md) for the semantics.
 

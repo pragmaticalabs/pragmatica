@@ -64,6 +64,26 @@ cluster_leader() {
     aether_field status cluster.leaderId
 }
 
+# Single-shot count assertion: blocks until the leader publishes a snapshot at the
+# current epoch (so KV writes that just landed are reflected), then reads count.
+#
+# Use after a state-changing action (scale_cluster, kill_node, etc.) when the test
+# wants the FINAL count without polling. Without this, `cluster_node_count` may
+# return the pre-action snapshot — particularly for scale-down, where the
+# `max(members, desired)` heuristic biases toward the larger (stale) members count.
+#
+# Args: optional timeout in seconds (default 30).
+# Falls back to the plain `cluster_node_count` if the await endpoint is unreachable
+# (cold cluster pre-projection) so the call is always safe.
+cluster_node_count_quiesced() {
+    local timeout="${1:-30}"
+    local endpoint="${CLUSTER_ENDPOINT:-}"
+    if [ -n "$endpoint" ]; then
+        await_generation_quiesced "$endpoint" "current" "$timeout" >/dev/null 2>&1 || true
+    fi
+    cluster_node_count
+}
+
 # Spec §4.4 / §10 P7: tests must consume the same operator-visible signals.
 # `clusterPhase` is published by HealthReconciler via consensus on ClusterPhaseKey
 # and projected to every node. Empty/default → "BOOTING".
