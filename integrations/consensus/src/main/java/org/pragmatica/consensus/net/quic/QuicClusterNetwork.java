@@ -1071,13 +1071,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         var viewChange = switch (operation) {
             case ADD -> {
-                // R5 + audit Step 2: transport-only event. Forwarded as `peerStateListener`
-                // hint (which feeds SWIM via `TransportObservation`); no upward
-                // `TopologyChangeNotification` emit. The canonical `NodeAdded` edge is
-                // published by `TopologyObserver.publishMembershipDeltas` once the snapshot
-                // reflects the new member.
+                // RC1-9 audit Step 2 reverted: cold-boot leader election needs synchronous
+                // `NodeAdded` to populate `LeaderElectionContext.currentTopology` BEFORE
+                // the snapshot exists (snapshot is only published after Rabia commits,
+                // which require an elected leader, which requires currentTopology to be
+                // non-empty — chicken/egg). `TopologyObserver.publishMembershipDeltas`
+                // augments this for runtime edges; cluster bootstrap relies on the
+                // synchronous transport emit.
                 peerStateListener.onPeerJoined(peerId);
-                yield null;
+                yield TopologyChangeNotification.nodeAdded(peerId, currentView());
             }
             case REMOVE -> {
                 // Advisory QUIC-level disconnect signal. On the leader this feeds the local
@@ -1085,13 +1087,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // outbound `ClusterSyncPong` so the leader folds it through PeerObservationReducer
                 // (ClusterSync refactor commit 2 — followers are sensor-only).
                 reportPeerRemoval(peerId);
-                // R5 + audit Step 2: transport-only event. Forwarded as `peerStateListener`
-                // hint (which feeds SWIM via `TransportObservation`); no upward
-                // `TopologyChangeNotification` emit. The canonical `NodeRemoved` edge is
-                // published by `TopologyObserver.publishMembershipDeltas` once the leader's
-                // `HealthReconciler` writes `DECOMMISSIONED` and the snapshot re-projects.
+                // RC1-9 audit Step 2 reverted: paired with ADD restoration above. QUIC's
+                // synchronous `NodeRemoved` is also load-bearing — `LeaderElectionContext`
+                // and 15 other receivers cannot wait on the membership-delta path during
+                // failure scenarios. `TopologyObserver.publishMembershipDeltas` still fires
+                // its own `NodeRemoved` once the snapshot re-projects; receivers may see
+                // duplicate emissions but each is idempotent.
                 peerStateListener.onPeerLeft(peerId);
-                yield null;
+                yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {
                 // Self-shutdown remains a transport-emitted event: it fires on the local

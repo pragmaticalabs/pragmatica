@@ -254,13 +254,14 @@ class QuicClusterNetworkHintEmissionTest {
     /// .unregisterPeer/markDeparted` enforces this; this test additionally confirms the
     /// runtime path doesn't accidentally invoke a no-op shim.
     @Test
-    void quicTransport_remove_doesNotRouteNodeRemovedNotification() {
-        // RC1-9 audit Step 2: QUIC's `processViewChange` REMOVE no longer emits an upward
-        // `TopologyChangeNotification.NodeRemoved`. The canonical edge is now published by
-        // `TopologyObserver.publishMembershipDeltas` once the leader's `HealthReconciler`
-        // writes `DECOMMISSIONED` and the snapshot re-projects. This test pins QUIC's
-        // silence on REMOVE so a regression cannot reintroduce the N+1 redundant emit
-        // cascade the audit identified.
+    void quicTransport_remove_routesNodeRemovedNotification() {
+        // RC1-9 audit Step 2 reverted: QUIC re-emits `TopologyChangeNotification.NodeRemoved`
+        // synchronously on transport REMOVE. The audit's plan to make `TopologyObserver`
+        // the SOLE emitter created a cold-boot catch-22 (LeaderElectionContext.currentTopology
+        // depends on these events; snapshot-driven equivalents only fire post-leader-elected).
+        // TopologyObserver.publishMembershipDeltas still fires its own NodeRemoved once the
+        // snapshot re-projects; consumers may see two emissions per departure but each is
+        // idempotent.
         var removed = new CopyOnWriteArrayList<NodeId>();
         var router = MessageRouter.mutable();
         router.addRoute(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved.class,
@@ -275,8 +276,8 @@ class QuicClusterNetworkHintEmissionTest {
         network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
 
         assertThat(removed)
-            .as("REMOVE no longer emits NodeRemoved — TopologyObserver owns that edge post audit Step 2")
-            .isEmpty();
+            .as("REMOVE emits an informational NodeRemoved notification (advisory, not authoritative)")
+            .containsExactly(missing);
     }
 
     @Test
