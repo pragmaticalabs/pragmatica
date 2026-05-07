@@ -561,6 +561,46 @@ slice_owner_for() {
         | head -1
 }
 
+# Retarget APP_ENDPOINT to a node that hosts an ACTIVE slice belonging to <coords>.
+# After SliceState.ROUTING was introduced, ACTIVE means routes have propagated
+# cluster-wide — but tests pinning APP_ENDPOINT to node-1 still 404 when the slice
+# isn't placed on node-1 (3 instances on 5 nodes is the typical 08-resources case).
+# Cloud-only: noop on docker / remote where APP_ENDPOINT is the LB.
+#
+# Args:
+#   $1 — blueprint coords (groupId:artifactId:version) used by slice_owner_for
+#   $2 — optional app HTTP port (default 8070)
+#   $3 — optional probe path (e.g. /api/kv/diag) — when supplied, polls APP_ENDPOINT
+#        with this path until http_status < 500 (catches the brief window where the
+#        owner reported ACTIVE but the local route table hasn't been hit yet)
+#   $4 — probe timeout seconds (default 30)
+#
+# Returns 0 on success, 1 if no owner found (caller should fall through). Always
+# leaves APP_ENDPOINT at a usable value (original LB on docker, retargeted on cloud).
+retarget_app_endpoint_to_active_slice() {
+    local coords="$1" port="${2:-8070}" probe_path="${3:-}" probe_timeout="${4:-30}"
+    if [ "${ENV_TYPE:-docker}" != "cloud" ]; then return 0; fi
+    local owner owner_ip
+    owner=$(slice_owner_for "$coords" 2>/dev/null || true)
+    if [ -z "$owner" ]; then
+        log_warn "retarget: no ACTIVE owner found for ${coords}; APP_ENDPOINT unchanged"
+        return 1
+    fi
+    owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
+    if [ -z "$owner_ip" ]; then
+        log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged"
+        return 1
+    fi
+    APP_ENDPOINT="http://${owner_ip}:${port}"
+    log_info "retarget: APP_ENDPOINT -> ${APP_ENDPOINT} (slice owner ${owner})"
+    if [ -n "$probe_path" ]; then
+        wait_for "app endpoint route ${probe_path}" \
+            "[ \$(http_status \"${APP_ENDPOINT}${probe_path}\" -H \"X-API-Key: \${API_KEY}\") -lt 500 ]" \
+            "$probe_timeout"
+    fi
+    return 0
+}
+
 slices_active_instances() {
     local slices
     slices=$(cluster_slices)

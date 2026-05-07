@@ -23,19 +23,11 @@ test_deploy_sql_app() {
     # which would make wait_for_all_target_instances_active hang because target_total counts
     # those non-active targets too. ≥1 active is sufficient: we re-target APP_ENDPOINT below.
     wait_for_slices_active 1 120
-    # Cloud: the test-persistence slice has 3 instances spread across 5 nodes — node-1 (the
-    # default APP_ENDPOINT host) may not host the slice. Find an active owner and re-target.
-    if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
-        local owner owner_ip
-        owner=$(slice_owner_for "$BLUEPRINT" 2>/dev/null || true)
-        if [ -n "$owner" ]; then
-            owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
-            if [ -n "$owner_ip" ]; then
-                APP_ENDPOINT="http://${owner_ip}:8070"
-                log_info "Retargeted APP_ENDPOINT to slice owner ${owner} → ${APP_ENDPOINT}"
-            fi
-        fi
-    fi
+    # Cloud: the test-persistence slice has 3 instances spread across 5 nodes — node-1
+    # (the default APP_ENDPOINT host) may not host the slice. Retarget to an owner and
+    # probe the route to catch the post-ACTIVE window where the chosen node's route
+    # table hasn't yet picked up the freshly-published route entry.
+    retarget_app_endpoint_to_active_slice "$BLUEPRINT" 8070 "/api/kv/route-probe" 30 || true
     log_pass "SQL-backed app deployed"
 }
 
