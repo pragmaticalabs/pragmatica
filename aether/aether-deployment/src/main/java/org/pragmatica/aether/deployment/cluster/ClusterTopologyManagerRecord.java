@@ -286,6 +286,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             log.debug("CTM: stability anchor unchanged ({}); count still {}", reason, current);
             return;
         }
+        // Only bump on UPWARD transitions (cluster grew). Downward transitions (a peer
+        // departed) confirm the deficit and should let the stability window elapse —
+        // resetting it on every NodeRemoved / NodeDown means a single FAULTY event can
+        // trigger multiple processViewChange(REMOVE) routings (leader's local
+        // routeDisconnect + every node's local SWIM-observation listener), and each
+        // routing races with KV-replicated `NodeLifecycleKey -> DECOMMISSIONED` snapshot
+        // updates. The snapshot's healthyOnDuty count flips 5 → 4 → 5 → 4 across the
+        // 100ms window, and any flip resets the 30s anchor — provisioning never elapses.
+        // Treat downward edges as "deficit confirmation" (do not reset) and upward edges
+        // as "new size to stabilize against" (reset and re-anchor). Initial UNINITIALIZED
+        // → N is treated as upward.
+        if (previous != UNINITIALIZED_REAL_ACTUAL && current < previous) {
+            log.debug("CTM: stability anchor preserved on downward edge ({}); healthyOnDuty {} -> {}",
+                      reason, previous, current);
+            return;
+        }
         var displayPrev = previous == UNINITIALIZED_REAL_ACTUAL
                          ? "<unset>"
                          : Integer.toString(previous);
@@ -569,6 +585,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract private void observeRealActualForStability(int actual) {
         var previous = lastObservedRealActual.getAndSet(actual);
         if (previous == UNINITIALIZED_REAL_ACTUAL) {return;}
+        // Mirror the directional semantic of maybeBumpAnchorOnHealthyOnDutyEdge: only
+        // upward transitions reset stability. Downward transitions confirm a deficit
+        // that should fast-track provisioning instead of restarting the 30s clock.
+        if (previous > actual) {return;}
         if (previous != actual) {bumpRealActualStability("realActual " + previous + " -> " + actual);}
     }
 
