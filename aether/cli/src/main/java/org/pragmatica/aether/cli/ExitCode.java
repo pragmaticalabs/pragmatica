@@ -13,6 +13,8 @@ public sealed interface ExitCode {
 
     int NOT_FOUND = 3;
 
+    int CLEANUP_FAILED = 4;
+
     int USAGE = 64;
 
     record unused() implements ExitCode{}

@@ -81,6 +81,17 @@ public sealed interface EnvironmentError extends Cause {
         }
     }
 
+    record CredentialsMissing(String provider, java.util.List<String> missingEnvVars) implements EnvironmentError {
+        public static Result<CredentialsMissing> credentialsMissing(String provider,
+                                                                    java.util.List<String> missingEnvVars) {
+            return success(new CredentialsMissing(provider, java.util.List.copyOf(missingEnvVars)));
+        }
+
+        @Override public String message() {
+            return "Cloud credentials missing for provider '" + provider + "': set " + String.join(", ", missingEnvVars);
+        }
+    }
+
     record unused() implements EnvironmentError {
         public static Result<unused > unused() {
             return success(new unused());

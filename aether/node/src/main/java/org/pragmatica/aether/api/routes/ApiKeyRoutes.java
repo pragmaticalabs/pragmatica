@@ -165,7 +165,12 @@ import static org.pragmatica.http.routing.PathParameter.aString;
         }
     }
 
-    record CreateKeyRequest(String keyId, String keyHash, long gracePeriodMs, String auditAction, String operatorHint, String authorizationRole){}
+    record CreateKeyRequest(String keyId,
+                            String keyHash,
+                            long gracePeriodMs,
+                            String auditAction,
+                            String operatorHint,
+                            String authorizationRole){}
 
     record CreateKeyResponse(String keyId, String status){}
 
@@ -173,7 +178,13 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 
     record RevokeKeyResponse(String keyId, String status, long gracePeriodMs){}
 
-    record KeyInfo(String keyId, String status, long createdAt, long expiresAt, long revokedAt, long gracePeriodMs, String authorizationRole){}
+    record KeyInfo(String keyId,
+                   String status,
+                   long createdAt,
+                   long expiresAt,
+                   long revokedAt,
+                   long gracePeriodMs,
+                   String authorizationRole){}
 
     record AuditEntry(String keyId, String action, long timestamp, String operatorHint){}
 

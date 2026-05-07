@@ -5,12 +5,10 @@
 package org.pragmatica.aether.cli;
 
 import org.pragmatica.aether.config.BuildInfo;
+
 import picocli.CommandLine.IVersionProvider;
 
 
-/// Picocli `IVersionProvider` that surfaces the JAR's `Implementation-Version` and
-/// `Implementation-Build-Date` so `aether --version` always reflects the actual
-/// jar bytes, not a hardcoded literal.
 public final class AetherVersionProvider implements IVersionProvider {
     @Override public String[] getVersion() {
         return new String[]{"Aether " + BuildInfo.current().displayString()};

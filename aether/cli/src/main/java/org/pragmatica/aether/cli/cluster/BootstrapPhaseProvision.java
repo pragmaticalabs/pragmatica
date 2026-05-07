@@ -64,10 +64,6 @@ import static org.pragmatica.lang.Result.success;
             var sourceName = entry.getKey();
             var source = entry.getValue();
             var providerName = resolveProviderName(source);
-            // resourceId must be the provider's instance ID (numeric for Hetzner) so
-            // BootstrapCleanup.terminateInstance can pass it back to the provider's
-            // terminate() API. Passing the human-readable nodeId here triggered
-            // NumberFormatException in HetznerComputeProvider.parseServerId during cleanup.
             for (var node : allNodes) {if (node.nodeId().startsWith(sourceName + "-")) {state = state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
                                                                                                                                                                node.serverId(),
                                                                                                                                                                sourceName,

@@ -37,18 +37,13 @@ public sealed interface ClusterHttpClient {
 
     AtomicReference<HttpOperations> HTTP_OPS_REF = new AtomicReference<>(JdkHttpOperations.jdkHttpOperations());
 
-    /// Replace the underlying HTTP client with one that accepts self-signed TLS
-    /// certificates. Used during bootstrap when the cluster's management HTTP
-    /// server is configured with `[operations.tls] auto_generate = true` — the
-    /// cert is signed by a cluster-derived CA the operator machine doesn't trust
-    /// by default. Idempotent; calling twice has no extra effect.
-    @Contract @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"}) static void enableTlsSkipVerify() {
+    @Contract@SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"}) static void enableTlsSkipVerify() {
         try {
             var trustAll = new TrustManager[]{new TrustAllManager()};
             var sslContext = SSLContext.getInstance("TLS");
             sslContext.init(null, trustAll, new SecureRandom());
             var client = HttpClient.newBuilder().sslContext(sslContext)
-                                            .build();
+                                              .build();
             HTTP_OPS_REF.set(JdkHttpOperations.jdkHttpOperations(client));
         } catch (NoSuchAlgorithmException | KeyManagementException e) {
             System.err.println("Warning: failed to enable TLS skip-verify in ClusterHttpClient: " + e.getMessage());
@@ -56,9 +51,13 @@ public sealed interface ClusterHttpClient {
     }
 
     final class TrustAllManager implements X509TrustManager {
-        @Contract @Override public void checkClientTrusted(X509Certificate[] chain, String authType) {}
-        @Contract @Override public void checkServerTrusted(X509Certificate[] chain, String authType) {}
-        @Override public X509Certificate[] getAcceptedIssuers() {return new X509Certificate[0];}
+        @Contract@Override public void checkClientTrusted(X509Certificate[] chain, String authType) {}
+
+        @Contract@Override public void checkServerTrusted(X509Certificate[] chain, String authType) {}
+
+        @Override public X509Certificate[] getAcceptedIssuers() {
+            return new X509Certificate[0];
+        }
     }
 
     Duration DEFAULT_REQUEST_TIMEOUT = TimeSpan.timeSpan(130).seconds()
@@ -154,8 +153,9 @@ public sealed interface ClusterHttpClient {
                                             .GET();
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
-        return HTTP_OPS_REF.get().sendString(builder.build()).await()
-                                  .flatMap(ClusterHttpClient::extractBody);
+        return HTTP_OPS_REF.get().sendString(builder.build())
+                               .await()
+                               .flatMap(ClusterHttpClient::extractBody);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private static Result<String> doPost(String endpoint,
@@ -168,8 +168,9 @@ public sealed interface ClusterHttpClient {
                                             .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
-        return HTTP_OPS_REF.get().sendString(builder.build()).await()
-                                  .flatMap(ClusterHttpClient::extractBody);
+        return HTTP_OPS_REF.get().sendString(builder.build())
+                               .await()
+                               .flatMap(ClusterHttpClient::extractBody);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) private static Result<String> doPut(String endpoint,
@@ -182,8 +183,9 @@ public sealed interface ClusterHttpClient {
                                             .PUT(HttpRequest.BodyPublishers.ofString(jsonBody));
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
-        return HTTP_OPS_REF.get().sendString(builder.build()).await()
-                                  .flatMap(ClusterHttpClient::extractBody);
+        return HTTP_OPS_REF.get().sendString(builder.build())
+                               .await()
+                               .flatMap(ClusterHttpClient::extractBody);
     }
 
     private static Result<String> extractBody(HttpResult<String> response) {
@@ -205,18 +207,15 @@ public sealed interface ClusterHttpClient {
         var builder = HttpRequest.newBuilder().uri(URI.create(url))
                                             .GET();
         applyTimeout(builder);
-        return HTTP_OPS_REF.get().sendString(builder.build()).await()
-                                  .flatMap(ClusterHttpClient::extractBody);
+        return HTTP_OPS_REF.get().sendString(builder.build())
+                               .await()
+                               .flatMap(ClusterHttpClient::extractBody);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> postDirect(String url, String jsonBody) {
         return postDirect(url, jsonBody, Option.empty());
     }
 
-    /// Variant that attaches an `X-API-Key` header when present. Used by bootstrap
-    /// formation POSTs against clusters whose per-node `[app-http] api_keys = [...]`
-    /// pre-configures a static key — the leader's `configValidator` accepts that key
-    /// even before any keys land in KV-Store, breaking the bootstrap chicken-and-egg.
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"}) static Result<String> postDirect(String url,
                                                                                         String jsonBody,
                                                                                         Option<String> apiKey) {
@@ -225,8 +224,9 @@ public sealed interface ClusterHttpClient {
                                             .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
         apiKey.onPresent(key -> builder.header("X-API-Key", key));
         applyTimeout(builder);
-        return HTTP_OPS_REF.get().sendString(builder.build()).await()
-                                  .flatMap(ClusterHttpClient::extractBody);
+        return HTTP_OPS_REF.get().sendString(builder.build())
+                               .await()
+                               .flatMap(ClusterHttpClient::extractBody);
     }
 
     static Result<Unit> drainNode(String address, int managementPort, String nodeId) {

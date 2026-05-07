@@ -147,9 +147,11 @@ import static org.pragmatica.lang.Result.success;
         var mgmtPort = ctx.config().operations()
                                  .ports()
                                  .management();
-        var scheme = ctx.config().operations().tls().autoGenerate()
-                  ? "https"
-                  : "http";
+        var scheme = ctx.config().operations()
+                               .tls()
+                               .autoGenerate()
+                    ? "https"
+                    : "http";
         var timeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config().operations()
                                                                                .timeouts()
                                                                                .healthCheck());
@@ -361,7 +363,10 @@ import static org.pragmatica.lang.Result.success;
         return Result.unitResult();
     }
 
-    private static boolean isHealthy(ProvisionedNode node, int mgmtPort, String scheme, Fn1<Result<String>, String> healthCheck) {
+    private static boolean isHealthy(ProvisionedNode node,
+                                     int mgmtPort,
+                                     String scheme,
+                                     Fn1<Result<String>, String> healthCheck) {
         var url = scheme + "://" + node.publicIp() + ":" + mgmtPort + "/health/live";
         return healthCheck.apply(url).isSuccess();
     }

@@ -83,7 +83,7 @@ class ClusterBootstrapOrchestratorKeepOnFailureTest {
             });
             BootstrapStatePersistence.save(stateWithVms(2, 1));
 
-            ClusterBootstrapOrchestrator.handleFailure(CLUSTER_NAME, new TestCause("boom"), false);
+            ClusterBootstrapOrchestrator.decorateAfterCleanup(CLUSTER_NAME, new TestCause("boom"), false);
 
             assertEquals(1, hookCalls.get());
             assertEquals(2, captured.get().createdResources().stream()
@@ -99,7 +99,7 @@ class ClusterBootstrapOrchestratorKeepOnFailureTest {
             });
             BootstrapStatePersistence.save(stateWithVms(3, 2));
 
-            ClusterBootstrapOrchestrator.handleFailure(CLUSTER_NAME, new TestCause("boom"), true);
+            ClusterBootstrapOrchestrator.decorateAfterCleanup(CLUSTER_NAME, new TestCause("boom"), true);
 
             assertEquals(0, hookCalls.get());
         }
@@ -112,7 +112,7 @@ class ClusterBootstrapOrchestratorKeepOnFailureTest {
                 return Result.unitResult();
             });
 
-            ClusterBootstrapOrchestrator.handleFailure(CLUSTER_NAME, new TestCause("no state"), false);
+            ClusterBootstrapOrchestrator.decorateAfterCleanup(CLUSTER_NAME, new TestCause("no state"), false);
 
             assertEquals(0, hookCalls.get());
         }
@@ -126,7 +126,7 @@ class ClusterBootstrapOrchestratorKeepOnFailureTest {
             });
             BootstrapStatePersistence.save(BootstrapState.initialState(CLUSTER_NAME, "hash-1", "2026-05-03T00:00:00Z"));
 
-            ClusterBootstrapOrchestrator.handleFailure(CLUSTER_NAME, new TestCause("empty"), false);
+            ClusterBootstrapOrchestrator.decorateAfterCleanup(CLUSTER_NAME, new TestCause("empty"), false);
 
             assertEquals(0, hookCalls.get());
         }
@@ -156,7 +156,7 @@ class ClusterBootstrapOrchestratorKeepOnFailureTest {
             ClusterBootstrapOrchestrator.setCleanupHook(state -> Result.unitResult());
             BootstrapStatePersistence.save(stateWithVms(3, 2));
 
-            ClusterBootstrapOrchestrator.handleFailure(CLUSTER_NAME, new TestCause("quorum-fail"), true);
+            ClusterBootstrapOrchestrator.decorateAfterCleanup(CLUSTER_NAME, new TestCause("quorum-fail"), true);
 
             var output = captured.toString(StandardCharsets.UTF_8);
             assertTrue(output.contains(CLUSTER_NAME), "warning should name cluster: " + output);

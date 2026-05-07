@@ -30,10 +30,10 @@ public record AbTestDeployment(String testId,
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid A/B test state transition: %s");
 
     public static AbTestDeployment abTestDeployment(String testId,
-                                                                                    ArtifactBase artifactBase,
-                                                                                    Version baselineVersion,
-                                                                                    Map<String, Version> variantVersions,
-                                                                                    SplitRule splitRule) {
+                                                    ArtifactBase artifactBase,
+                                                    Version baselineVersion,
+                                                    Map<String, Version> variantVersions,
+                                                    SplitRule splitRule) {
         var now = System.currentTimeMillis();
         return new AbTestDeployment(testId,
                                     artifactBase,
@@ -78,8 +78,7 @@ public record AbTestDeployment(String testId,
                                     System.currentTimeMillis());
     }
 
-    public AbTestDeployment withBlueprintContext(String newBlueprintId,
-                                                                                 List<ArtifactBase> newArtifacts) {
+    public AbTestDeployment withBlueprintContext(String newBlueprintId, List<ArtifactBase> newArtifacts) {
         return new AbTestDeployment(testId,
                                     artifactBase,
                                     baselineVersion,

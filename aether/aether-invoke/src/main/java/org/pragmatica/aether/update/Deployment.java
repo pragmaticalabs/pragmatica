@@ -31,15 +31,15 @@ public record Deployment(String deploymentId,
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid deployment state transition: %s");
 
     public static Deployment deployment(String deploymentId,
-                                                                        String blueprintId,
-                                                                        Version oldVersion,
-                                                                        Version newVersion,
-                                                                        DeploymentStrategy strategy,
-                                                                        StrategyConfig strategyConfig,
-                                                                        HealthThresholds thresholds,
-                                                                        CleanupPolicy cleanupPolicy,
-                                                                        List<ArtifactBase> artifacts,
-                                                                        int newInstances) {
+                                        String blueprintId,
+                                        Version oldVersion,
+                                        Version newVersion,
+                                        DeploymentStrategy strategy,
+                                        StrategyConfig strategyConfig,
+                                        HealthThresholds thresholds,
+                                        CleanupPolicy cleanupPolicy,
+                                        List<ArtifactBase> artifacts,
+                                        int newInstances) {
         var now = System.currentTimeMillis();
         return new Deployment(deploymentId,
                               blueprintId,

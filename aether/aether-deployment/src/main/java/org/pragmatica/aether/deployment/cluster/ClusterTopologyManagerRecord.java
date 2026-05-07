@@ -286,20 +286,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             log.debug("CTM: stability anchor unchanged ({}); count still {}", reason, current);
             return;
         }
-        // Only bump on UPWARD transitions (cluster grew). Downward transitions (a peer
-        // departed) confirm the deficit and should let the stability window elapse —
-        // resetting it on every NodeRemoved / NodeDown means a single FAULTY event can
-        // trigger multiple processViewChange(REMOVE) routings (leader's local
-        // routeDisconnect + every node's local SWIM-observation listener), and each
-        // routing races with KV-replicated `NodeLifecycleKey -> DECOMMISSIONED` snapshot
-        // updates. The snapshot's healthyOnDuty count flips 5 → 4 → 5 → 4 across the
-        // 100ms window, and any flip resets the 30s anchor — provisioning never elapses.
-        // Treat downward edges as "deficit confirmation" (do not reset) and upward edges
-        // as "new size to stabilize against" (reset and re-anchor). Initial UNINITIALIZED
-        // → N is treated as upward.
-        if (previous != UNINITIALIZED_REAL_ACTUAL && current < previous) {
+        if (previous != UNINITIALIZED_REAL_ACTUAL && current <previous) {
             log.debug("CTM: stability anchor preserved on downward edge ({}); healthyOnDuty {} -> {}",
-                      reason, previous, current);
+                      reason,
+                      previous,
+                      current);
             return;
         }
         var displayPrev = previous == UNINITIALIZED_REAL_ACTUAL
@@ -585,9 +576,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract private void observeRealActualForStability(int actual) {
         var previous = lastObservedRealActual.getAndSet(actual);
         if (previous == UNINITIALIZED_REAL_ACTUAL) {return;}
-        // Mirror the directional semantic of maybeBumpAnchorOnHealthyOnDutyEdge: only
-        // upward transitions reset stability. Downward transitions confirm a deficit
-        // that should fast-track provisioning instead of restarting the 30s clock.
         if (previous > actual) {return;}
         if (previous != actual) {bumpRealActualStability("realActual " + previous + " -> " + actual);}
     }
@@ -632,17 +620,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract private void handleDeficit(int actual, int desired) {
         var nowMs = nowMs();
-        // Snapshot (`MembershipView` derived from leader-coordinated KV-Store atoms) is the
-        // authoritative source for cluster size — `actual` already filters by ON_DUTY +
-        // healthy. Cross-checking with `observer.healthyActiveNodeCount()` previously
-        // suppressed provisioning when the local QUIC view disagreed, but the local fallback
-        // (`nodeStatesById`) does NOT update health on SWIM FAULTY observation: it stays
-        // HEALTHY indefinitely until the QUIC transport itself produces a `DisconnectNode`,
-        // which is gated behind a `helloTimeout × 3` protection window. On cloud Hetzner that
-        // window can outlive the test, so the guard misfired and CTM never auto-healed —
-        // breaking 12-network suite-2 (`No NODE_JOINED for replacement`) and any operator
-        // expectation that snapshot deficit drives provisioning. Stability window below is
-        // the correct flap-absorber; the local QUIC count is not.
         if (!stabilityElapsed(nowMs)) {
             var elapsed = nowMs - realActualStableSinceMs.get();
             log.info("CTM: stability window not yet elapsed (elapsed={}ms, required={}ms, actual={}, desired={}); deferring provisioning dispatch",

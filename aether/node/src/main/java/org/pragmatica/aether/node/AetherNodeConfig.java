@@ -73,7 +73,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                ClusterFormationConfig clusterFormation) {
     public record DeploymentDefaults(long canaryEvaluationIntervalMs, List<CanaryStageConfig> defaultCanaryStages) {
         public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(30_000,
-                                                                                                                DeploymentConfig.defaultCanaryStages());
+                                                                                DeploymentConfig.defaultCanaryStages());
     }
 
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;

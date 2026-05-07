@@ -148,13 +148,8 @@ final class DeploymentManagerImpl implements DeploymentManager {
         return BlueprintId.blueprintId(blueprintId).flatMap(this::lookupBlueprint);
     }
 
-    // Bounded retry: when a publish_blueprint is followed immediately by a deploy start,
-    // the deploy may land on a different node (STRATEGIES task-group owner) whose local
-    // KV state machine is still draining the consensus-decision queue. Rabia commits
-    // synchronously on the leader but followers apply asynchronously — most of the time
-    // <100ms; occasionally a few seconds under load. Without this retry, the same coords
-    // that publish_blueprint just confirmed return BlueprintNotFound.
     private static final long BLUEPRINT_LOOKUP_BUDGET_MS = 5_000L;
+
     private static final long BLUEPRINT_LOOKUP_INTERVAL_MS = 100L;
 
     private Result<ExpandedBlueprint> lookupBlueprint(BlueprintId id) {
@@ -162,11 +157,9 @@ final class DeploymentManagerImpl implements DeploymentManager {
         var deadline = System.currentTimeMillis() + BLUEPRINT_LOOKUP_BUDGET_MS;
         while (true) {
             var hit = kvStore.get(key).filter(AppBlueprintValue.class::isInstance)
-                                  .map(AppBlueprintValue.class::cast)
-                                  .map(AppBlueprintValue::blueprint);
-            if (hit.isPresent() || System.currentTimeMillis() >= deadline) {
-                return hit.toResult(blueprintNotFound(id.asString()));
-            }
+                                 .map(AppBlueprintValue.class::cast)
+                                 .map(AppBlueprintValue::blueprint);
+            if (hit.isPresent() || System.currentTimeMillis() >= deadline) {return hit.toResult(blueprintNotFound(id.asString()));}
             sleepQuietly(BLUEPRINT_LOOKUP_INTERVAL_MS);
         }
     }
@@ -178,11 +171,6 @@ final class DeploymentManagerImpl implements DeploymentManager {
             Thread.currentThread().interrupt();
         }
     }
-    // Note: the server-side retry above is the correct fix but requires a new aether-node
-    // Docker image to take effect on cloud clusters. For the active test run we additionally
-    // wait_for_blueprint_visible (test-side) after publish_blueprint — that polls until the
-    // blueprint shows up via api_get /api/blueprint, providing the same propagation guard
-    // without an image rebuild.
 
     private Result<Unit> checkNoActiveDeployment(String blueprintId) {
         var existing = activeDeployments.values().stream()

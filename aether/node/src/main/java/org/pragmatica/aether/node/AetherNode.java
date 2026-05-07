@@ -1164,26 +1164,11 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
         swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
-        // Local-witness emit for NODE_FAILED / NODE_LEFT — every node records what
-        // it observed, eliminating the leader-broadcast bottleneck that hid events
-        // on cloud when the leader hadn't crossed SWIM's faulty timeout yet.
         swimHealthDetector.addObservationListener(eventAggregator::onSwimObservation);
-        // Local QUIC eviction on FAULTY — every node disconnects its own stale link
-        // when SWIM observes the peer faulty, instead of waiting for the leader's
-        // local-only `routeDisconnect` (which only mutates the leader's PeerState).
-        // Without this hook, followers keep a CONNECTED PeerState whose underlying
-        // Netty channel is silently dead but `isActive()` reports true; future Hello
-        // from a restarted peer with the same NodeId returns AttachResult.DUPLICATE
-        // → connection.close → reconnection storm. With this hook, every node's
-        // PeerState transitions CONNECTED → EVICTED on FAULTY, so the next Hello
-        // from the restarted peer returns RECONNECTED → ConnectionEstablished →
-        // swim.markAlive → SWIM revives the peer.
         var localNetwork = clusterNode.network();
         swimHealthDetector.addObservationListener(observation -> {
-            if (observation instanceof org.pragmatica.swim.SwimObservation.FaultyObserved faulty) {
-                localNetwork.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(faulty.peer()));
-            }
-        });
+                                                      if (observation instanceof org.pragmatica.swim.SwimObservation.FaultyObserved faulty) {localNetwork.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(faulty.peer()));}
+                                                  });
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
@@ -2204,19 +2189,6 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                               msg -> httpRouteRegistry.evictNode(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, eventAggregator::onNodeAdded));
-        // NODE_FAILED / NODE_LEFT events emit from two paths:
-        //   1. Local SWIM observation (eventAggregator::onSwimObservation, wired alongside
-        //      healthReconciler in this same builder) — fires on every surviving node when
-        //      its local SWIM crosses the FAULTY/DEPARTED edge for a peer. Canonical signal
-        //      for abrupt failure.
-        //   2. KV-replicated NodeLifecycleKey transitions (eventAggregator::onNodeLifecyclePut) —
-        //      fires on every node when the leader writes DRAINING / DECOMMISSIONED.
-        //      Required for graceful-drain semantics (DRAINING → DECOMMISSIONED → NODE_LEFT).
-        // The previous leader-broadcast `TopologyChangeNotification.NodeRemoved/NodeDown`
-        // path was redundant with #1 (same NODE_FAILED/NODE_LEFT semantics, same triggering
-        // event, same broadcast latency on cloud per diagnostic at 2026-05-06). Removed
-        // to avoid duplicate buffer entries — see commit ddf90d221's diagnostic which
-        // confirmed swim-observation fires immediately on every node.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));

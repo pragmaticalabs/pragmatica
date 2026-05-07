@@ -25,9 +25,6 @@ import static org.pragmatica.lang.Option.option;
         return Promise.allOf(provisions).flatMap(results -> Result.allOf(results).async());
     }
 
-    /// Provision a single node with a caller-supplied ProvisionSpec. Returns the resulting
-    /// ProvisionedNode tagged with the supplied nodeId. Bootstrap phases use this instead of
-    /// `provisionVia` when each node needs its own user_data string (per-node cloud-init).
     public static Promise<ProvisionedNode> provisionOne(ComputeProvider compute, String nodeId, ProvisionSpec spec) {
         return compute.provision(spec).map(info -> toProvisionedNode(nodeId, info));
     }

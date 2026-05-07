@@ -37,8 +37,7 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
         return new RetryConfig(attempts, strategy);
     }
 
-    @SuppressWarnings("JBCT-NAM-01") private static RetryConfig withFixedBackoff(int attempts,
-                                                                                                 TimeSpan interval) {
+    @SuppressWarnings("JBCT-NAM-01") private static RetryConfig withFixedBackoff(int attempts, TimeSpan interval) {
         return new RetryConfig(attempts,
                                BackoffStrategy.fixed().interval(interval));
     }

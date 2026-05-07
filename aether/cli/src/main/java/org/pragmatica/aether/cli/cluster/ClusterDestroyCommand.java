@@ -231,9 +231,13 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDO
                                                            ? "ok"
                                                            : "failed");
         System.out.println("  Registry entry removed.");
-        var allSucceeded = countSuccesses(drainResults) == drainResults.size() && countSuccesses(shutdownResults) == shutdownResults.size() && cleanupSucceeded;
-        if (!allSucceeded) {
-            System.err.println("Warning: some operations failed. Check output above.");
+        var drainShutdownOk = countSuccesses(drainResults) == drainResults.size() && countSuccesses(shutdownResults) == shutdownResults.size();
+        if (!cleanupSucceeded) {
+            System.err.println("Warning: cloud resource cleanup failed; orphan resources may remain. " + "Run 'tools/cloud-reaper.sh --cluster " + clusterName + " --destroy' to clean up.");
+            return ExitCode.CLEANUP_FAILED;
+        }
+        if (!drainShutdownOk) {
+            System.err.println("Warning: some drain/shutdown operations failed. Check output above.");
             return ExitCode.ERROR;
         }
         System.out.printf("Cluster '%s' destroyed successfully.%n", clusterName);

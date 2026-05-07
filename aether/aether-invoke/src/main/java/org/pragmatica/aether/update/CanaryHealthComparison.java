@@ -34,11 +34,11 @@ public record CanaryHealthComparison(String canaryId,
         }
 
         public static VersionMetrics versionMetrics(Version version,
-                                                                                    long requestCount,
-                                                                                    long errorCount,
-                                                                                    double errorRate,
-                                                                                    long p99LatencyMs,
-                                                                                    long avgLatencyMs) {
+                                                    long requestCount,
+                                                    long errorCount,
+                                                    double errorRate,
+                                                    long p99LatencyMs,
+                                                    long avgLatencyMs) {
             return new VersionMetrics(version, requestCount, errorCount, errorRate, p99LatencyMs, avgLatencyMs);
         }
 

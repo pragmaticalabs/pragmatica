@@ -60,10 +60,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final SwimHealthContext context;
     private final SwimConfig swimConfig;
 
-    /// Observation listeners registered via [#addObservationListener] before SWIM
-    /// has reached the Running state. Re-attached to every freshly-started
-    /// SwimProtocol in [#seedAndWrap], so registrations made during AetherNode
-    /// init (when `protocol()` is empty) survive across SWIM start/restart cycles.
     private final List<Consumer<SwimObservation>> pendingObservationListeners = new CopyOnWriteArrayList<>();
 
     private CoreSwimHealthDetector(SwimHealthContext context, SwimConfig swimConfig) {

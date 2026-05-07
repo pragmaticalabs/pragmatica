@@ -37,10 +37,10 @@ import static org.pragmatica.lang.Verify.ensure;
     }
 
     private static ResolvedSlice toResolvedSlice(Artifact artifact,
-                                                                                 int instances,
-                                                                                 int minAvailable,
-                                                                                 boolean isDependency,
-                                                                                 Set<Artifact> dependencies) {
+                                                 int instances,
+                                                 int minAvailable,
+                                                 boolean isDependency,
+                                                 Set<Artifact> dependencies) {
         var safeDeps = dependencies == null
                       ? Set.<Artifact>of()
                       : Set.copyOf(dependencies);

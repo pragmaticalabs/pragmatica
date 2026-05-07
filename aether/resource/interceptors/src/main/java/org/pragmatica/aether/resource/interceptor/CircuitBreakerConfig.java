@@ -14,9 +14,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, int testAttempts) {
-    private static final CircuitBreakerConfig DEFAULTS = new CircuitBreakerConfig(5,
-                                                                                                                  timeSpan(30).seconds(),
-                                                                                                                  3);
+    private static final CircuitBreakerConfig DEFAULTS = new CircuitBreakerConfig(5, timeSpan(30).seconds(), 3);
 
     public static CircuitBreakerConfig circuitBreakerConfig() {
         return DEFAULTS;

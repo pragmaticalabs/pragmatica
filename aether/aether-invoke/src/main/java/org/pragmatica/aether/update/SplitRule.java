@@ -13,8 +13,7 @@ public sealed interface SplitRule {
     String resolveVariant(Map<String, String> headers, Map<String, String> cookies);
 
     record HeaderHashSplit(String headerName, int variantCount) implements SplitRule {
-        public static HeaderHashSplit headerHashSplit(String headerName,
-                                                                                      int variantCount) {
+        public static HeaderHashSplit headerHashSplit(String headerName, int variantCount) {
             return new HeaderHashSplit(headerName, variantCount);
         }
 
@@ -26,8 +25,7 @@ public sealed interface SplitRule {
     }
 
     record CookieHashSplit(String cookieName, int variantCount) implements SplitRule {
-        public static CookieHashSplit cookieHashSplit(String cookieName,
-                                                                                      int variantCount) {
+        public static CookieHashSplit cookieHashSplit(String cookieName, int variantCount) {
             return new CookieHashSplit(cookieName, variantCount);
         }
 
@@ -40,8 +38,8 @@ public sealed interface SplitRule {
 
     record HeaderMatchSplit(String headerName, Map<String, String> valueToVariant, String defaultVariant) implements SplitRule {
         public static HeaderMatchSplit headerMatchSplit(String headerName,
-                                                                                        Map<String, String> valueToVariant,
-                                                                                        String defaultVariant) {
+                                                        Map<String, String> valueToVariant,
+                                                        String defaultVariant) {
             return new HeaderMatchSplit(headerName, valueToVariant, defaultVariant);
         }
 

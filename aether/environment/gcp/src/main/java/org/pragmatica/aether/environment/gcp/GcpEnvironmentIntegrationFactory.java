@@ -5,12 +5,14 @@
 package org.pragmatica.aether.environment.gcp;
 
 import org.pragmatica.aether.environment.CloudConfig;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.gcp.GcpConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.util.ArrayList;
 import java.util.Map;
 
 import static org.pragmatica.aether.environment.gcp.GcpEnvironmentConfig.GcpNegConfig.gcpNegConfig;
@@ -28,12 +30,31 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
     }
 
     private static Result<GcpEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
-        var creds = config.credentials();
+        return validateCredentials(config.credentials()).flatMap(creds -> buildFromValidated(creds, config));
+    }
+
+    private static Result<Map<String, String>> validateCredentials(Map<String, String> creds) {
+        var missing = new ArrayList<String>();
+        if (blank(creds.get("project_id"))) {missing.add("GCP_PROJECT_ID");}
+        if (blank(creds.get("service_account_email"))) {missing.add("GCP_SERVICE_ACCOUNT_EMAIL");}
+        if (blank(creds.get("private_key_pem"))) {missing.add("GCP_PRIVATE_KEY_PEM");}
+        if (blank(creds.get("zone"))) {missing.add("GCP_ZONE");}
+        if (!missing.isEmpty()) {return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("gcp",
+                                                                                                              missing)
+        .unwrap());}
+        return Result.success(creds);
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static Result<GcpEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {
         var compute = config.compute();
-        var gcpConfig = GcpConfig.gcpConfig(creds.getOrDefault("project_id", ""),
-                                            creds.getOrDefault("zone", ""),
-                                            creds.getOrDefault("service_account_email", ""),
-                                            creds.getOrDefault("private_key_pem", ""));
+        var gcpConfig = GcpConfig.gcpConfig(creds.get("project_id"),
+                                            creds.get("zone"),
+                                            creds.get("service_account_email"),
+                                            creds.get("private_key_pem"));
         return gcpEnvironmentConfig(gcpConfig,
                                     compute.getOrDefault("machine_type", ""),
                                     compute.getOrDefault("source_image", ""),
@@ -78,7 +99,7 @@ public record GcpEnvironmentIntegrationFactory() implements EnvironmentIntegrati
     }
 
     private static GcpEnvironmentConfig withNetworkEndpointGroup(GcpEnvironmentConfig envConfig,
-                                                                                                 GcpEnvironmentConfig.GcpNegConfig negConfig) {
+                                                                 GcpEnvironmentConfig.GcpNegConfig negConfig) {
         return new GcpEnvironmentConfig(envConfig.gcpConfig(),
                                         envConfig.machineType(),
                                         envConfig.sourceImage(),

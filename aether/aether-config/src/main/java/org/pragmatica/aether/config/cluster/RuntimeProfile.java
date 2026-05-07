@@ -7,14 +7,6 @@ package org.pragmatica.aether.config.cluster;
 import org.pragmatica.lang.Option;
 
 
-/// Runtime profile for a node role.
-///
-/// `jarUrl` (optional) overrides the auto-derived JVM-mode jar URL. When absent,
-/// `UserDataTemplate.deriveJarTag(version)` is used to construct a URL of the form
-/// `https://github.com/pragmaticalabs/pragmatica/releases/download/<tag>/aether-node.jar`
-/// where `<tag>` is `v<version>` for plain semver and `v<version>-candidate` for prereleases.
-/// Set this for environments that require a custom artifact location, or when the auto-derived
-/// tag does not match the actual git tag.
 public record RuntimeProfile(String name,
                              RuntimeType type,
                              Option<String> image,

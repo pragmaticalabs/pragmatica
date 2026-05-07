@@ -45,7 +45,7 @@ public record TransactionConfig(TransactionPropagation propagation,
     }
 
     @SuppressWarnings("JBCT-NAM-01") private static TransactionConfig withPropagationAndIsolation(TransactionPropagation p,
-                                                                                                                  IsolationLevel i) {
+                                                                                                  IsolationLevel i) {
         return new TransactionConfig(p, i, none(), false, EMPTY_ROLLBACK_FOR);
     }
 }

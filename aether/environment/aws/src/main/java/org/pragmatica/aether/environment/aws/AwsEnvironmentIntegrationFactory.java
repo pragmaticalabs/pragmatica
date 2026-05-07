@@ -5,12 +5,14 @@
 package org.pragmatica.aether.environment.aws;
 
 import org.pragmatica.aether.environment.CloudConfig;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.aws.AwsConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -31,11 +33,29 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
     }
 
     private static Result<AwsEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
-        var creds = config.credentials();
+        return validateCredentials(config.credentials()).flatMap(creds -> buildFromValidated(creds, config));
+    }
+
+    private static Result<Map<String, String>> validateCredentials(Map<String, String> creds) {
+        var missing = new ArrayList<String>();
+        if (blank(creds.get("access_key_id"))) {missing.add("AWS_ACCESS_KEY_ID");}
+        if (blank(creds.get("secret_access_key"))) {missing.add("AWS_SECRET_ACCESS_KEY");}
+        if (blank(creds.get("region"))) {missing.add("AWS_REGION");}
+        if (!missing.isEmpty()) {return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("aws",
+                                                                                                              missing)
+        .unwrap());}
+        return Result.success(creds);
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static Result<AwsEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {
         var compute = config.compute();
-        var awsConfig = AwsConfig.awsConfig(creds.getOrDefault("access_key_id", ""),
-                                            creds.getOrDefault("secret_access_key", ""),
-                                            creds.getOrDefault("region", ""));
+        var awsConfig = AwsConfig.awsConfig(creds.get("access_key_id"),
+                                            creds.get("secret_access_key"),
+                                            creds.get("region"));
         return awsEnvironmentConfig(awsConfig,
                                     compute.getOrDefault("ami_id", ""),
                                     compute.getOrDefault("instance_type", ""),
@@ -78,7 +98,7 @@ public record AwsEnvironmentIntegrationFactory() implements EnvironmentIntegrati
     }
 
     private static AwsEnvironmentConfig withLoadBalancer(AwsEnvironmentConfig envConfig,
-                                                                                         AwsEnvironmentConfig.AwsLbConfig lbConfig) {
+                                                         AwsEnvironmentConfig.AwsLbConfig lbConfig) {
         return new AwsEnvironmentConfig(envConfig.awsConfig(),
                                         envConfig.amiId(),
                                         envConfig.instanceType(),

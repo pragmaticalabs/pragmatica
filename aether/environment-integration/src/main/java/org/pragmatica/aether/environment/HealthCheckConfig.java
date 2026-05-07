@@ -19,12 +19,12 @@ public record HealthCheckConfig(String protocol,
                                 int healthyThreshold,
                                 int unhealthyThreshold) {
     public static final HealthCheckConfig DEFAULT = new HealthCheckConfig("http",
-                                                                                                          8080,
-                                                                                                          "/health/ready",
-                                                                                                          timeSpan(10).seconds(),
-                                                                                                          timeSpan(5).seconds(),
-                                                                                                          3,
-                                                                                                          3);
+                                                                          8080,
+                                                                          "/health/ready",
+                                                                          timeSpan(10).seconds(),
+                                                                          timeSpan(5).seconds(),
+                                                                          3,
+                                                                          3);
 
     public static Result<HealthCheckConfig> healthCheckConfig(String protocol,
                                                               int port,

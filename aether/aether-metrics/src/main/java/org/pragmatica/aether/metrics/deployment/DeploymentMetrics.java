@@ -75,8 +75,7 @@ public record DeploymentMetrics(Artifact artifact,
                                 .option();
     }
 
-    private static Result<DeploymentMetrics> buildFromEntry(Artifact artifact,
-                                                                                            DeploymentMetricsEntry entry) {
+    private static Result<DeploymentMetrics> buildFromEntry(Artifact artifact, DeploymentMetricsEntry entry) {
         return NodeId.nodeId(entry.nodeId())
                             .map(nodeId -> new DeploymentMetrics(artifact,
                                                                  nodeId,
@@ -88,9 +87,7 @@ public record DeploymentMetrics(Artifact artifact,
                                                                  DeploymentStatus.deploymentStatus(entry.status())));
     }
 
-    public static DeploymentMetrics deploymentMetrics(Artifact artifact,
-                                                                                      NodeId nodeId,
-                                                                                      long timestamp) {
+    public static DeploymentMetrics deploymentMetrics(Artifact artifact, NodeId nodeId, long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, timestamp, 0, 0, 0, 0, DeploymentStatus.IN_PROGRESS);
     }
 

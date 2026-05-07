@@ -12,21 +12,15 @@ import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 
 
-/// Build metadata read from the executable jar's MANIFEST.MF at startup.
-///
-/// `Implementation-Version` is populated by `maven-jar-plugin` /
-/// `maven-shade-plugin`'s `ManifestResourceTransformer` from `${project.version}`
-/// of the module producing the jar. `Implementation-Build-Date` is added in the
-/// same plugin configuration from `${maven.build.timestamp}`.
-///
-/// When run from an IDE classpath (no jar) or from a jar without these manifest
-/// entries, both fall back to development sentinels: `version = "dev"`,
-/// `buildDate = "unknown"`.
 public final class BuildInfo {
     private static final String DEV_VERSION = "dev";
+
     private static final String UNKNOWN_DATE = "unknown";
+
     private static final String VERSION_KEY = "Implementation-Version";
+
     private static final String BUILD_DATE_KEY = "Implementation-Build-Date";
+
     private static final BuildInfo CURRENT = load();
 
     private final String version;
@@ -54,18 +48,19 @@ public final class BuildInfo {
     }
 
     private static BuildInfo load() {
-        return Option.option(BuildInfo.class.getProtectionDomain().getCodeSource())
-                                  .map(java.security.CodeSource::getLocation)
-                                  .flatMap(BuildInfo::toJarFile)
-                                  .flatMap(BuildInfo::readManifest)
-                                  .map(BuildInfo::fromManifest)
-                                  .or(BuildInfo::fallback);
+        return Option.option(BuildInfo.class.getProtectionDomain().getCodeSource()).map(java.security.CodeSource::getLocation)
+                            .flatMap(BuildInfo::toJarFile)
+                            .flatMap(BuildInfo::readManifest)
+                            .map(BuildInfo::fromManifest)
+                            .or(BuildInfo::fallback);
     }
 
     private static Option<File> toJarFile(URL url) {
         try {
             var file = new File(url.toURI());
-            return file.isFile() ? Option.some(file) : Option.empty();
+            return file.isFile()
+                  ? Option.some(file)
+                  : Option.empty();
         } catch (Exception _) {
             return Option.empty();
         }

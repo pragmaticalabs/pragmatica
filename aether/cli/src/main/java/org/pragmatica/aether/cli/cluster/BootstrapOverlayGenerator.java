@@ -101,21 +101,17 @@ public interface BootstrapOverlayGenerator {
         return Section.section("cloud.compute", values);
     }
 
-    /// Top-level `[cloud]` section. Required for `ConfigLoader.populateCloudConfig` to
-    /// build a `CloudConfig` at runtime — without it, `lifecycleManager.isCloudManaged()`
-    /// returns false and CTM cannot auto-provision new nodes during scale-up.
     private static Option<Section> cloudSection(SourceProfile source) {
         if (source.type() != SourceType.CLOUD) {return Option.empty();}
-        return source.provider().map(provider -> Section.section("cloud", Map.of("provider", provider.value())));
+        return source.provider().map(provider -> Section.section("cloud",
+                                                                 Map.of("provider", provider.value())));
     }
 
-    /// `[cloud.credentials]` section carrying the API token from the bootstrap config.
-    /// Required so the runtime ComputeProvider can authenticate with the cloud API
-    /// when it provisions new VMs after a `/api/cluster/scale` request.
     private static Option<Section> cloudCredentialsSection(SourceProfile source) {
         if (source.type() != SourceType.CLOUD) {return Option.empty();}
         return source.credentials().filter(token -> !token.isBlank())
-                                 .map(token -> Section.section("cloud.credentials", Map.of("api_token", token)));
+                                 .map(token -> Section.section("cloud.credentials",
+                                                               Map.of("api_token", token)));
     }
 
     private static Option<String> coreInstanceType(SourceProfile source) {

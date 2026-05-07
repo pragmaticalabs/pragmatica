@@ -37,14 +37,14 @@ public record EmberConfig(int nodes,
     public static final int DEFAULT_CORE_MAX = 0;
 
     public static final EmberConfig DEFAULT = new EmberConfig(DEFAULT_NODES,
-                                                                                              DEFAULT_MANAGEMENT_PORT,
-                                                                                              DEFAULT_DASHBOARD_PORT,
-                                                                                              DEFAULT_APP_HTTP_PORT,
-                                                                                              EmberH2Config.disabled(),
-                                                                                              ObservabilityConfig.DEFAULT,
-                                                                                              DEFAULT_LB_ENABLED,
-                                                                                              DEFAULT_LB_PORT,
-                                                                                              DEFAULT_CORE_MAX);
+                                                              DEFAULT_MANAGEMENT_PORT,
+                                                              DEFAULT_DASHBOARD_PORT,
+                                                              DEFAULT_APP_HTTP_PORT,
+                                                              EmberH2Config.disabled(),
+                                                              ObservabilityConfig.DEFAULT,
+                                                              DEFAULT_LB_ENABLED,
+                                                              DEFAULT_LB_PORT,
+                                                              DEFAULT_CORE_MAX);
 
     public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int dashboardPort) {
         return emberConfig(nodes,

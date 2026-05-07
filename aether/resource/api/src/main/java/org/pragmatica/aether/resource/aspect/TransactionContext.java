@@ -38,7 +38,7 @@ public record TransactionContext(String id,
     }
 
     @SuppressWarnings("JBCT-NAM-01") public static TransactionContext nestedContext(TransactionConfig config,
-                                                                                                    TransactionContext parent) {
+                                                                                    TransactionContext parent) {
         return new TransactionContext(UUID.randomUUID().toString(),
                                       config,
                                       TransactionStatus.ACTIVE,

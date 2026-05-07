@@ -5,12 +5,14 @@
 package org.pragmatica.aether.environment.azure;
 
 import org.pragmatica.aether.environment.CloudConfig;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.azure.AzureConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.util.ArrayList;
 import java.util.Map;
 
 import static org.pragmatica.aether.environment.azure.AzureEnvironmentConfig.AzureLbConfig.azureLbConfig;
@@ -28,14 +30,35 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
     }
 
     private static Result<AzureEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
-        var creds = config.credentials();
+        return validateCredentials(config.credentials()).flatMap(creds -> buildFromValidated(creds, config));
+    }
+
+    private static Result<Map<String, String>> validateCredentials(Map<String, String> creds) {
+        var missing = new ArrayList<String>();
+        if (blank(creds.get("tenant_id"))) {missing.add("AZURE_TENANT_ID");}
+        if (blank(creds.get("client_id"))) {missing.add("AZURE_CLIENT_ID");}
+        if (blank(creds.get("client_secret"))) {missing.add("AZURE_CLIENT_SECRET");}
+        if (blank(creds.get("subscription_id"))) {missing.add("AZURE_SUBSCRIPTION_ID");}
+        if (blank(creds.get("resource_group"))) {missing.add("AZURE_RESOURCE_GROUP");}
+        if (blank(creds.get("location"))) {missing.add("AZURE_LOCATION");}
+        if (!missing.isEmpty()) {return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("azure",
+                                                                                                              missing)
+        .unwrap());}
+        return Result.success(creds);
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static Result<AzureEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {
         var compute = config.compute();
-        var azureConfig = AzureConfig.azureConfig(creds.getOrDefault("tenant_id", ""),
-                                                  creds.getOrDefault("client_id", ""),
-                                                  creds.getOrDefault("client_secret", ""),
-                                                  creds.getOrDefault("subscription_id", ""),
-                                                  creds.getOrDefault("resource_group", ""),
-                                                  creds.getOrDefault("location", ""));
+        var azureConfig = AzureConfig.azureConfig(creds.get("tenant_id"),
+                                                  creds.get("client_id"),
+                                                  creds.get("client_secret"),
+                                                  creds.get("subscription_id"),
+                                                  creds.get("resource_group"),
+                                                  creds.get("location"));
         return azureEnvironmentConfig(azureConfig,
                                       compute.getOrDefault("vm_size", ""),
                                       compute.getOrDefault("image", ""),
@@ -81,7 +104,7 @@ public record AzureEnvironmentIntegrationFactory() implements EnvironmentIntegra
     }
 
     private static AzureEnvironmentConfig withLoadBalancer(AzureEnvironmentConfig envConfig,
-                                                                                           AzureEnvironmentConfig.AzureLbConfig lbConfig) {
+                                                           AzureEnvironmentConfig.AzureLbConfig lbConfig) {
         return new AzureEnvironmentConfig(envConfig.azureConfig(),
                                           envConfig.vmSize(),
                                           envConfig.image(),

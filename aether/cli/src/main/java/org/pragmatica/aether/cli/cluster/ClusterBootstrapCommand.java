@@ -227,6 +227,7 @@ import static org.pragmatica.lang.Option.option;
     private static int onFailure(Cause cause) {
         if (cause instanceof AbortedError) {return ExitCode.SUCCESS;}
         System.err.println("Error: " + cause.message());
+        if (cause instanceof ClusterBootstrapOrchestrator.BootstrapError.BootstrapFailedWithOrphans) {return ExitCode.CLEANUP_FAILED;}
         return ExitCode.ERROR;
     }
 

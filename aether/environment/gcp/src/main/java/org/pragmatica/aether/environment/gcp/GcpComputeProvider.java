@@ -51,7 +51,8 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.insertInstance(buildInsertRequest(Option.empty(), config.userData())).map(GcpComputeProvider::toInstanceInfo)
+        return client.insertInstance(buildInsertRequest(Option.empty(),
+                                                        config.userData())).map(GcpComputeProvider::toInstanceInfo)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
 

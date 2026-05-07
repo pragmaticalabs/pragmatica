@@ -23,9 +23,7 @@ import org.pragmatica.serialization.Codec;
         .map(Artifact::new);
     }
 
-    public static Artifact artifact(GroupId groupId,
-                                                                    ArtifactId artifactId,
-                                                                    Version version) {
+    public static Artifact artifact(GroupId groupId, ArtifactId artifactId, Version version) {
         return new Artifact(groupId, artifactId, version);
     }
 

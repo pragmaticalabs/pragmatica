@@ -209,9 +209,7 @@ import static org.pragmatica.lang.Result.success;
             return httpMethod + ":" + pathPrefix;
         }
 
-        public static HttpNodeRouteKey httpNodeRouteKey(String httpMethod,
-                                                                                        String pathPrefix,
-                                                                                        NodeId nodeId) {
+        public static HttpNodeRouteKey httpNodeRouteKey(String httpMethod, String pathPrefix, NodeId nodeId) {
             return new HttpNodeRouteKey(httpMethod.toUpperCase(), normalizePrefix(pathPrefix), nodeId);
         }
 
@@ -273,8 +271,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        public static ObservabilityDepthKey observabilityDepthKey(String artifactBase,
-                                                                                                  String methodName) {
+        public static ObservabilityDepthKey observabilityDepthKey(String artifactBase, String methodName) {
             return new ObservabilityDepthKey(artifactBase, methodName);
         }
 
@@ -321,8 +318,8 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static TopicSubscriptionKey topicSubscriptionKey(String topicName,
-                                                                                                Artifact artifact,
-                                                                                                MethodName methodName) {
+                                                                Artifact artifact,
+                                                                MethodName methodName) {
             return new TopicSubscriptionKey(topicName, artifact, methodName);
         }
 
@@ -357,8 +354,8 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static ScheduledTaskKey scheduledTaskKey(String configSection,
-                                                                                        Artifact artifact,
-                                                                                        MethodName methodName) {
+                                                        Artifact artifact,
+                                                        MethodName methodName) {
             return new ScheduledTaskKey(configSection, artifact, methodName);
         }
 
@@ -393,8 +390,8 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static ScheduledTaskStateKey scheduledTaskStateKey(String configSection,
-                                                                                                  Artifact artifact,
-                                                                                                  MethodName methodName) {
+                                                                  Artifact artifact,
+                                                                  MethodName methodName) {
             return new ScheduledTaskStateKey(configSection, artifact, methodName);
         }
 
@@ -499,8 +496,7 @@ import static org.pragmatica.lang.Result.success;
             return new WorkerSliceDirectiveKey(artifact, Option.none());
         }
 
-        public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact,
-                                                                                                      String communityId) {
+        public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact, String communityId) {
             return new WorkerSliceDirectiveKey(artifact, Option.option(communityId));
         }
 
@@ -712,8 +708,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        public static NodeArtifactKey nodeArtifactKey(NodeId nodeId,
-                                                                                      Artifact artifact) {
+        public static NodeArtifactKey nodeArtifactKey(NodeId nodeId, Artifact artifact) {
             return new NodeArtifactKey(nodeId, artifact);
         }
 
@@ -869,7 +864,7 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static StreamPartitionAssignmentKey streamPartitionAssignmentKey(String streamName,
-                                                                                                                String consumerGroup) {
+                                                                                String consumerGroup) {
             return new StreamPartitionAssignmentKey(streamName, consumerGroup);
         }
 
@@ -897,8 +892,8 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static StreamCursorCheckpointKey streamCursorCheckpointKey(String streamName,
-                                                                                                          int partitionIndex,
-                                                                                                          String consumerGroup) {
+                                                                          int partitionIndex,
+                                                                          String consumerGroup) {
             return new StreamCursorCheckpointKey(streamName, partitionIndex, consumerGroup);
         }
 
@@ -924,9 +919,9 @@ import static org.pragmatica.lang.Result.success;
         }
 
         public static StreamRegistrationKey streamRegistrationKey(String streamName,
-                                                                                                  String configSection,
-                                                                                                  Artifact artifact,
-                                                                                                  MethodName methodName) {
+                                                                  String configSection,
+                                                                  Artifact artifact,
+                                                                  MethodName methodName) {
             return new StreamRegistrationKey(streamName, configSection, artifact, methodName);
         }
 
@@ -964,8 +959,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        public static StorageBlockKey storageBlockKey(String instanceName,
-                                                                                      String blockIdHex) {
+        public static StorageBlockKey storageBlockKey(String instanceName, String blockIdHex) {
             return new StorageBlockKey(instanceName, blockIdHex);
         }
 
@@ -990,8 +984,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        public static StorageRefKey storageRefKey(String instanceName,
-                                                                                  String referenceName) {
+        public static StorageRefKey storageRefKey(String instanceName, String referenceName) {
             return new StorageRefKey(instanceName, referenceName);
         }
 
@@ -1020,8 +1013,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        public static StorageStatusKey storageStatusKey(NodeId nodeId,
-                                                                                        String instanceName) {
+        public static StorageStatusKey storageStatusKey(NodeId nodeId, String instanceName) {
             return new StorageStatusKey(nodeId, instanceName);
         }
 
@@ -1305,9 +1297,7 @@ import static org.pragmatica.lang.Result.success;
             return asString();
         }
 
-        public static ConsumerGroupKey consumerGroupKey(String groupId,
-                                                                                        String streamName,
-                                                                                        int partition) {
+        public static ConsumerGroupKey consumerGroupKey(String groupId, String streamName, int partition) {
             return new ConsumerGroupKey(groupId, streamName, partition);
         }
 

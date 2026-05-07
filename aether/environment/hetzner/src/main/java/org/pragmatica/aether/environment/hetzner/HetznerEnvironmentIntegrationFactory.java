@@ -5,12 +5,14 @@
 package org.pragmatica.aether.environment.hetzner;
 
 import org.pragmatica.aether.environment.CloudConfig;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -29,18 +31,35 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
                                      .map(EnvironmentIntegration.class::cast);
     }
 
-    // Defaults applied when the bootstrap TOML / config map omits these compute fields. Hetzner API
-    // rejects empty strings (422 invalid_input). cx33 = current cheapest 4 vCPU type (cx22 deprecated).
     private static final String DEFAULT_SERVER_TYPE = "cx33";
-    private static final String DEFAULT_IMAGE       = "ubuntu-22.04";
+
+    private static final String DEFAULT_IMAGE = "ubuntu-22.04";
 
     private static Result<HetznerEnvironmentConfig> buildEnvironmentConfig(CloudConfig config) {
-        var creds = config.credentials();
+        return validateCredentials(config.credentials()).flatMap(creds -> buildFromValidated(creds, config));
+    }
+
+    private static Result<Map<String, String>> validateCredentials(Map<String, String> creds) {
+        var missing = new ArrayList<String>();
+        if (blank(creds.get("api_token"))) {missing.add("HCLOUD_TOKEN");}
+        if (!missing.isEmpty()) {return Result.failure(EnvironmentError.CredentialsMissing.credentialsMissing("hetzner",
+                                                                                                              missing)
+        .unwrap());}
+        return Result.success(creds);
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static Result<HetznerEnvironmentConfig> buildFromValidated(Map<String, String> creds, CloudConfig config) {
         var compute = config.compute();
-        var hetznerConfig = HetznerConfig.hetznerConfig(creds.getOrDefault("api_token", ""));
+        var hetznerConfig = HetznerConfig.hetznerConfig(creds.get("api_token"));
         return hetznerEnvironmentConfig(hetznerConfig,
-                                        nonBlank(compute.get("server_type"), DEFAULT_SERVER_TYPE),
-                                        nonBlank(compute.get("image"), DEFAULT_IMAGE),
+                                        nonBlank(compute.get("server_type"),
+                                                 DEFAULT_SERVER_TYPE),
+                                        nonBlank(compute.get("image"),
+                                                 DEFAULT_IMAGE),
                                         compute.getOrDefault("region", ""),
                                         parseLongList(compute.getOrDefault("ssh_key_ids", "")),
                                         parseLongList(compute.getOrDefault("network_ids", "")),
@@ -74,7 +93,7 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
     }
 
     private static HetznerEnvironmentConfig withLoadBalancer(HetznerEnvironmentConfig envConfig,
-                                                                                             HetznerEnvironmentConfig.HetznerLbConfig lbConfig) {
+                                                             HetznerEnvironmentConfig.HetznerLbConfig lbConfig) {
         return new HetznerEnvironmentConfig(envConfig.hetznerConfig(),
                                             envConfig.serverType(),
                                             envConfig.image(),
@@ -98,6 +117,8 @@ public record HetznerEnvironmentIntegrationFactory() implements EnvironmentInteg
     }
 
     private static String nonBlank(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value;
+        return value == null || value.isBlank()
+              ? fallback
+              : value;
     }
 }

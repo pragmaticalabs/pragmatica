@@ -10,27 +10,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Configuration for the cluster controller.
-///
-///
-/// Controls thresholds for automatic scaling decisions.
-///
-///
-/// **Note on evaluationIntervalMs:** Both ControllerConfig and ScalingConfig have
-/// an evaluationIntervalMs field. They serve different purposes:
-///
-///   - `ControllerConfig.evaluationIntervalMs` - Controls the scheduler interval for the control loop
-///   - `ScalingConfig.evaluationIntervalMs` - Used for window timing calculations (how long until window is full)
-///
-///
-/// @param cpuScaleUpThreshold CPU usage above which to scale up (0.0-1.0)
-/// @param cpuScaleDownThreshold CPU usage below which to scale down (0.0-1.0)
-/// @param callRateScaleUpThreshold call rate above which to scale up (must be positive)
-/// @param evaluationIntervalMs interval between controller evaluations in milliseconds (must be positive)
-/// @param warmUpPeriodMs time after ControlLoop activation during which scaling is blocked (must be non-negative)
-/// @param sliceCooldownMs time after slice reaches ACTIVE during which scaling is blocked (must be non-negative)
-/// @param scalingConfig configuration for the Lizard Brain relative change scaling algorithm
-// Record copy methods (with*) and DEFAULT constant use new internally — validated by factory
 public record ControllerConfig(double cpuScaleUpThreshold,
                                double cpuScaleDownThreshold,
                                double callRateScaleUpThreshold,

@@ -6,6 +6,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.CloudConfig;
+import org.pragmatica.aether.environment.CloudCredentials;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
@@ -54,9 +55,9 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
                               .flatMap(ProviderResolver::extractFloatingIp);
     }
 
-    public static Result<ComputeProvider> resolveCloudCompute(String providerName) {
-        return lookupFactory(providerName).flatMap(factory -> factory.create(minimalCloudConfig(providerName)))
-                            .flatMap(ProviderResolver::extractCompute);
+    public static Result<ComputeProvider> resolveCloudComputeForCleanup(String providerName) {
+        return CloudCredentials.fromEnvironment(providerName).flatMap(cloudConfig -> lookupFactory(providerName).flatMap(factory -> factory.create(cloudConfig)))
+                                               .flatMap(ProviderResolver::extractCompute);
     }
 
     public static Result<ComputeProvider> resolveDockerCompute() {
@@ -122,10 +123,6 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
     private static String joinLongs(List<Long> ids) {
         return ids.stream().map(String::valueOf)
                          .collect(Collectors.joining(","));
-    }
-
-    private static CloudConfig minimalCloudConfig(String providerName) {
-        return new CloudConfig(providerName, Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
     }
 
     private static CloudConfig dockerCloudConfig() {

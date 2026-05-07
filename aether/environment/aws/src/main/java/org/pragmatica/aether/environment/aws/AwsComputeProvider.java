@@ -47,7 +47,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.runInstances(buildRunRequest(Option.empty(), config.userData())).flatMap(this::tagAndMapFirstInstance)
+        return client.runInstances(buildRunRequest(Option.empty(),
+                                                   config.userData())).flatMap(this::tagAndMapFirstInstance)
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 

@@ -7,24 +7,12 @@ package org.pragmatica.aether.slice.blueprint;
 import java.util.List;
 
 
-/// Deployment strategy configuration parsed from blueprint TOML.
-///
-/// This is the blueprint-level configuration that defines HOW an application
-/// should be deployed (rolling, canary, blue-green) and the associated thresholds.
-/// The runtime deployment managers in aether-invoke consume this configuration.
-///
-/// @param strategy the deployment strategy type
-/// @param canaryStages canary stages (only used when strategy is CANARY)
-/// @param maxErrorRate maximum error rate threshold (0.0-1.0)
-/// @param maxLatencyMs maximum latency threshold in milliseconds
-/// @param drainTimeoutMs blue-green drain timeout in milliseconds
-/// @param schemaRequired whether schema migrations must complete before slice activation (default true)
 @SuppressWarnings("JBCT-UTIL-02") public record DeploymentConfig(Strategy strategy,
-                                                                                 List<CanaryStageConfig> canaryStages,
-                                                                                 double maxErrorRate,
-                                                                                 long maxLatencyMs,
-                                                                                 long drainTimeoutMs,
-                                                                                 boolean schemaRequired) {
+                                                                 List<CanaryStageConfig> canaryStages,
+                                                                 double maxErrorRate,
+                                                                 long maxLatencyMs,
+                                                                 long drainTimeoutMs,
+                                                                 boolean schemaRequired) {
     public enum Strategy {
         ROLLING,
         CANARY,
@@ -32,8 +20,7 @@ import java.util.List;
     }
 
     public record CanaryStageConfig(int trafficPercent, int observationMinutes) {
-        public static CanaryStageConfig canaryStageConfig(int trafficPercent,
-                                                                                          int observationMinutes) {
+        public static CanaryStageConfig canaryStageConfig(int trafficPercent, int observationMinutes) {
             return new CanaryStageConfig(trafficPercent, observationMinutes);
         }
     }

@@ -82,15 +82,9 @@ import static org.pragmatica.lang.Result.success;
         return freshBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
     }
 
-    /// When the cluster is configured with `[operations.tls] auto_generate = true`,
-    /// the leader's management HTTP server boots with TLS bound. Bootstrap formation
-    /// POSTs hit https://leader-ip:port/api/cluster/config, with a cert signed by a
-    /// cluster-derived CA the operator machine doesn't trust. Skip TLS verification
-    /// for those calls — the cluster_secret-derived chain is the actual root of trust.
     @Contract private static void configureClusterHttpClient(ClusterBootstrapConfig config) {
-        if (config.operations().tls().autoGenerate()) {
-            ClusterHttpClient.enableTlsSkipVerify();
-        }
+        if (config.operations().tls()
+                             .autoGenerate()) {ClusterHttpClient.enableTlsSkipVerify();}
     }
 
     private static Result<BootstrapResult> freshBootstrap(ClusterBootstrapConfig config,
@@ -101,9 +95,11 @@ import static org.pragmatica.lang.Result.success;
         return BootstrapPhaseValidate.execute(config, fullCheck).map(ctx -> ctx.withSshPublicKeys(sshPublicKeys))
                                              .map(ctx -> ctx.withRawTomlContent(rawTomlContent))
                                              .flatMap(ClusterBootstrapOrchestrator::runPhaseChain)
-                                             .onFailure(cause -> handleFailure(config.cluster().name(),
-                                                                               cause,
-                                                                               keepOnFailure));
+                                             .fold(cause -> Result.<BootstrapResult>failure(decorateAfterCleanup(config.cluster()
+                                                                                                                               .name(),
+                                                                                                                 cause,
+                                                                                                                 keepOnFailure)),
+                                                   Result::success);
     }
 
     private static Result<BootstrapResult> resumeBootstrap(ClusterBootstrapConfig config,
@@ -119,7 +115,10 @@ import static org.pragmatica.lang.Result.success;
                                                                                state,
                                                                                sshPublicKeys,
                                                                                rawTomlContent))
-                                             .onFailure(cause -> handleFailure(clusterName, cause, keepOnFailure));
+                                             .fold(cause -> Result.<BootstrapResult>failure(decorateAfterCleanup(clusterName,
+                                                                                                                 cause,
+                                                                                                                 keepOnFailure)),
+                                                   Result::success);
     }
 
     private static Result<BootstrapState> validateResumeState(BootstrapState state, ClusterBootstrapConfig config) {
@@ -194,17 +193,22 @@ import static org.pragmatica.lang.Result.success;
         BootstrapStatePersistence.save(failed.state());
     }
 
-    @Contract static void handleFailure(String clusterName, Cause cause, boolean keepOnFailure) {
+    static Cause decorateAfterCleanup(String clusterName, Cause cause, boolean keepOnFailure) {
         if (keepOnFailure) {
             warnKeepOnFailure(clusterName, cause);
-            return;
+            return cause;
         }
-        cleanupOnFailure(clusterName);
+        return cleanupOnFailure(clusterName).fold(cleanupCause -> wrapWithOrphans(cause, cleanupCause), _ -> cause);
     }
 
-    @Contract private static void cleanupOnFailure(String clusterName) {
-        BootstrapStatePersistence.load(clusterName).filter(state -> !state.createdResources().isEmpty())
-                                      .onPresent(state -> cleanupHook().apply(state));
+    private static Cause wrapWithOrphans(Cause originalCause, Cause cleanupCause) {
+        return new BootstrapError.BootstrapFailedWithOrphans(originalCause, cleanupCause.message());
+    }
+
+    private static Result<Unit> cleanupOnFailure(String clusterName) {
+        return BootstrapStatePersistence.load(clusterName).filter(state -> !state.createdResources().isEmpty())
+                                             .map(state -> cleanupHook().apply(state))
+                                             .or(Result.unitResult());
     }
 
     @Contract private static void warnKeepOnFailure(String clusterName, Cause cause) {
@@ -279,11 +283,6 @@ import static org.pragmatica.lang.Result.success;
         return ClusterHttpClient.postDirect(url, body);
     }
 
-    /// Variant used by `BootstrapPhaseFormation` to authenticate against clusters that
-    /// pre-configure a static API key in `[source.X.node_config.app-http].api_keys`.
-    /// Without this header, formation POSTs to `/api/cluster/config` and `/api/cluster/keys`
-    /// fail with HTTP 401 because the leader's `configValidator` reports configured
-    /// credentials are required, but no keys are in KV-Store yet.
     static Result<String> httpPost(String url, String body, Option<String> apiKey) {
         return ClusterHttpClient.postDirect(url, body, apiKey);
     }
@@ -481,8 +480,13 @@ import static org.pragmatica.lang.Result.success;
 
         record FormationWriteFailed(String operation, int attempts, long elapsedMs, String lastError) implements BootstrapError {
             @Override public String message() {
-                return "Cluster formation write failed: " + operation
-                       + " (after " + attempts + " attempts over " + (elapsedMs / 1000) + "s) — " + lastError;
+                return "Cluster formation write failed: " + operation + " (after " + attempts + " attempts over " + (elapsedMs / 1000) + "s) — " + lastError;
+            }
+        }
+
+        record BootstrapFailedWithOrphans(Cause originalCause, String cleanupDetail) implements BootstrapError {
+            @Override public String message() {
+                return originalCause.message() + " — cleanup failed, orphan resources may remain: " + cleanupDetail;
             }
         }
     }

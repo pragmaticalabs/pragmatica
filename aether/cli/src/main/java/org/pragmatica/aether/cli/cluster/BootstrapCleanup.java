@@ -23,7 +23,7 @@ import java.util.List;
     record unused() implements BootstrapCleanup{}
 
     static Result<Unit> cleanup(BootstrapState state) {
-        return cleanup(state, ProviderResolver::resolveCloudCompute, BootstrapCleanup::defaultHetznerClient);
+        return cleanup(state, ProviderResolver::resolveCloudComputeForCleanup, BootstrapCleanup::defaultHetznerClient);
     }
 
     static Result<Unit> cleanup(BootstrapState state, Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {

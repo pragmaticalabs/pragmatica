@@ -102,10 +102,8 @@ import org.slf4j.LoggerFactory;
     }
 
     private static AuthorizationRole parseAuthorizationRole(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return AuthorizationRole.VIEWER;
-        }
-        return switch (raw.toUpperCase()) {
+        if (raw == null || raw.isBlank()) {return AuthorizationRole.VIEWER;}
+        return switch (raw.toUpperCase()){
             case "ADMIN" -> AuthorizationRole.ADMIN;
             case "OPERATOR" -> AuthorizationRole.OPERATOR;
             case "VIEWER" -> AuthorizationRole.VIEWER;

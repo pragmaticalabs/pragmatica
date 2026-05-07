@@ -12,10 +12,10 @@ import static org.pragmatica.lang.Verify.ensure;
 
 public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSeconds, int maxEntries, CacheMode mode) {
     private static final CacheConfig DEFAULTS = new CacheConfig("default",
-                                                                                                CacheStrategy.CACHE_ASIDE,
-                                                                                                300,
-                                                                                                10_000,
-                                                                                                CacheMode.LOCAL);
+                                                                CacheStrategy.CACHE_ASIDE,
+                                                                300,
+                                                                10_000,
+                                                                CacheMode.LOCAL);
 
     public static CacheConfig cacheConfig() {
         return DEFAULTS;
