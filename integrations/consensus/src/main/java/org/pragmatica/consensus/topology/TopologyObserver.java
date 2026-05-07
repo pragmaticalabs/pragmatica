@@ -143,7 +143,8 @@ public interface TopologyObserver extends TopologyManager {
                        AtomicBoolean quorumEstablished,
                        AtomicBoolean started,
                        Object lifecycleLock,
-                       AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture) implements TopologyObserver {
+                       AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
+                       AtomicReference<Set<NodeId>> previousCoreMembers) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -160,7 +161,8 @@ public interface TopologyObserver extends TopologyManager {
                     AtomicBoolean quorumEstablished,
                     AtomicBoolean started,
                     Object lifecycleLock,
-                    AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture) {
+                    AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
+                    AtomicReference<Set<NodeId>> previousCoreMembers) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -176,6 +178,7 @@ public interface TopologyObserver extends TopologyManager {
                 this.started = started;
                 this.lifecycleLock = lifecycleLock;
                 this.reconcileFuture = reconcileFuture;
+                this.previousCoreMembers = previousCoreMembers;
                 this.effectiveClusterSize.set(config.clusterSize());
                 // Mirror the `initReconcile` filter: a peer the cluster has durably retired
                 // (KV NodeLifecycleValue.DECOMMISSIONED) must not be reconstructed from
@@ -440,6 +443,42 @@ public interface TopologyObserver extends TopologyManager {
                         router.route(QuorumStateNotification.disappeared());
                     }
                 }
+                publishMembershipDeltas();
+            }
+
+            /// Diff the latest `MembershipView` against the previously observed core member
+            /// set and route one `TopologyChangeNotification.NodeAdded` / `NodeRemoved` per
+            /// edge. Foundation for the membership-state-tracker consolidation
+            /// (`aether/docs/internal/audits/membership-state-tracker-audit-2026-05-07.md`):
+            /// downstream subscribers can drive off this canonical edge stream rather than
+            /// the parallel SWIM / QUIC / KV-lifecycle paths that today amplify a single
+            /// peer departure into N+ redundant routings. Step 1 of the consolidation only
+            /// publishes; later steps make this the SOLE driver and retire the alternate
+            /// emit paths in QUIC / AetherNode / SwimHealthContext.
+            ///
+            /// No-op when the snapshot source is empty (legacy / cold-boot windows). The
+            /// `started` gate is enforced upstream by `evaluateQuorumState` so the router
+            /// is fully wired by the time this method is invoked.
+            private void publishMembershipDeltas() {
+                var view = snapshotSource.currentMembershipView();
+                if (view.isEmpty()) {
+                    return;
+                }
+                var current = view.unwrap().coreMemberIds();
+                var previous = previousCoreMembers.getAndSet(Set.copyOf(current));
+                var delta = MembershipDelta.diff(previous, current);
+                if (delta.isEmpty()) {
+                    return;
+                }
+                var topology = List.copyOf(current);
+                for (var added : delta.added()) {
+                    log.debug("Membership delta: NodeAdded {}", added);
+                    router.route(TopologyChangeNotification.nodeAdded(added, topology));
+                }
+                for (var removed : delta.removed()) {
+                    log.debug("Membership delta: NodeRemoved {}", removed);
+                    router.route(TopologyChangeNotification.nodeRemoved(removed, topology));
+                }
             }
 
             /// Healthy active peers, excluding self. Used by the canonical quorum-state
@@ -599,6 +638,7 @@ public interface TopologyObserver extends TopologyManager {
                                           new AtomicBoolean(false),
                                           new AtomicBoolean(false),
                                           new Object(),
-                                          new AtomicReference<>(Option.none())));
+                                          new AtomicReference<>(Option.none()),
+                                          new AtomicReference<>(Set.<NodeId>of())));
     }
 }
