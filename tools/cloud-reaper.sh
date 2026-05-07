@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # cloud-reaper.sh — Hetzner safety-net cleaner for Aether-labeled cloud resources.
 #
-# Lists every Hetzner Cloud resource carrying an `aether-cluster` label (servers,
-# floating IPs, networks, firewalls, SSH keys) and — with --destroy — deletes
-# them in dependency order.
+# Lists every Hetzner Cloud resource carrying an `aether-cluster` OR `aether-node-id`
+# label (servers, floating IPs, networks, firewalls, SSH keys) and — with --destroy —
+# deletes them in dependency order.
+#
+# `aether-node-id` is included in the union so we catch ORPHANS from a failed bootstrap
+# (where `aether-cluster` was never written) and CTM-provisioned VMs that may have
+# inherited a wrong/missing cluster label. Pass --strict-cluster to limit to exact
+# `aether-cluster` matches only.
 #
 # This is a SAFETY NET. It does NOT consult ~/.aether/clusters/<name>/bootstrap-state.json
 # or any local state. It is 100% Hetzner-API-driven (label-match-only) so it
@@ -46,8 +51,12 @@ USAGE
     cloud-reaper.sh [--cluster <name>] [--destroy] [--force] [--help]
 
 FLAGS
-    --cluster <name>   Filter to resources labeled aether-cluster=<name>.
-                       Default: any non-empty aether-cluster label.
+    --cluster <name>   Filter to resources labeled aether-cluster=<name>. Also includes
+                       orphans (aether-node-id present but no aether-cluster) since they
+                       commonly belong to <name> after a failed bootstrap.
+                       Default: any non-empty aether-cluster OR aether-node-id label.
+    --strict-cluster   Used with --cluster <name>: require exact aether-cluster=<name>
+                       match. Excludes orphans even if they likely belong to the cluster.
     --destroy          Actually delete resources (default is dry-run).
     --force            Skip the 5-second confirmation prompt (CI use).
     --help, -h         Print this help and exit.
@@ -74,6 +83,7 @@ EOF
 CLUSTER=""
 DESTROY=false
 FORCE=false
+STRICT_CLUSTER=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -86,6 +96,7 @@ while [ $# -gt 0 ]; do
             CLUSTER="${1#*=}"
             shift
             ;;
+        --strict-cluster) STRICT_CLUSTER=true; shift ;;
         --destroy) DESTROY=true; shift ;;
         --force)   FORCE=true;   shift ;;
         --help|-h) usage; exit 0 ;;
@@ -115,11 +126,27 @@ if [ -z "${HCLOUD_TOKEN:-}" ]; then
 fi
 
 API="https://api.hetzner.cloud/v1"
+
+# Build the list of label selectors to query. We always perform the union client-side
+# (Hetzner label selectors are AND-only; OR is implemented by multiple queries + dedupe).
+#
+# Selection matrix:
+#   --cluster X --strict-cluster  ->  ["aether-cluster=X"]              (exact match only)
+#   --cluster X                    ->  ["aether-cluster=X", "aether-node-id"]
+#                                       + post-filter: keep aether-node-id rows ONLY when
+#                                         their aether-cluster label is empty/missing
+#                                         (orphan capture, no cross-cluster bleed)
+#   (no flag)                      ->  ["aether-cluster", "aether-node-id"]   (catch-all)
+SELECTORS=()
 if [ -n "$CLUSTER" ]; then
-    SELECTOR="aether-cluster=${CLUSTER}"
+    SELECTORS+=("aether-cluster=${CLUSTER}")
+    if [ "$STRICT_CLUSTER" != true ]; then
+        SELECTORS+=("aether-node-id")
+    fi
 else
-    SELECTOR="aether-cluster"
+    SELECTORS+=("aether-cluster" "aether-node-id")
 fi
+SELECTOR_DESC=$(IFS=','; printf '%s' "${SELECTORS[*]}")
 
 # ---------------------------------------------------------------------------
 # HTTP wrappers
@@ -184,21 +211,48 @@ hcloud_post() {
 # Listing — returns "id<TAB>name<TAB>cluster_label" lines, one per resource.
 # ---------------------------------------------------------------------------
 # list_resource <plural-endpoint> <json-array-key>
+#
+# Queries Hetzner once per selector in $SELECTORS, unions the results client-side
+# (deduped by id), and applies the orphan-capture post-filter when a non-strict
+# `--cluster X` was given (rows surfaced only via aether-node-id are kept ONLY when
+# their aether-cluster label is empty — never when it points to a different cluster).
 list_resource() {
     local endpoint="$1" key="$2"
-    local body
-    # URL-encode '=' → %3D so the selector survives query parsing on all curl/server combos.
-    local enc_selector
-    enc_selector=$(printf '%s' "$SELECTOR" | sed 's/=/%3D/g')
-    if ! body=$(hcloud_get "/${endpoint}?label_selector=${enc_selector}&per_page=50"); then
-        return 1
+    local body sel enc_selector raw="" filtered
+    for sel in "${SELECTORS[@]}"; do
+        enc_selector=$(printf '%s' "$sel" | sed 's/=/%3D/g')
+        if ! body=$(hcloud_get "/${endpoint}?label_selector=${enc_selector}&per_page=50"); then
+            return 1
+        fi
+        raw+=$(printf '%s\n' "$body" | jq -r --arg key "$key" '
+            .[$key][]?
+            | [ (.id | tostring),
+                (.name // ""),
+                (.labels["aether-cluster"] // ""),
+                (.labels["aether-node-id"] // "") ]
+            | @tsv')
+        raw+=$'\n'
+    done
+
+    # Orphan-capture post-filter: with --cluster X and no --strict-cluster, drop rows
+    # that came in via aether-node-id but already have a different aether-cluster value.
+    if [ -n "$CLUSTER" ] && [ "$STRICT_CLUSTER" != true ]; then
+        filtered=$(printf '%s' "$raw" | awk -F'\t' -v c="$CLUSTER" '
+            NF >= 4 && $1 != "" {
+                if ($3 == "" || $3 == c) {print}
+            }
+            NF == 3 && $1 != "" {  # legacy 3-col rows shouldnt happen, but harmless
+                if ($3 == "" || $3 == c) {print}
+            }')
+    else
+        filtered="$raw"
     fi
-    printf '%s\n' "$body" | jq -r --arg key "$key" '
-        .[$key][]?
-        | [ (.id | tostring),
-            (.name // ""),
-            (.labels["aether-cluster"] // "") ]
-        | @tsv'
+
+    # Dedupe by id (col 1), strip trailing tab columns we no longer need.
+    printf '%s' "$filtered" | awk -F'\t' '
+        $1 != "" && !seen[$1]++ {
+            printf "%s\t%s\t%s\n", $1, $2, $3
+        }'
 }
 
 # ---------------------------------------------------------------------------
@@ -416,7 +470,7 @@ iterate_lines() {
 # ---------------------------------------------------------------------------
 # Main flow
 # ---------------------------------------------------------------------------
-log_info "selector: ${SELECTOR}"
+log_info "selectors: ${SELECTOR_DESC}"
 log_info "endpoint: ${API}"
 [ "$DESTROY" = true ] && log_warn "MODE: DESTROY (resources WILL be deleted)" \
                       || log_info "MODE: dry-run (no deletions)"
@@ -445,7 +499,7 @@ fi
 # ---------- destruction confirmation ----------
 echo
 log_warn "About to DELETE ${TOTAL} Hetzner resource(s) listed above."
-log_warn "Selector: ${SELECTOR}"
+log_warn "Selectors: ${SELECTOR_DESC}"
 if [ "$FORCE" = false ]; then
     log_warn "Press Ctrl-C within 5 seconds to abort..."
     for i in 5 4 3 2 1; do
