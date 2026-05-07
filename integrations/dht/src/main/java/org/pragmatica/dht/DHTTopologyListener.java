@@ -67,4 +67,18 @@ public final class DHTTopologyListener {
             .removeNode(removedNodeId);
         rebalancer.onPresent(r -> r.onNodeRemoved(removedNodeId));
     }
+
+    /// Handle a node-down event by removing the node from the consistent hash ring.
+    /// Mirrors `onNodeRemoved`; today the only `NodeDown` emitter is QuicClusterNetwork
+    /// on local-process SHUTDOWN, which is a no-op for the local DHT (process is
+    /// stopping). Required for symmetry once non-self `NodeDown` emitters land — pre-Step
+    /// 2 audit identified this as a routing gap that could leave a dead-by-shutdown
+    /// peer in the ring while other consumers had already evicted it.
+    public void onNodeDown(TopologyChangeNotification.NodeDown event) {
+        var downNodeId = event.nodeId();
+        log.info("DHT: Node down {}, updating ring", downNodeId.id());
+        node.ring()
+            .removeNode(downNodeId);
+        rebalancer.onPresent(r -> r.onNodeRemoved(downNodeId));
+    }
 }

@@ -1071,10 +1071,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         var viewChange = switch (operation) {
             case ADD -> {
-                // R5: transport-only event. Forwarded as TransportObservation hint to SWIM
-                // via the Aether peerStateListener wiring. No topology mutation.
+                // R5 + audit Step 2: transport-only event. Forwarded as `peerStateListener`
+                // hint (which feeds SWIM via `TransportObservation`); no upward
+                // `TopologyChangeNotification` emit. The canonical `NodeAdded` edge is
+                // published by `TopologyObserver.publishMembershipDeltas` once the snapshot
+                // reflects the new member.
                 peerStateListener.onPeerJoined(peerId);
-                yield TopologyChangeNotification.nodeAdded(peerId, currentView());
+                yield null;
             }
             case REMOVE -> {
                 // Advisory QUIC-level disconnect signal. On the leader this feeds the local
@@ -1082,16 +1085,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // outbound `ClusterSyncPong` so the leader folds it through PeerObservationReducer
                 // (ClusterSync refactor commit 2 — followers are sensor-only).
                 reportPeerRemoval(peerId);
-                // R5: transport-only event. Forwarded as TransportObservation hint to SWIM
-                // via the Aether peerStateListener wiring. No topology mutation —
-                // authoritative DECOMMISSIONED transitions flow through HealthReconciler.
+                // R5 + audit Step 2: transport-only event. Forwarded as `peerStateListener`
+                // hint (which feeds SWIM via `TransportObservation`); no upward
+                // `TopologyChangeNotification` emit. The canonical `NodeRemoved` edge is
+                // published by `TopologyObserver.publishMembershipDeltas` once the leader's
+                // `HealthReconciler` writes `DECOMMISSIONED` and the snapshot re-projects.
                 peerStateListener.onPeerLeft(peerId);
-                yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
+                yield null;
             }
             case SHUTDOWN -> {
-                // Self-shutdown is a local-only event; the canonical quorum publisher
-                // (TopologyObserver) sees membership changes through its own SWIM signal
-                // and edge-transitions QuorumStateNotification accordingly.
+                // Self-shutdown remains a transport-emitted event: it fires on the local
+                // process's shutdown path before any consensus / KV writes can propagate, so
+                // there is no `MembershipView` delta to drive it. `TopologyObserver` cannot
+                // publish a `NodeDown` for self because by the time the snapshot would
+                // reflect the shutdown the local process has stopped.
                 yield TopologyChangeNotification.nodeDown(peerId);
             }
             case RECONNECT -> {

@@ -254,9 +254,13 @@ class QuicClusterNetworkHintEmissionTest {
     /// .unregisterPeer/markDeparted` enforces this; this test additionally confirms the
     /// runtime path doesn't accidentally invoke a no-op shim.
     @Test
-    void quicTransport_remove_routesNodeRemovedNotification() {
-        // R5: REMOVE view-change emits an informational NodeRemoved notification — the
-        // observer treats it as advisory only (authoritative state flows through KV).
+    void quicTransport_remove_doesNotRouteNodeRemovedNotification() {
+        // RC1-9 audit Step 2: QUIC's `processViewChange` REMOVE no longer emits an upward
+        // `TopologyChangeNotification.NodeRemoved`. The canonical edge is now published by
+        // `TopologyObserver.publishMembershipDeltas` once the leader's `HealthReconciler`
+        // writes `DECOMMISSIONED` and the snapshot re-projects. This test pins QUIC's
+        // silence on REMOVE so a regression cannot reintroduce the N+1 redundant emit
+        // cascade the audit identified.
         var removed = new CopyOnWriteArrayList<NodeId>();
         var router = MessageRouter.mutable();
         router.addRoute(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved.class,
@@ -271,8 +275,8 @@ class QuicClusterNetworkHintEmissionTest {
         network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
 
         assertThat(removed)
-            .as("REMOVE emits an informational NodeRemoved notification (advisory, not authoritative)")
-            .containsExactly(missing);
+            .as("REMOVE no longer emits NodeRemoved — TopologyObserver owns that edge post audit Step 2")
+            .isEmpty();
     }
 
     @Test

@@ -1113,6 +1113,8 @@ public interface AetherNode extends ManageableNode {
                                                     dhtTopologyListener::onNodeAdded));
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                                     dhtTopologyListener::onNodeRemoved));
+        aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
+                                                    dhtTopologyListener::onNodeDown));
         @SuppressWarnings({"unchecked", "rawtypes"}) MessageRouter.Entry forwardRequestRoute = MessageRouter.Entry.route(ForwardApplyRequest.class,
                                                                                                                          (ForwardApplyRequest request) -> handleForwardApplyRequest(request,
                                                                                                                                                                                     clusterNode));
