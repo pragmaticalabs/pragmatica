@@ -477,16 +477,16 @@ public interface TopologyObserver extends TopologyManager {
             /// Healthy active peers, excluding self. Used by the canonical quorum-state
             /// publisher: `+ 1` is added back to include self, matching the formula
             /// formerly used by the QUIC/Netty transports.
-            /// RC1-9 audit Step 5: snapshot-only — legacy nodeStatesById fallback is gone.
-            /// During cold-boot windows where the snapshot has not yet been published, this
-            /// returns 0, which conservatively fails the quorum check and routes
-            /// `QuorumStateNotification.disappeared()`. The previous fallback could announce
-            /// quorum based on transport-only signals that disagreed with the eventual
-            /// snapshot.
+            /// RC1-9 audit Step 5 — partial revert: the PUBLIC `healthyActiveNodeCount`
+            /// is snapshot-only (CTM must not act on stale data), but the PRIVATE
+            /// quorum-evaluation path needs a config-derived fallback because the
+            /// snapshot is published only after Rabia commits — which itself requires
+            /// quorum to be established. Returning 0 here at cold-boot creates a
+            /// catch-22 where `/health/ready` never flips and bootstrap times out.
             private int healthyActivePeerCount() {
                 return snapshotSource.currentMembershipView()
                                      .map(this::peerHealthyOnDutyCount)
-                                     .or(0);
+                                     .or(this::legacyHealthyActivePeerCount);
             }
 
             /// Snapshot's `healthyOnDutyCount` may include self; subtract it deterministically
@@ -494,6 +494,20 @@ public interface TopologyObserver extends TopologyManager {
             private int peerHealthyOnDutyCount(MembershipView view) {
                 var selfHealthy = view.onDutyMemberIds().contains(config.self()) ? 1 : 0;
                 return Math.max(0, view.healthyOnDutyCount() - selfHealthy);
+            }
+
+            /// Pre-snapshot fallback — counts peers in `nodeStatesById` whose initial
+            /// `NodeHealth` is HEALTHY (this defaults to true on `addNode`). This
+            /// path is used ONLY by `healthyActivePeerCount` for the bootstrap quorum
+            /// publish; the public `healthyActiveNodeCount` (used by CTM and operator
+            /// status) remains snapshot-only.
+            private int legacyHealthyActivePeerCount() {
+                return (int) nodeStatesById.values()
+                                          .stream()
+                                          .filter(state -> !state.info().id().equals(config.self()))
+                                          .filter(state -> state.info().role() != NodeRole.PASSIVE)
+                                          .filter(state -> state.health() == NodeHealth.HEALTHY)
+                                          .count();
             }
 
             @Override
