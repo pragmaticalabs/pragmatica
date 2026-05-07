@@ -953,12 +953,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                      .flatMap(nodeId -> observer.get(nodeId).stream())
                                      .map(ClusterTopologyManagerRecord::formatPeerEntry)
                                      .collect(Collectors.joining(","));
-        return Map.of("aether.peers",
-                      peers,
-                      "aether.core-max",
-                      String.valueOf(snapshotDesiredCoreSize()),
-                      "aether.provisioned-by",
-                      "ctm");
+        var tags = new java.util.LinkedHashMap<String, String>();
+        tags.put("aether.peers", peers);
+        tags.put("aether.core-max", String.valueOf(snapshotDesiredCoreSize()));
+        tags.put("aether.provisioned-by", "ctm");
+        // Defense in depth — pass cluster name as an explicit Hetzner-compatible label so
+        // the provider's default `aether-cluster=unknown` (used when [cloud.discovery]
+        // cluster_name is missing from node config) is overridden. Avoids orphaned VMs
+        // that the cluster name-scoped reaper / discovery polling can't see.
+        clusterConfigReader.get().map(ClusterConfigValue::clusterName)
+                                       .filter(name -> !name.isEmpty())
+                                       .onPresent(name -> tags.put("aether-cluster", name));
+        return Map.copyOf(tags);
     }
 
     private boolean isHealthyPeer(NodeId nodeId) {

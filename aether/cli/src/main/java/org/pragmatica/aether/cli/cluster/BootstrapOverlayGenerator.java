@@ -35,6 +35,7 @@ public interface BootstrapOverlayGenerator {
                               Option.some(clusterPortsSection(config)),
                               cloudSection(source),
                               cloudCredentialsSection(source),
+                              cloudDiscoverySection(config, source),
                               sourceSpecificSection(config, source, nodeIndex, apiKey, dockerGid),
                               tlsSection(source, clusterSecret))
         .flatMap(Option::stream);
@@ -112,6 +113,19 @@ public interface BootstrapOverlayGenerator {
         return source.credentials().filter(token -> !token.isBlank())
                                  .map(token -> Section.section("cloud.credentials",
                                                                Map.of("api_token", token)));
+    }
+
+    /// Emits `[cloud.discovery] cluster_name = "<name>"` for cloud sources so that the
+    /// running node knows which cluster it belongs to. Cloud `EnvironmentIntegrationFactory`
+    /// implementations (Hetzner / AWS / GCP / Azure) read this key in `applyDiscovery`,
+    /// and `HetznerComputeProvider.buildLabels()` uses the resulting `clusterName` field
+    /// to tag CTM-provisioned replacement VMs with `aether-cluster=<name>`. Without this
+    /// section, `clusterName` is `Option.empty()` and replacement VMs get
+    /// `aether-cluster=unknown`, breaking discovery-by-label and orphan-tracking.
+    private static Option<Section> cloudDiscoverySection(ClusterBootstrapConfig config, SourceProfile source) {
+        if (source.type() != SourceType.CLOUD) {return Option.empty();}
+        return Option.some(Section.section("cloud.discovery",
+                                           Map.of("cluster_name", config.cluster().name())));
     }
 
     private static Option<String> coreInstanceType(SourceProfile source) {
