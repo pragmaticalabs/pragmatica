@@ -12,7 +12,6 @@ import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.HealthHintWire;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Contract;
@@ -142,10 +141,6 @@ public final class SwimHealthContext {
 
     public SwimConfig swimConfig() {
         return swimConfig;
-    }
-
-    @Contract public void routeDisconnect(NodeId nodeId) {
-        router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(nodeId));
     }
 
     @Contract public void reportHint(NodeId nodeId, HealthHint hint) {
