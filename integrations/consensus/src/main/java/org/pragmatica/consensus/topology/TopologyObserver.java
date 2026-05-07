@@ -377,23 +377,16 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public int healthyActiveNodeCount() {
-                // Snapshot is the authoritative view when present — the leader has already
-                // cross-referenced SWIM/health-hint signals across the whole cluster, whereas
-                // local nodeStatesById only sees QUIC connection outcomes observed by self.
+                // RC1-9 audit Step 5: snapshot is the SOLE source of truth. The legacy
+                // `nodeStatesById`-derived fallback is gone — `NodeState.health` is dead
+                // state w.r.t. cluster-wide health (defaults to HEALTHY on add, never
+                // updates on SWIM FAULTY because audit Step 3 moved that flow through
+                // KV-Store). Cold-boot windows where the snapshot is empty now report
+                // `0` instead of leaking a transport-derived count that disagrees with
+                // the leader's view.
                 return snapshotSource.currentMembershipView()
                                      .map(MembershipView::healthyOnDutyCount)
-                                     .or(() -> (int) nodeStatesById.values()
-                                                                   .stream()
-                                                                   .filter(state -> state.info().role() != NodeRole.PASSIVE)
-                                                                   .filter(state -> state.health() == NodeHealth.HEALTHY)
-                                                                   .count());
-            }
-
-            private int activeTopologySize() {
-                return (int) nodeStatesById.values()
-                                          .stream()
-                                          .filter(state -> state.health() == NodeHealth.HEALTHY)
-                                          .count();
+                                     .or(0);
             }
 
             /// Canonical edge-transition publisher for `QuorumStateNotification`.
@@ -484,10 +477,16 @@ public interface TopologyObserver extends TopologyManager {
             /// Healthy active peers, excluding self. Used by the canonical quorum-state
             /// publisher: `+ 1` is added back to include self, matching the formula
             /// formerly used by the QUIC/Netty transports.
+            /// RC1-9 audit Step 5: snapshot-only — legacy nodeStatesById fallback is gone.
+            /// During cold-boot windows where the snapshot has not yet been published, this
+            /// returns 0, which conservatively fails the quorum check and routes
+            /// `QuorumStateNotification.disappeared()`. The previous fallback could announce
+            /// quorum based on transport-only signals that disagreed with the eventual
+            /// snapshot.
             private int healthyActivePeerCount() {
                 return snapshotSource.currentMembershipView()
                                      .map(this::peerHealthyOnDutyCount)
-                                     .or(this::legacyHealthyActivePeerCount);
+                                     .or(0);
             }
 
             /// Snapshot's `healthyOnDutyCount` may include self; subtract it deterministically
@@ -495,15 +494,6 @@ public interface TopologyObserver extends TopologyManager {
             private int peerHealthyOnDutyCount(MembershipView view) {
                 var selfHealthy = view.onDutyMemberIds().contains(config.self()) ? 1 : 0;
                 return Math.max(0, view.healthyOnDutyCount() - selfHealthy);
-            }
-
-            private int legacyHealthyActivePeerCount() {
-                return (int) nodeStatesById.values()
-                                          .stream()
-                                          .filter(state -> !state.info().id().equals(config.self()))
-                                          .filter(state -> state.info().role() != NodeRole.PASSIVE)
-                                          .filter(state -> state.health() == NodeHealth.HEALTHY)
-                                          .count();
             }
 
             @Override
@@ -516,7 +506,10 @@ public interface TopologyObserver extends TopologyManager {
                 }
                 if (newSize > currentSize) {
                     int newQuorum = newSize / 2 + 1;
-                    int activeNodes = activeTopologySize();
+                    // RC1-9 audit Step 5: handleSetClusterSize uses the same snapshot-derived
+                    // healthy count as `healthyActivePeerCount`; the legacy
+                    // `activeTopologySize()` (transport-only count) is gone.
+                    int activeNodes = healthyActivePeerCount() + 1;
                     if (activeNodes < newQuorum) {
                         log.info("rejected: insufficient healthy nodes for cluster size {} -> {} (active={}, required quorum={})",
                                  currentSize,

@@ -18,8 +18,10 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Predicate;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -47,6 +49,21 @@ class TopologyObserverTest {
                                   timeSpan(60).seconds(),
                                   timeSpan(1).seconds(),
                                   List.of(INFO_SELF, INFO_A, INFO_B));
+    }
+
+    /// RC1-9 audit Step 5: the legacy `nodeStatesById`-derived count is gone, so tests
+    /// that exercise quorum-state edges must seed a synthetic snapshot reflecting the
+    /// configured core set.
+    private static GenerationSnapshotSource fullQuorumSnapshotSource() {
+        record StubView(Set<NodeId> coreMemberIds, Set<NodeId> onDutyMemberIds,
+                        int healthyOnDutyCount, int desiredCoreSize) implements MembershipView {}
+        var view = new StubView(Set.of(SELF, PEER_A, PEER_B),
+                                Set.of(SELF, PEER_A, PEER_B),
+                                3, 3);
+        return new GenerationSnapshotSource() {
+            @Override public Option<MembershipView> currentMembershipView() { return Option.some(view); }
+            @Override public long observedRabiaTerm() { return 0L; }
+        };
     }
 
     /// `initReconcile` consults the KV-Store's `NodeLifecycleValue.DECOMMISSIONED`
@@ -115,14 +132,13 @@ class TopologyObserverTest {
 
         @Test
         void start_aboveQuorumViaConfig_routesEstablishedExactlyOnce() {
-            // baseConfig has SELF + PEER_A + PEER_B (clusterSize=3, quorum=2). After
-            // construction, `nodeStatesById` already contains all three peers as healthy
-            // (legacy fallback path). `start()` triggers the initial publish — peers=2,
-            // +1=3 >= quorum=2 → established once.
+            // RC1-9 audit Step 5: snapshot is the SOLE source of healthy-count truth.
+            // Tests must seed a synthetic snapshot reflecting the configured core set;
+            // start() then publishes ESTABLISHED based on snapshot.healthyOnDutyCount.
             var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
             var router = routerCapturing(notifications);
 
-            var observer = TopologyObserver.topologyObserver(baseConfig(), router).unwrap();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), router, fullQuorumSnapshotSource()).unwrap();
             observer.start().await();
 
             assertThat(notifications)
@@ -153,12 +169,13 @@ class TopologyObserverTest {
 
         @Test
         void constructionWithFullCoreNodes_doesNotRouteUntilStart() {
-            // baseConfig() seeds SELF + PEER_A + PEER_B. Constructor does NOT publish;
-            // only `start()` may.
+            // RC1-9 audit Step 5: seed the snapshot before construction so the ESTABLISHED
+            // edge can be computed at start(). Constructor still does NOT publish; only
+            // start() may.
             var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
             var router = routerCapturing(notifications);
 
-            var observer = TopologyObserver.topologyObserver(baseConfig(), router).unwrap();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), router, fullQuorumSnapshotSource()).unwrap();
 
             assertThat(notifications)
                 .as("construction-time evaluateQuorumState must be deferred until start()")
@@ -178,10 +195,11 @@ class TopologyObserverTest {
             // Regression for HEAD 3c66e9e65 NPE: production wiring uses a
             // `MessageRouter.DelegateRouter` whose `delegate` field is null at
             // construction time and is populated by node bootstrap before `start()`.
+            // RC1-9 audit Step 5: snapshot must be seeded for ESTABLISHED edge to fire.
             var delegate = MessageRouter.DelegateRouter.delegate();
             var notifications = new CopyOnWriteArrayList<QuorumStateNotification>();
 
-            var observer = TopologyObserver.topologyObserver(baseConfig(), delegate).unwrap();
+            var observer = TopologyObserver.topologyObserver(baseConfig(), delegate, fullQuorumSnapshotSource()).unwrap();
             assertThat(notifications)
                 .as("construction with partially-wired router must not NPE and must not publish")
                 .isEmpty();

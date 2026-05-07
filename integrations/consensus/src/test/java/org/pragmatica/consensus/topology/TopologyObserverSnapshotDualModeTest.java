@@ -87,11 +87,13 @@ class TopologyObserverSnapshotDualModeTest {
     @Nested
     class HealthyActiveCount {
         @Test
-        void healthyActiveNodeCount_noSnapshot_usesLegacy() {
+        void healthyActiveNodeCount_noSnapshot_isZero() {
+            // RC1-9 audit Step 5: with no snapshot, the legacy nodeStatesById fallback
+            // is gone. healthyActiveNodeCount conservatively returns 0 instead of leaking
+            // a transport-derived count that may disagree with the eventual snapshot.
             var observer = observerWith(GenerationSnapshotSource.noop());
 
-            // constructor adds all three core nodes as HEALTHY -> count = 3
-            assertThat(observer.healthyActiveNodeCount()).isEqualTo(3);
+            assertThat(observer.healthyActiveNodeCount()).isZero();
         }
 
         @Test
@@ -107,9 +109,9 @@ class TopologyObserverSnapshotDualModeTest {
         }
 
         @Test
-        void healthyActiveNodeCount_snapshotAndLegacyDisagree_snapshotWins() {
-            // Legacy in-memory would report 3 healthy (all coreNodes added in ctor).
-            // Snapshot says 1 -> snapshot wins.
+        void healthyActiveNodeCount_withSnapshot_alwaysWinsOverInMemory() {
+            // RC1-9 audit Step 5: snapshot is the SOLE source. Even when the in-memory
+            // map disagrees, the snapshot determines the count.
             var source = new StubSource();
             source.set(new StubView(Set.of(SELF), Set.of(SELF), 1, 3));
             var observer = observerWith(source);

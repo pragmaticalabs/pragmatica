@@ -1166,7 +1166,11 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
         swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
-        swimHealthDetector.addObservationListener(eventAggregator::onSwimObservation);
+        // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
+        // observations directly. NODE_FAILED / NODE_LEFT events are emitted only via
+        // `onNodeLifecyclePut` (the leader's HealthReconciler writing DECOMMISSIONED to
+        // KV-Store with prior-state context). The SWIM-witnessed duplicate emit was
+        // amplifying the membership-tracker cascade audit identified.
         // RC1-9 audit Step 3: the SWIM-FAULTY-to-disconnect short-circuit lambda is
         // gone. QUIC eviction now flows from `TopologyChangeNotification.NodeRemoved`
         // (published by `TopologyObserver.publishMembershipDeltas` after the leader's
