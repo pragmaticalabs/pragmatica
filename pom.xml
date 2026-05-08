@@ -657,8 +657,7 @@
                     <executions>
                         <execution>
                             <goals>
-                                <goal>format</goal>
-                                <goal>lint</goal>
+                                <goal>process</goal>
                             </goals>
                         </execution>
                     </executions>

@@ -47,9 +47,14 @@ public class FlowFormatter {
         if (source.content().length() > MAX_SOURCE_SIZE) {
             return Result.success(source);
         }
-        return parse(source)
-            .map(cst -> formatCst(cst, source.content()))
-            .map(source::withContent);
+        return parse(source).map(cst -> formatParsed(cst, source));
+    }
+
+    /// Format an already-parsed CST. Single-pass orchestrators (e.g. ProcessMojo) call
+    /// this to avoid re-parsing when the parse tree is already in hand.
+    /// Caller is responsible for size limits — this entry point performs no size check.
+    public SourceFile formatParsed(CstNode tree, SourceFile source) {
+        return source.withContent(formatCst(tree, source.content()));
     }
 
     /// Check if a source file is already formatted.
