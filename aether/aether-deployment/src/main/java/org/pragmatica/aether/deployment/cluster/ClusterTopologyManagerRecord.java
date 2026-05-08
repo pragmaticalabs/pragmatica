@@ -89,6 +89,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicLong realActualStableSinceMs,
                                     AtomicInteger lastObservedRealActual,
                                     AtomicInteger lastObservedHealthyOnDutyCount,
+                                    AtomicInteger consecutiveProvisioningFailures,
+                                    AtomicLong nextProvisioningAllowedMs,
                                     LongSupplier clock) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
 
@@ -99,6 +101,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private static final int UNINITIALIZED_REAL_ACTUAL = - 1;
 
     private static final long BOOTSTRAP_GRACE_MS = 60_000L;
+
+    // Circuit breaker: stop runaway provisioning when replacements consistently fail to join.
+    // Counter increments on each API rejection or slot deadline expiry; resets on successful node arrival,
+    // cluster phase NORMAL transition, leader (re)activation, or operator setDesiredSize.
+    private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
+
+    private static final long PROVISIONING_BACKOFF_BASE_MS = 30_000L;
+
+    private static final long PROVISIONING_BACKOFF_MAX_MS = 300_000L;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -133,6 +144,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicLong(clock.getAsLong()),
                                                 new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
                                                 new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
+                                                new AtomicInteger(0),
+                                                new AtomicLong(0L),
                                                 clock);
     }
 
@@ -151,6 +164,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override public Promise<Unit> setDesiredSize(int size) {
         if (size <MINIMUM_CLUSTER_SIZE) {return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)")
                                                             .promise();}
+        resetProvisioningCircuit("setDesiredSize=" + size);
         return writeDesiredCoreCount(size);
     }
 
@@ -201,6 +215,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Contract@Override public void onNodeReady(NodeId nodeId) {
+        resetProvisioningCircuit("node " + nodeId + " reached ON_DUTY");
         deleteCompletedSlotAtomsForNode(nodeId);
         if (stateRef.get() instanceof NodeReconcilerState.Reconciling) {
             log.info("Node {} reached ON_DUTY, checking reconciliation progress", nodeId);
@@ -252,6 +267,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (newPhase == ClusterPhase.NORMAL) {
             cancelInFlightProvisions("phase transition to NORMAL — restart stability window");
             bumpRealActualStability("phase transition to NORMAL");
+            resetProvisioningCircuit("phase transition to NORMAL");
             log.info("CTM: cluster phase transitioned to NORMAL — provisioning resumed (stability window restarted from zero)");
             if (active.get()) {reconcile();}
             return;
@@ -305,9 +321,50 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.debug("CTM: stability anchor reset ({}), nowMs={}", reason, nowMs);
     }
 
+    private boolean provisioningCircuitTripped() {
+        return consecutiveProvisioningFailures.get() >= MAX_CONSECUTIVE_PROVISIONING_FAILURES;
+    }
+
+    private boolean provisioningBackoffActive(long nowMs) {
+        return nowMs <nextProvisioningAllowedMs.get();
+    }
+
+    @Contract private void recordProvisioningFailure(String reason) {
+        var failures = consecutiveProvisioningFailures.incrementAndGet();
+        var backoffMs = computeProvisioningBackoffMs(failures);
+        nextProvisioningAllowedMs.set(nowMs() + backoffMs);
+        if (failures >= MAX_CONSECUTIVE_PROVISIONING_FAILURES) {
+            log.error("CTM: provisioning circuit breaker tripped — {} consecutive failure(s); reason: {}. Auto-heal halted until successful node arrival, phase NORMAL, or operator setDesiredSize.",
+                      failures,
+                      reason);
+            return;
+        }
+        log.warn("CTM: provisioning failure {} of {} ({}); next attempt allowed in {}ms",
+                 failures,
+                 MAX_CONSECUTIVE_PROVISIONING_FAILURES,
+                 reason,
+                 backoffMs);
+    }
+
+    @Contract private void resetProvisioningCircuit(String reason) {
+        var prev = consecutiveProvisioningFailures.getAndSet(0);
+        nextProvisioningAllowedMs.set(0L);
+        if (prev > 0) {
+            log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prev);
+        }
+    }
+
+    private static long computeProvisioningBackoffMs(int failureCount) {
+        if (failureCount <= 0) {return 0L;}
+        var shift = Math.min(failureCount - 1, 5);
+        var raw = PROVISIONING_BACKOFF_BASE_MS << shift;
+        return Math.min(raw, PROVISIONING_BACKOFF_MAX_MS);
+    }
+
     @Contract@Override public void activate() {
         if (!active.compareAndSet(false, true)) {return;}
         bumpRealActualStability("activate");
+        resetProvisioningCircuit("activate (leader handoff)");
         var hadRehydratedSlots = rehydrateInFlightSlotsFromKV();
         if (!hadRehydratedSlots) {activateWithCurrentTopology();}
         scheduleSafetyNetPoll();
@@ -600,6 +657,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return alive;
         }
         log.info("CTM: expired {} stalled provisioning slot(s); {} slot(s) still in-flight", expiredCount, alive.size());
+        for (var i = 0;i <expiredCount;i++) {recordProvisioningFailure("slot deadline expired (VM did not reach ON_DUTY in time)");}
         return alive;
     }
 
@@ -627,6 +685,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      autoHealConfig.provisionStabilityWindow().millis(),
                      actual,
                      desired);
+            return;
+        }
+        if (provisioningCircuitTripped()) {
+            log.info("CTM: provisioning halted by circuit breaker ({} consecutive failures); skipping deficit handling. Reset on successful node arrival, phase NORMAL, or setDesiredSize.",
+                     consecutiveProvisioningFailures.get());
+            return;
+        }
+        if (provisioningBackoffActive(nowMs)) {
+            log.info("CTM: provisioning backoff active ({}ms remaining after {} failure(s)); deferring dispatch",
+                     nextProvisioningAllowedMs.get() - nowMs,
+                     consecutiveProvisioningFailures.get());
             return;
         }
         var current = stateRef.get();
@@ -889,8 +958,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var slotKvKey = ProvisioningSlotKey.provisioningSlotKey(java.util.UUID.randomUUID().toString());
         writeProvisioningSlotAtom(slotKvKey);
         var promise = lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
-                                                    .onFailure(cause -> log.warn("CTM: Node provisioning failed: {}",
-                                                                                 cause.message()));
+                                                    .onFailure(cause -> recordProvisioningFailure("API rejection: " + cause.message()));
         inFlightProvisions.put(localTag, promise);
         promise.onResult(_ -> inFlightProvisions.remove(localTag));
     }
