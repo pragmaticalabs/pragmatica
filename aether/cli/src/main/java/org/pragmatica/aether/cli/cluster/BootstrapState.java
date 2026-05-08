@@ -8,10 +8,9 @@ import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings("JBCT-SEQ-01") public record BootstrapState(String clusterName,
@@ -21,7 +20,36 @@ import static org.pragmatica.lang.Result.success;
                                                               List<CreatedResource> createdResources,
                                                               List<String> provisionedNodeIds,
                                                               List<String> collectedAddresses,
-                                                              String clusterSecret) {
+                                                              String clusterSecret,
+                                                              Map<String, SourceCleanupHandle> sources) {
+    public BootstrapState {
+        phases = Map.copyOf(phases);
+        createdResources = List.copyOf(createdResources);
+        provisionedNodeIds = List.copyOf(provisionedNodeIds);
+        collectedAddresses = List.copyOf(collectedAddresses);
+        sources = Map.copyOf(sources);
+    }
+
+    @SuppressWarnings("JBCT-VO-02") public static BootstrapState bootstrapState(String clusterName,
+                                                                                String configHash,
+                                                                                String startedAt,
+                                                                                Map<BootstrapPhase, PhaseStatus> phases,
+                                                                                List<CreatedResource> createdResources,
+                                                                                List<String> provisionedNodeIds,
+                                                                                List<String> collectedAddresses,
+                                                                                String clusterSecret,
+                                                                                Map<String, SourceCleanupHandle> sources) {
+        return new BootstrapState(clusterName,
+                                  configHash,
+                                  startedAt,
+                                  phases,
+                                  createdResources,
+                                  provisionedNodeIds,
+                                  collectedAddresses,
+                                  clusterSecret,
+                                  sources);
+    }
+
     @SuppressWarnings("JBCT-VO-02") public static BootstrapState bootstrapState(String clusterName,
                                                                                 String configHash,
                                                                                 String startedAt,
@@ -30,14 +58,15 @@ import static org.pragmatica.lang.Result.success;
                                                                                 List<String> provisionedNodeIds,
                                                                                 List<String> collectedAddresses,
                                                                                 String clusterSecret) {
-        return new BootstrapState(clusterName,
-                                  configHash,
-                                  startedAt,
-                                  Map.copyOf(phases),
-                                  List.copyOf(createdResources),
-                                  List.copyOf(provisionedNodeIds),
-                                  List.copyOf(collectedAddresses),
-                                  clusterSecret);
+        return bootstrapState(clusterName,
+                              configHash,
+                              startedAt,
+                              phases,
+                              createdResources,
+                              provisionedNodeIds,
+                              collectedAddresses,
+                              clusterSecret,
+                              Map.of());
     }
 
     @SuppressWarnings("JBCT-VO-02") public static BootstrapState bootstrapState(String clusterName,
@@ -54,13 +83,14 @@ import static org.pragmatica.lang.Result.success;
                               createdResources,
                               provisionedNodeIds,
                               collectedAddresses,
-                              "");
+                              "",
+                              Map.of());
     }
 
     public static BootstrapState initialState(String clusterName, String configHash, String startedAt) {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
         for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.PENDING);}
-        return bootstrapState(clusterName, configHash, startedAt, phases, List.of(), List.of(), List.of(), "");
+        return bootstrapState(clusterName, configHash, startedAt, phases, List.of(), List.of(), List.of(), "", Map.of());
     }
 
     public BootstrapState withPhaseStatus(BootstrapPhase phase, PhaseStatus status) {
@@ -73,7 +103,8 @@ import static org.pragmatica.lang.Result.success;
                               createdResources,
                               provisionedNodeIds,
                               collectedAddresses,
-                              clusterSecret);
+                              clusterSecret,
+                              sources);
     }
 
     public BootstrapState withResource(CreatedResource resource) {
@@ -86,7 +117,8 @@ import static org.pragmatica.lang.Result.success;
                               updated,
                               provisionedNodeIds,
                               collectedAddresses,
-                              clusterSecret);
+                              clusterSecret,
+                              sources);
     }
 
     public BootstrapState withProvisionedNodeIds(List<String> ids) {
@@ -97,7 +129,8 @@ import static org.pragmatica.lang.Result.success;
                               createdResources,
                               ids,
                               collectedAddresses,
-                              clusterSecret);
+                              clusterSecret,
+                              sources);
     }
 
     public BootstrapState withCollectedAddresses(List<String> addrs) {
@@ -108,7 +141,8 @@ import static org.pragmatica.lang.Result.success;
                               createdResources,
                               provisionedNodeIds,
                               addrs,
-                              clusterSecret);
+                              clusterSecret,
+                              sources);
     }
 
     public BootstrapState withClusterSecret(String secret) {
@@ -119,7 +153,26 @@ import static org.pragmatica.lang.Result.success;
                               createdResources,
                               provisionedNodeIds,
                               collectedAddresses,
-                              secret);
+                              secret,
+                              sources);
+    }
+
+    public BootstrapState withSources(Map<String, SourceCleanupHandle> newSources) {
+        return bootstrapState(clusterName,
+                              configHash,
+                              startedAt,
+                              phases,
+                              createdResources,
+                              provisionedNodeIds,
+                              collectedAddresses,
+                              clusterSecret,
+                              newSources);
+    }
+
+    public BootstrapState withSource(String sourceName, SourceCleanupHandle handle) {
+        var merged = new HashMap<String, SourceCleanupHandle>(sources);
+        merged.put(sourceName, handle);
+        return withSources(merged);
     }
 
     public String toJson() {

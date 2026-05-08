@@ -22,8 +22,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.PROVISION;
 import static org.pragmatica.lang.Option.option;
@@ -59,6 +61,7 @@ import static org.pragmatica.lang.Result.success;
     private static BootstrapState buildUpdatedState(BootstrapContext ctx, List<ProvisionedNode> allNodes) {
         var state = ctx.state().withProvisionedNodeIds(allNodes.stream().map(ProvisionedNode::nodeId)
                                                                       .toList());
+        var rawToml = ctx.rawTomlContent();
         for (var entry : ctx.config().sources()
                                    .entrySet()) {
             var sourceName = entry.getKey();
@@ -69,9 +72,64 @@ import static org.pragmatica.lang.Result.success;
                                                                                                                                                                sourceName,
                                                                                                                                                                extractRole(node.nodeId(),
                                                                                                                                                                            sourceName)));}}
+            state = stampSourceHandle(state, rawToml, sourceName, source, providerName);
         }
         return state;
     }
+
+    static BootstrapState stampSourceHandle(BootstrapState state,
+                                             String rawToml,
+                                             String sourceName,
+                                             SourceProfile source,
+                                             String providerName) {
+        if (source.type() != SourceType.CLOUD) {return state;}
+        var envVars = extractEnvVarNames(rawToml, sourceName);
+        var handle = SourceCleanupHandle.sourceCleanupHandle(providerName, source.region(), envVars);
+        return state.withSource(sourceName, handle);
+    }
+
+    /// Re-parse raw TOML to recover the `${env:NAME}` env-var name the operator wrote
+    /// for the named source's `credentials` field. By the time we have a `SourceProfile`
+    /// the `ConfigReferenceResolver.resolveAll` step has already substituted the value;
+    /// the raw name is otherwise lost. The recovered name is recorded under each
+    /// credential-key alias the per-provider factory may consume (`api_token`,
+    /// `access_key`, `credentials_file`) — mirroring `ProviderResolver.buildCloudConfig`.
+    @SuppressWarnings("JBCT-PAT-01") static Map<String, String> extractEnvVarNames(String rawToml,
+                                                                                    String sourceName) {
+        if (rawToml == null || rawToml.isEmpty()) {return Map.of();}
+        var stanza = extractStanza(rawToml, sourceName);
+        if (stanza.isEmpty()) {return Map.of();}
+        var envName = matchCredentialEnvName(stanza);
+        if (envName == null) {return Map.of();}
+        var result = new LinkedHashMap<String, String>();
+        for (var alias : CREDENTIAL_FIELD_KEYS) {result.put(alias, envName);}
+        return Map.copyOf(result);
+    }
+
+    private static String matchCredentialEnvName(String stanza) {
+        var pattern = Pattern.compile("(?m)^\\s*credentials\\s*=\\s*\"\\$\\{env:([A-Z_][A-Z0-9_]*)\\}\"");
+        var matcher = pattern.matcher(stanza);
+        return matcher.find()
+              ? matcher.group(1)
+              : null;
+    }
+
+    private static String extractStanza(String rawToml, String sourceName) {
+        var header = "[sources." + sourceName + "]";
+        var headerIndex = rawToml.indexOf(header);
+        if (headerIndex <0) {return "";}
+        var after = rawToml.indexOf("\n[", headerIndex + header.length());
+        return after <0
+              ? rawToml.substring(headerIndex)
+              : rawToml.substring(headerIndex, after);
+    }
+
+    /// Credential-key aliases for cloud sources. Mirrors the schema accepted by
+    /// `ProviderResolver.buildCloudConfig`: a single TOML `credentials` value is
+    /// echoed under three logical keys so any per-provider factory can read whichever
+    /// it expects (Hetzner: `api_token`; AWS: `access_key`; GCP/Azure file paths:
+    /// `credentials_file`).
+    List<String> CREDENTIAL_FIELD_KEYS = List.of("api_token", "access_key", "credentials_file");
 
     static String resolveProviderName(SourceProfile source) {
         return source.provider().map(CloudProviderName::value)

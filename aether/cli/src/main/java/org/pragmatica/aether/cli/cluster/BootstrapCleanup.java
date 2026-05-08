@@ -36,16 +36,17 @@ import java.util.List;
         System.out.println("Cleaning up resources for cluster '" + state.clusterName() + "'...");
         var resources = new ArrayList<>(state.createdResources());
         Collections.reverse(resources);
-        var failures = collectCleanupFailures(resources, cloudComputeResolver, hetznerClientResolver);
+        var failures = collectCleanupFailures(state, resources, cloudComputeResolver, hetznerClientResolver);
         return finishCleanup(state, failures);
     }
 
-    private static List<String> collectCleanupFailures(List<CreatedResource> resources,
+    private static List<String> collectCleanupFailures(BootstrapState state,
+                                                       List<CreatedResource> resources,
                                                        Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
                                                        Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
         var failures = new ArrayList<String>();
         for (var resource : resources) {
-            var result = destroyResource(resource, cloudComputeResolver, hetznerClientResolver);
+            var result = destroyResource(state, resource, cloudComputeResolver, hetznerClientResolver);
             logResourceResult(result, resource);
             var _ = result.onFailure(cause -> failures.add(resource.description() + ": " + cause.message()));
         }
@@ -62,11 +63,12 @@ import java.util.List;
         return BootstrapStatePersistence.delete(state.clusterName());
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> destroyResource(CreatedResource resource,
+    @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> destroyResource(BootstrapState state,
+                                                                                 CreatedResource resource,
                                                                                  Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
                                                                                  Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
         return switch (resource){
-            case CreatedResource.ProvisionedVm vm -> destroyVm(vm, cloudComputeResolver);
+            case CreatedResource.ProvisionedVm vm -> destroyVm(state, vm, cloudComputeResolver);
             case CreatedResource.FirewallRule rule -> deleteFirewallRule(rule);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
             case CreatedResource.DockerContainer container -> removeContainer(container);
@@ -90,12 +92,23 @@ import java.util.List;
         return Result.success(HetznerClient.hetznerClient(HetznerConfig.hetznerConfig(token)));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> destroyVm(CreatedResource.ProvisionedVm vm,
+    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> destroyVm(BootstrapState state,
+                                                                          CreatedResource.ProvisionedVm vm,
                                                                           Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         System.out.printf("  Destroying VM %s (provider: %s)...%n", vm.resourceId(), vm.provider());
-        return cloudComputeResolver.apply(vm.provider())
-                                         .flatMap(compute -> terminateInstance(compute,
-                                                                               vm.resourceId()));
+        return resolveComputeForVm(state, vm, cloudComputeResolver).flatMap(compute -> terminateInstance(compute,
+                                                                                                          vm.resourceId()));
+    }
+
+    /// Prefer the persisted source handle (env-var names + region as recorded at
+    /// bootstrap time). Fall back to the legacy hardcoded-env-var resolver only
+    /// when the state file predates the handle (backward compat).
+    private static Result<ComputeProvider> resolveComputeForVm(BootstrapState state,
+                                                                CreatedResource.ProvisionedVm vm,
+                                                                Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+        var handle = state.sources().get(vm.sourceName());
+        if (handle == null) {return cloudComputeResolver.apply(vm.provider());}
+        return ProviderResolver.resolveCloudComputeFromHandle(handle);
     }
 
     @SuppressWarnings("JBCT-EX-01") private static Result<Unit> terminateInstance(ComputeProvider compute,

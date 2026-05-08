@@ -8,10 +8,12 @@ import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -43,6 +45,8 @@ import static org.pragmatica.lang.Result.success;
         appendStringList(sb, "collectedAddresses", state.collectedAddresses());
         sb.append(",\n");
         appendStringField(sb, "clusterSecret", state.clusterSecret());
+        sb.append(",\n");
+        appendSources(sb, state.sources());
         sb.append("\n}");
         return sb.toString();
     }
@@ -64,6 +68,7 @@ import static org.pragmatica.lang.Result.success;
         var nodeIds = parseStringList(root.path("provisionedNodeIds"));
         var addresses = parseStringList(root.path("collectedAddresses"));
         var clusterSecret = root.path("clusterSecret").asText("");
+        var sources = parseSources(root.path("sources"));
         return BootstrapState.bootstrapState(clusterName,
                                              configHash,
                                              startedAt,
@@ -71,7 +76,34 @@ import static org.pragmatica.lang.Result.success;
                                              resources,
                                              nodeIds,
                                              addresses,
-                                             clusterSecret);
+                                             clusterSecret,
+                                             sources);
+    }
+
+    private static Map<String, SourceCleanupHandle> parseSources(JsonNode node) {
+        if (node.isMissingNode() || node.isNull() || !node.isObject()) {return Map.of();}
+        var sources = new LinkedHashMap<String, SourceCleanupHandle>();
+        for (var entry : node.properties()) {
+            var handle = parseSourceCleanupHandle(entry.getValue());
+            if (handle != null) {sources.put(entry.getKey(), handle);}
+        }
+        return Map.copyOf(sources);
+    }
+
+    private static SourceCleanupHandle parseSourceCleanupHandle(JsonNode node) {
+        if (node.isMissingNode() || node.isNull() || !node.isObject()) {return null;}
+        var provider = node.path("provider").asText("");
+        var regionText = node.path("region").asText("");
+        var region = regionText.isEmpty() ? Option.<String>none() : Option.some(regionText);
+        var envVars = parseStringMap(node.path("credentialEnvVars"));
+        return SourceCleanupHandle.sourceCleanupHandle(provider, region, envVars);
+    }
+
+    private static Map<String, String> parseStringMap(JsonNode node) {
+        if (node.isMissingNode() || node.isNull() || !node.isObject()) {return Map.of();}
+        var map = new LinkedHashMap<String, String>();
+        for (var entry : node.properties()) {map.put(entry.getKey(), entry.getValue().asText(""));}
+        return Map.copyOf(map);
     }
 
     private static Map<BootstrapPhase, PhaseStatus> parsePhases(JsonNode node) {
@@ -241,6 +273,37 @@ import static org.pragmatica.lang.Result.success;
                  .append("\", \"remotePath\": \"")
                  .append(escapeJson(config.remotePath()))
                  .append("\"}");
+    }
+
+    private static void appendSources(StringBuilder sb, Map<String, SourceCleanupHandle> sources) {
+        sb.append("  \"sources\": {");
+        var first = true;
+        for (var entry : sources.entrySet()) {
+            if (!first) {sb.append(',');}
+            sb.append("\n    \"").append(escapeJson(entry.getKey()))
+                     .append("\": ");
+            appendSourceCleanupHandle(sb, entry.getValue());
+            first = false;
+        }
+        if (!sources.isEmpty()) {sb.append("\n  ");}
+        sb.append('}');
+    }
+
+    private static void appendSourceCleanupHandle(StringBuilder sb, SourceCleanupHandle handle) {
+        sb.append("{\"provider\": \"").append(escapeJson(handle.provider()))
+                 .append("\", \"region\": \"")
+                 .append(escapeJson(handle.region().or("")))
+                 .append("\", \"credentialEnvVars\": {");
+        var first = true;
+        for (var entry : handle.credentialEnvVars().entrySet()) {
+            if (!first) {sb.append(", ");}
+            sb.append('"').append(escapeJson(entry.getKey()))
+                     .append("\": \"")
+                     .append(escapeJson(entry.getValue()))
+                     .append('"');
+            first = false;
+        }
+        sb.append("}}");
     }
 
     private static void appendStringList(StringBuilder sb, String key, List<String> values) {

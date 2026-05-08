@@ -13,6 +13,7 @@ import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.lang.Result;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +59,38 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
     public static Result<ComputeProvider> resolveCloudComputeForCleanup(String providerName) {
         return CloudCredentials.fromEnvironment(providerName).flatMap(cloudConfig -> lookupFactory(providerName).flatMap(factory -> factory.create(cloudConfig)))
                                                .flatMap(ProviderResolver::extractCompute);
+    }
+
+    /// Cleanup variant that honours the env-var NAMES recorded at bootstrap time.
+    /// Reads `System.getenv(name)` per credential field instead of the hardcoded
+    /// names baked into `CloudCredentials.fromEnvironment(providerName)`. This
+    /// lets `aether cluster destroy` succeed from a fresh shell when the operator
+    /// used non-default env-var names (e.g. `${env:HCLOUD_TOKEN_PROD}`).
+    public static Result<ComputeProvider> resolveCloudComputeFromHandle(SourceCleanupHandle handle) {
+        return buildHandleConfig(handle).flatMap(config -> lookupFactory(handle.provider()).flatMap(factory -> factory.create(config)))
+                                                     .flatMap(ProviderResolver::extractCompute);
+    }
+
+    private static Result<CloudConfig> buildHandleConfig(SourceCleanupHandle handle) {
+        var creds = new HashMap<String, String>();
+        var missing = new ArrayList<String>();
+        for (var entry : handle.credentialEnvVars().entrySet()) {
+            var value = System.getenv(entry.getValue());
+            if (value == null || value.isBlank()) {missing.add(entry.getValue());} else {creds.put(entry.getKey(),
+                                                                                                    value);}
+        }
+        if (!missing.isEmpty()) {return new BootstrapError.ProvisionFailed(handle.provider(),
+                                                                            "Missing credential env vars for cleanup: " + String.join(", ",
+                                                                                                                                       missing)).result();}
+        var compute = new HashMap<String, String>();
+        handle.region().onPresent(r -> compute.put("region", r));
+        return Result.success(new CloudConfig(handle.provider(),
+                                              Map.copyOf(creds),
+                                              Map.copyOf(compute),
+                                              Map.of(),
+                                              Map.of(),
+                                              Map.of(),
+                                              Map.of()));
     }
 
     public static Result<ComputeProvider> resolveDockerCompute() {
