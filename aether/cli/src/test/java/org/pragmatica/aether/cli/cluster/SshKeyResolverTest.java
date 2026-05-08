@@ -105,7 +105,7 @@ class SshKeyResolverTest {
                                                                                           "default")),
                                                        List.of());
         return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                              ClusterIdentity.clusterIdentity("test", "1.0.0"),
+                                                              ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
                                                               CoreTopology.defaultCoreTopology(),
                                                               Map.of("cloud-1", cloudSource),
                                                               Map.of(),
@@ -135,7 +135,7 @@ class SshKeyResolverTest {
                                                                                           "ember")),
                                                        List.of());
         return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                              ClusterIdentity.clusterIdentity("test", "1.0.0"),
+                                                              ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
                                                               CoreTopology.defaultCoreTopology(),
                                                               Map.of("forge-1", forgeSource),
                                                               Map.of(),

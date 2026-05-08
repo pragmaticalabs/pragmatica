@@ -70,7 +70,7 @@ import static org.pragmatica.lang.Option.option;
             System.err.println("Invalid --cluster value: '" + clusterNameOverride + "': must match ^[a-z][a-z0-9-]{0,62}$");
             return ExitCode.USAGE;
         }
-        return parseConfig().map(this::applyClusterNameOverride)
+        return parseConfig().flatMap(this::applyClusterNameOverride)
                           .flatMap(this::confirmAndBootstrap)
                           .fold(ClusterBootstrapCommand::onFailure, this::onSuccess);
     }
@@ -80,10 +80,10 @@ import static org.pragmatica.lang.Option.option;
         return CLUSTER_NAME_PATTERN.matcher(clusterNameOverride).matches();
     }
 
-    private ParsedConfig applyClusterNameOverride(ParsedConfig parsed) {
-        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return parsed;}
-        return new ParsedConfig(parsed.config().withClusterName(clusterNameOverride),
-                                parsed.rawToml());
+    private Result<ParsedConfig> applyClusterNameOverride(ParsedConfig parsed) {
+        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return Result.success(parsed);}
+        return parsed.config().withClusterName(clusterNameOverride)
+                                       .map(updated -> new ParsedConfig(updated, parsed.rawToml()));
     }
 
     private Result<ParsedConfig> parseConfig() {

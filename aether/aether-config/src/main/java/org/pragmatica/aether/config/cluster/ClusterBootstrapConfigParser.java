@@ -116,7 +116,7 @@ import static org.pragmatica.lang.Result.success;
         var name = doc.getString(CLUSTER_SECTION, "name").toResult(parseFailed("Missing required field: cluster.name"));
         var version = doc.getString(CLUSTER_SECTION, "version")
                                    .toResult(parseFailed("Missing required field: cluster.version"));
-        return Result.all(name, version).map(ClusterIdentity::clusterIdentity);
+        return Result.all(name, version).flatMap(ClusterIdentity::clusterIdentity);
     }
 
     private static CoreTopology parseCoreTopology(TomlDocument doc) {

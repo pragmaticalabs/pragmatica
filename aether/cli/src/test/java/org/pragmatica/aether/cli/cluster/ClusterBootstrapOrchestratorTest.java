@@ -78,7 +78,7 @@ class ClusterBootstrapOrchestratorTest {
         );
 
         return clusterBootstrapConfig(
-            "1", clusterIdentity(clusterName, "1.0.0"),
+            "1", clusterIdentity(clusterName, "1.0.0").unwrap(),
             defaultCoreTopology(),
             Map.of("forge", forgeSource),
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.EMBER, none(), none())),

@@ -40,7 +40,7 @@ class ClusterBootstrapConfigValidatorTest {
                                    none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                    none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
 
-        return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0"),
+        return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("local", source), Map.of(),
                                       infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
     }
@@ -54,7 +54,7 @@ class ClusterBootstrapConfigValidatorTest {
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
                                    Map.of(NodeRole.CORE, coreRole, NodeRole.WORKER, workerRole), List.of());
 
-        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0"),
+        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("hetzner-eu", source),
                                       Map.of("prod", runtime),
                                       infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
@@ -82,19 +82,17 @@ class ClusterBootstrapConfigValidatorTest {
     class ClusterLevel {
 
         @Test
-        void validate_invalidClusterName_returnsError() {
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("INVALID_NAME!", "1.0.0"),
-                                                defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
-            validate(config)
+        void clusterIdentity_invalidClusterName_returnsFailure() {
+            // CL-01 is now enforced at construction (parse-don't-validate); the factory rejects
+            // invalid names before they can reach the validator.
+            clusterIdentity("INVALID_NAME!", "1.0.0")
                 .onSuccess(v -> Assertions.fail("Expected failure"))
-                .onFailure(cause -> assertThat(cause.message()).contains("CL-01"));
+                .onFailure(cause -> assertThat(cause.message()).contains("INVALID_NAME!"));
         }
 
         @Test
         void validate_invalidVersion_returnsError() {
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "not-semver"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "not-semver").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
                                                 Map.of(), infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -109,7 +107,7 @@ class ClusterBootstrapConfigValidatorTest {
             var source = sourceProfile("local", SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -124,7 +122,7 @@ class ClusterBootstrapConfigValidatorTest {
             var source = sourceProfile("local", SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -139,7 +137,7 @@ class ClusterBootstrapConfigValidatorTest {
             var source = sourceProfile("local", SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.WORKER, workerRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -153,7 +151,7 @@ class ClusterBootstrapConfigValidatorTest {
             var ports = portMapping(8080, 8080, 8070, 8190);
             var ops = operationsConfig(defaultOperationsConfig().autoHeal(), defaultOperationsConfig().tls(),
                                        defaultOperationsConfig().timeouts(), ports);
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
                                                 Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops);
             validate(config)
@@ -166,7 +164,7 @@ class ClusterBootstrapConfigValidatorTest {
             var ports = portMapping(0, 8080, 8070, 8190);
             var ops = operationsConfig(defaultOperationsConfig().autoHeal(), defaultOperationsConfig().tls(),
                                        defaultOperationsConfig().timeouts(), ports);
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
                                                 Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops);
             validate(config)
@@ -181,7 +179,7 @@ class ClusterBootstrapConfigValidatorTest {
         @Test
         void validate_maxUnavailableTooHigh_returnsError() {
             var topology = coreTopology(none(), none(), 3);
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 topology, validForgeConfig().sources(), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -202,7 +200,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        some("root"), some("/key"), some(22), LoadBalancerMode.NONE, List.of(),
                                        none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -219,7 +217,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -235,7 +233,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        some("root"), some("/key"), some(22), LoadBalancerMode.ELECTED,
                                        List.of(), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -251,7 +249,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
                                        List.of(), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -269,7 +267,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        some("key"), some("eu"), none(), none(), none(), none(),
                                        LoadBalancerMode.EXTERNAL, List.of(), none(), Map.of(),
                                        Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("cloud-src", source),
                                                 Map.of("prod", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL),
@@ -286,7 +284,7 @@ class ClusterBootstrapConfigValidatorTest {
             var source = sourceProfile("local", SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of(rule));
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -302,7 +300,7 @@ class ClusterBootstrapConfigValidatorTest {
             var source = sourceProfile("local", SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of(rule));
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
                                                 defaultOperationsConfig());
@@ -318,7 +316,7 @@ class ClusterBootstrapConfigValidatorTest {
             var source = sourceProfile("local", SourceType.FORGE, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source),
                                                 Map.of("jvm-rt", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL),
@@ -335,7 +333,7 @@ class ClusterBootstrapConfigValidatorTest {
             var source = sourceProfile("local", SourceType.DOCKER, none(), none(), none(), none(),
                                        none(), none(), none(), LoadBalancerMode.NONE, List.of(),
                                        none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0"),
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source),
                                                 Map.of("jvm-rt", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL),

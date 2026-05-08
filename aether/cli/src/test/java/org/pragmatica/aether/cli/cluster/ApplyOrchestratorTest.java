@@ -60,7 +60,7 @@ class ApplyOrchestratorTest {
 
     private static ClusterBootstrapConfig configWithSources(Map<String, SourceProfile> sources) {
         return clusterBootstrapConfig(
-            "1", clusterIdentity("test-cluster", "1.0.0"),
+            "1", clusterIdentity("test-cluster", "1.0.0").unwrap(),
             defaultCoreTopology(), sources,
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
             infrastructureConfig(NetworkingType.MANUAL),
@@ -74,7 +74,7 @@ class ApplyOrchestratorTest {
 
     private static ClusterBootstrapConfig configWithName(String name, int coreCount) {
         return clusterBootstrapConfig(
-            "1", clusterIdentity(name, "1.0.0"),
+            "1", clusterIdentity(name, "1.0.0").unwrap(),
             defaultCoreTopology(),
             Map.of("forge", forgeSource("forge", coreCount)),
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),

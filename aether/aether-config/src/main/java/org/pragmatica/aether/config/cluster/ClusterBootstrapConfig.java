@@ -5,6 +5,7 @@
 package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import java.util.List;
 import java.util.Map;
@@ -38,14 +39,14 @@ public record ClusterBootstrapConfig(String configVersion,
                                           operations);
     }
 
-    public ClusterBootstrapConfig withClusterName(String newName) {
-        return new ClusterBootstrapConfig(configVersion,
-                                          cluster.withName(newName),
-                                          coreTopology,
-                                          sources,
-                                          runtimes,
-                                          infrastructure,
-                                          operations);
+    public Result<ClusterBootstrapConfig> withClusterName(String newName) {
+        return cluster.withName(newName).map(updated -> new ClusterBootstrapConfig(configVersion,
+                                                                                    updated,
+                                                                                    coreTopology,
+                                                                                    sources,
+                                                                                    runtimes,
+                                                                                    infrastructure,
+                                                                                    operations));
     }
 
     public int derivedCoreCount() {

@@ -66,7 +66,7 @@ class BootstrapPhaseProvisionUserDataTest {
 
     private static ClusterBootstrapConfig configWithSource(SourceProfile source) {
         return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0"),
+                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("eu-1", source),
                                                              Map.of(),

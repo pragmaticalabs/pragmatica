@@ -90,7 +90,7 @@ class BootstrapPhaseSshKeyTest {
 
     private static ClusterBootstrapConfig configWithCloudSource() {
         return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                              ClusterIdentity.clusterIdentity("test", "1.0.0"),
+                                                              ClusterIdentity.clusterIdentity("test", "1.0.0").unwrap(),
                                                               CoreTopology.defaultCoreTopology(),
                                                               Map.of("eu-1", cloudHetznerSource()),
                                                               Map.of(),

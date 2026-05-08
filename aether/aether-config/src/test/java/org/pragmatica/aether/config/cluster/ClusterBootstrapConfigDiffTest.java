@@ -59,7 +59,7 @@ class ClusterBootstrapConfigDiffTest {
 
     private static ClusterBootstrapConfig configWithSources(Map<String, SourceProfile> sources) {
         return clusterBootstrapConfig(
-            "1", clusterIdentity("test-cluster", "1.0"),
+            "1", clusterIdentity("test-cluster", "1.0").unwrap(),
             defaultCoreTopology(), sources,
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
             infrastructureConfig(NetworkingType.MANUAL),
@@ -234,7 +234,7 @@ class ClusterBootstrapConfigDiffTest {
         void diff_versionChange_producesClusterLevel() {
             var stored = forgeConfig(3);
             var desired = clusterBootstrapConfig(
-                "1", clusterIdentity("test-cluster", "2.0"),
+                "1", clusterIdentity("test-cluster", "2.0").unwrap(),
                 defaultCoreTopology(),
                 Map.of("forge", forgeSource("forge", 3)),
                 Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
@@ -259,7 +259,7 @@ class ClusterBootstrapConfigDiffTest {
         void diff_clusterNameChange_producesImmutable() {
             var stored = forgeConfig(3);
             var desired = clusterBootstrapConfig(
-                "1", clusterIdentity("other-cluster", "1.0"),
+                "1", clusterIdentity("other-cluster", "1.0").unwrap(),
                 defaultCoreTopology(),
                 Map.of("forge", forgeSource("forge", 3)),
                 Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),

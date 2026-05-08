@@ -46,7 +46,7 @@ class DockerComposeGeneratorTest {
             Option.some("ghcr.io/pragmaticalabs/aether-node:1.0.0-alpha"), Option.none());
         return ClusterBootstrapConfig.clusterBootstrapConfig(
             "1",
-            ClusterIdentity.clusterIdentity("test-cluster", "1.0.0-alpha"),
+            ClusterIdentity.clusterIdentity("test-cluster", "1.0.0-alpha").unwrap(),
             CoreTopology.defaultCoreTopology(),
             Map.of("docker-source", source),
             Map.of("default", runtime),

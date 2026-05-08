@@ -63,7 +63,7 @@ class ClusterBootstrapCommandTest {
 
     private static ClusterBootstrapConfig configWithName(String name) {
         return clusterBootstrapConfig("1",
-                                      clusterIdentity(name, "1.0.0"),
+                                      clusterIdentity(name, "1.0.0").unwrap(),
                                       defaultCoreTopology(),
                                       Map.of("forge", forgeSource(3)),
                                       Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
@@ -76,7 +76,7 @@ class ClusterBootstrapCommandTest {
         @Test
         void withClusterName_overridesIdentityName_whenInvoked() {
             var config = configWithName("from-toml");
-            var overridden = config.withClusterName("cli-name");
+            var overridden = config.withClusterName("cli-name").unwrap();
 
             assertEquals("cli-name", overridden.cluster().name());
             assertEquals(config.cluster().version(), overridden.cluster().version());
@@ -90,8 +90,8 @@ class ClusterBootstrapCommandTest {
 
         @Test
         void withName_overridesClusterIdentityName_keepsVersion() {
-            var identity = clusterIdentity("from-toml", "2.5.0");
-            var renamed = identity.withName("cli-name");
+            var identity = clusterIdentity("from-toml", "2.5.0").unwrap();
+            var renamed = identity.withName("cli-name").unwrap();
 
             assertEquals("cli-name", renamed.name());
             assertEquals("2.5.0", renamed.version());

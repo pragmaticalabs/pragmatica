@@ -64,7 +64,7 @@ class ClusterSecretGenerationTest {
 
     private static ClusterBootstrapConfig minimalConfig() {
         return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
-                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0"),
+                                                             ClusterIdentity.clusterIdentity("prod", "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("eu-1", threeCoreCloudSource()),
                                                              Map.of("default", defaultRuntime()),

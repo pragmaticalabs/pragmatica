@@ -134,7 +134,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                     timeouts,
                                                     ports);
         return ClusterBootstrapConfig.clusterBootstrapConfig(CLUSTER_VERSION,
-                                                             ClusterIdentity.clusterIdentity(CLUSTER_NAME, CLUSTER_VERSION),
+                                                             ClusterIdentity.clusterIdentity(CLUSTER_NAME, CLUSTER_VERSION).unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
                                                              Map.of("eu-1", source),
                                                              runtimes,
