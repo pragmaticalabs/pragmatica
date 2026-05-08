@@ -595,20 +595,31 @@ slice_owner_for() {
 # leaves APP_ENDPOINT at a usable value (original LB on docker, retargeted on cloud).
 retarget_app_endpoint_to_active_slice() {
     local coords="$1" port="${2:-8070}" probe_path="${3:-}" probe_timeout="${4:-30}"
-    if [ "${ENV_TYPE:-docker}" != "cloud" ]; then return 0; fi
-    local owner owner_ip
-    owner=$(slice_owner_for "$coords" 2>/dev/null || true)
-    if [ -z "$owner" ]; then
-        log_warn "retarget: no ACTIVE owner found for ${coords}; APP_ENDPOINT unchanged"
-        return 1
+    if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
+        # Cloud: each node has its own public IP. Find an ACTIVE slice owner and
+        # retarget APP_ENDPOINT to its IP so the test bypasses cross-node forwarding
+        # (which on cloud means the cluster's app-HTTP forwarder, which has its own
+        # route-table propagation window).
+        local owner owner_ip
+        owner=$(slice_owner_for "$coords" 2>/dev/null || true)
+        if [ -z "$owner" ]; then
+            log_warn "retarget: no ACTIVE owner found for ${coords}; APP_ENDPOINT unchanged"
+            return 1
+        fi
+        owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
+        if [ -z "$owner_ip" ]; then
+            log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged"
+            return 1
+        fi
+        APP_ENDPOINT="http://${owner_ip}:${port}"
+        log_info "retarget: APP_ENDPOINT -> ${APP_ENDPOINT} (slice owner ${owner})"
     fi
-    owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
-    if [ -z "$owner_ip" ]; then
-        log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged"
-        return 1
-    fi
-    APP_ENDPOINT="http://${owner_ip}:${port}"
-    log_info "retarget: APP_ENDPOINT -> ${APP_ENDPOINT} (slice owner ${owner})"
+    # Both cloud AND docker/remote: probe the path until it returns < 500. On
+    # docker/remote, only node-1's app port is host-mapped, so we can't IP-retarget;
+    # instead we wait for node-1's route table to pick up the freshly-published slice
+    # route. Without this wait, PUT calls right after wait_for_slices_active race the
+    # post-ACTIVE route-table propagation window and 500 (slice owner not yet routable
+    # on node-1).
     if [ -n "$probe_path" ]; then
         wait_for "app endpoint route ${probe_path}" \
             "[ \$(http_status \"${APP_ENDPOINT}${probe_path}\" -H \"X-API-Key: \${API_KEY}\") -lt 500 ]" \
