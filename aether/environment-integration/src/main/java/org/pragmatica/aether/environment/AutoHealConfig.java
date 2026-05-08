@@ -27,7 +27,12 @@ public record AutoHealConfig(TimeSpan retryInterval,
 
     public static final TimeSpan DEFAULT_PROVISION_STABILITY_WINDOW = timeSpan(30).seconds();
 
-    public static final TimeSpan DEFAULT_DECOMMISSIONED_RETENTION = timeSpan(24).hours();
+    // Short retention so DECOMMISSIONED entries don't pollute KV across long-running clusters
+    // (or back-to-back integration test suites). DecommissionedAtomGc sweeps at retention/2,
+    // clamped to [5s, 1h]. For tests this means stale entries are gone within ~minute, restoring
+    // accurate disruption-budget calculations and lifecycle-list responses. Operators can override
+    // via `[operations.auto_heal] decommissioned_retention = "..."` for forensic retention.
+    public static final TimeSpan DEFAULT_DECOMMISSIONED_RETENTION = timeSpan(60).seconds();
 
     public static final TimeSpan DEFAULT_SWIM_HINTS_TTL = timeSpan(60).seconds();
 
