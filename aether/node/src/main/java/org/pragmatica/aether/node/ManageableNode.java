@@ -83,6 +83,7 @@ public interface ManageableNode {
     Option<ClusterTopologyManager> clusterTopologyManager();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
     Option<ClusterGenerationSnapshot> currentGenerationSnapshot();
+    void requestGenerationSnapshotRefresh();
     int connectedNodeCount();
     Map<String, Number> transportMetrics();
     Set<NodeId> connectedPeerIds();

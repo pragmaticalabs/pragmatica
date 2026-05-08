@@ -478,6 +478,7 @@ public interface AetherNode extends ManageableNode {
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           Supplier<Option<ClusterGenerationSnapshot>> generationSnapshotSupplier,
+                          Runnable refreshGenerationSnapshot,
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
@@ -497,6 +498,10 @@ public interface AetherNode extends ManageableNode {
 
             @Override public Option<ClusterGenerationSnapshot> currentGenerationSnapshot() {
                 return generationSnapshotSupplier.get();
+            }
+
+            @Override public void requestGenerationSnapshotRefresh() {
+                refreshGenerationSnapshot.run();
             }
 
             @Override public Promise<Unit> start() {
@@ -1237,15 +1242,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                                          isLeaderSupplier,
                                                                                                                          config.autoHeal());
         decommissionedAtomGc.start();
-        var swimHintsTickExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+        var publisherTickExecutor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
                                                                                                         var thread = new Thread(runnable,
-                                                                                                                                "swim-hints-tick");
+                                                                                                                                "generation-publisher-tick");
                                                                                                         thread.setDaemon(true);
                                                                                                         return thread;
                                                                                                     });
-        swimHintsTickExecutor.scheduleAtFixedRate(() -> {
-                                                      if (!swimHints.isEmpty()) {generationSnapshotPublisher.markDirty();}
-                                                  },
+        publisherTickExecutor.scheduleAtFixedRate(generationSnapshotPublisher::markDirty,
                                                   1,
                                                   1,
                                                   java.util.concurrent.TimeUnit.SECONDS);
@@ -1442,6 +1445,7 @@ public interface AetherNode extends ManageableNode {
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   spokesmanSnapshotSupplier,
+                                  generationSnapshotPublisher::markDirty,
                                   Option.empty(),
                                   discoveryProvider,
                                   certRenewalScheduler,
@@ -1535,6 +1539,7 @@ public interface AetherNode extends ManageableNode {
                                                                               eventLoopMetricsCollector,
                                                                               swimHealthDetector,
                                                                               spokesmanSnapshotSupplier,
+                                                                              generationSnapshotPublisher::markDirty,
                                                                               Option.some(managementServer),
                                                                               discoveryProvider,
                                                                               certRenewalScheduler,

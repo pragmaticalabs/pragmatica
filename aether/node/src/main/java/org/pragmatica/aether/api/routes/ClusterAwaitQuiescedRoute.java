@@ -113,6 +113,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
         var startNanos = System.nanoTime();
         var deadlineNanos = startNanos + timeout.nanos();
         log.debug("await-quiesced: requested={}, timeout={}ms", requested, timeout.millis());
+        nodeSupplier.get().requestGenerationSnapshotRefresh();
         return pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos, 0);
     }
 
