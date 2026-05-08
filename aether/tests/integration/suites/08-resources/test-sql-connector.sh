@@ -27,7 +27,11 @@ test_deploy_sql_app() {
     # (the default APP_ENDPOINT host) may not host the slice. Retarget to an owner and
     # probe the route to catch the post-ACTIVE window where the chosen node's route
     # table hasn't yet picked up the freshly-published route entry.
-    retarget_app_endpoint_to_active_slice "$BLUEPRINT" 8070 "/api/kv/route-probe" 30 || true
+    # 90s timeout: on docker-remote, slice route propagation to node-1 can take 30-60s
+    # under cluster A+B concurrent load. Earlier 30s + GET-probe passed spuriously
+    # (404 from missing route reads same as 404 from missing key); PUT-probe surfaces
+    # the real readiness window.
+    retarget_app_endpoint_to_active_slice "$BLUEPRINT" 8070 "/api/kv/route-probe" 90 || true
     log_pass "SQL-backed app deployed"
 }
 

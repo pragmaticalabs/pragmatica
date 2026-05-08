@@ -100,7 +100,9 @@ await_generation_quiesced() {
         log_pass "quiesced at ${target_epoch} (${elapsed}ms)"
         return 0
     fi
-    log_fail "await-quiesced status=${http_status} after ${elapsed}ms (target=${target_epoch})"
+    # Library function: caller decides via return code whether timeout is fatal.
+    # Print as warn (not fail) so `|| log_warn` callers don't get spurious [FAIL] noise.
+    log_warn "await-quiesced status=${http_status} after ${elapsed}ms (target=${target_epoch})"
     return 1
 }
 

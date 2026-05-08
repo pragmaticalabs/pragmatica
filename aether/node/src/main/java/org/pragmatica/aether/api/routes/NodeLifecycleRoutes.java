@@ -123,11 +123,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
-        var totalNodes = nodeSupplier.get().initialTopology()
-                                         .size();
-        var currentlyUnavailable = countUnavailableNodes();
-        var minAvailable = (totalNodes / 2) + 1;
-        var operationalAfterDrain = totalNodes - currentlyUnavailable - 1;
+        var intendedSize = nodeSupplier.get().initialTopology()
+                                            .size();
+        var minAvailable = (intendedSize / 2) + 1;
+        var operationalAfterDrain = countOnDuty() - 1;
         if (operationalAfterDrain >= minAvailable) {return Promise.success(new TransitionResult(true,
                                                                                                 nodeIdStr,
                                                                                                 "",
@@ -135,17 +134,17 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return budgetExceededError(nodeIdStr, operationalAfterDrain, minAvailable).promise();
     }
 
-    private int countUnavailableNodes() {
+    private int countOnDuty() {
         var count = new AtomicInteger(0);
         nodeSupplier.get().kvStore()
                         .forEach(NodeLifecycleKey.class,
                                  NodeLifecycleValue.class,
-                                 (_, value) -> incrementIfUnavailable(count, value));
+                                 (_, value) -> incrementIfOnDuty(count, value));
         return count.get();
     }
 
-    private static void incrementIfUnavailable(AtomicInteger count, NodeLifecycleValue value) {
-        if (value.state() != NodeLifecycleState.ON_DUTY) {count.incrementAndGet();}
+    private static void incrementIfOnDuty(AtomicInteger count, NodeLifecycleValue value) {
+        if (value.state() == NodeLifecycleState.ON_DUTY) {count.incrementAndGet();}
     }
 
     private static Cause budgetExceededError(String nodeIdStr, int operationalAfterDrain, int minAvailable) {

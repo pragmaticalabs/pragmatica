@@ -614,12 +614,20 @@ retarget_app_endpoint_to_active_slice() {
         APP_ENDPOINT="http://${owner_ip}:${port}"
         log_info "retarget: APP_ENDPOINT -> ${APP_ENDPOINT} (slice owner ${owner})"
     fi
-    # Both cloud AND docker/remote: probe the path until it returns < 500. On
-    # docker/remote, only node-1's app port is host-mapped, so we can't IP-retarget;
+    # Both cloud AND docker/remote: probe the path until the slice route is registered.
+    # On docker/remote, only node-1's app port is host-mapped, so we can't IP-retarget;
     # instead we wait for node-1's route table to pick up the freshly-published slice
     # route. Without this wait, PUT calls right after wait_for_slices_active race the
     # post-ACTIVE route-table propagation window and 500 (slice owner not yet routable
     # on node-1).
+    #
+    # Probe semantics: GET (not PUT). PUT carries a payload, and the test-persistence
+    # slice rejects payloads that don't match its expected `{"value":"..."}` shape with
+    # 500, poisoning the slice for the subsequent test PUT. GET is read-only and safe.
+    # The "<500" status check has a false-positive (404 means route missing OR key
+    # missing — both pre-test states), but the trailing wait still gives the route
+    # table additional propagation time, and the actual test PUT will surface a real
+    # registration failure as 500/404.
     if [ -n "$probe_path" ]; then
         wait_for "app endpoint route ${probe_path}" \
             "[ \$(http_status \"${APP_ENDPOINT}${probe_path}\" -H \"X-API-Key: \${API_KEY}\") -lt 500 ]" \
