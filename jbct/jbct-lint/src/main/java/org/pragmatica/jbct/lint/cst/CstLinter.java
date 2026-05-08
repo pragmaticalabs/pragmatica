@@ -48,6 +48,12 @@ public class CstLinter {
         return parse(source).map(cst -> analyzeWithRules(cst, source));
     }
 
+    /// Lint an already-parsed CST. Single-pass orchestrators (e.g. ProcessMojo) call
+    /// this to avoid re-parsing when the parse tree is already in hand.
+    public List<Diagnostic> lintParsed(CstNode tree, SourceFile source) {
+        return analyzeWithRules(tree, source);
+    }
+
     /// Check if source passes lint rules.
     public Result<Boolean> check(SourceFile source) {
         return lint(source).map(this::passesLintRules);
