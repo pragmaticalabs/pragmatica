@@ -147,32 +147,48 @@ mgmt_entry_point_node() {
     printf ''
 }
 
-# Pick a non-leader node ID from the known set (integration-test-1..5).
+# Pick a non-leader node from the cluster's CURRENT live membership.
 # Excludes BOTH the leader AND the pinned MGMT entry-point node (cluster B
 # only — cluster A has no pinning constraint). Fails loudly if no candidate
 # remains rather than silently returning the entry point — a kill of the
 # entry point on cluster B's `restart: "no"` policy turns one suite failure
 # into five (every subsequent cluster-B suite times out its mgmt gate).
+#
+# Source of truth: `/api/nodes/lifecycle` filtered to state=ON_DUTY. This
+# excludes nodes that were drained / killed / decommissioned by earlier
+# suites — those are NOT valid kill targets because:
+#  (a) their KV state is DECOMMISSIONED (single-writer rule) so they can't
+#      be re-admitted to the cluster even when the container restarts,
+#  (b) the surviving cluster has already removed them from its SWIM members
+#      map, so killing them produces no Ping timeout and no FAULTY edge.
+# Falls back to the static `node-1..5` list only if the API call fails
+# (e.g. cluster not yet ready / pre-bootstrap).
 pick_non_leader() {
     local leader="$1"
     local count="${2:-1}"
     local pinned
     pinned=$(mgmt_entry_point_node)
+
+    local current_members
+    current_members=$(api_get "/api/nodes/lifecycle" 2>/dev/null \
+        | grep -oE '"nodeId":"[^"]+","state":"ON_DUTY"|"state":"ON_DUTY","nodeId":"[^"]+"' \
+        | grep -oE '"nodeId":"[^"]+"' \
+        | sed 's/"nodeId":"\([^"]*\)"/\1/' || true)
+    if [ -z "$current_members" ]; then
+        current_members=$'node-1\nnode-2\nnode-3\nnode-4\nnode-5'
+    fi
+
     local found=0
-    for i in 1 2 3 4 5; do
-        local candidate="node-$i"
-        if [ "$candidate" = "$leader" ]; then
-            continue
-        fi
-        if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then
-            continue
-        fi
+    local candidate
+    while IFS= read -r candidate; do
+        [ -z "$candidate" ] && continue
+        if [ "$candidate" = "$leader" ]; then continue; fi
+        if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
         echo "$candidate"
         found=$((found + 1))
-        if [ "$found" -ge "$count" ]; then
-            return 0
-        fi
-    done
+        if [ "$found" -ge "$count" ]; then return 0; fi
+    done <<< "$current_members"
+
     if [ "$found" -lt "$count" ]; then
         log_fail "pick_non_leader: only ${found}/${count} candidates available (leader=${leader}, pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})"
         return 1
