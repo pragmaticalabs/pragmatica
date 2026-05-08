@@ -84,9 +84,14 @@ detect_operator_ips() {
         printf '%s' "$OPERATOR_IPS"
         return 0
     fi
+    # Force IPv4 explicitly. ifconfig.me's default response can be IPv6 depending on
+    # the operator's connection, and Hetzner's firewall API rejects IPv6 source IPs
+    # with a /32 prefix (it expects /128 for a single IPv6 host). Sticking to IPv4
+    # avoids that whole class of bug; if the operator has only IPv6 they can pass
+    # OPERATOR_IPS=<ipv6>/128 explicitly.
     local ip
-    ip=$(curl -sS --max-time 10 https://ifconfig.me 2>/dev/null) || {
-        log_err "could not detect operator IP via ifconfig.me; set OPERATOR_IPS=<cidr>[,<cidr>...]"
+    ip=$(curl -sS -4 --max-time 10 https://ifconfig.me 2>/dev/null) || {
+        log_err "could not detect operator IPv4 via ifconfig.me; set OPERATOR_IPS=<cidr>[,<cidr>...]"
         return 2
     }
     printf '%s/32' "$ip"
