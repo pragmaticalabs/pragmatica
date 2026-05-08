@@ -81,9 +81,10 @@ class CloudProviderSupportTest {
     }
 
     private static void assertHasClusterLabels(ProvisionSpec spec) {
-        assertThat(spec.tags()).containsEntry("aether-cluster", "test-a")
-                               .containsEntry("aether-source", "hetzner-eu")
-                               .containsEntry("aether-role", "core");
+        var ctx = spec.context();
+        assertThat(ctx.clusterName()).isEqualTo("test-a");
+        assertThat(ctx.sourceName()).isEqualTo("hetzner-eu");
+        assertThat(ctx.role()).isEqualTo("core");
     }
 
     private static void assertZoneFsn1(ProvisionSpec spec) {

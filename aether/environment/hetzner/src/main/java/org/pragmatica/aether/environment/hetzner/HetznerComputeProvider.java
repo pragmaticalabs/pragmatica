@@ -11,6 +11,7 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.api.Server;
@@ -45,8 +46,9 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
+        var defaultLabels = buildLabels(config.clusterName().or("unknown"), "core", "");
         return client.createServer(buildCreateRequest(config.region(),
-                                                      Map.of(),
+                                                      defaultLabels,
                                                       config.userData())).map(HetznerComputeProvider::toInstanceInfo)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
@@ -54,8 +56,9 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var location = extractLocation(spec.placement());
         var userData = spec.userData().or(config.userData());
+        var labels = labelsFor(spec.context());
         return client.createServer(buildCreateRequest(location,
-                                                      spec.tags(),
+                                                      labels,
                                                       userData)).map(HetznerComputeProvider::toInstanceInfo)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
@@ -113,14 +116,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private static final CreateServerRequest.PublicNetSpec IPV4_ONLY = new CreateServerRequest.PublicNetSpec(true, false);
 
-    private CreateServerRequest buildCreateRequest(String location, Map<String, String> extraLabels, String userData) {
+    private CreateServerRequest buildCreateRequest(String location, Map<String, String> labels, String userData) {
         var name = generateServerName();
         var serverType = config.serverType();
         var image = config.image();
         var sshKeyIds = config.sshKeyIds();
         var networkIds = config.networkIds();
         var firewallIds = config.firewallIds();
-        var labels = mergeLabels(buildLabels(), extraLabels);
         return CreateServerRequest.createServerRequest(name,
                                                        serverType,
                                                        image,
@@ -134,19 +136,41 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                        labels);
     }
 
-    private Map<String, String> buildLabels() {
-        var clusterLabel = config.clusterName().or("unknown");
-        return Map.of("aether-cluster", clusterLabel, "aether-role", "core");
+    /// Derive Hetzner-spec labels from a [ProvisionContext]. Pulls the well-known
+    /// fields (cluster, role, source) into Hetzner's `aether-*` dashed naming and
+    /// folds in any caller-supplied [ProvisionContext#extraTags] that pass the
+    /// Hetzner key/value regex; everything else is logged-and-dropped (the caller
+    /// is expected to deliver such metadata via `userData`).
+    private Map<String, String> labelsFor(ProvisionContext ctx) {
+        var clusterLabel = clusterNameOrDefault(ctx);
+        var role = ctx.role().isEmpty()
+                  ? "core"
+                  : ctx.role();
+        return appendCompatible(buildLabels(clusterLabel, role, ctx.sourceName()), ctx.extraTags());
+    }
+
+    private String clusterNameOrDefault(ProvisionContext ctx) {
+        return ctx.clusterName().isEmpty()
+              ? config.clusterName().or("unknown")
+              : ctx.clusterName();
+    }
+
+    private static Map<String, String> buildLabels(String clusterLabel, String role, String sourceName) {
+        var labels = new HashMap<String, String>();
+        labels.put("aether-cluster", clusterLabel);
+        labels.put("aether-role", role);
+        if (!sourceName.isEmpty()) {labels.put("aether-source", sourceName);}
+        return labels;
     }
 
     private static final java.util.regex.Pattern HETZNER_LABEL_KEY_RX = java.util.regex.Pattern.compile("^[a-zA-Z]([a-zA-Z0-9_.-]*[a-zA-Z0-9])?(/[a-zA-Z0-9_.-]+)?$");
 
     private static final java.util.regex.Pattern HETZNER_LABEL_VALUE_RX = java.util.regex.Pattern.compile("^[a-zA-Z0-9_.-]*$");
 
-    private static Map<String, String> mergeLabels(Map<String, String> defaults, Map<String, String> overrides) {
-        if (overrides.isEmpty()) {return defaults;}
-        var merged = new HashMap<String, String>(defaults);
-        for (var entry : overrides.entrySet()) {
+    private static Map<String, String> appendCompatible(Map<String, String> base, Map<String, String> extras) {
+        if (extras.isEmpty()) {return Map.copyOf(base);}
+        var merged = new HashMap<>(base);
+        for (var entry : extras.entrySet()) {
             var key = entry.getKey();
             var value = entry.getValue();
             if (key == null || value == null || key.length() > 63 || value.length() > 63 || !HETZNER_LABEL_KEY_RX.matcher(key)

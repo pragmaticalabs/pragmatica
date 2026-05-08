@@ -11,6 +11,7 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.azure.AzureClient;
 import org.pragmatica.cloud.azure.api.CreateVmRequest;
@@ -55,13 +56,14 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return client.createVm(buildCreateRequest(List.of())).map(AzureComputeProvider::toInstanceInfo)
+        return client.createVm(buildCreateRequest(List.of(), defaultTags())).map(AzureComputeProvider::toInstanceInfo)
                               .mapError(AzureComputeProvider::toProvisionError);
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var zones = extractZones(spec.placement());
-        return client.createVm(buildCreateRequest(zones)).map(AzureComputeProvider::toInstanceInfo)
+        var tags = tagsFor(spec.context());
+        return client.createVm(buildCreateRequest(zones, tags)).map(AzureComputeProvider::toInstanceInfo)
                               .mapError(AzureComputeProvider::toProvisionError);
     }
 
@@ -92,7 +94,7 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                                     .mapError(AzureComputeProvider::toListInstancesError);
     }
 
-    private CreateVmRequest buildCreateRequest(List<String> zones) {
+    private CreateVmRequest buildCreateRequest(List<String> zones, Map<String, String> tags) {
         var name = generateVmName();
         var imageRef = parseImageUrn(config.image());
         var hardware = new HardwareProfile(config.vmSize());
@@ -102,12 +104,29 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         var os = new OsProfile(name, config.adminUsername(), linux);
         var network = new NetworkProfile(List.of(new NetworkInterfaceRef(config.vnetSubnetId())));
         var properties = new VmRequestProperties(hardware, storage, os, network);
-        var tags = Map.of("aether-managed", "true");
         return CreateVmRequest.createVmRequest(name,
                                                config.azureConfig().location(),
                                                tags,
                                                properties,
                                                zones);
+    }
+
+    private static Map<String, String> defaultTags() {
+        return Map.of("aether-managed", "true");
+    }
+
+    /// Translate a [ProvisionContext] into Azure VM tags. Well-known `aether-*`
+    /// slots are emitted alongside the managed marker; caller-supplied
+    /// [ProvisionContext#extraTags] are folded in last (extras win on collision).
+    private static Map<String, String> tagsFor(ProvisionContext ctx) {
+        var tags = new java.util.HashMap<String, String>();
+        tags.put("aether-managed", "true");
+        if (!ctx.clusterName().isEmpty()) {tags.put("aether-cluster", ctx.clusterName());}
+        if (!ctx.role().isEmpty()) {tags.put("aether-role", ctx.role());}
+        if (!ctx.sourceName().isEmpty()) {tags.put("aether-source", ctx.sourceName());}
+        ctx.nodeId().onPresent(value -> tags.put("aether-node-id", value));
+        tags.putAll(ctx.extraTags());
+        return Map.copyOf(tags);
     }
 
     private static List<String> extractZones(Option<PlacementHint> placement) {

@@ -11,6 +11,7 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.aws.AwsClient;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
@@ -48,14 +49,15 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.runInstances(buildRunRequest(Option.empty(),
-                                                   config.userData())).flatMap(this::tagAndMapFirstInstance)
+                                                   config.userData())).flatMap(response -> tagAndMapFirstInstance(response, defaultTags()))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var zone = extractAvailabilityZone(spec.placement());
         var userData = spec.userData().or(config.userData());
-        return client.runInstances(buildRunRequest(zone, userData)).flatMap(this::tagAndMapFirstInstance)
+        var tags = tagsFor(spec.context());
+        return client.runInstances(buildRunRequest(zone, userData)).flatMap(response -> tagAndMapFirstInstance(response, tags))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 
@@ -92,12 +94,31 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                  tags);
     }
 
-    private Promise<InstanceInfo> tagAndMapFirstInstance(RunInstancesResponse response) {
+    private Promise<InstanceInfo> tagAndMapFirstInstance(RunInstancesResponse response, Map<String, String> tags) {
         var instance = response.instances().getFirst();
         var instanceId = instance.instanceId();
         return client.createTags(List.of(instanceId),
-                                 Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE))
+                                 tags)
         .map(unit -> toInstanceInfo(instance));
+    }
+
+    private static Map<String, String> defaultTags() {
+        return Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE);
+    }
+
+    /// Translate a [ProvisionContext] into AWS tag entries. The well-known
+    /// `aether-cluster` / `aether-role` / `aether-source` slots are emitted
+    /// alongside the managed marker; caller-supplied [ProvisionContext#extraTags]
+    /// are folded in last (extras win on key collision).
+    private static Map<String, String> tagsFor(ProvisionContext ctx) {
+        var tags = new java.util.HashMap<String, String>();
+        tags.put(MANAGED_TAG_KEY, MANAGED_TAG_VALUE);
+        if (!ctx.clusterName().isEmpty()) {tags.put("aether-cluster", ctx.clusterName());}
+        if (!ctx.role().isEmpty()) {tags.put("aether-role", ctx.role());}
+        if (!ctx.sourceName().isEmpty()) {tags.put("aether-source", ctx.sourceName());}
+        ctx.nodeId().onPresent(value -> tags.put("aether-node-id", value));
+        tags.putAll(ctx.extraTags());
+        return Map.copyOf(tags);
     }
 
     private Promise<List<InstanceInfo>> describeByTag(String tagKey, String tagValue) {

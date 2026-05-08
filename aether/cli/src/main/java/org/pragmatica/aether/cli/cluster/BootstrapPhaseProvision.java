@@ -14,6 +14,7 @@ import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.config.toml.TomlDocument;
@@ -278,7 +279,14 @@ import static org.pragmatica.lang.Result.success;
                                         .or("default")
                           : "default";
         var zone = source.zone().or("default");
-        var labels = Map.of("aether-cluster", clusterName, "aether-source", sourceName, "aether-role", role.value());
+        var context = ProvisionContext.provisionContext(clusterName,
+                                                        role.value(),
+                                                        sourceName,
+                                                        Option.some(nodeId),
+                                                        Option.empty(),
+                                                        ProvisionContext.DEFAULT_CORE_MAX,
+                                                        ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
+                                                        Map.of());
         return NodeConfigBuilder.compose(ctx,
                                          source,
                                          nodeIndex,
@@ -293,7 +301,7 @@ import static org.pragmatica.lang.Result.success;
                                         .flatMap(userData -> ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                                                          instanceType,
                                                                                          role.value(),
-                                                                                         labels).map(spec -> applyZone(spec,
+                                                                                         context).map(spec -> applyZone(spec,
                                                                                                                        zone))
                                                                                         .map(spec -> spec.withUserData(userData)));
     }

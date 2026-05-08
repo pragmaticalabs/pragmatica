@@ -11,6 +11,7 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.cloud.gcp.GcpClient;
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest;
@@ -52,14 +53,16 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.insertInstance(buildInsertRequest(Option.empty(),
-                                                        config.userData())).map(GcpComputeProvider::toInstanceInfo)
+                                                        config.userData(),
+                                                        defaultLabels())).map(GcpComputeProvider::toInstanceInfo)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var zone = extractZone(spec.placement());
         var userData = spec.userData().or(config.userData());
-        return client.insertInstance(buildInsertRequest(zone, userData)).map(GcpComputeProvider::toInstanceInfo)
+        var labels = labelsFor(spec.context());
+        return client.insertInstance(buildInsertRequest(zone, userData, labels)).map(GcpComputeProvider::toInstanceInfo)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
@@ -99,12 +102,11 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return "";
     }
 
-    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride, String userData) {
+    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride, String userData, Map<String, String> labels) {
         var name = generateInstanceName();
         var machineType = config.machineType();
         var disk = buildBootDisk();
         var networkInterface = buildNetworkInterface();
-        var labels = Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
         var metadata = buildMetadata(userData);
         return new InsertInstanceRequest(name,
                                          machineType,
@@ -113,6 +115,24 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                                          labels,
                                          metadata,
                                          zoneOverride);
+    }
+
+    private static Map<String, String> defaultLabels() {
+        return Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
+    }
+
+    /// Translate a [ProvisionContext] into GCP labels. Well-known `aether-*`
+    /// slots are emitted alongside the managed marker; caller-supplied
+    /// [ProvisionContext#extraTags] are folded in last (extras win on collision).
+    private static Map<String, String> labelsFor(ProvisionContext ctx) {
+        var labels = new java.util.HashMap<String, String>();
+        labels.put(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
+        if (!ctx.clusterName().isEmpty()) {labels.put("aether-cluster", ctx.clusterName());}
+        if (!ctx.role().isEmpty()) {labels.put("aether-role", ctx.role());}
+        if (!ctx.sourceName().isEmpty()) {labels.put("aether-source", ctx.sourceName());}
+        ctx.nodeId().onPresent(value -> labels.put("aether-node-id", value));
+        labels.putAll(ctx.extraTags());
+        return Map.copyOf(labels);
     }
 
     private static Option<String> extractZone(Option<PlacementHint> placement) {

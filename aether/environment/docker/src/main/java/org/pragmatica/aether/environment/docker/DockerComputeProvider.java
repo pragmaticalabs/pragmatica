@@ -11,6 +11,7 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -41,7 +42,8 @@ import static org.pragmatica.lang.Result.success;
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        return provision(ProvisionSpec.provisionSpec(instanceType, "docker", "default", Map.of()).unwrap());
+        var ctx = ProvisionContext.provisionContext("default", "core", "default", ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+        return provision(ProvisionSpec.provisionSpec(instanceType, "docker", "default", ctx).unwrap());
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
@@ -96,12 +98,13 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private List<String> buildRunCommand(ProvisionSpec spec, String containerName, int nodeIndex) {
-        var role = spec.tags().getOrDefault("aether.role", "core");
-        var cluster = spec.tags().getOrDefault("aether.cluster", "default");
-        var nodeId = spec.tags().getOrDefault("aether.node-id", containerName);
-        var peers = spec.tags().getOrDefault("aether.peers", "");
-        var coreMax = spec.tags().getOrDefault("aether.core-max", "3");
-        var provisionedBy = spec.tags().getOrDefault("aether.provisioned-by", "");
+        var ctx = spec.context();
+        var role = roleOrDefault(ctx);
+        var cluster = clusterOrDefault(ctx);
+        var nodeId = ctx.nodeId().or(containerName);
+        var peers = ctx.peers().or("");
+        var coreMax = String.valueOf(ctx.coreMax());
+        var provisionedBy = ctx.provisionedBy();
         var apiKey = config.apiKey();
         var command = new ArrayList<>(List.of("docker",
                                               "run",
@@ -146,7 +149,7 @@ import static org.pragmatica.lang.Result.success;
             command.add("-p");
             command.add((config.managementPortBase() + nodeIndex) + ":8080");
         }
-        addSpecLabels(command, spec.tags());
+        addSpecLabels(command, ctx.extraTags());
         addPlacementLabels(command, spec.placement());
         command.add(config.imageName());
         return List.copyOf(command);
@@ -252,10 +255,23 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static Map<String, String> buildInstanceTags(ProvisionSpec spec, String containerName) {
-        var role = spec.tags().getOrDefault("aether.role", "core");
-        var cluster = spec.tags().getOrDefault("aether.cluster", "default");
-        var nodeId = spec.tags().getOrDefault("aether.node-id", containerName);
+        var ctx = spec.context();
+        var role = roleOrDefault(ctx);
+        var cluster = clusterOrDefault(ctx);
+        var nodeId = ctx.nodeId().or(containerName);
         return Map.of("aether.cluster", cluster, "aether.role", role, "aether.node-id", nodeId);
+    }
+
+    private static String roleOrDefault(ProvisionContext ctx) {
+        return ctx.role().isEmpty()
+              ? "core"
+              : ctx.role();
+    }
+
+    private static String clusterOrDefault(ProvisionContext ctx) {
+        return ctx.clusterName().isEmpty()
+              ? "default"
+              : ctx.clusterName();
     }
 
     static List<InstanceInfo> parseContainerList(String output) {

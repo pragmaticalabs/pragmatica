@@ -10,6 +10,7 @@ import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -951,7 +952,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                    "default",
                                                    "core",
-                                                   buildProvisionTags())
+                                                   buildProvisionContext())
         .unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
         var localTag = NodeId.nodeId("ctm-inflight-" + System.nanoTime() + "-" + Math.abs(spec.hashCode())).unwrap();
@@ -1015,24 +1016,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         slotKeyByNodeId.clear();
     }
 
-    private Map<String, String> buildProvisionTags() {
+    private ProvisionContext buildProvisionContext() {
         var peers = observer.topology().stream()
                                      .filter(this::isHealthyPeer)
                                      .flatMap(nodeId -> observer.get(nodeId).stream())
                                      .map(ClusterTopologyManagerRecord::formatPeerEntry)
                                      .collect(Collectors.joining(","));
-        var tags = new java.util.LinkedHashMap<String, String>();
-        tags.put("aether.peers", peers);
-        tags.put("aether.core-max", String.valueOf(snapshotDesiredCoreSize()));
-        tags.put("aether.provisioned-by", "ctm");
-        // Defense in depth — pass cluster name as an explicit Hetzner-compatible label so
-        // the provider's default `aether-cluster=unknown` (used when [cloud.discovery]
-        // cluster_name is missing from node config) is overridden. Avoids orphaned VMs
-        // that the cluster name-scoped reaper / discovery polling can't see.
-        clusterConfigReader.get().map(ClusterConfigValue::clusterName)
-                                       .filter(name -> !name.isEmpty())
-                                       .onPresent(name -> tags.put("aether-cluster", name));
-        return Map.copyOf(tags);
+        // Pass cluster name explicitly so the provider's default `aether-cluster=unknown`
+        // (used when [cloud.discovery] cluster_name is missing from node config) is overridden.
+        // Avoids orphaned VMs that the cluster name-scoped reaper / discovery polling can't see.
+        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
+        return ProvisionContext.provisionContext(clusterName,
+                                                 "core",
+                                                 "default",
+                                                 Option.empty(),
+                                                 Option.some(peers),
+                                                 snapshotDesiredCoreSize(),
+                                                 ProvisionContext.PROVISIONED_BY_CTM,
+                                                 Map.of());
     }
 
     private boolean isHealthyPeer(NodeId nodeId) {

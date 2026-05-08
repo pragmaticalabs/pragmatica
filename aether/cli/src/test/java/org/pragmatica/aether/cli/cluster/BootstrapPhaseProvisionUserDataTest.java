@@ -188,10 +188,10 @@ class BootstrapPhaseProvisionUserDataTest {
 
         var spec = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-0", 0);
 
-        assertEquals("prod", spec.tags().get("aether-cluster"),
-                     "Tags must include cluster name so reaper can label-match orphans");
-        assertEquals("eu-1", spec.tags().get("aether-source"));
-        assertEquals("core", spec.tags().get("aether-role"));
+        assertEquals("prod", spec.context().clusterName(),
+                     "Context must include cluster name so reaper can label-match orphans");
+        assertEquals("eu-1", spec.context().sourceName());
+        assertEquals("core", spec.context().role());
     }
 
     @Test

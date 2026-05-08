@@ -12,6 +12,7 @@ import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
@@ -114,9 +115,9 @@ class DockerComputeProviderTest {
         @Test
         void provision_withSpec_passesTagsToCommand() {
             testRunner.nextResponse = Promise.success("container-id-1");
-            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "staging",
-                                                    Map.of("aether.cluster", "test-cluster",
-                                                           "aether.role", "worker")).unwrap();
+            var ctx = ProvisionContext.provisionContext("test-cluster", "worker", "default",
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "staging", ctx).unwrap();
 
             provider.provision(spec)
                     .await()
