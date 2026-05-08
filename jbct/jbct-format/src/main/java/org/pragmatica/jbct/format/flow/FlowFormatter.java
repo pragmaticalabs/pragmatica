@@ -121,7 +121,7 @@ public class FlowFormatter {
             }
         }
         return changed
-               ? new CstNode.NonTerminal(nt.span(), nt.rule(), flatChildren,
+               ? new CstNode.NonTerminal(nt.id(), nt.span(), nt.rule(), flatChildren,
                                          nt.leadingTrivia(), nt.trailingTrivia())
                : nt;
     }
