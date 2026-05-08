@@ -317,7 +317,8 @@ public sealed interface ManagementApiResponses {
                                          List<String> coreNodes,
                                          int connectedPeerCount,
                                          List<TopologyNodeDetail> nodeDetails,
-                                         Option<String> epoch){}
+                                         Option<String> epoch,
+                                         String mode){}
 
     record TopologyNodeDetail(String nodeId, String role, String health, String hostname, String zone, String address){}
 

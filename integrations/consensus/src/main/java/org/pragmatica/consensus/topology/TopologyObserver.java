@@ -50,6 +50,35 @@ public interface TopologyObserver extends TopologyManager {
         }
     }
 
+    /// Explicit mode that drives `BOOTING`-vs-`NORMAL` semantics for the legacy
+    /// `nodeStatesById` fallback paths.
+    ///
+    /// `BOOTING` — the cluster has never observed a `MembershipView` whose projected
+    /// `coreMemberIds` reaches quorum (`clusterSize/2 + 1`). During this window
+    /// `healthyActiveNodeCount`, `readyNodeCount`, and the private quorum-eval
+    /// `healthyActivePeerCount` fall back to the in-memory `nodeStatesById` map so
+    /// `/health/ready` does not stall waiting on a snapshot that itself requires
+    /// quorum to be published.
+    ///
+    /// `NORMAL` — quorum has been observed at least once via the snapshot. From this
+    /// point all reads are snapshot-only; if the snapshot ever becomes empty again
+    /// the observer reports `0` rather than leaking a transport-derived count that
+    /// disagrees with the leader's view.
+    ///
+    /// Transition is one-way: `BOOTING -> NORMAL` triggers on the FIRST snapshot whose
+    /// `coreMemberIds.size() >= clusterSize/2 + 1`. Subsequent smaller snapshots do
+    /// not flip back to `BOOTING`.
+    enum TopologyMode {
+        BOOTING, NORMAL
+    }
+
+    /// Current topology mode. Default `NORMAL` for the abstract interface so legacy /
+    /// test-only implementations (notably `TopologyManager` minimal stubs) retain the
+    /// snapshot-only contract by default.
+    default TopologyMode topologyMode() {
+        return TopologyMode.NORMAL;
+    }
+
     @MessageReceiver
     void reconcile(NetworkServiceMessage.ConnectedNodesList connectedNodesList);
 
@@ -144,7 +173,8 @@ public interface TopologyObserver extends TopologyManager {
                        AtomicBoolean started,
                        Object lifecycleLock,
                        AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
-                       AtomicReference<Set<NodeId>> previousCoreMembers) implements TopologyObserver {
+                       AtomicReference<Set<NodeId>> previousCoreMembers,
+                       AtomicReference<TopologyMode> mode) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -162,7 +192,8 @@ public interface TopologyObserver extends TopologyManager {
                     AtomicBoolean started,
                     Object lifecycleLock,
                     AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
-                    AtomicReference<Set<NodeId>> previousCoreMembers) {
+                    AtomicReference<Set<NodeId>> previousCoreMembers,
+                    AtomicReference<TopologyMode> mode) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -179,6 +210,7 @@ public interface TopologyObserver extends TopologyManager {
                 this.lifecycleLock = lifecycleLock;
                 this.reconcileFuture = reconcileFuture;
                 this.previousCoreMembers = previousCoreMembers;
+                this.mode = mode;
                 this.effectiveClusterSize.set(config.clusterSize());
                 // Mirror the `initReconcile` filter: a peer the cluster has durably retired
                 // (KV NodeLifecycleValue.DECOMMISSIONED) must not be reconstructed from
@@ -364,29 +396,86 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             @Override
+            public TopologyMode topologyMode() {
+                return mode.get();
+            }
+
+            @Override
             public int readyNodeCount() {
-                // Snapshot-projected ON_DUTY set is the sole source of truth: dynamically
-                // provisioned nodes may be ON_DUTY in the leader-projected view before
-                // appearing in local nodeStatesById. KV NodeLifecycleKey writes
-                // (HealthReconciler) are authoritative; if the snapshot is absent (pre-sync),
-                // we report 0 ready nodes rather than fall back to a transport-derived view.
-                return snapshotSource.currentMembershipView()
-                                     .map(view -> view.onDutyMemberIds().size())
-                                     .or(0);
+                // BOOTING vs NORMAL semantics (audit Step 5, R1):
+                //   BOOTING — snapshot may be absent because quorum has never been
+                //     observed; fall back to legacy in-memory `nodeStatesById` size of
+                //     non-passive peers + self so `/health/ready` does not stall waiting
+                //     on a snapshot that itself requires quorum.
+                //   NORMAL — snapshot is the SOLE source. If absent (publisher hiccup
+                //     during steady state), report 0 rather than leak a transport-derived
+                //     count that disagrees with the leader's view.
+                var view = snapshotSource.currentMembershipView();
+                if (view.isPresent()) {
+                    maybeTransitionToNormal(view.unwrap());
+                    return view.unwrap().onDutyMemberIds().size();
+                }
+                if (mode.get() == TopologyMode.BOOTING) {
+                    return legacyActiveNodeCount();
+                }
+                return 0;
             }
 
             @Override
             public int healthyActiveNodeCount() {
-                // RC1-9 audit Step 5: snapshot is the SOLE source of truth. The legacy
-                // `nodeStatesById`-derived fallback is gone — `NodeState.health` is dead
-                // state w.r.t. cluster-wide health (defaults to HEALTHY on add, never
-                // updates on SWIM FAULTY because audit Step 3 moved that flow through
-                // KV-Store). Cold-boot windows where the snapshot is empty now report
-                // `0` instead of leaking a transport-derived count that disagrees with
-                // the leader's view.
-                return snapshotSource.currentMembershipView()
-                                     .map(MembershipView::healthyOnDutyCount)
-                                     .or(0);
+                // BOOTING vs NORMAL semantics (audit Step 5, R1):
+                //   BOOTING — fall back to legacy in-memory map (defaults to HEALTHY on
+                //     add) so the bootstrap path can advance before the first snapshot.
+                //   NORMAL — snapshot is the SOLE source. If absent, report 0.
+                var view = snapshotSource.currentMembershipView();
+                if (view.isPresent()) {
+                    maybeTransitionToNormal(view.unwrap());
+                    return view.unwrap().healthyOnDutyCount();
+                }
+                if (mode.get() == TopologyMode.BOOTING) {
+                    return legacyHealthyActiveNodeCount();
+                }
+                return 0;
+            }
+
+            /// One-way transition `BOOTING -> NORMAL` triggered by the FIRST observation
+            /// of a `MembershipView` whose projected `coreMemberIds` reaches quorum
+            /// (`clusterSize/2 + 1`). After flip, all `*Count` reads stop consulting the
+            /// legacy `nodeStatesById` fallback and become snapshot-only.
+            ///
+            /// Idempotent: subsequent snapshots (smaller or larger) do not flip back.
+            private void maybeTransitionToNormal(MembershipView view) {
+                if (mode.get() == TopologyMode.NORMAL) {
+                    return;
+                }
+                var quorum = quorumSize();
+                if (view.coreMemberIds().size() >= quorum
+                    && mode.compareAndSet(TopologyMode.BOOTING, TopologyMode.NORMAL)) {
+                    log.info("Topology mode transitioned BOOTING -> NORMAL (snapshot coreMemberIds={} >= quorum={})",
+                             view.coreMemberIds().size(), quorum);
+                }
+            }
+
+            /// Legacy active-node count for `readyNodeCount` BOOTING fallback. Counts
+            /// non-passive entries in `nodeStatesById` regardless of `NodeHealth` because
+            /// the early-bootstrap path needs to count provisionally-joined peers before
+            /// any successful Ack establishes their HEALTHY edge.
+            private int legacyActiveNodeCount() {
+                return (int) nodeStatesById.values()
+                                           .stream()
+                                           .filter(state -> state.info().role() != NodeRole.PASSIVE)
+                                           .count();
+            }
+
+            /// Legacy healthy-active-node count for `healthyActiveNodeCount` BOOTING
+            /// fallback. INCLUDES self (matching the snapshot-derived
+            /// `healthyOnDutyCount` shape used by `NORMAL`-mode callers).
+            private int legacyHealthyActiveNodeCount() {
+                return (int) nodeStatesById.values()
+                                           .stream()
+                                           .filter(state -> state.info().role() != NodeRole.PASSIVE)
+                                           .filter(state -> state.health() == NodeHealth.HEALTHY)
+                                           .count();
             }
 
             /// Canonical edge-transition publisher for `QuorumStateNotification`.
@@ -457,6 +546,10 @@ public interface TopologyObserver extends TopologyManager {
                 if (view.isEmpty()) {
                     return;
                 }
+                // Hook the BOOTING -> NORMAL transition into the snapshot-arrival path so
+                // it is checked on every snapshot publish, not only when external readers
+                // happen to query a count.
+                maybeTransitionToNormal(view.unwrap());
                 var current = view.unwrap().coreMemberIds();
                 var previous = previousCoreMembers.getAndSet(Set.copyOf(current));
                 var delta = MembershipDelta.diff(previous, current);
@@ -477,16 +570,22 @@ public interface TopologyObserver extends TopologyManager {
             /// Healthy active peers, excluding self. Used by the canonical quorum-state
             /// publisher: `+ 1` is added back to include self, matching the formula
             /// formerly used by the QUIC/Netty transports.
-            /// RC1-9 audit Step 5 — partial revert: the PUBLIC `healthyActiveNodeCount`
-            /// is snapshot-only (CTM must not act on stale data), but the PRIVATE
-            /// quorum-evaluation path needs a config-derived fallback because the
-            /// snapshot is published only after Rabia commits — which itself requires
-            /// quorum to be established. Returning 0 here at cold-boot creates a
-            /// catch-22 where `/health/ready` never flips and bootstrap times out.
+            /// BOOTING vs NORMAL semantics:
+            ///   BOOTING — snapshot is published only after Rabia commits, which itself
+            ///     requires quorum to be established. Falling back to the legacy
+            ///     `nodeStatesById` count avoids the catch-22 where `/health/ready` never
+            ///     flips and bootstrap times out.
+            ///   NORMAL — snapshot-only. If absent during steady state, return 0.
             private int healthyActivePeerCount() {
-                return snapshotSource.currentMembershipView()
-                                     .map(this::peerHealthyOnDutyCount)
-                                     .or(this::legacyHealthyActivePeerCount);
+                var view = snapshotSource.currentMembershipView();
+                if (view.isPresent()) {
+                    maybeTransitionToNormal(view.unwrap());
+                    return peerHealthyOnDutyCount(view.unwrap());
+                }
+                if (mode.get() == TopologyMode.BOOTING) {
+                    return legacyHealthyActivePeerCount();
+                }
+                return 0;
             }
 
             /// Snapshot's `healthyOnDutyCount` may include self; subtract it deterministically
@@ -646,6 +745,7 @@ public interface TopologyObserver extends TopologyManager {
                                           new AtomicBoolean(false),
                                           new Object(),
                                           new AtomicReference<>(Option.none()),
-                                          new AtomicReference<>(Set.<NodeId>of())));
+                                          new AtomicReference<>(Set.<NodeId>of()),
+                                          new AtomicReference<>(TopologyMode.BOOTING)));
     }
 }

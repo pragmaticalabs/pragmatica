@@ -127,6 +127,32 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 BooleanSupplier isLeaderSupplier,
                                                                 PeerObservationStore observationStore,
                                                                 SwimConfig swimConfig) {
+        return coreSwimHealthDetector(router,
+                                      topologyConfig,
+                                      serializer,
+                                      deserializer,
+                                      signalSink,
+                                      epochSupplier,
+                                      isLeaderSupplier,
+                                      observationStore,
+                                      swimConfig,
+                                      () -> true);
+    }
+
+    /// Phase-aware overload (audit Step 6, 2026-05-07). `isBootingSupplier` is the
+    /// cluster's `HealthReconciler.phase() == ClusterPhase.BOOTING` projection wired
+    /// from `AetherNode`. When `false`, SWIM emits `FaultyObserved` regardless of
+    /// per-peer `everSeenHealthy`.
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationStore observationStore,
+                                                                SwimConfig swimConfig,
+                                                                BooleanSupplier isBootingSupplier) {
         var ctxHolder = new AtomicReference<SwimHealthContext>();
         Function<Fsm<SwimHealthState, SwimHealthEvents>, SwimHealthState> initialStateFactory = fsm -> buildContextAndStopped(fsm,
                                                                                                                               ctxHolder,
@@ -138,7 +164,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                                                                               epochSupplier,
                                                                                                                               isLeaderSupplier,
                                                                                                                               observationStore,
-                                                                                                                              swimConfig);
+                                                                                                                              swimConfig,
+                                                                                                                              isBootingSupplier);
         Fsm.fsm("swim-health",
                 topologyConfig.self().id(),
                 initialStateFactory);
@@ -155,7 +182,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                           Supplier<Epoch> epochSupplier,
                                                           BooleanSupplier isLeaderSupplier,
                                                           PeerObservationStore observationStore,
-                                                          SwimConfig swimConfig) {
+                                                          SwimConfig swimConfig,
+                                                          BooleanSupplier isBootingSupplier) {
         var ctx = new SwimHealthContext(fsm,
                                         router,
                                         topologyConfig,
@@ -165,7 +193,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                         epochSupplier,
                                         isLeaderSupplier,
                                         observationStore,
-                                        swimConfig);
+                                        swimConfig,
+                                        System::currentTimeMillis,
+                                        isBootingSupplier);
         ctxHolder.set(ctx);
         return ctx.stopped();
     }
@@ -280,7 +310,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                       transport,
                                                                       this,
                                                                       context.topologyConfig().self(),
-                                                                      selfAddress))
+                                                                      selfAddress,
+                                                                      context.isBootingSupplier()))
                               .flatMap(SwimProtocol::start)
                               .map(protocol -> seedAndWrap(protocol, transport, encryptor));
     }

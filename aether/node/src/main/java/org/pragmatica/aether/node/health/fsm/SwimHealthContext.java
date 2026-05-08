@@ -42,6 +42,13 @@ public final class SwimHealthContext {
     private final PeerObservationStore observationStore;
     private final SwimConfig swimConfig;
     private final LongSupplier clock;
+    /// Audit Step 6 (2026-05-07) — phase-aware SWIM cold-boot suppression. `true` when
+    /// the cluster is in `BOOTING` phase (FAULTY for never-HEALTHY peers should be
+    /// suppressed to `UnknownObserved`); `false` in `NORMAL` (always emit
+    /// `FaultyObserved` regardless of `everSeenHealthy`). Production wiring sources
+    /// this from `HealthReconciler.phase() == ClusterPhase.BOOTING`. Default
+    /// `() -> true` preserves legacy behavior for unit tests that don't wire a phase.
+    private final BooleanSupplier isBootingSupplier;
 
     private final AtomicInteger faultyCountInWindow = new AtomicInteger();
 
@@ -70,7 +77,8 @@ public final class SwimHealthContext {
              isLeaderSupplier,
              observationStore,
              swimConfig,
-             System::currentTimeMillis);
+             System::currentTimeMillis,
+             () -> true);
     }
 
     public SwimHealthContext(Fsm<SwimHealthState, SwimHealthEvents> fsm,
@@ -84,6 +92,32 @@ public final class SwimHealthContext {
                              PeerObservationStore observationStore,
                              SwimConfig swimConfig,
                              LongSupplier clock) {
+        this(fsm,
+             router,
+             topologyConfig,
+             serializer,
+             deserializer,
+             signalSink,
+             epochSupplier,
+             isLeaderSupplier,
+             observationStore,
+             swimConfig,
+             clock,
+             () -> true);
+    }
+
+    public SwimHealthContext(Fsm<SwimHealthState, SwimHealthEvents> fsm,
+                             MessageRouter router,
+                             TopologyConfig topologyConfig,
+                             Serializer serializer,
+                             Deserializer deserializer,
+                             HealthSignalSink signalSink,
+                             Supplier<Epoch> epochSupplier,
+                             BooleanSupplier isLeaderSupplier,
+                             PeerObservationStore observationStore,
+                             SwimConfig swimConfig,
+                             LongSupplier clock,
+                             BooleanSupplier isBootingSupplier) {
         this.fsm = fsm;
         this.router = router;
         this.topologyConfig = topologyConfig;
@@ -95,6 +129,7 @@ public final class SwimHealthContext {
         this.observationStore = observationStore;
         this.swimConfig = swimConfig;
         this.clock = clock;
+        this.isBootingSupplier = isBootingSupplier;
         this.stopped = new SwimHealthState.Stopped(this);
         this.starting = new SwimHealthState.Starting(this);
     }
@@ -137,6 +172,11 @@ public final class SwimHealthContext {
 
     public BooleanSupplier isLeaderSupplier() {
         return isLeaderSupplier;
+    }
+
+    /// Phase-aware cold-boot suppression gate. See [`#isBootingSupplier`] field doc.
+    public BooleanSupplier isBootingSupplier() {
+        return isBootingSupplier;
     }
 
     public SwimConfig swimConfig() {

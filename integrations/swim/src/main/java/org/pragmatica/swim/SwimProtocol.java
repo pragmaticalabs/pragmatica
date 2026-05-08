@@ -29,6 +29,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -74,6 +75,19 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final SwimMembershipListener listener;
     private final NodeId selfId;
     private final InetSocketAddress selfAddress;
+    /// Phase gate for cold-boot FAULTY suppression (audit Step 6, 2026-05-07):
+    ///   `true`  — cluster is still BOOTING; preserve `everSeenHealthy` per-peer
+    ///             cold-boot suppression (a never-healthy peer transitions to
+    ///             `UnknownObserved`, not `FaultyObserved`).
+    ///   `false` — cluster has reached NORMAL; ALWAYS emit `FaultyObserved` on the
+    ///             FAULTY edge regardless of `everSeenHealthy`. This fixes the
+    ///             container-restart-during-cold-boot regression where a peer killed
+    ///             before its first successful Ping never produced any cluster-visible
+    ///             observation, blocking `HealthReconciler` aggregation and the
+    ///             downstream `DECOMMISSIONED` write / `NODE_LEFT` event.
+    /// The default `() -> true` keeps the legacy cold-boot-suppression behavior for
+    /// callers (notably unit tests) that don't wire a phase source.
+    private final BooleanSupplier isBooting;
     private final Map<NodeId, SwimMember> members = new ConcurrentHashMap<>();
     private final Map<Long, PendingProbe> pendingProbes = new ConcurrentHashMap<>();
     private final Map<Long, RelayInfo> pendingRelays = new ConcurrentHashMap<>();
@@ -109,23 +123,41 @@ public final class SwimProtocol implements SwimMessageHandler {
                          SwimTransport transport,
                          SwimMembershipListener listener,
                          NodeId selfId,
-                         InetSocketAddress selfAddress) {
+                         InetSocketAddress selfAddress,
+                         BooleanSupplier isBooting) {
         this.config = config;
         this.transport = transport;
         this.listener = listener;
         this.selfId = selfId;
         this.selfAddress = selfAddress;
         this.piggybackBuffer = PiggybackBuffer.piggybackBuffer(config.maxPiggyback());
+        this.isBooting = isBooting;
     }
 
     /// Factory creating a SWIM protocol instance.
     /// Result wrapper retained for flatMap(SwimProtocol::start) composition.
+    /// Backwards-compatible overload — preserves legacy per-peer `everSeenHealthy`
+    /// cold-boot suppression for callers (notably tests) that do not wire a phase
+    /// supplier.
     public static Result<SwimProtocol> swimProtocol(SwimConfig config,
                                                     SwimTransport transport,
                                                     SwimMembershipListener listener,
                                                     NodeId selfId,
                                                     InetSocketAddress selfAddress) {
-        return Result.success(new SwimProtocol(config, transport, listener, selfId, selfAddress));
+        return swimProtocol(config, transport, listener, selfId, selfAddress, () -> true);
+    }
+
+    /// Phase-aware factory. `isBooting` is consulted in [#emitFaultyOrUnknown]: when
+    /// the supplier returns `false` (cluster has reached NORMAL phase), the per-peer
+    /// `everSeenHealthy` cold-boot gate is bypassed and `FaultyObserved` is emitted
+    /// regardless. See audit Step 6 (2026-05-07).
+    public static Result<SwimProtocol> swimProtocol(SwimConfig config,
+                                                    SwimTransport transport,
+                                                    SwimMembershipListener listener,
+                                                    NodeId selfId,
+                                                    InetSocketAddress selfAddress,
+                                                    BooleanSupplier isBooting) {
+        return Result.success(new SwimProtocol(config, transport, listener, selfId, selfAddress, isBooting));
     }
 
     /// Start the protocol: begin periodic probing via SharedScheduler.
@@ -698,14 +730,29 @@ public final class SwimProtocol implements SwimMessageHandler {
         emitObservationOnEdge(peer, SwimHealth.SUSPECTED, () -> new SwimObservation.SuspectObserved(peer, incarnation));
     }
 
-    /// Emit FAULTY on edge — but if the peer has never been observed HEALTHY,
-    /// emit `UnknownObserved` instead (cold-boot suppression, spec §4.2).
+    /// Emit FAULTY on edge.
+    ///
+    /// Phase-aware cold-boot suppression (audit Step 6, 2026-05-07):
+    /// - In `BOOTING` phase, preserve the legacy per-peer `everSeenHealthy` gate: a
+    ///   peer that has never been observed HEALTHY emits `UnknownObserved` so noisy
+    ///   bootstrap-time SWIM transitions do not flood `HealthReconciler` with
+    ///   unactionable FAULTY edges.
+    /// - In `NORMAL` phase, ALWAYS emit `FaultyObserved` regardless of
+    ///   `everSeenHealthy`. This eliminates the container-restart-during-cold-boot
+    ///   regression where a peer killed before its first successful Ping never
+    ///   produced any cluster-visible observation, leaving `HealthReconciler` with
+    ///   no signal to write `DECOMMISSIONED` and no downstream `NODE_LEFT` event.
     private void emitFaultyOrUnknown(NodeId peer, long incarnation) {
-        if (!everSeenHealthy.contains(peer)) {
-            LOG.info("SWIM cold-boot suppression: peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
+        var booting = isBooting.getAsBoolean();
+        if (booting && !everSeenHealthy.contains(peer)) {
+            LOG.info("SWIM cold-boot suppression (BOOTING phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
                      peer.id());
             emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
             return;
+        }
+        if (!booting && !everSeenHealthy.contains(peer)) {
+            LOG.warn("SWIM phase=NORMAL: emitting FaultyObserved for never-HEALTHY peer {} (cold-boot suppression bypassed)",
+                     peer.id());
         }
         emitObservationOnEdge(peer, SwimHealth.FAULTY, () -> new SwimObservation.FaultyObserved(peer, incarnation));
     }

@@ -1149,6 +1149,15 @@ public interface AetherNode extends ManageableNode {
         var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
                                                  swimTimeouts.probeTimeout(),
                                                  swimTimeouts.suspectTimeout());
+        // Audit Step 6 (2026-05-07): phase-aware SWIM cold-boot suppression. SWIM
+        // suppresses FAULTY-for-never-HEALTHY peers ONLY while the cluster is in
+        // BOOTING; once `HealthReconciler` projects NORMAL, FAULTY edges always
+        // emit so a peer killed before its first successful Ping still produces a
+        // cluster-visible observation, drives the `DECOMMISSIONED` write, and the
+        // downstream `NODE_LEFT` event. Lambda captures `healthReconciler` by ref;
+        // the reconciler is `start()`-ed at line 884 above so the supplier is safe
+        // to consult by the time SWIM probes any peer.
+        BooleanSupplier swimIsBootingSupplier = () -> healthReconciler.phase() == AetherValue.ClusterPhase.BOOTING;
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
@@ -1157,7 +1166,8 @@ public interface AetherNode extends ManageableNode {
                                                                                leaderEpochSupplier,
                                                                                isLeaderSupplier,
                                                                                peerObservationStore,
-                                                                               swimConfig);
+                                                                               swimConfig,
+                                                                               swimIsBootingSupplier);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,

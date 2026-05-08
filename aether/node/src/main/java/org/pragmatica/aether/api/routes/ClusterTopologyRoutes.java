@@ -19,6 +19,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeHealth;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.http.routing.Handler;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -101,7 +102,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  coreNodeIds,
                                                  connectedPeers.size(),
                                                  nodeDetails,
-                                                 Option.<String>none());
+                                                 Option.<String>none(),
+                                                 topologyMode(topologyManager));
     }
 
     private static ClusterTopologyStatusResponse assembleTopologyStatus(ManageableNode node,
@@ -129,7 +131,17 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  coreNodeIds,
                                                  connectedPeers.size(),
                                                  nodeDetails,
-                                                 epoch);
+                                                 epoch,
+                                                 topologyMode(topologyManager));
+    }
+
+    /// `TopologyManager` is the public interface; mode lives on `TopologyObserver`.
+    /// Manager instances in production are observers, but defensive isinstance keeps
+    /// test stubs (which may not extend `TopologyObserver`) safe.
+    private static String topologyMode(TopologyManager tm) {
+        return (tm instanceof TopologyObserver observer)
+               ? observer.topologyMode().name()
+               : TopologyObserver.TopologyMode.NORMAL.name();
     }
 
     private static int snapshotCoreCount(ClusterGenerationSnapshot snapshot) {
