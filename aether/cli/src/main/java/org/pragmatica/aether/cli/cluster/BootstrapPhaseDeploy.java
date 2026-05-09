@@ -486,7 +486,9 @@ import static org.pragmatica.lang.Result.success;
         var peersEnv = peers.isEmpty()
                       ? ""
                       : " -e PEERS=\"" + peers + "\"";
-        var startCommand = "mkdir -p /opt/aether/config" + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -l aether-cluster=" + clusterName + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + peersEnv + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " ghcr.io/pragmaticalabs/aether-node:latest";
+        // --restart no: same rationale as buildRestartCommand above — CTM owns
+        // recovery; auto-restart competes with auto-heal and resurrects evicted nodes.
+        var startCommand = "mkdir -p /opt/aether/config" + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest" + " && docker run -d --name aether-node --restart no --network host" + " -l aether-cluster=" + clusterName + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + peersEnv + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " ghcr.io/pragmaticalabs/aether-node:latest";
         return RemoteCommandRunner.ssh(host, startCommand, sshConfig).mapToUnit();
     }
 

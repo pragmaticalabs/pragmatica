@@ -328,8 +328,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                        () -> "Restart command MUST start a new container in detached mode: " + cmd);
             assertTrue(cmd.contains("-v /opt/aether/config/aether.toml:/app/aether.toml:ro"),
                        () -> "Bind-mount of composed aether.toml MUST be preserved (Bug 13): " + cmd);
-            assertTrue(cmd.contains("--restart unless-stopped"),
-                       () -> "Container must auto-restart on failure: " + cmd);
+            assertTrue(cmd.contains("--restart no"),
+                       () -> "Container must NOT auto-restart — CTM owns recovery (deployment-recovery.md): " + cmd);
             assertTrue(cmd.contains("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION),
                        () -> "Image must fall back to derived (cluster.version) when no [runtime.default] image set: " + cmd);
         }
@@ -501,7 +501,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091",
                                                            CLUSTER_SECRET);
         assertTrue(cmd.contains("docker rm -f aether-node"), cmd);
-        assertTrue(cmd.contains("docker run -d --name aether-node --restart unless-stopped --network host"), cmd);
+        assertTrue(cmd.contains("docker run -d --name aether-node --restart no --network host"), cmd);
         assertTrue(cmd.contains("-l aether-cluster=" + CLUSTER_NAME), cmd);
         assertTrue(cmd.contains("-l aether-node-id=eu-1-core-0"), cmd);
         assertTrue(cmd.contains("-v /opt/aether/config/aether.toml:/app/aether.toml:ro"), cmd);
