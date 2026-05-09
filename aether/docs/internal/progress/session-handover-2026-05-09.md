@@ -351,39 +351,54 @@ curl -s -X POST -H "Authorization: Bearer $HCLOUD_TOKEN" \
 
 ---
 
-## 10 · Post-handover investigation: Rabia consensus stall (NEW finding)
+## 10 · Post-handover investigation: post-kill consensus stall (NEW finding)
 
 After the handover above was committed, we instrumented + tested the cloud Container freeze further. Two more architectural fixes shipped (still incomplete):
 
 ### 10.1 What we shipped
 
-- **`HealthReconcilerImpl.handleAggregatedEdge` self-leader-eviction escape hatch** — when the aggregated FAULTY target IS the current cluster leader, ANY surviving node may attempt the lifecycle write. Otherwise leader-gating still applies. Rabia serializes; concurrent proposals deduplicate idempotently.
+- **`HealthReconcilerImpl.handleAggregatedEdge` self-leader-eviction escape hatch** — when the aggregated FAULTY target IS the current cluster leader, ANY surviving node may attempt the lifecycle write. Otherwise leader-gating still applies. Rabia is leaderless and serializes proposals; concurrent attempts deduplicate idempotently.
 - **`ObservationAggregator.respectColdBoot` removed** — the aggregator's per-peer `everSeenHealthy` cold-boot guard duplicated SwimProtocol's audit-Step-6 phase-gating without phase awareness, and silently dropped FAULTY edges for peers added in initial ALIVE state (no transition → no `notifyAlive` → no `recordHealthyAndEmit` → never populated `everSeenHealthy`). Trust upstream emit gating; `HealthReconciler.suppressedByPhase` still gates writes in BOOTING.
 
 Both are architecturally correct. Verified on cloud Container with diag logs: SWIM-FAULTY → onSwimObservation → handleAggregatedEdge → escape hatch fired on **all 4 surviving nodes simultaneously** at `~06:39:27`, all attempted DECOMMISSIONED writes via `proposeLifecycleWrite`.
 
-### 10.2 What still doesn't work — Rabia stall
+### 10.2 What still doesn't work — post-kill consensus stall
 
-After the 4 escape-hatch firings, **NO `recordWrite` log appeared on any node**. The `commandApplier.apply(List.of(command))` Promise never resolves. Neither `onSuccess` nor `onFailure` callbacks fire.
+After the 4 escape-hatch firings, **NO `recordWrite` log appeared on any node**. The `commandApplier.apply(List.of(command))` Promise never resolves. Neither `onSuccess` nor `onFailure` callbacks fire on any of the 4 surviving nodes for the duration of the 450s test timeout.
 
-This means **Rabia consensus stalls on the post-kill DECOMMISSIONED proposal** even with 4-of-5 surviving nodes (quorum requires 3). Successful writes during boot phase (each surviving node successfully wrote ON_DUTY for itself and for core-0 between `06:38:50` and `06:38:58`) confirm Rabia consensus IS working — it just hangs specifically when proposing while the previous Rabia "round leader" / "primary proposer" is dead.
+This is **NOT** a Rabia-leadership issue. **Rabia is leaderless — every node can propose, and quorum (3 of 5) is satisfied by any 3 surviving nodes.** Boot-time writes confirm consensus works: each surviving node successfully wrote ON_DUTY for itself and for core-0 between `06:38:50` and `06:38:58` via the same `commandApplier.apply` path.
 
-JVM cloud doesn't hit this because (we hypothesize) JVM kills produce different transport-layer signals (bare process kill vs containerized SIGKILL through the Docker daemon's network namespace cleanup), causing QUIC eviction to fire faster on JVM than on Container, which in turn drives a faster Rabia round-leader transition.
+The stall must be at a layer below Rabia's quorum-counting. The most likely shape:
+
+**Reliable-broadcast over QUIC waits per-peer, not per-quorum.** Rabia's transport layer broadcasts each round's messages to all 5 peers; if the broadcast layer queues sends behind per-peer reliable-delivery (UDP retransmits, no ACK ever arriving from the dead peer because QUIC still treats core-0 as "connected"), the round hangs even though quorum was satisfied by the other 3 ACKs.
+
+This is consistent with what's different between JVM cloud (works in 158s end-to-end) and Container cloud (450s timeout):
+
+- **JVM cloud kill = bare-process kill.** Linux kernel sends RST/FIN immediately on the killed process's UDP sockets. QUIC sees connection drop fast → emits `processViewChange(REMOVE, ...)` → `TopologyChangeNotification.NodeRemoved` → broadcasts skip the dead peer → quorum-of-4 ACK the round → consensus commits.
+- **Container cloud kill = `docker kill` of containerized JVM.** Docker daemon's namespace teardown delays kernel-level socket close. QUIC continues to see a "connected" but unresponsive peer for many seconds (the previous SWIM-FAULTY-to-eviction chain is now indirect, post-Step-3; QUIC's own inactivity timeout is the only thing that fires). Reliable-broadcast queues sends to the dead peer indefinitely, blocking round completion despite quorum.
+
+We saw earlier in this session: SWIM marks FAULTY in 16s, but no `processViewChange: op=REMOVE` log fires for 2+ minutes. That's the smoking gun for "QUIC eviction not firing fast enough on cloud Container."
 
 ### 10.3 Possible directions for next session
 
-- **Investigate `RabiaEngine` round-leader election.** Where does Rabia decide who proposes, and what triggers the next round when the current proposer is unresponsive? Likely a timeout-based escape that's set too high for cloud Container teardown semantics.
-- **Compare JVM vs Container kill semantics at the QUIC layer.** Add per-peer transport-state logging in `QuicClusterNetwork.processViewChange` and `QuicPeerConnection`. Determine why eviction fires fast on JVM cloud but not on Container cloud.
-- **Force QUIC eviction independently of SWIM** when cluster has been observing FAULTY for a peer for >N seconds. Today's logic relies on QUIC's own connection-state machine.
+The fix is NOT at Rabia's leaderless-proposer layer (it's already correct). It's at the QUIC connection-state / reliable-broadcast layer:
+
+1. **Tighten QUIC inactivity timeout for cloud Container.** Find QUIC's per-peer inactivity / keepalive timeout in `QuicClusterNetwork` / Quiche configuration. Today it appears to be minutes; should be ~5-15s for cloud-class RTT. With shorter timeout, EVICTED fires within seconds of `docker kill`, which feeds the existing chain (NodeRemoved → consensus broadcasts skip the peer → round commits → leader re-election → DECOMMISSIONED write).
+2. **Trigger QUIC eviction from SWIM-FAULTY directly on a timer.** Today the SWIM-to-QUIC bridge was removed in audit Step 3 (replaced by post-consensus path). For the FAULTY-leader-target case where consensus is itself blocked, restore a SWIM-driven eviction trigger gated on "SWIM has been FAULTY for >N seconds AND target is current leader."
+3. **Decouple consensus broadcast progress from per-peer reliable delivery.** If the round has quorum ACKs, complete the round; non-ack'd peers catch up via gossip/sync. This is more invasive but cleaner architecturally.
+4. **Compare per-peer transport state on JVM vs Container cloud.** Add WARN-level logging in `QuicClusterNetwork.expireEvicted` / `QuicPeerConnection` connection-state transitions. Run kill-leader on both; correlate exact timing of EVICTED firing.
+
+Direction 1 is the smallest fix and likely enough. Direction 2 is the "belt and suspenders" complement when QUIC's own timeout is too sluggish. Directions 3 and 4 are bigger investigations.
 
 ### 10.4 Commits added post-handover (pushed; tag re-moved)
 
 ```
-81e48e234 fix(health): self-leader-eviction escape hatch + drop respectColdBoot suppression (with diag logs)
+0caf363f9 fix(health,docs): remove diag logs; document Rabia consensus stall finding
+81e48e234 fix(health): self-leader-eviction escape hatch + drop respectColdBoot suppression
 ```
 
-Diag logs (`HEALTHRECONCILER-DIAG`) were temporarily added to confirm the chain fires; these are removed in a follow-up commit before the tag's final move.
+Diag logs (`HEALTHRECONCILER-DIAG`) were temporarily added to confirm the chain fires; removed in `0caf363f9` before final tag move.
 
 ---
 
-**Final net: 5 distinct architectural fixes (publisher heartbeat, budget calc, container restart policy, cloud test infra rotation, self-leader-eviction escape hatch + cold-boot suppression removal). Cloud Container kill-leader recovery still blocked at Rabia consensus stall — distinct architectural layer requiring follow-up.**
+**Final net: 5 distinct architectural fixes (publisher heartbeat, budget calc, container restart policy, cloud test infra rotation, self-leader-eviction escape hatch + cold-boot suppression removal). Cloud Container kill-leader recovery still blocked at the QUIC eviction / reliable-broadcast layer — quorum is satisfied by surviving nodes but per-peer broadcast to the dead-but-still-QUIC-connected leader keeps the round from completing. Direction 1 (tighter QUIC inactivity timeout) is the recommended first attempt for next session.**
