@@ -162,19 +162,73 @@ class HealthReconcilerTest {
             assertThat(applier.commands).isEmpty();
         }
 
+        // Contract change (commit 81e48e234, "drop respectColdBoot suppression"):
+        // The reconciler's cold-boot suppression no longer keys off everSeenHealthy.
+        // The phase gate `suppressedByPhase` only fires when phase == BOOTING. In NORMAL
+        // phase the reconciler now writes DECOMMISSIONED regardless of whether the target
+        // was ever observed HEALTHY (the upstream SwimProtocol.emitFaultyOrUnknown gate
+        // owns that filtering, and tests that feed observations directly to the reconciler
+        // bypass it).
+        // The 2x2 truth table below pins the new contract end-to-end.
         @Test
-        void reconciler_neverWritesFaulty_forNeverHealthyPeer() {
-            // Cold-boot: target has never been HEALTHY → aggregator must not emit FAULTY.
+        void reconciler_suppressedByPhase_inBooting_evenWhenNeverHealthy() {
+            // BOOTING + never-HEALTHY → suppressedByPhase blocks the DECOMMISSIONED write.
             var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
             reconciler.start();
-            phaseRef.set(ClusterPhase.NORMAL); // Even outside BOOTING, aggregator's cold-boot honor applies
+            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.BOOTING));
+            phaseRef.set(ClusterPhase.BOOTING);
             onDutyCount.set(3);
             reconciler.onSwimObservation(faulty(TARGET));
-            reconciler.onSwimObservation(faulty(TARGET));
-            reconciler.onSwimObservation(faulty(TARGET));
-            // No commands emitted — aggregator suppressed the edge
-            assertThat(applier.commands).isEmpty();
+            assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
+                    .as("BOOTING phase suppresses DECOMMISSIONED lifecycle write")
+                    .isTrue();
         }
+
+        @Test
+        void reconciler_suppressedByPhase_inBooting_evenWhenEverHealthy() {
+            // BOOTING + previously-HEALTHY → suppressedByPhase still blocks. Phase gate
+            // is independent of everSeenHealthy.
+            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
+            reconciler.start();
+            // First, in NORMAL, drive an ON_DUTY edge so the aggregator records HEALTHY.
+            phaseRef.set(ClusterPhase.NORMAL);
+            onDutyCount.set(3);
+            reconciler.onSwimObservation(healthy(TARGET));
+            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
+            applier.commands.clear();
+            // Now flip to BOOTING and feed FAULTY: the phase gate suppresses the write.
+            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.BOOTING));
+            phaseRef.set(ClusterPhase.BOOTING);
+            reconciler.onSwimObservation(faulty(TARGET));
+            assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
+                    .as("BOOTING phase suppresses DECOMMISSIONED write regardless of prior HEALTHY")
+                    .isTrue();
+        }
+
+        @Test
+        void reconciler_writesDecommissioned_inNormal_evenWhenNeverHealthy() {
+            // NORMAL + never-HEALTHY → write proceeds. This is the formerly-suppressed
+            // case: the old aggregator's respectColdBoot used to filter this out, which
+            // silently dropped FAULTY edges for the leader on cloud Container post-kill.
+            // Now the reconciler trusts upstream gating and writes DECOMMISSIONED.
+            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
+            reconciler.start();
+            phaseRef.set(ClusterPhase.NORMAL);
+            onDutyCount.set(3);
+            reconciler.onSwimObservation(faulty(TARGET));
+            assertThat(applier.commands.stream().anyMatch(HealthReconcilerTest::isLifecycleWriteFor))
+                    .as("NORMAL phase + never-HEALTHY: leader writes DECOMMISSIONED")
+                    .isTrue();
+            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+        }
+
+        // The fourth corner of the 2x2 table (NORMAL + everSeenHealthy → writes
+        // DECOMMISSIONED) is intentionally NOT covered by a dedicated test here:
+        // (a) it is the standard healthy-then-faulty happy path already exercised
+        //     end-to-end by integration tests, and
+        // (b) the new contract makes everSeenHealthy irrelevant inside the reconciler
+        //     (cold-boot gating moved upstream per 81e48e234), so the "NORMAL + never"
+        //     and "NORMAL + ever" rows produce the same behavior; one row suffices.
     }
 
     @Nested class SelfOnDutyRetry {

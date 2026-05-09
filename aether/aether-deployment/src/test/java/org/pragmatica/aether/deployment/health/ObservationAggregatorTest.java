@@ -92,15 +92,30 @@ class ObservationAggregatorTest {
     }
 
     @Test
-    void aggregator_unknownOnly_neverEmitsFaulty() {
+    void aggregator_emitsDecommissionedEdge_evenWhenNeverHealthy() {
+        // Contract change (commit 81e48e234, "drop respectColdBoot suppression"):
+        // The aggregator no longer suppresses FAULTY edges for targets that have never
+        // been observed HEALTHY. Cold-boot gating now lives upstream — SwimProtocol's
+        // emitFaultyOrUnknown gates by phase, and HealthReconcilerImpl.suppressedByPhase
+        // gates the actual lifecycle write while in BOOTING.
+        // The aggregator's job is purely to collapse SWIM observations into edges; it
+        // emits the first FAULTY edge it sees regardless of history. This test pins the
+        // new contract: no everSeenHealthy filtering inside the aggregator.
         var aggregator = ObservationAggregator.observationAggregator();
         var t0 = 0L;
-        // Only UnknownObserved + FaultyObserved — never HEALTHY.
-        // Cold-boot: FAULTY must NOT promote because target was never HEALTHY,
-        // even though single-observer threshold would otherwise be reached.
+        // Seed UNKNOWN (does not record an entry; only triggers eviction).
         aggregator.onObservation(SELF, unknown(TARGET), 5, t0);
-        var first = aggregator.onObservation(OBS_A, faulty(TARGET), 5, t0);
-        assertThat(first.isEmpty()).isTrue();
+        assertThat(aggregator.everSeenHealthy(TARGET))
+                .as("Precondition: target has never been observed HEALTHY")
+                .isFalse();
+        // First FAULTY observation crosses the single-observer threshold and emits the edge.
+        var emitted = aggregator.onObservation(OBS_A, faulty(TARGET), 5, t0);
+        assertThat(emitted.isPresent())
+                .as("Aggregator emits DECOMMISSIONED edge even when target was never HEALTHY")
+                .isTrue();
+        assertThat(emitted.unwrap().target()).isEqualTo(TARGET);
+        assertThat(emitted.unwrap().newState()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+        // Subsequent FAULTY observations do not re-emit (idempotence via lastAggregated).
         var second = aggregator.onObservation(OBS_B, faulty(TARGET), 5, t0);
         assertThat(second.isEmpty()).isTrue();
         var third = aggregator.onObservation(OBS_C, faulty(TARGET), 5, t0);
