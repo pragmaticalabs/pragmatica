@@ -94,6 +94,9 @@ while [ $# -gt 0 ]; do
             echo "  AETHER_SSH_KEY     SSH key for remote env"
             echo "  HCLOUD_TOKEN       Hetzner token for cloud env"
             echo "  AETHER_API_KEY     API key (default: aether-integration-test-key)"
+            echo "  AETHER_VM_SNAPSHOT_ID       Hetzner snapshot id for cloud --runtime container"
+            echo "  AETHER_VM_SNAPSHOT_ID_JVM   Hetzner snapshot id for cloud --runtime jvm"
+            echo "                              See aether/docs/operator/vm-snapshot.md"
             exit 0
             ;;
         *) echo "Unknown argument: $1"; exit 2 ;;
@@ -470,6 +473,10 @@ deploy_docker() {
 # ---------------------------------------------------------------------------
 teardown() {
     log_step "Tearing down clusters"
+    # Clean up snapshot-override temp TOMLs (set when AETHER_VM_SNAPSHOT_ID is used).
+    if [ -n "${CLOUD_TOML_TMPDIR:-}" ] && [ -d "$CLOUD_TOML_TMPDIR" ]; then
+        rm -rf "$CLOUD_TOML_TMPDIR"
+    fi
     case "$ENV_TYPE" in
         docker|remote)
             local host="${TARGET_HOST:-localhost}"
@@ -617,12 +624,32 @@ if [ "$SKIP_DEPLOY" = false ]; then
                 jvm)
                     CLOUD_TOML_A="${SCRIPT_DIR}/env/cloud-hetzner-jvm.toml"
                     CLOUD_TOML_B="${SCRIPT_DIR}/env/cloud-hetzner-jvm-b.toml"
+                    SNAPSHOT_ID_VAR="${AETHER_VM_SNAPSHOT_ID_JVM:-}"
                     ;;
                 *)
                     CLOUD_TOML_A="${SCRIPT_DIR}/env/cloud-hetzner.toml"
                     CLOUD_TOML_B="${SCRIPT_DIR}/env/cloud-hetzner-b.toml"
+                    SNAPSHOT_ID_VAR="${AETHER_VM_SNAPSHOT_ID:-}"
                     ;;
             esac
+            # Pre-pulled snapshot override: rewrite the OS-image line to the snapshot
+            # id in temp copies of the cloud TOMLs, leave the originals untouched.
+            # The temp dir is cleaned by the existing teardown EXIT trap.
+            # See aether/docs/operator/vm-snapshot.md.
+            if [ -n "$SNAPSHOT_ID_VAR" ]; then
+                log_info "Using pre-pulled VM snapshot id=${SNAPSHOT_ID_VAR}"
+                CLOUD_TOML_TMPDIR=$(mktemp -d -t aether-snapshot-toml.XXXXXX)
+                toml_a_tmp="${CLOUD_TOML_TMPDIR}/$(basename "$CLOUD_TOML_A")"
+                toml_b_tmp="${CLOUD_TOML_TMPDIR}/$(basename "$CLOUD_TOML_B")"
+                # Match only the OS-image line `image = "ubuntu-22.04"`, not the
+                # runtime-block `image = "ghcr.io/..."` (registry image with slashes).
+                sed -E 's|^(image[[:space:]]*=[[:space:]]*)"ubuntu-[^"]*"|\1"'"$SNAPSHOT_ID_VAR"'"|' \
+                    "$CLOUD_TOML_A" > "$toml_a_tmp"
+                sed -E 's|^(image[[:space:]]*=[[:space:]]*)"ubuntu-[^"]*"|\1"'"$SNAPSHOT_ID_VAR"'"|' \
+                    "$CLOUD_TOML_B" > "$toml_b_tmp"
+                CLOUD_TOML_A="$toml_a_tmp"
+                CLOUD_TOML_B="$toml_b_tmp"
+            fi
             if [ ${#A_SUITES[@]} -gt 0 ]; then
                 aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
                 # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
