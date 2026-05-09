@@ -10,8 +10,9 @@ import org.pragmatica.consensus.net.NetworkMessage.Hello;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -392,12 +393,20 @@ public class NettyClusterNetwork implements ClusterNetwork {
 
     /// Netty is pure transport — peer-link state, peerLinks table, hello handshakes,
     /// message routing. Membership and quorum decisions are owned by `TopologyObserver`
-    /// (canonical publisher of `QuorumStateNotification`, fed by SWIM via `HealthReconciler`).
+    /// (canonical publisher of `QuorumStateNotification` and `MembershipDecision`, fed
+    /// by SWIM via `HealthReconciler`).
     ///
-    /// R5 (spec §4.1): transport never mutates topology. The `TopologyChangeNotification`
-    /// emitted here is informational only — Layer 3 (TopologyObserver) projects authoritative
-    /// membership exclusively from KV `NodeLifecycleKey` writes by HealthReconciler.
-    /// Symmetric counterpart of `QuicClusterNetwork.processViewChange`.
+    /// This method is the **canonical source of `TransportObservation` for the Netty
+    /// transport** (`ObservationSource.NETTY`). Each emission is a *local* observation
+    /// — fast, partial-view, may flap. Cluster-canonical decisions about membership
+    /// are emitted by `TopologyObserver.publishMembershipDeltas` as `MembershipDecision`.
+    ///
+    /// R5 (spec §4.1): transport never mutates topology. Emissions are informational —
+    /// Layer 3 (TopologyObserver) projects authoritative membership exclusively from
+    /// KV `NodeLifecycleKey` writes by HealthReconciler.
+    ///
+    /// Symmetric counterpart of `QuicClusterNetwork.processViewChange`. Netty has no
+    /// RECONNECT path (transient peer-link evictions are not surfaced here).
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
         var activePeerCount = peerLinks.size() - passivePeers.size();
         var quorumSize = topologyManager.quorumSize();
@@ -408,13 +417,13 @@ public class NettyClusterNetwork implements ClusterNetwork {
                  activePeerCount,
                  clusterSize,
                  quorumSize);
-        var viewChange = switch (operation) {
-            case ADD -> TopologyChangeNotification.nodeAdded(peerId, currentView());
-            case REMOVE -> TopologyChangeNotification.nodeRemoved(peerId, currentView());
-            case SHUTDOWN -> TopologyChangeNotification.nodeDown(peerId);
+        var observation = switch (operation) {
+            case ADD -> TransportObservation.peerJoined(peerId, currentView(), ObservationSource.NETTY);
+            case REMOVE -> TransportObservation.peerDisconnected(peerId, currentView(), ObservationSource.NETTY);
+            case SHUTDOWN -> TransportObservation.selfShutdown(peerId, ObservationSource.NETTY);
         };
-        log.info("Routing topology change: {}", viewChange);
-        router.route(viewChange);
+        log.info("Routing transport observation: {}", observation);
+        router.route(observation);
     }
 
     private List<NodeId> currentView() {

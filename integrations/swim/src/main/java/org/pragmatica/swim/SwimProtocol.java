@@ -19,10 +19,12 @@ package org.pragmatica.swim;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledFuture;
@@ -51,6 +53,8 @@ import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.consensus.topology.TransportObservation.ObservationSource.SWIM;
+import static org.pragmatica.consensus.topology.TransportObservation.peerObservedFaulty;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
@@ -110,6 +114,23 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// PeerReachable removes the bias.
     private final Map<NodeId, TransportHintState> transportHints = new ConcurrentHashMap<>();
     private final List<Consumer<SwimObservation>> observationListeners = new CopyOnWriteArrayList<>();
+    /// Cluster-wide `TransportObservation` emitters. SWIM-internal `SwimObservation`
+    /// (see [#observationListeners]) is consumed by `SwimHealthDetector` and its
+    /// listeners; the cluster-wide stream defined by
+    /// `org.pragmatica.consensus.topology.TransportObservation` has different consumers
+    /// (`LeaderManager`, `ClusterFsmRouter`, etc.) and is wired by the Aether layer to
+    /// the cluster-wide message router. The dual emission is intentional: the two
+    /// streams serve different audiences.
+    private final List<TransportObservationEmitter> transportObservationEmitters = new CopyOnWriteArrayList<>();
+
+    /// Adapter callback for forwarding SWIM-detected FAULTY observations to the
+    /// cluster-wide `TransportObservation` stream owned by the consensus layer.
+    /// Wired by the Aether node assembly (see `CoreSwimHealthDetector`) to the
+    /// cluster `MessageRouter`. The FQCN is used here once, deliberately, to avoid
+    /// the local-vs-cluster `TransportObservation` name collision in this module.
+    @FunctionalInterface
+    public interface TransportObservationEmitter
+        extends Consumer<org.pragmatica.consensus.topology.TransportObservation> {}
     /// Serializes `start()` / `stop()` against each other so a `start()` racing
     /// concurrent `start()` cannot double-schedule, and a `start()` racing a
     /// `stop()` cannot leave the protocol running after `stop()` returns.
@@ -230,6 +251,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// suppressed (P5 idempotent edge transitions, spec §4.2).
     @Contract public void addObservationListener(Consumer<SwimObservation> listener) {
         observationListeners.add(listener);
+    }
+
+    /// Register an emitter for the cluster-wide
+    /// `org.pragmatica.consensus.topology.TransportObservation` stream. Invoked from
+    /// [#emitFaultyOrUnknown] when SWIM transitions a peer to FAULTY (paired with the
+    /// SWIM-internal `SwimObservation.FaultyObserved` delivered to `observationListeners`).
+    /// Wired by the Aether node assembly to the cluster `MessageRouter`.
+    @Contract public void addTransportObservationEmitter(TransportObservationEmitter emitter) {
+        transportObservationEmitters.add(emitter);
     }
 
     /// Pull-channel current per-peer health. Snapshot semantics — modifications
@@ -755,6 +785,46 @@ public final class SwimProtocol implements SwimMessageHandler {
                      peer.id());
         }
         emitObservationOnEdge(peer, SwimHealth.FAULTY, () -> new SwimObservation.FaultyObserved(peer, incarnation));
+        emitClusterFaulty(peer);
+    }
+
+    /// Forward SWIM's FAULTY edge to the cluster-wide `TransportObservation` stream
+    /// (`PeerObservedFaulty` with `ObservationSource.SWIM`). Independent of the
+    /// SWIM-internal `SwimObservation` delivery — the two streams have different
+    /// consumers and the dual emission is intentional. No-op if no emitter is wired.
+    private void emitClusterFaulty(NodeId peer) {
+        if (transportObservationEmitters.isEmpty()) {
+            return;
+        }
+        var topology = aliveTopologySnapshot();
+        var observation = peerObservedFaulty(peer, topology, SWIM);
+        transportObservationEmitters.forEach(emitter -> safeEmitTransportObservation(emitter, observation));
+    }
+
+    private void safeEmitTransportObservation(TransportObservationEmitter emitter,
+                                              org.pragmatica.consensus.topology.TransportObservation observation) {
+        Result.lift(Causes::fromThrowable, () -> deliverTransportObservation(emitter, observation))
+              .onFailure(cause -> LOG.warn("Cluster TransportObservation emitter threw: {}", cause.message()));
+    }
+
+    private static Unit deliverTransportObservation(TransportObservationEmitter emitter,
+                                                    org.pragmatica.consensus.topology.TransportObservation observation) {
+        emitter.accept(observation);
+        return Unit.unit();
+    }
+
+    /// Snapshot of currently-ALIVE peer ids plus self, sorted. Local view; matches
+    /// the partial-view semantics of `TransportObservation` (each node emits its own
+    /// observations independently).
+    private List<NodeId> aliveTopologySnapshot() {
+        return Stream.concat(
+                Stream.of(selfId),
+                members.entrySet()
+                       .stream()
+                       .filter(entry -> entry.getValue().state() == MemberState.ALIVE)
+                       .map(Map.Entry::getKey))
+            .sorted(Comparator.comparing(NodeId::id))
+            .toList();
     }
 
     /// Emit `DepartedObserved` on edge.

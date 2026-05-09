@@ -47,8 +47,9 @@ import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -272,7 +273,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Attach a QUIC peer-state listener post-construction. Fires on join/reconnect/leave
     /// so higher layers (e.g. CTM) can track peer-state churn even when the upstream
-    /// `TopologyChangeNotification.NodeAdded` is suppressed for transient reconnects.
+    /// `TransportObservation.PeerJoined` is suppressed for transient reconnects.
     /// A `null` argument resets the listener to the no-op implementation.
     @Contract public void setPeerStateListener(QuicPeerStateListener listener) {
         this.peerStateListener = listener == null
@@ -1038,23 +1039,28 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// QUIC is pure transport — peer-link state, peerLinks table, hello handshakes, message
     /// routing. Membership and quorum decisions are owned by `TopologyObserver` (canonical
-    /// publisher of `QuorumStateNotification`, fed by SWIM via `HealthReconciler`).
+    /// publisher of `QuorumStateNotification` and `MembershipDecision`, fed by SWIM via
+    /// `HealthReconciler`).
     ///
-    /// R5 (spec §4.1): transport must NOT mutate topology. The only upward signal allowed
-    /// is `TransportObservation` via `peerStateListener` (which the Aether wiring forwards
-    /// to `swimDetector.recordTransportHint`). The `TopologyChangeNotification` emissions
-    /// kept here remain informational and route via the observer's own subscription path
-    /// — the observer treats them as advisory and does not derive membership from them.
-    /// This method:
-    ///   - ADD: notifies `peerStateListener.onPeerJoined` (informational hint to SWIM
-    ///     via Aether's wiring) and emits an informational
-    ///     `TopologyChangeNotification.nodeAdded`.
-    ///   - REMOVE: fires a `HealthSignal.QuicDisconnect` via the disconnect listener
-    ///     (advisory; leader's `HealthReconciler` counts it for ClusterSync), notifies
-    ///     `peerStateListener.onPeerLeft` (informational hint to SWIM), emits an
-    ///     informational `TopologyChangeNotification.nodeRemoved`. NO topology mutation.
-    ///   - SHUTDOWN: emits `TopologyChangeNotification.nodeDown`.
-    ///   - RECONNECT: transparent re-attach, suppress duplicate ADD.
+    /// This method is the **canonical source of `TransportObservation` for the QUIC
+    /// transport** (`ObservationSource.QUIC`). Each emission is a *local* observation —
+    /// fast, partial-view, may flap. Cluster-canonical decisions about membership are
+    /// emitted by `TopologyObserver.publishMembershipDeltas` as `MembershipDecision`.
+    /// Subscribers must choose the appropriate stream:
+    ///   - fast bootstrap-time reactions (e.g. `LeaderManager`) → `TransportObservation`
+    ///   - canonical cluster-truth reactions (e.g. workload reassignment) → `MembershipDecision`
+    ///
+    /// R5 (spec §4.1): transport must NOT mutate topology. Emissions are advisory; the
+    /// observer treats them as hints and does not derive membership from them.
+    ///
+    /// Mapping:
+    ///   - ADD       → `TransportObservation.PeerJoined`
+    ///   - REMOVE    → `TransportObservation.PeerDisconnected` (also fires
+    ///                 `HealthSignal.QuicDisconnect` via `reportPeerRemoval`)
+    ///   - SHUTDOWN  → `TransportObservation.SelfShutdown` (self-emit only)
+    ///   - RECONNECT → `TransportObservation.PeerReconnected` (previously suppressed;
+    ///                 now surfaced as a typed event so subscribers can invalidate
+    ///                 disconnect-driven cleanup if appropriate)
     @SuppressWarnings("JBCT-PAT-01") // Switch expression with side effects
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
         // Self should never appear in view changes — guard against cascading self-removal
@@ -1069,17 +1075,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.info("processViewChange: op={}, peer={}, activePeerCount={}, clusterSize={}, quorumSize={}",
                  operation, peerId, activePeerCount, clusterSize, quorumSize);
 
-        var viewChange = switch (operation) {
+        var observation = switch (operation) {
             case ADD -> {
-                // RC1-9 audit Step 2 reverted: cold-boot leader election needs synchronous
-                // `NodeAdded` to populate `LeaderElectionContext.currentTopology` BEFORE
-                // the snapshot exists (snapshot is only published after Rabia commits,
-                // which require an elected leader, which requires currentTopology to be
-                // non-empty — chicken/egg). `TopologyObserver.publishMembershipDeltas`
-                // augments this for runtime edges; cluster bootstrap relies on the
-                // synchronous transport emit.
+                // Cold-boot leader election needs synchronous `PeerJoined` to populate
+                // `LeaderElectionContext.currentTopology` BEFORE the snapshot exists
+                // (snapshot is only published after Rabia commits, which require an
+                // elected leader, which requires currentTopology to be non-empty —
+                // chicken/egg). `TopologyObserver.publishMembershipDeltas` augments
+                // this for runtime edges via `MembershipDecision`; cluster bootstrap
+                // relies on the synchronous transport emit.
                 peerStateListener.onPeerJoined(peerId);
-                yield TopologyChangeNotification.nodeAdded(peerId, currentView());
+                yield TransportObservation.peerJoined(peerId, currentView(), ObservationSource.QUIC);
             }
             case REMOVE -> {
                 // Advisory QUIC-level disconnect signal. On the leader this feeds the local
@@ -1087,39 +1093,36 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // outbound `ClusterSyncPong` so the leader folds it through PeerObservationReducer
                 // (ClusterSync refactor commit 2 — followers are sensor-only).
                 reportPeerRemoval(peerId);
-                // RC1-9 audit Step 2 reverted: paired with ADD restoration above. QUIC's
-                // synchronous `NodeRemoved` is also load-bearing — `LeaderElectionContext`
-                // and 15 other receivers cannot wait on the membership-delta path during
-                // failure scenarios. `TopologyObserver.publishMembershipDeltas` still fires
-                // its own `NodeRemoved` once the snapshot re-projects; receivers may see
-                // duplicate emissions but each is idempotent.
+                // Synchronous `PeerDisconnected` is load-bearing for receivers that cannot
+                // wait on the membership-delta path during failure scenarios.
+                // `TopologyObserver.publishMembershipDeltas` still fires its own
+                // `MembershipDecision.NodeRemoved` once the snapshot re-projects; subscribers
+                // distinguish between the local (transport) and global (membership) facts.
                 peerStateListener.onPeerLeft(peerId);
-                yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
+                yield TransportObservation.peerDisconnected(peerId, currentView(), ObservationSource.QUIC);
             }
             case SHUTDOWN -> {
                 // Self-shutdown remains a transport-emitted event: it fires on the local
                 // process's shutdown path before any consensus / KV writes can propagate, so
                 // there is no `MembershipView` delta to drive it. `TopologyObserver` cannot
-                // publish a `NodeDown` for self because by the time the snapshot would
-                // reflect the shutdown the local process has stopped.
-                yield TopologyChangeNotification.nodeDown(peerId);
+                // publish a decision for self because by the time the snapshot would reflect
+                // the shutdown the local process has stopped.
+                yield TransportObservation.selfShutdown(peerId, ObservationSource.QUIC);
             }
             case RECONNECT -> {
-                // Transparent reconnect — peer is already known to upstream consumers.
-                // No membership change is emitted (no duplicate ADD), and SWIM owns the
-                // HEALTHY observation (canonical source). Quorum is unaffected because
-                // EVICTED peers were already counted as active.
+                // Transparent reconnect — peer is already known to upstream consumers; no
+                // duplicate `PeerJoined` is emitted. SWIM owns the HEALTHY observation
+                // (canonical source). Quorum is unaffected because EVICTED peers were
+                // already counted as active. Subscribers may use `PeerReconnected` to
+                // invalidate disconnect-driven cleanup if appropriate.
                 peerStateListener.onPeerReconnected(peerId);
-                log.debug("processViewChange RECONNECT for {} — suppressed duplicate ADD", peerId);
-                yield null;
+                log.debug("processViewChange RECONNECT for {} — emitting PeerReconnected", peerId);
+                yield TransportObservation.peerReconnected(peerId, currentView(), ObservationSource.QUIC);
             }
         };
 
-        if (viewChange == null) {
-            return;
-        }
-        log.info("Routing topology change: {}", viewChange);
-        router.route(viewChange);
+        log.info("Routing transport observation: {}", observation);
+        router.route(observation);
     }
 
     private int activeConnectedCount() {

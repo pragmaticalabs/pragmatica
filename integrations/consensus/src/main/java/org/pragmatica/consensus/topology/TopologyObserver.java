@@ -39,6 +39,15 @@ import org.slf4j.LoggerFactory;
 /// Topology observer for cluster networks. Tracks connections, health states,
 /// SWIM events, and reconnection. This is the read-only topology tracking component;
 /// cluster size management is handled by ClusterTopologyManager in the deployment layer.
+///
+/// **Canonical emitter of `MembershipDecision`**: `publishMembershipDeltas` is the
+/// single source of truth for cluster-wide membership decisions. Subscribers that
+/// need authoritative membership (workload reassignment, capacity planning, routing
+/// updates) consume `MembershipDecision`. Subscribers that need fast local reactions
+/// during cluster bootstrap consume `TransportObservation` (emitted by
+/// `QuicClusterNetwork` / `NettyClusterNetwork` / `SwimProtocol`). Conflating the
+/// two streams is a subtle dual-reaction bug class — see the javadoc on each type
+/// for the epistemic distinction.
 public interface TopologyObserver extends TopologyManager {
     /// Errors that can occur during topology observer creation.
     sealed interface TopologyError extends Cause {
@@ -529,14 +538,16 @@ public interface TopologyObserver extends TopologyManager {
             }
 
             /// Diff the latest `MembershipView` against the previously observed core member
-            /// set and route one `TopologyChangeNotification.NodeAdded` / `NodeRemoved` per
-            /// edge. Foundation for the membership-state-tracker consolidation
-            /// (`aether/docs/internal/audits/membership-state-tracker-audit-2026-05-07.md`):
-            /// downstream subscribers can drive off this canonical edge stream rather than
-            /// the parallel SWIM / QUIC / KV-lifecycle paths that today amplify a single
-            /// peer departure into N+ redundant routings. Step 1 of the consolidation only
-            /// publishes; later steps make this the SOLE driver and retire the alternate
-            /// emit paths in QUIC / AetherNode / SwimHealthContext.
+            /// set and route one `MembershipDecision.NodeJoined` / `NodeRemoved` per edge.
+            /// This method is the **exclusive emitter of `MembershipDecision`** — single-
+            /// source-of-truth for cluster-canonical membership decisions. Downstream
+            /// subscribers drive off this canonical edge stream rather than the parallel
+            /// SWIM / QUIC / KV-lifecycle paths that previously amplified a single peer
+            /// departure into N+ redundant routings.
+            ///
+            /// `MembershipDecision.NodeDecommissioned` is reserved for the lifecycle path
+            /// that projects from the `NodeLifecycleKey` DECOMMISSIONED entry; not emitted
+            /// here.
             ///
             /// No-op when the snapshot source is empty (legacy / cold-boot windows). The
             /// `started` gate is enforced upstream by `evaluateQuorumState` so the router
@@ -558,12 +569,12 @@ public interface TopologyObserver extends TopologyManager {
                 }
                 var topology = List.copyOf(current);
                 for (var added : delta.added()) {
-                    log.debug("Membership delta: NodeAdded {}", added);
-                    router.route(TopologyChangeNotification.nodeAdded(added, topology));
+                    log.debug("Membership delta: NodeJoined {}", added);
+                    router.route(MembershipDecision.nodeJoined(added, topology));
                 }
                 for (var removed : delta.removed()) {
                     log.debug("Membership delta: NodeRemoved {}", removed);
-                    router.route(TopologyChangeNotification.nodeRemoved(removed, topology));
+                    router.route(MembershipDecision.nodeRemoved(removed, topology));
                 }
             }
 
