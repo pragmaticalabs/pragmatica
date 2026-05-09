@@ -1,6 +1,7 @@
 package org.pragmatica.postgres.conversion;
 
 import org.pragmatica.postgres.Oid;
+import org.pragmatica.postgres.net.PgValue;
 
 import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
@@ -9,10 +10,19 @@ import java.util.List;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
-// TODO: change internal value format from byte[] to PgValue(TEXT|BINARY)
 @SuppressWarnings({"unchecked", "rawtypes"})
 final class ArrayConversions {
     private ArrayConversions() {}
+
+    /// Unified entrypoint — dispatches on the wire format carried by `PgValue`.
+    /// Text-path uses the supplied per-element `parse` function; binary-path uses
+    /// `BinaryCodecs.forOid(...)`.
+    static <T> T toArray(Class<T> arrayType, PgValue value, BiFunction<Oid, String, Object> parse) {
+        return switch (value) {
+            case PgValue.Text text -> toTextArray(arrayType, text.type(), text.asString(), parse);
+            case PgValue.Binary binary -> toBinaryArray(arrayType, binary.type(), binary.raw());
+        };
+    }
     static String fromArray(final Object elements, final Function<Object, String> printFn) {
         return appendArray(new StringBuilder(), elements, printFn).toString();
     }
@@ -55,7 +65,7 @@ final class ArrayConversions {
         return b.append('"');
     }
 
-    static <T> T toArray(Class<T> arrayType, Oid oid, String value, BiFunction<Oid, String, Object> parse) {
+    private static <T> T toTextArray(Class<T> arrayType, Oid oid, String value, BiFunction<Oid, String, Object> parse) {
         Class elementType = arrayType.getComponentType();
 
         while (elementType.getComponentType() != null && elementType != byte[].class) {
@@ -213,9 +223,14 @@ final class ArrayConversions {
     }
 
     @SuppressWarnings("unchecked")
-    static <T> T toBinaryArray(Class<T> arrayType, Oid oid, byte[] value) {
+    private static <T> T toBinaryArray(Class<T> arrayType, Oid oid, byte[] value) {
         if (value == null) {
             return null;
+        }
+
+        Class elementType = resolveLeafType(arrayType);
+        if (elementType.isPrimitive()) {
+            throw new IllegalArgumentException("Primitive arrays are not supported due to possible NULL values");
         }
 
         var buf = ByteBuffer.wrap(value);
@@ -224,7 +239,7 @@ final class ArrayConversions {
         int elemTypeOid = buf.getInt();
 
         if (ndim == 0) {
-            return (T) Array.newInstance(resolveLeafType(arrayType), 0);
+            return (T) Array.newInstance(elementType, 0);
         }
 
         int[] dims = new int[ndim];
@@ -235,17 +250,44 @@ final class ArrayConversions {
 
         var elementOid = Oid.valueOfId(elemTypeOid);
         var elementCodec = BinaryCodecs.forOid(elementOid);
-        Class elementType = resolveLeafType(arrayType);
 
         if (ndim == 1) {
             var arr = (Object[]) Array.newInstance(elementType, dims[0]);
             for (int i = 0; i < dims[0]; i++) {
-                arr[i] = readBinaryElement(buf, elementCodec);
+                arr[i] = canonicalize(oid, readBinaryElement(buf, elementCodec));
             }
             return (T) arr;
         }
 
-        return (T) readMultiDimArray(buf, dims, 0, elementType, elementCodec);
+        return (T) readMultiDimArray(buf, dims, 0, elementType, elementCodec, oid);
+    }
+
+    /// Coerce a codec-decoded element to the canonical type used by the text path's
+    /// `lookupParser` (in `DataConverter`). Without this, binary-decoded `Float` could
+    /// not be stored into `BigDecimal[]`, etc. — keeping the binary path
+    /// feature-equivalent to text.
+    private static Object canonicalize(Oid arrayOid, Object value) {
+        if (value == null) {
+            return null;
+        }
+        return switch (arrayOid) {
+            case FLOAT4_ARRAY, FLOAT8_ARRAY -> {
+                if (value instanceof Number n) {
+                    // Match PG text format scale: Java's `Float.toString(0.0f)` is "0.0"
+                    // but PG sends "0" — without stripping, `BigDecimal("0.0")` and
+                    // `BigDecimal("0")` compare unequal under scale-sensitive `.equals`.
+                    var s = n.toString();
+                    if (s.endsWith(".0")) {
+                        s = s.substring(0, s.length() - 2);
+                    }
+                    yield new java.math.BigDecimal(s);
+                }
+                yield value;
+            }
+            case TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY ->
+                value instanceof java.time.LocalDateTime ldt ? ldt.toInstant(java.time.ZoneOffset.UTC) : value;
+            default -> value;
+        };
     }
 
     private static Class resolveLeafType(Class arrayType) {
@@ -275,13 +317,13 @@ final class ArrayConversions {
     }
 
     private static Object[] readMultiDimArray(ByteBuffer buf, int[] dims, int dimIndex,
-                                               Class<?> elementType, BinaryCodec<?> codec) {
+                                               Class<?> elementType, BinaryCodec<?> codec, Oid arrayOid) {
         int size = dims[dimIndex];
 
         if (dimIndex == dims.length - 1) {
             var arr = (Object[]) Array.newInstance(elementType, size);
             for (int i = 0; i < size; i++) {
-                arr[i] = readBinaryElement(buf, codec);
+                arr[i] = canonicalize(arrayOid, readBinaryElement(buf, codec));
             }
             return arr;
         }
@@ -291,7 +333,7 @@ final class ArrayConversions {
         var subArrayType = Array.newInstance(elementType, subDims).getClass();
         var arr = (Object[]) Array.newInstance(subArrayType, size);
         for (int i = 0; i < size; i++) {
-            arr[i] = readMultiDimArray(buf, dims, dimIndex + 1, elementType, codec);
+            arr[i] = readMultiDimArray(buf, dims, dimIndex + 1, elementType, codec, arrayOid);
         }
         return arr;
     }

@@ -47,6 +47,12 @@ public class ArrayConversionsTest {
         return dbr.query("SELECT * FROM CA_TEST").index(0);
     }
 
+    /// Force the text wire path: `script()` uses the simple Query message which
+    /// always returns text-format columns regardless of `Oid.supportsBinary()`.
+    private Row getRowViaScript() {
+        return dbr.script("SELECT * FROM CA_TEST").iterator().next().index(0);
+    }
+
     @Test
     public void selectShorts() {
         dbr.query("INSERT INTO CA_TEST (SHORTA) VALUES ('{0, 1, 2, null, 4}')");
@@ -246,5 +252,86 @@ public class ArrayConversionsTest {
         assertArrayEquals(bb[0], readbb[0]);
         assertArrayEquals(bb[1], readbb[1]);
         assertArrayEquals(bb[2], readbb[2]);
+    }
+
+    // ========================================================================
+    // Text-format coverage. After enabling _ARRAY in Oid.supportsBinary(),
+    // `dbr.query(...)` routes through the binary array path. The cases below
+    // use `dbr.script(...)` (simple Query message) which always returns text-
+    // format columns, so the text-path decoder in ArrayConversions stays exercised.
+    // ========================================================================
+
+    @Test
+    public void selectInts_textFormat() {
+        dbr.query("INSERT INTO CA_TEST (INTA) VALUES ('{0, null, 2, 3}')");
+        assertArrayEquals(
+            new Integer[]{0, null, 2, 3},
+            getRowViaScript().getArray("inta", Integer[].class));
+    }
+
+    @Test
+    public void selectShorts_textFormat() {
+        dbr.query("INSERT INTO CA_TEST (SHORTA) VALUES ('{0, 1, 2, null, 4}')");
+        assertArrayEquals(
+            new Short[]{0, 1, 2, null, 4},
+            getRowViaScript().getArray("shorta", Short[].class));
+    }
+
+    @Test
+    public void selectLongs_textFormat() {
+        dbr.query("INSERT INTO CA_TEST (LONGA) VALUES ('{-1, null, 1, 2, 3}')");
+        assertArrayEquals(
+            new Long[]{-1L, null, 1L, 2L, 3L},
+            getRowViaScript().getArray("longa", Long[].class));
+    }
+
+    @Test
+    public void selectIntsMulti_textFormat() {
+        dbr.query("INSERT INTO CA_TEST (INTA) VALUES ('{{{0}, {1}}, {{2}, {3}}}')");
+        assertArrayEquals(
+            new Integer[][][]{
+                new Integer[][]{new Integer[]{0}, new Integer[]{1}},
+                new Integer[][]{new Integer[]{2}, new Integer[]{3}}},
+            getRowViaScript().getArray("inta", Integer[][][].class));
+    }
+
+    @Test
+    public void selectText_textFormat() {
+        dbr.query("INSERT INTO CA_TEST (TEXTA) VALUES ('{foo, bar, \"{foo, bar}\"}')");
+        assertArrayEquals(
+            new String[]{"foo", "bar", "{foo, bar}"},
+            getRowViaScript().getArray("texta", String[].class));
+    }
+
+    @Test
+    public void selectFloat_textFormat() {
+        dbr.query("INSERT INTO CA_TEST (FLOATA) VALUES ('{177.7, 0.0, null, -2.012}')");
+        assertArrayEquals(
+            new BigDecimal[]{
+                new BigDecimal("177.7"),
+                new BigDecimal("0"),
+                null,
+                new BigDecimal("-2.012")
+            },
+            getRowViaScript().getArray("floata", BigDecimal[].class));
+    }
+
+    @Test
+    public void selectTimestamp_textFormat() {
+        dbr.query("INSERT INTO CA_TEST (TIMESTAMPA) VALUES ('"
+                  + "{1999-05-16 00:00:00.591, 1970-02-04 01:02:33.01, null}')");
+        assertArrayEquals(
+            new Instant[]{
+                LocalDateTime.parse("1999-05-16T00:00:00.591").toInstant(ZoneOffset.UTC),
+                LocalDateTime.parse("1970-02-04T01:02:33.01").toInstant(ZoneOffset.UTC),
+                null
+            },
+            getRowViaScript().getArray("timestampa", Instant[].class));
+    }
+
+    @Test
+    public void selectNull_textFormat() {
+        dbr.query("INSERT INTO CA_TEST (TEXTA) VALUES (NULL);");
+        assertArrayEquals(null, getRowViaScript().getArray("texta", String[].class));
     }
 }

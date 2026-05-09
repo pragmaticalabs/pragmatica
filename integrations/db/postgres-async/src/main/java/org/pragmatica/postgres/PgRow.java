@@ -223,7 +223,8 @@ public class PgRow implements Row, KeyToValue {
     }
 
     public Object get(int index) {
-        return dataConverter.toObject(columns[index].type(), data.getValue(index), null);
+        var col = columns[index];
+        return dataConverter.toObject(col.type(), data.getValue(index), null, col.isBinary());
     }
 
     public Object get(String column) {
