@@ -193,7 +193,9 @@ package org.pragmatica.aether.delegation;
 /// Only active on the leader node (activated by onLeaderChange).
 public interface TaskAssignmentCoordinator {
     @MessageReceiver void onLeaderChange(LeaderChange leaderChange);
-    @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
+    // v2: subscribes to MembershipDecision (DECISION stream), not the deleted TopologyChangeNotification.
+    // See membership-architecture-spec §3.1 for the typed-stream split.
+    @MessageReceiver void onMembershipDecision(MembershipDecision decision);
 
     /// Current assignment map (for observability).
     Map<TaskGroup, NodeId> assignments();
@@ -559,9 +561,10 @@ var coordinator = TaskAssignmentCoordinator.taskAssignmentCoordinator(
 
 // Only the coordinator listens to leader change
 entries.add(route(LeaderChange.class, coordinator::onLeaderChange));
-entries.add(route(TopologyChangeNotification.NodeAdded.class, coordinator::onTopologyChange));
-entries.add(route(TopologyChangeNotification.NodeRemoved.class, coordinator::onTopologyChange));
-entries.add(route(TopologyChangeNotification.NodeDown.class, coordinator::onTopologyChange));
+// v2: typed DECISION stream (replaced TopologyChangeNotification — see membership-architecture-spec §3.1).
+entries.add(route(MembershipDecision.NodeJoined.class, coordinator::onMembershipDecision));
+entries.add(route(MembershipDecision.NodeRemoved.class, coordinator::onMembershipDecision));
+entries.add(route(MembershipDecision.NodeDecommissioned.class, coordinator::onMembershipDecision));
 
 // Every node watches task assignments via KV notifications
 kvRouterBuilder.onPut(TaskAssignmentKey.class, activator::onTaskAssignmentPut);

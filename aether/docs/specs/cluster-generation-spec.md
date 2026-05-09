@@ -479,7 +479,7 @@ Every node receives snapshots via ping and updates projections:
 | `ClusterDeploymentManager` | `coreMembers`, `communities` for scheduling | Stale-cleanup timer → now snapshot-delta-driven (nodes that disappear → cleanup their artifacts in next reconcile triggered by snapshot change) |
 | `HttpRouteRegistry` | `coreMembers` + `communities` for route presence | `NodeRoutesKey` watch stays, but ACTIVE transition is epoch-fenced |
 | `NodeDeploymentManager` | current `epoch` for ROUTING → ACTIVE gate | Timer-based ROUTING wait → epoch-fenced |
-| `QuicClusterNetwork` | informational only | No longer authoritative writer — stops emitting `TopologyChangeNotification.nodeRemoved` from transport events |
+| `QuicClusterNetwork` | informational only | No longer authoritative writer — emits only `TransportObservation` (local OBSERVATION stream); the cluster-canonical `MembershipDecision.NodeRemoved` comes exclusively from `TopologyObserver.publishMembershipDeltas`. See membership-architecture-spec §3.1 (typed-stream split). |
 | Dashboard / `/api/cluster/topology` | core+communities+partitions | Single source |
 
 ## 13. What gets deleted

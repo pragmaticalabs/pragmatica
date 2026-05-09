@@ -1379,16 +1379,18 @@ TCP connections remain for DATA transport (Rabia messages, Decisions, mutations)
 ### 17.3 Architecture Change
 
 ```
-Before (current):
-  TCP connect/disconnect → TopologyChangeNotification.NodeDown/NodeUp
+Before (current — pre v2):
+  TCP connect/disconnect → TopologyChangeNotification.NodeDown/NodeUp     (deleted in v2)
 
-After (proposed):
-  SWIM probe failure → TopologyChangeNotification.NodeDown
-  SWIM probe success → TopologyChangeNotification.NodeUp
-  TCP connection      → data transport only (no health signaling)
+After (post v2):
+  SWIM probe failure → TransportObservation.PeerObservedFaulty (source=SWIM)
+                       → HealthReconciler aggregates → KV NodeLifecycleKey
+                       → TopologyObserver projects → MembershipDecision.NodeRemoved
+  SWIM probe success → KV NodeLifecycleKey transitions → MembershipDecision.NodeJoined
+  TCP / QUIC connection → data transport only (TransportObservation only, no decision)
 ```
 
-The change is in the SOURCE of health signals, not in how those signals are consumed. All downstream logic (Rabia recovery, leader election, CDM reconciliation) receives the same `TopologyChangeNotification` events.
+The change is in the SOURCE of health signals, not in how DECISION-stream subscribers are wired. All downstream consensus-canonical logic (Rabia recovery, leader election, CDM reconciliation) reacts to `MembershipDecision` events. See `membership-architecture-spec.md` §3.1 for the typed-stream split.
 
 ### 17.4 Core-to-Core SWIM
 
@@ -1406,7 +1408,7 @@ The core SWIM group consists of all core nodes (5-9 members). This is a very sma
 ### 17.5 What Changes in Existing Code
 
 - **`TcpTopologyManager`:** TCP disconnect no longer triggers `NodeDown`. It triggers a reconnection attempt only. The connection is considered unhealthy only when SWIM declares the remote node FAULTY.
-- **`TopologyChangeNotification`:** Fired by SWIM membership changes, not by TCP events. The notification type and payload remain identical.
+- **`MembershipDecision` (v2 — replaces `TopologyChangeNotification`):** Fired by `TopologyObserver.publishMembershipDeltas` after KV `NodeLifecycleKey` projection. SWIM observations are inputs to `HealthReconciler` (not direct emitters of decisions). Transport-level events emit `TransportObservation` only (OBSERVATION stream). See `membership-architecture-spec.md` §3.1 for full detail.
 - **`NettyClusterNetwork`:** Connection loss enters a reconnect loop. No topology notification is emitted. If SWIM also declares the node FAULTY, the topology notification fires from the SWIM layer.
 - **Rabia:** `NodeDown` from SWIM triggers the same recovery path as today (stall detection, re-election, state reconstruction).
 

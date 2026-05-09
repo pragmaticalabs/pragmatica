@@ -1,9 +1,11 @@
 # Membership Architecture Specification
 
-**Status:** Draft v1
-**Date:** 2026-05-01
+**Status:** Draft v2
+**Date:** 2026-05-10 (v2: typed-stream split landed)
 **Branch target:** `release-1.0.0-rc1`
 **Scope:** Full redesign of cross-layer signal flow between QUIC, SWIM, HealthReconciler, TopologyObserver, Rabia, leader election, auto-heal (CTM), and node lifecycle. Backwards-compatibility is **not** a constraint.
+
+**v2 update — typed observation/decision streams.** The unified `TopologyChangeNotification` of v1 has been split into two type-distinct streams (`TransportObservation` and `MembershipDecision`) that live in `integrations/consensus/src/main/java/org/pragmatica/consensus/topology/`. This is a **structural** fix to the dual-reaction class of bugs: subscribers' Java type signatures now declare which stream they consume, and the compiler's sealed-exhaustive checking enforces non-confusion. See §3.1 (typed streams) and §6 (signal catalog).
 
 ---
 
@@ -69,7 +71,7 @@ Tests must consume the exact same observable signals operators use (`/health/rea
    ┌─────────────────────────────────────────────────────────────────────┐
    │ Layer 3: Topology View (TopologyObserver)                           │
    │   - Pure projection of KV NodeLifecycleKey + ClusterConfigKey.      │
-   │   - Sole publisher of TopologyChangeNotification & QuorumState.     │
+   │   - Sole publisher of MembershipDecision & QuorumStateNotification. │
    └─────────────────────────────────────────────────────────────────────┘
                                 ▲
    ┌─────────────────────────────────────────────────────────────────────┐
@@ -85,11 +87,98 @@ Tests must consume the exact same observable signals operators use (`/health/rea
    └─────────────────────────────────────────────────────────────────────┘
                                 ▲
    ┌─────────────────────────────────────────────────────────────────────┐
-   │ Layer 0: Transport (QUIC)                                           │
+   │ Layer 0: Transport (QUIC, Netty)                                    │
    │   - Byte movement. Per-peer connection state.                       │
-   │   - Emits TransportObservation as informational hint only.          │
+   │   - Emits TransportObservation (local, fast, partial-view).         │
    └─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 3.1 Typed observation/decision streams (v2)
+
+The previous v1 design routed every membership-relevant event through a single `TopologyChangeNotification` type. That conflated two epistemically different facts:
+
+- **"I observed peer X disconnect"** — local fact, fast, may flap, partial-view.
+- **"The cluster has agreed peer X is no longer a member"** — global fact, slow, authoritative, idempotent.
+
+Subscribers to the unified type received duplicate emissions for the same conceptual event from two different paths (transport-level QUIC eviction + consensus-driven snapshot delta). Some had subtle interleaving bugs where state changed between the two emissions and produced wrong reactions. The audit at `aether/docs/internal/audits/membership-state-tracker-audit-2026-05-07.md` traced this to D2 (QUIC still emits `TopologyChangeNotification`) and D6 (CTM listens to the unified type, not snapshot deltas).
+
+The v2 architecture replaces `TopologyChangeNotification` with **two type-distinct sealed interfaces** in `integrations/consensus/src/main/java/org/pragmatica/consensus/topology/`. Subscribers' method signatures now declare which stream they consume; the Java compiler enforces non-confusion via sealed-exhaustive pattern checks.
+
+### 3.1.1 `TransportObservation` — local, fast, may-flap
+
+`integrations/consensus/.../TransportObservation.java`. Sealed `Message.Local` interface with five variants:
+
+| Variant | Meaning | Fires from |
+|---|---|---|
+| `PeerJoined(nodeId, topology, source)` | Local handshake completed | QUIC ADD, Netty ADD |
+| `PeerDisconnected(nodeId, topology, source)` | Local channel evicted | QUIC REMOVE, Netty REMOVE, SWIM-FAULTY |
+| `PeerReconnected(nodeId, topology, source)` | Local channel re-established after a previous disconnect | QUIC RECONNECT |
+| `PeerObservedFaulty(nodeId, topology, source)` | SWIM protocol declared peer FAULTY (suspect timeout + indirect-ping failure) | SWIM protocol layer |
+| `SelfShutdown(nodeId, topology, source)` | THIS node is shutting down (self-emit) | QUIC SHUTDOWN with `self.id()` |
+
+Each variant carries an `ObservationSource` enum (`QUIC | NETTY | SWIM`) for diagnostics. `topology()` is the **local** view of connected peers as known to THIS node — not a cluster-canonical snapshot.
+
+**Properties:** local, fast (synchronous with transport events), may flap, partial-view.
+
+**Producers:** `QuicClusterNetwork.processViewChange`, `NettyClusterNetwork.processViewChange`, `SwimProtocol.emitFaultyOrUnknown`.
+
+**Consumers:** code paths that need fast local reactions and tolerate partial-view semantics, notably:
+- `LeaderManager` — bootstrap fast-path before consensus exists.
+- `ClusterFsmRouter` — same bootstrap fast-path.
+- `RabiaNode` — bootstrap fast-path: consensus engine itself needs to learn about peers before it can commit anything.
+- `SelfShutdown` may also be consumed by DECISION-stream subscribers that need a self-cleanup hook (see §3.1.2 below).
+
+### 3.1.2 `MembershipDecision` — global, authoritative, idempotent
+
+`integrations/consensus/.../MembershipDecision.java`. Sealed `Message.Local` interface with three variants:
+
+| Variant | Meaning |
+|---|---|
+| `NodeJoined(nodeId, topology)` | The cluster has agreed (via consensus snapshot) that this node is a core member. |
+| `NodeRemoved(nodeId, topology)` | The cluster has agreed (via consensus snapshot) that this node is no longer a core member. View-level transition. |
+| `NodeDecommissioned(nodeId, topology)` | The cluster has agreed (via consensus on the lifecycle KV entry) that this node is permanently decommissioned. Lifecycle-level decision distinct from `NodeRemoved`. |
+
+`topology()` is the **cluster-canonical** view of `coreMemberIds` after the decision committed.
+
+**Properties:** global, authoritative (subscribers may rely on it for canonical reactions), eventually-consistent (consensus must commit before projection updates), idempotent (the diff is computed from prior committed state, so duplicate emissions for the same decision do not occur).
+
+**Producer (sole emitter):** `TopologyObserver.publishMembershipDeltas`. Single-source-of-truth is part of the contract — no other code path in the system emits `MembershipDecision`.
+
+**Consumers** (cluster-canonical reactions): `ClusterDeploymentManager` (workload reassignment), `ClusterTopologyManager` (capacity anchoring), `LoadBalancerManager` (target table), `HttpForwarder` (routing cleanup), `SliceInvoker`, `TaskAssignmentCoordinator`, `ClusterSyncCollector`, `ClusterSyncScheduler`, `DeploymentMetricsCollector`, `DeploymentMetricsScheduler`, `ControlLoop`, `AppHttpServer`, `DHTTopologyListener`.
+
+### 3.1.3 Why the split is structural, not informational
+
+In v1 the doc-comment on `TopologyChangeNotification` claimed transport-level emissions were "informational" while snapshot-level emissions were "authoritative." The audit (D2 in `membership-state-tracker-audit-2026-05-07.md`) showed that 15 receivers across 8 modules treated all emissions as authoritative regardless of source — the convention was unenforceable.
+
+The v2 split fixes this in the type system: a subscriber that wants canonical truth declares `@MessageReceiver onMembershipDecision(MembershipDecision d)` and is **physically incapable** of receiving a `TransportObservation`. Likewise, bootstrap fast-path consumers declare `@MessageReceiver onTransportObservation(TransportObservation o)` and never see canonical decisions. Compiler-enforced non-confusion replaces convention-enforced non-confusion.
+
+### 3.1.4 Bootstrap chicken-egg, resolved
+
+A previous v1 concern: leader-election needs a topology view, but the canonical membership snapshot only exists after consensus commits, which requires a leader. v1 papered this over with a "load-bearing" rationale for retaining synchronous transport-level emissions on the unified channel.
+
+In v2 the answer is explicit and type-safe. During bootstrap, `LeaderManager`, `ClusterFsmRouter`, and `RabiaNode` consume `TransportObservation` — the partial-view, fast-path stream is exactly what's available before consensus exists. Once consensus is up and `TopologyObserver.publishMembershipDeltas` starts emitting `MembershipDecision`, every other consumer receives canonical truth. The transition is implicit in which stream each component subscribes to; no "reverted audit step" or carve-out is needed.
+
+### 3.1.5 Single-writer rule, refined
+
+Principle P4 (single-writer for `NodeLifecycleKey`) applies to `MembershipDecision` — only `TopologyObserver.publishMembershipDeltas` emits decisions, and `HealthReconciler` is still the sole writer of the underlying KV atom. `TransportObservation` deliberately does NOT obey single-writer: every node emits its own observations independently — that is the entire point of an observation stream.
+
+The `HealthReconciler.handleAggregatedEdge` self-leader-eviction escape hatch (when the eviction target IS the current leader, any surviving node may attempt the lifecycle write) is reframed under v2 as: "single-writer for *decisions*; the leader-self-decommission case is an explicit exception because the leader cannot decommission itself." Project memory `feedback_single_writer_rule_scope.md` captures the same distinction (atoms LEFT/ACTIVE/ON_DUTY are decision atoms; transport hygiene like local `DisconnectNode` routing is not).
+
+### 3.1.6 CQRS-style transducer pattern
+
+Architecturally the split is a CQRS shape:
+
+- **Observation streams** (`TransportObservation`) are per-node, fast, and may be wrong/transient.
+- **Decision streams** (`MembershipDecision`) are cluster-canonical, slower, and authoritative.
+- **Transducers** aggregate observations into decisions. Currently:
+  - `HealthReconciler` aggregates SWIM observations (cross-node, quorum-of-observations rule, cooldown) and writes `NodeLifecycleKey`. `TopologyObserver` then projects committed lifecycle state to `MembershipDecision.NodeRemoved` (and, when wired, `NodeDecommissioned`).
+  - There is **no transducer yet** for raw QUIC/Netty `PeerDisconnected` observations — see §11 (`PeerObservationStore`, RC2).
+
+### 3.1.7 `NodeDecommissioned` wiring status
+
+`MembershipDecision.NodeDecommissioned` is present in the type system and pattern-matchable by subscribers, but `TopologyObserver.publishMembershipDeltas` does not yet emit it. Today `HealthReconciler` writes `NodeLifecycleKey = DECOMMISSIONED` and `TopologyObserver` projects that as `MembershipDecision.NodeRemoved` (view-level transition). Wiring `TopologyObserver` to additionally project the lifecycle DECOMMISSIONED edge as `NodeDecommissioned` is a follow-up item — kept distinct from `NodeRemoved` because durable decommission and transient view removal are different decisions to react to.
 
 ---
 
@@ -112,18 +201,14 @@ interface ClusterTransport {
 
 **Internal state:** per-peer `PeerState` (CONNECTING/CONNECTED/REMOVED), reconnect backoff, peerLinks table.
 
-**Signals emitted upward (one only):**
-```java
-sealed interface TransportObservation {
-    record PeerReachable(NodeId peer) implements TransportObservation {}
-    record PeerUnreachable(NodeId peer, Cause cause) implements TransportObservation {}
-}
-```
+**Signals emitted upward (one only):** `TransportObservation` (defined in `integrations/consensus/.../TransportObservation.java`). See §3.1.1 for the full variant list and properties. QUIC and Netty both publish to this stream; the `ObservationSource` enum disambiguates the producer.
 
-`TransportObservation` is an **informational hint**. Layer 1 (SWIM) MAY use it to shorten its own suspect window for a peer (e.g., upon `PeerUnreachable` from local transport, SWIM may downgrade suspect timeout for that specific peer from 15s to 3s). Layer 1 MUST NOT translate transport observations directly into authoritative HEALTHY/FAULTY signals — those still go through SWIM gossip aggregation.
+The stream is consumed only by bootstrap fast-path components (`LeaderManager`, `ClusterFsmRouter`, `RabiaNode`) and by `HealthReconciler`'s SWIM aggregator when the source is `SWIM`. Components that need cluster-canonical truth subscribe to `MembershipDecision` instead, and the type system prevents cross-stream confusion.
+
+Layer 1 (SWIM) MAY use a `PeerDisconnected` observation as an informational hint to shorten its own suspect window for that peer (e.g., from 15s to 3s). Layer 1 MUST NOT translate transport observations directly into authoritative HEALTHY/FAULTY signals — those still go through SWIM gossip aggregation. Layer 1's `PeerObservedFaulty` emission is the SWIM protocol layer's *own* observation, distinct from a raw transport-level `PeerDisconnected`.
 
 **What Layer 0 must NOT do:**
-- Emit `TopologyChangeNotification` (any variant)
+- Emit `MembershipDecision` (any variant) — this is `TopologyObserver`'s exclusive domain
 - Emit `QuorumStateNotification` (any variant)
 - Call `topologyManager.registerPeer` or `unregisterPeer`
 - Call `peerObservationStore.pushHealth`
@@ -237,7 +322,7 @@ record ReconcilerState(
 
 ### 4.4 Layer 3 — Topology View (TopologyObserver)
 
-**Responsibility:** Pure read-only projection of KV atoms. Sole publisher of `TopologyChangeNotification` and `QuorumStateNotification`.
+**Responsibility:** Pure read-only projection of KV atoms. **Sole publisher** of `MembershipDecision` and `QuorumStateNotification`. There is no other emitter for either stream.
 
 **Public surface:**
 ```java
@@ -256,11 +341,14 @@ interface TopologyView {
 
 **Signals emitted:**
 ```java
-sealed interface TopologyChangeNotification {
-    record NodeJoined(NodeId nodeId, MembershipView view) {}
-    record NodeOnDuty(NodeId nodeId, MembershipView view) {}
-    record NodeDraining(NodeId nodeId, MembershipView view) {}
-    record NodeRemoved(NodeId nodeId, RemovalReason reason, MembershipView view) {}
+// integrations/consensus/.../MembershipDecision.java
+sealed interface MembershipDecision extends Message.Local {
+    NodeId nodeId();
+    List<NodeId> topology();   // cluster-canonical core member list AFTER this decision
+
+    record NodeJoined(NodeId nodeId, List<NodeId> topology)         implements MembershipDecision {}
+    record NodeRemoved(NodeId nodeId, List<NodeId> topology)        implements MembershipDecision {}
+    record NodeDecommissioned(NodeId nodeId, List<NodeId> topology) implements MembershipDecision {}
 }
 
 sealed interface QuorumStateNotification {
@@ -270,11 +358,12 @@ sealed interface QuorumStateNotification {
 }
 ```
 
+**Emission point:** `TopologyObserver.publishMembershipDeltas` runs after each `evaluateQuorumState` mutation, diffs the new committed `MembershipView.coreMemberIds()` against the prior snapshot, and emits one `MembershipDecision.NodeJoined` per added member and one `NodeRemoved` per removed member. The diff is computed from canonical state, so duplicate emissions for the same edge do not occur (idempotent at projection — see §3.1.2).
+
 **Edge-transition semantics:**
-- `NodeOnDuty` fires on first transition of a peer's `NodeLifecycleKey` value into `ON_DUTY`.
-- `NodeRemoved` fires on first transition into `DECOMMISSIONED` or `SHUTTING_DOWN`, OR on KV REMOVE.
-- `NodeDraining` fires on first transition into `DRAINING`.
-- `NodeJoined` fires on first transition into `JOINING`.
+- `NodeJoined` fires on first transition into the cluster's `coreMemberIds` set.
+- `NodeRemoved` fires on first transition out of the cluster's `coreMemberIds` set (whether by `DECOMMISSIONED`/`SHUTTING_DOWN` lifecycle write or by KV REMOVE).
+- `NodeDecommissioned` (planned wiring): fires on first lifecycle KV transition into `DECOMMISSIONED`. Distinct from `NodeRemoved` because durable lifecycle decommission and transient view removal are different decisions to react to. See §3.1.7 — variant exists in the type system; emission wiring is a follow-up.
 
 **Quorum latch:** atomic `quorumEstablished` boolean. `evaluateQuorumState` runs after each KV-atom-driven mutation. Edge transitions emit `Established(seq++)` or `Disappeared(seq++)` exactly once per edge.
 
@@ -282,6 +371,7 @@ sealed interface QuorumStateNotification {
 - Have any `registerPeer/unregisterPeer/markReady/markDeparted/handleConnectionFailed/handleConnectionEstablished` API. These are removed entirely.
 - Be writeable from any layer. The internal state is computed from KV atom subscriptions only.
 - React to `TransportObservation`, `SwimObservation`, or any non-KV signal.
+- Emit any other variant of `MembershipDecision` or `QuorumStateNotification` from any path other than `publishMembershipDeltas` / `evaluateQuorumState`.
 
 ### 4.5 Layer 4 — Consensus (Rabia)
 
@@ -400,11 +490,11 @@ In practice, only node-1 ever proposes; the others observe `LeaderKey=node-1` in
 
 **Behavior changes:**
 
-**Sole input source:** subscribes to `TopologyChangeNotification` from Layer 3. **No other input.**
+**Sole input source:** subscribes to `MembershipDecision` from Layer 3 (and `QuorumStateNotification` for quorum-loss suspension). **No other input.** CTM does **not** subscribe to `TransportObservation` — by design, transient transport flaps must not drive provisioning. The compiler enforces this: `@MessageReceiver` on `MembershipDecision` cannot accidentally receive a `TransportObservation`.
 
 **Phase awareness:** subscribes to `ClusterPhaseChanged` from Layer 2. CTM only operates in `NORMAL` phase. In `BOOTING` and `RECOVERING`, CTM is suspended (no provisioning, no decommissioning).
 
-**Stability anchor:** bumped only on edge transitions of `MembershipView.healthyOnDutyCount()`. NOT on `TransportObservation`, NOT on `SwimObservation`, NOT on any per-peer event that doesn't change the on-duty count.
+**Stability anchor:** bumped only on edge transitions of `MembershipView.healthyOnDutyCount()` as projected by `MembershipDecision`. NOT on `TransportObservation`, NOT on `SwimObservation`, NOT on any per-peer event that doesn't change the on-duty count.
 
 **Decision loop:**
 ```
@@ -506,28 +596,40 @@ Symmetric to BOOTING but entered when, in NORMAL phase, healthyOnDutyCount drops
 
 ## 6. Signal Catalog
 
-Complete list of cross-layer signals after this redesign. Anything not on this list does not exist.
+Complete list of cross-layer signals after this redesign. Anything not on this list does not exist. The two streams introduced in §3.1 are typeset as **OBSERVATION** (local, fast, may-flap) and **DECISION** (global, authoritative) for clarity.
 
-| From → To | Signal | Type | Notes |
+| From → To | Signal | Stream / Type | Notes |
 |---|---|---|---|
-| Layer 0 → Layer 1 | `TransportObservation.PeerReachable/Unreachable` | informational | SWIM may use as suspect-shortener hint |
-| Layer 1 → Layer 2 | `SwimObservation.HealthyObserved/Suspect/Faulty/Departed` | observation | input to reconciler decision |
+| Layer 0 → Layer 1, bootstrap fast-path | `TransportObservation.{PeerJoined,PeerDisconnected,PeerReconnected,PeerObservedFaulty,SelfShutdown}` | OBSERVATION | local fact; `ObservationSource ∈ {QUIC, NETTY, SWIM}` |
+| Layer 1 → Layer 2 | `SwimObservation.HealthyObserved/Suspect/Faulty/Departed` | OBSERVATION | input to reconciler decision aggregation |
 | Layer 2 → Layer 4 | `RabiaCommand.Put<NodeLifecycleKey, NodeLifecycleValue>` | command | proposed via consensus |
 | Layer 2 → all | `ClusterPhaseChanged(phase)` | broadcast | published via Rabia commit on `ClusterPhaseKey` |
 | Layer 4 → Layer 3 | `KVStoreNotification.ValuePut/Remove<NodeLifecycleKey, ClusterConfigKey, ClusterPhaseKey, LeaderKey>` | notification | derived from consensus commit |
 | Layer 3 → Layer 4 | (nothing — Layer 3 is read-only) | — | — |
 | Layer 3 → Layer 5 | `KVStoreNotification.ValuePut<LeaderKey>` (relayed) | notification | leader election listener |
-| Layer 3 → Layer 6 | `TopologyChangeNotification.*`, `QuorumStateNotification.*` | notification | sole CTM input |
+| Layer 3 → Layer 6 (and other DECISION subscribers) | `MembershipDecision.{NodeJoined,NodeRemoved,NodeDecommissioned}`, `QuorumStateNotification.*` | DECISION | sole DECISION-stream emitter is `TopologyObserver.publishMembershipDeltas` |
 | Layer 4 → Layer 5 | `RabiaCommand.Put<LeaderKey, _>` commit | command-result | proposes leader |
 | Layer 5 → Layer 7 | `LeaderChange(currentLeader)` | notification | optional — for routing |
 | Layer 6 → Layer 0 (provisioning) | command (provision/decommission VM) | RPC | external SPI calls |
 | Layer 6 → Layer 4 | `RabiaCommand.Put<ProvisioningSlotKey, _>` | command | tracks in-flight provisioning |
 | Layer 7 → all | `LifecyclePhaseChanged(self, phase)` | broadcast | per-node |
 
+**Stream-subscriber matrix** (which components consume which stream):
+
+| Component | Subscribes to | Why |
+|---|---|---|
+| `LeaderManager` | OBSERVATION | bootstrap fast-path; needs to learn peers before consensus exists |
+| `ClusterFsmRouter` | OBSERVATION | same bootstrap fast-path |
+| `RabiaNode` | OBSERVATION | engine learns peer set before it can commit anything |
+| `HealthReconciler` SWIM aggregator | OBSERVATION (`PeerObservedFaulty` only, source=SWIM) | aggregates into KV writes; emits no observations of its own |
+| `ClusterDeploymentManager`, `ClusterTopologyManager`, `LoadBalancerManager`, `HttpForwarder`, `SliceInvoker`, `TaskAssignmentCoordinator`, `ClusterSyncCollector`/`Scheduler`, `DeploymentMetricsCollector`/`Scheduler`, `ControlLoop`, `AppHttpServer`, `DHTTopologyListener` | DECISION | canonical reactions to cluster-agreed membership |
+| Self-cleanup hooks on local shutdown | OBSERVATION (`SelfShutdown` only) | local fact; the cluster does not need to agree the local node is shutting down |
+
 **Removed signals (must not exist after redesign):**
-- QUIC → anything except `TransportObservation`
-- Any `TopologyChangeNotification` emitter other than TopologyObserver
-- Any `QuorumStateNotification` emitter other than TopologyObserver
+- The unified `TopologyChangeNotification` type — split into `TransportObservation` and `MembershipDecision` (v2). The class is **deleted**, not renamed.
+- QUIC / Netty → anything except `TransportObservation`
+- Any `MembershipDecision` emitter other than `TopologyObserver.publishMembershipDeltas`
+- Any `QuorumStateNotification` emitter other than `TopologyObserver`
 - Direct `topologyManager.registerPeer/unregisterPeer/markReady/markDeparted` callable from outside Layer 2/3
 - `RabiaEngine.clusterConnected/clusterDisconnected` (replaced by Active/Paused state transitions)
 
@@ -716,13 +818,22 @@ void clusterConnected();
 void clusterDisconnected();
 
 // Removed from QuicClusterNetwork / NettyClusterNetwork:
-private void processViewChange(ViewChangeOperation, NodeId);
-// (replaced by internal-only PeerStateChange dispatch that emits TransportObservation)
+//   The old upward emission of TopologyChangeNotification.NodeAdded/NodeRemoved/NodeDown.
+//   processViewChange now publishes only TransportObservation variants (PeerJoined,
+//   PeerDisconnected, PeerReconnected, SelfShutdown) with ObservationSource = QUIC or NETTY.
+
+// Deleted entirely (v2):
+sealed interface TopologyChangeNotification { ... }   // gone — replaced by typed split below
 ```
 
 ### 8.2 New APIs
 
 ```java
+// Streams (v2 — typed split, replacing TopologyChangeNotification)
+//   integrations/consensus/.../TransportObservation.java  (OBSERVATION stream)
+//   integrations/consensus/.../MembershipDecision.java    (DECISION stream)
+// Both are Message.Local sealed interfaces; see §3.1 for variants and properties.
+
 // Layer 0
 interface ClusterTransport {
     Promise<Unit> send(NodeId, byte[], StreamType);
@@ -797,7 +908,7 @@ The full redesign is a multi-week effort. Phased to keep the cluster bootable at
 **Files:** `HealthReconciler.java`, new `ClusterPhaseKey/Value`, AetherNode wiring.
 
 ### Phase R4: Layer 3 (TopologyObserver) — Pure projection
-**Scope:** Strip all writeable APIs. Pure subscriber to NodeLifecycleKey/ClusterConfigKey/LeaderKey/ClusterPhaseKey. Sole publisher of `TopologyChangeNotification` and `QuorumStateNotification`.
+**Scope:** Strip all writeable APIs. Pure subscriber to NodeLifecycleKey/ClusterConfigKey/LeaderKey/ClusterPhaseKey. Sole publisher of `MembershipDecision` and `QuorumStateNotification` (v2 — see §3.1 for the typed-stream split that replaced the unified `TopologyChangeNotification`).
 
 **Files:** `TopologyObserver.java`, `TopologyMembershipPublisher.java` (folds into observer), all callers of removed APIs.
 
@@ -812,7 +923,7 @@ The full redesign is a multi-week effort. Phased to keep the cluster bootable at
 **Files:** `LeaderElectionFsm.java`, `LeaderElectionState.java`, `LeaderElectionContext.java`.
 
 ### Phase R7: Layer 6 (Auto-Heal) — Phase-aware + KV-only input
-**Scope:** Subscribe to ClusterPhaseChanged. Suspend in BOOTING. Sole input is TopologyChangeNotification.
+**Scope:** Subscribe to ClusterPhaseChanged. Suspend in BOOTING. Sole input is `MembershipDecision` (v2 — DECISION stream); CTM does not subscribe to `TransportObservation`.
 
 **Files:** `ClusterTopologyManagerRecord.java`.
 
@@ -853,7 +964,29 @@ Defined above. Harness must use operator-visible signals only.
 
 ---
 
-## 11. Open Questions / Decisions Needed
+## 11. RC2 follow-up: `PeerObservationStore` (Step 7 from the audit)
+
+The v2 split closes D2/D6 from `membership-state-tracker-audit-2026-05-07.md` structurally — components are now bound by Java types to the correct stream — but it does not by itself add cross-node aggregation for raw QUIC/Netty `TransportObservation.PeerDisconnected`. Today only SWIM observations get cross-node aggregation (via `HealthReconciler`'s quorum-of-observations rule). A single witness reporting a QUIC eviction has no quorum check before downstream reactions fire.
+
+The natural follow-up architectural layer is a typed transducer between `TransportObservation` and `MembershipDecision`:
+
+**`PeerObservationStore`** — RC2 component.
+
+| Property | Value |
+|---|---|
+| Purpose | Cross-node aggregation of `TransportObservation.PeerDisconnected` / `PeerObservedFaulty` / `PeerJoined` with TTL |
+| Input | `TransportObservation` events from N nodes (broadcast or pushed via consensus) |
+| Output | `MembershipDecision` proposed for write when ⌈N/2⌉+1 distinct observers report the same target |
+| Semantics | TTL-decayed observation set; quorum threshold; cooldown post-decision |
+| Lands as | The typed transducer between OBSERVATION and DECISION streams (CQRS shape per §3.1.6) |
+| Eliminates | Single-witness false-positive surface for non-SWIM transport observations |
+| Estimated effort | 2-3 days (consensus integration + TTL state machine + tests) |
+
+The component lands cleanly in v2 because the type system already separates the input stream (OBSERVATION) from the output stream (DECISION), and the new contract that `TopologyObserver.publishMembershipDeltas` is the **sole** DECISION emitter means `PeerObservationStore` will route its decisions through `HealthReconciler`'s KV write path rather than minting `MembershipDecision` directly. Nothing in v2 reserves the right to bypass this.
+
+---
+
+## 12. Open Questions / Decisions Needed
 
 1. **Reconfigure semantics:** when cluster size changes via admin (5 → 7), what happens to in-flight Rabia proposals? Drain or carry over? Spec proposes drain; alternative is to carry over with a phase-fence.
 
@@ -869,7 +1002,7 @@ Defined above. Harness must use operator-visible signals only.
 
 ---
 
-## 12. Estimated Effort
+## 13. Estimated Effort
 
 | Phase | LoC | Effort |
 |---|---|---|
@@ -889,7 +1022,7 @@ Plus ~3-5 days of integration testing on remote infrastructure.
 
 ---
 
-## 13. Migration Note
+## 14. Migration Note
 
 This spec assumes a **greenfield deployment**. There is no rolling-upgrade path from current rc1 to the redesigned architecture. Existing clusters will need cluster-wide stop, deployment of new binaries, and bootstrap from scratch. Document this prominently in the rc1 → new-design release notes.
 
@@ -897,7 +1030,7 @@ The architectural cleanup commits already on `release-1.0.0-rc1` (`5c29a104f` Ph
 
 ---
 
-## 14. Acceptance Criteria
+## 15. Acceptance Criteria
 
 The redesign is complete when:
 
