@@ -23,8 +23,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
@@ -150,7 +150,7 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
                                                 3,
                                                 5),
                                    2L);
-            ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
             var dispatched = lifecycleManager.provisionCount.get();
             assertThat(dispatched).as("at least one provision dispatched").isGreaterThanOrEqualTo(1);
             assertThat(clusterStore.slotPutCount.get())
@@ -179,7 +179,7 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
                                                 3,
                                                 5),
                                    2L);
-            ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
             var slotsAfterDispatch = clusterStore.slots().size();
             assertThat(slotsAfterDispatch).isGreaterThanOrEqualTo(1);
             // Wait beyond the provisioning timeout so deadlines lapse.
@@ -191,7 +191,7 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
                                                 5),
                                    3L);
             // Trigger another reconcile so `expireSlots` runs.
-            ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
             assertThat(clusterStore.slotRemoveCount.get())
                     .as("expired slots produce KV Remove commands")
                     .isGreaterThanOrEqualTo(1);
@@ -240,7 +240,7 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
                                                 3,
                                                 5),
                                    2L);
-            leaderOne.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+            leaderOne.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
             var slotsLeftByLeader1 = clusterStore.slots().size();
             assertThat(slotsLeftByLeader1).as("leader-1 created KV slots").isGreaterThanOrEqualTo(1);
             // Leader-1 hands off; deactivate so its safety-net timer cannot fire spurious
@@ -327,8 +327,8 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
                                                 5,
                                                 5),
                                    2L);
-            ctm.onTopologyChange(TopologyChangeNotification.nodeAdded(PEER_C, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-            ctm.onTopologyChange(TopologyChangeNotification.nodeAdded(PEER_D, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+            ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_C, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+            ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_D, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
             // Wait beyond the stability window so any pending dispatch would have fired by now.
             Thread.sleep(COLD_BOOT_STABILITY.millis() + 200L);
             assertThat(lifecycleManager.provisionCount.get())

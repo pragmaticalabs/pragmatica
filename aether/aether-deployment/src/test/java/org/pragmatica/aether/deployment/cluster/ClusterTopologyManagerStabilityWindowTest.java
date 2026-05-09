@@ -17,8 +17,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
@@ -160,7 +160,7 @@ class ClusterTopologyManagerStabilityWindowTest {
                                             5),
                                2L);
         // External trigger as the last node joins.
-        ctm.onTopologyChange(TopologyChangeNotification.nodeAdded(PEER_D, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_D, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
         assertThat(lifecycleManager.provisionCount.get()).isZero();
         assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
     }
@@ -185,7 +185,7 @@ class ClusterTopologyManagerStabilityWindowTest {
                                             3,
                                             5),
                                2L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         // Within the stability window — no dispatch yet.
         assertThat(lifecycleManager.provisionCount.get())
                 .as("dispatch suppressed during stability window")

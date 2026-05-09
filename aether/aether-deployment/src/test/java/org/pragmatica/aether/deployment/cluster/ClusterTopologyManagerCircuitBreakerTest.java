@@ -18,8 +18,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
@@ -138,7 +138,7 @@ class ClusterTopologyManagerCircuitBreakerTest {
                                2L);
 
         // Wave 1 — initial deficit, dispatches first provisioning attempt(s).
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         var afterWave1 = lifecycleManager.provisionCount.get();
         assertThat(afterWave1).isGreaterThanOrEqualTo(1);
 
@@ -147,14 +147,14 @@ class ClusterTopologyManagerCircuitBreakerTest {
         // backoff window each iteration to guarantee the next reconcile re-enters handleDeficit.
         for (var attempt = 0;attempt <5;attempt++) {
             clockMs.addAndGet(slotTimeoutMs + (5 * 60 * 1000L));
-            ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         }
 
         // After enough cycles, provisioning count plateaus — circuit tripped.
         var plateauCount = lifecycleManager.provisionCount.get();
         clockMs.addAndGet(60 * 60 * 1000L);  // advance 1 h — backoff fully clear
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         assertThat(lifecycleManager.provisionCount.get())
             .as("provisioning must NOT continue after circuit breaker trips, regardless of clock advance")
             .isEqualTo(plateauCount);
@@ -177,23 +177,23 @@ class ClusterTopologyManagerCircuitBreakerTest {
                                             3,
                                             5),
                                2L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
 
         // Trip the breaker by repeated expirations.
         for (var attempt = 0;attempt <6;attempt++) {
             clockMs.addAndGet(slotTimeoutMs + (5 * 60 * 1000L));
-            ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         }
         var plateauCount = lifecycleManager.provisionCount.get();
         clockMs.addAndGet(60 * 60 * 1000L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         assertThat(lifecycleManager.provisionCount.get())
             .as("breaker must be tripped before reset")
             .isEqualTo(plateauCount);
 
         // Operator-driven reset: setDesiredSize re-opens the gate.
         ctm.setDesiredSize(5).await();
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         assertThat(lifecycleManager.provisionCount.get())
             .as("provisioning must resume after setDesiredSize reset")
             .isGreaterThan(plateauCount);
@@ -217,16 +217,16 @@ class ClusterTopologyManagerCircuitBreakerTest {
                                             3,
                                             5),
                                2L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
 
         // Trip the breaker.
         for (var attempt = 0;attempt <6;attempt++) {
             clockMs.addAndGet(slotTimeoutMs + (5 * 60 * 1000L));
-            ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         }
         var plateauCount = lifecycleManager.provisionCount.get();
         clockMs.addAndGet(60 * 60 * 1000L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         assertThat(lifecycleManager.provisionCount.get()).isEqualTo(plateauCount);
 
         // Replacement node arrives: snapshot reflects a successful join, then onNodeReady fires.
@@ -243,7 +243,7 @@ class ClusterTopologyManagerCircuitBreakerTest {
                                             4,
                                             5),
                                4L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         assertThat(lifecycleManager.provisionCount.get())
             .as("provisioning must resume after successful node arrival")
             .isGreaterThan(plateauCount);
@@ -266,18 +266,18 @@ class ClusterTopologyManagerCircuitBreakerTest {
                                             3,
                                             5),
                                2L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         var afterWave1 = lifecycleManager.provisionCount.get();
         assertThat(afterWave1).isGreaterThanOrEqualTo(1);
 
         // Expire slots — failure recorded, backoff window starts (>= 30 s for first failure).
         clockMs.addAndGet(slotTimeoutMs + 1L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         var afterFirstExpire = lifecycleManager.provisionCount.get();
 
         // Within backoff (advance only 5 s — well below 30 s base backoff).
         clockMs.addAndGet(5000L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         assertThat(lifecycleManager.provisionCount.get())
             .as("deficit reconciles WITHIN backoff window must not dispatch new provisions")
             .isEqualTo(afterFirstExpire);

@@ -21,7 +21,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -254,7 +254,7 @@ class DHTRebalancerTest {
 
             storage.put(key("item"), value("data")).await();
 
-            listener.onNodeRemoved(new TopologyChangeNotification.NodeRemoved(PEER_B, List.of(LOCAL, PEER_A)));
+            listener.onNodeRemoved(new MembershipDecision.NodeRemoved(PEER_B, List.of(LOCAL, PEER_A)));
 
             assertThat(ring.nodes()).doesNotContain(PEER_B);
             assertThat(ring.nodes()).containsExactlyInAnyOrder(LOCAL, PEER_A);

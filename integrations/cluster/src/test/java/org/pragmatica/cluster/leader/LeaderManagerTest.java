@@ -6,9 +6,9 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
+import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
+import org.pragmatica.consensus.topology.TransportObservation.SelfShutdown;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -25,8 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.consensus.leader.LeaderNotification.leaderChange;
-import static org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded;
-import static org.pragmatica.consensus.topology.TopologyChangeNotification.nodeRemoved;
+import static org.pragmatica.consensus.topology.TransportObservation.ObservationSource.QUIC;
+import static org.pragmatica.consensus.topology.TransportObservation.peerDisconnected;
+import static org.pragmatica.consensus.topology.TransportObservation.peerJoined;
 
 class LeaderManagerTest {
     record Watcher<T>(List<T> collected) {
@@ -52,9 +53,9 @@ class LeaderManagerTest {
 
             // LeaderManager uses @MessageReceiver annotations, routes added manually
             var leaderManager = LeaderManager.leaderManager(self, router);
-            router.addRoute(NodeAdded.class, leaderManager::nodeAdded);
-            router.addRoute(NodeRemoved.class, leaderManager::nodeRemoved);
-            router.addRoute(NodeDown.class, leaderManager::nodeDown);
+            router.addRoute(PeerJoined.class, leaderManager::peerJoined);
+            router.addRoute(PeerDisconnected.class, leaderManager::peerDisconnected);
+            router.addRoute(SelfShutdown.class, leaderManager::selfShutdown);
             router.addRoute(QuorumStateNotification.class, leaderManager::watchQuorumState);
         }
 
@@ -123,9 +124,9 @@ class LeaderManagerTest {
             };
 
             leaderManager = LeaderManager.leaderManager(self, router, proposalHandler);
-            router.addRoute(NodeAdded.class, leaderManager::nodeAdded);
-            router.addRoute(NodeRemoved.class, leaderManager::nodeRemoved);
-            router.addRoute(NodeDown.class, leaderManager::nodeDown);
+            router.addRoute(PeerJoined.class, leaderManager::peerJoined);
+            router.addRoute(PeerDisconnected.class, leaderManager::peerDisconnected);
+            router.addRoute(SelfShutdown.class, leaderManager::selfShutdown);
             router.addRoute(QuorumStateNotification.class, leaderManager::watchQuorumState);
         }
 
@@ -140,7 +141,7 @@ class LeaderManagerTest {
                 return Promise.unitPromise();
             };
             var localLeaderManager = LeaderManager.leaderManager(minNode, localRouter, handler);
-            localRouter.addRoute(NodeAdded.class, localLeaderManager::nodeAdded);
+            localRouter.addRoute(PeerJoined.class, localLeaderManager::peerJoined);
             localRouter.addRoute(QuorumStateNotification.class, localLeaderManager::watchQuorumState);
 
             // Add nodes
@@ -148,7 +149,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                localRouter.route(nodeAdded(nodeId, topology));
+                localRouter.route(peerJoined(nodeId, topology, QUIC));
             }
 
             // Establish quorum (sets active=true but does NOT auto-trigger initial election)
@@ -175,7 +176,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(nodeAdded(nodeId, topology));
+                router.route(peerJoined(nodeId, topology, QUIC));
             }
             router.route(QuorumStateNotification.established());
 
@@ -203,7 +204,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(nodeAdded(nodeId, topology));
+                router.route(peerJoined(nodeId, topology, QUIC));
             }
             router.route(QuorumStateNotification.established());
 
@@ -235,14 +236,14 @@ class LeaderManagerTest {
             };
             // self=node-b (rank 1), expectedCluster=[node-a, node-b, node-c]
             var localManager = LeaderManager.leaderManager(self, localRouter, handler, nodes);
-            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(PeerJoined.class, localManager::peerJoined);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
 
             // Add nodes to topology
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(nodeAdded(nodeId, list.stream().sorted().toList()));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
             }
 
             // Establish quorum (sets active=true)
@@ -272,14 +273,14 @@ class LeaderManagerTest {
                 return Promise.unitPromise();
             };
             var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes);
-            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(PeerJoined.class, localManager::peerJoined);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
 
             // Build topology
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(nodeAdded(nodeId, list.stream().sorted().toList()));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
             }
 
             // Simulate rapid quorum flapping: ESTABLISHED -> DISAPPEARED -> ESTABLISHED -> DISAPPEARED -> ESTABLISHED
@@ -315,14 +316,14 @@ class LeaderManagerTest {
                 return Promise.unitPromise();
             };
             var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes);
-            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(PeerJoined.class, localManager::peerJoined);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
 
             // Build topology
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(nodeAdded(nodeId, list.stream().sorted().toList()));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
             }
 
             // Establish quorum and trigger election (simulating AetherNode)
@@ -371,14 +372,14 @@ class LeaderManagerTest {
             };
             // self = min node, so WOULD submit a proposal if hasEverHadLeader=false
             var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes);
-            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(PeerJoined.class, localManager::peerJoined);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
 
             // Build topology
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(nodeAdded(nodeId, list.stream().sorted().toList()));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
             }
 
             // Establish quorum (sets active=true)
@@ -417,12 +418,12 @@ class LeaderManagerTest {
             };
             localRouter.addRoute(LeaderChange.class, localWatcher::watch);
             var localManager = LeaderManager.leaderManager(minNode, localRouter, handler);
-            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(PeerJoined.class, localManager::peerJoined);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
 
             // Topology only contains [a, b] — NOT node-c
-            localRouter.route(nodeAdded(minNode, List.of(minNode)));
-            localRouter.route(nodeAdded(self, List.of(minNode, self)));
+            localRouter.route(peerJoined(minNode, List.of(minNode), QUIC));
+            localRouter.route(peerJoined(self, List.of(minNode, self), QUIC));
             localRouter.route(QuorumStateNotification.established());
 
             // Stale commit: leader = node-c which is NOT in our topology
@@ -450,14 +451,14 @@ class LeaderManagerTest {
             };
             localRouter.addRoute(LeaderChange.class, localWatcher::watch);
             var localManager = LeaderManager.leaderManager(follower, localRouter, handler, nodes);
-            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
-            localRouter.addRoute(NodeRemoved.class, localManager::nodeRemoved);
+            localRouter.addRoute(PeerJoined.class, localManager::peerJoined);
+            localRouter.addRoute(PeerDisconnected.class, localManager::peerDisconnected);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
 
             var list = new ArrayList<NodeId>();
             for (var n : nodes) {
                 list.add(n);
-                localRouter.route(nodeAdded(n, list.stream().sorted().toList()));
+                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC));
             }
             localRouter.route(QuorumStateNotification.established());
 
@@ -469,7 +470,7 @@ class LeaderManagerTest {
 
             // Leader (node-a) removed
             var survivors = List.of(follower, nodes.getLast());
-            localRouter.route(nodeRemoved(leaderNode, survivors));
+            localRouter.route(peerDisconnected(leaderNode, survivors, QUIC));
 
             // Wait for re-election: leader cleared, no-leader notification emitted, follower
             // submits a proposal. Path: Led → ReElecting (NodeGone of leader) → propose. The
@@ -495,12 +496,12 @@ class LeaderManagerTest {
             var localRouter = MessageRouter.mutable();
             LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> Promise.unitPromise();
             var localManager = LeaderManager.leaderManager(self, localRouter, handler);
-            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(PeerJoined.class, localManager::peerJoined);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
 
             localManager.stop();
 
-            localRouter.route(nodeAdded(self, List.of(self)));
+            localRouter.route(peerJoined(self, List.of(self), QUIC));
             localRouter.route(QuorumStateNotification.established());
             localManager.onLeaderCommitted(self);
 
@@ -529,13 +530,13 @@ class LeaderManagerTest {
             var consensusReady = new java.util.concurrent.atomic.AtomicBoolean(true);
             var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes,
                                                            () -> 0L, consensusReady::get);
-            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(PeerJoined.class, localManager::peerJoined);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
 
             var list = new ArrayList<NodeId>();
             for (var n : nodes) {
                 list.add(n);
-                localRouter.route(nodeAdded(n, list.stream().sorted().toList()));
+                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC));
             }
 
             // Establish quorum — QuorumWaiting.onEntry queries the supplier (true) and
@@ -557,7 +558,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(nodeAdded(nodeId, topology));
+                router.route(peerJoined(nodeId, topology, QUIC));
             }
             router.route(QuorumStateNotification.established());
 
@@ -586,7 +587,7 @@ class LeaderManagerTest {
                              .sorted()
                              .toList();
 
-        router.route(nodeAdded(nodeId, topology));
+        router.route(peerJoined(nodeId, topology, QUIC));
     }
 
     private void sendNodeRemoved(MessageRouter router, NodeId nodeId) {
@@ -595,7 +596,7 @@ class LeaderManagerTest {
                             .sorted()
                             .toList();
 
-        router.route(nodeRemoved(nodeId, topology));
+        router.route(peerDisconnected(nodeId, topology, QUIC));
     }
 
     private List<LeaderNotification> simulateClusterStart(MessageRouter router,
@@ -616,7 +617,7 @@ class LeaderManagerTest {
                 router.route(QuorumStateNotification.established());
             }
 
-            router.route(nodeAdded(nodeId, topology));
+            router.route(peerJoined(nodeId, topology, QUIC));
         }
 
         return expected;

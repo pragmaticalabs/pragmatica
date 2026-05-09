@@ -38,7 +38,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -309,7 +309,7 @@ class ClusterDeploymentManagerTest {
         // Add third node with ON_DUTY lifecycle
         kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(node3),
                     AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
-        manager.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
+        manager.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
 
         // Should allocate 1 more instance to reach desired 3
         assertThat(filterNodeArtifactPuts()).hasSize(1);
@@ -329,7 +329,7 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         // Remove node3 - this removes slice state for node3 and triggers reconciliation
-        manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node3, List.of(self, node2)));
+        manager.onMembershipDecision(MembershipDecision.nodeRemoved(node3, List.of(self, node2)));
 
         // NodeArtifactKey removes for node3
         var naRemoves = filterNodeArtifactRemoves();
@@ -710,7 +710,7 @@ class ClusterDeploymentManagerTest {
             kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId),
                         AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
         }
-        restoredManager.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
+        restoredManager.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
 
         clusterNode.appliedCommands.clear();
 
@@ -794,7 +794,7 @@ class ClusterDeploymentManagerTest {
             kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId),
                         AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
         }
-        mgr.onTopologyChange(TopologyChangeNotification.nodeAdded(nodes[nodes.length - 1], topology));
+        mgr.onMembershipDecision(MembershipDecision.nodeJoined(nodes[nodes.length - 1], topology));
     }
 
     @SuppressWarnings("unchecked")

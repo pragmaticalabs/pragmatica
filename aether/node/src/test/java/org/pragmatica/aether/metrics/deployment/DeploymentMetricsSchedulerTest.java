@@ -14,7 +14,7 @@ import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetrics
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -59,7 +59,7 @@ class DeploymentMetricsSchedulerTest {
     @Test
     void scheduler_starts_pinging_when_becoming_leader() {
         // Setup topology
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(node2, List.of(self, node2)));
 
         // Become leader
         scheduler.activate();
@@ -76,7 +76,7 @@ class DeploymentMetricsSchedulerTest {
     @Test
     void scheduler_stops_pinging_when_losing_leadership() {
         // Setup topology and become leader
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(node2, List.of(self, node2)));
         scheduler.activate();
 
         // Wait for initial ping
@@ -95,7 +95,7 @@ class DeploymentMetricsSchedulerTest {
     @Test
     void scheduler_does_not_ping_before_becoming_leader() {
         // Setup topology but don't become leader
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(node2, List.of(self, node2)));
 
         sleep(100);
 
@@ -110,8 +110,8 @@ class DeploymentMetricsSchedulerTest {
         scheduler.activate();
 
         // Add nodes via topology changes
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(node2, List.of(self, node2)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
 
         // Wait for pings
         waitUntil(() -> network.sentMessages.size() >= 2, 500);
@@ -127,8 +127,8 @@ class DeploymentMetricsSchedulerTest {
     @Test
     void scheduler_removes_node_from_topology_on_nodeRemoved() {
         // Setup: leader with 2 other nodes
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(node2, List.of(self, node2)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(node3, List.of(self, node2, node3)));
         scheduler.activate();
 
         // Wait for initial pings
@@ -138,7 +138,7 @@ class DeploymentMetricsSchedulerTest {
         network.sentMessages.clear();
 
         // Remove node3
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeRemoved(node3, List.of(self, node2)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeRemoved(node3, List.of(self, node2)));
 
         // Wait for next ping round
         waitUntil(() -> !network.sentMessages.isEmpty(), 500);
@@ -154,7 +154,7 @@ class DeploymentMetricsSchedulerTest {
     @Test
     void scheduler_does_not_ping_self() {
         // Become leader with only self in topology
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(self, List.of(self)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(self, List.of(self)));
         scheduler.activate();
 
         sleep(100);
@@ -179,7 +179,7 @@ class DeploymentMetricsSchedulerTest {
     @Test
     void scheduler_restarts_pinging_after_regaining_leadership() {
         // Setup topology
-        scheduler.onTopologyChange(TopologyChangeNotification.nodeAdded(node2, List.of(self, node2)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(node2, List.of(self, node2)));
 
         // Become leader
         scheduler.activate();
@@ -317,7 +317,7 @@ class DeploymentMetricsSchedulerTest {
         public void onDeploymentMetricsPong(org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPong pong) {}
 
         @Override
-        public void onTopologyChange(TopologyChangeNotification topologyChange) {}
+        public void onMembershipDecision(MembershipDecision decision) {}
 
         @Override
         public Map<String, List<org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsEntry>> collectLocalEntries() {

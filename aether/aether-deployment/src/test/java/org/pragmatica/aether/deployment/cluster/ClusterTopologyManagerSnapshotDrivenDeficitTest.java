@@ -149,7 +149,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                1L);
         ctm.activate();
         // Topology change triggers reconcile; snapshot surplus drives termination.
-        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
         assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
     }
 
@@ -194,7 +194,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             Set.of(SELF)),
                                1L);
         ctm.activate();
-        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
         assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
@@ -208,7 +208,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             Set.of(PEER_A, PEER_B)),
                                1L);
         ctm.activate();
-        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
         assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
         assertThat(lifecycleManager.terminatedNodeIds()).isSubsetOf(Set.of(PEER_A, PEER_B));
     }
@@ -224,7 +224,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             Set.of()),
                                1L);
         ctm.activate();
-        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
         assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
@@ -241,7 +241,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             Set.of(PEER_B)),
                                1L);
         ctm.activate();
-        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
         assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
         assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_B);
     }
@@ -257,7 +257,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             Set.of(PEER_A)),
                                1L);
         ctm.activate();
-        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
         assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
@@ -287,7 +287,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             7,
                                             Set.of(PEER_A, PEER_B)),
                                2L);
-        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
         assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Reconciling.class);
         var reconciling = (NodeReconcilerState.Reconciling) ctm.reconcilerState();
         assertThat(reconciling.targetSize()).isEqualTo(7);
@@ -303,7 +303,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                3L);
 
         // Step 4: next reconcile trigger (topology event, safety-net poll, or onNodeReady).
-        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded(PEER_B, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_B, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
 
         // The stale-target guard transitions Reconciling(target=7) → Converged and re-dispatches
         // handleSurplus, which terminates the CTM-provisioned surplus (PEER_A and/or PEER_B).
@@ -328,7 +328,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             5),
                                2L);
         // External trigger (topology event in production) drives reconcile
-        ctm.onTopologyChange(org.pragmatica.consensus.topology.TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeRemoved(PEER_C, List.of()));
         assertThat(lifecycleManager.provisionCount.get()).isGreaterThanOrEqualTo(1);
     }
 

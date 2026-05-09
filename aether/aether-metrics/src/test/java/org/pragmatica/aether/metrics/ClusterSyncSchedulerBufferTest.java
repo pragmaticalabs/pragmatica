@@ -10,7 +10,7 @@ import org.pragmatica.cluster.metrics.HealthHintWire;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
@@ -64,7 +64,7 @@ class ClusterSyncSchedulerBufferTest {
         var scheduler = newScheduler();
         // Topology has SELF + 1 peer (PEER_A); cap = (topologySize - 1) * 4 = 4,
         // but MIN_BUFFER_CAP = 8, so effective cap is 8.
-        scheduler.onTopologyChange(new TopologyChangeNotification.NodeAdded(PEER_A, List.of(SELF, PEER_A)));
+        scheduler.onMembershipDecision(new MembershipDecision.NodeJoined(PEER_A, List.of(SELF, PEER_A)));
 
         for (int i = 0; i < 12; i++) {
             scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, i, 0L));

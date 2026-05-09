@@ -118,10 +118,13 @@ class PublisherFactoryTest {
         public void onInvokeResponse(InvocationMessage.InvokeResponse response) {}
 
         @Override
-        public void onNodeRemoved(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved event) {}
+        public void onNodeRemoved(org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved event) {}
 
         @Override
-        public void onNodeDown(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown event) {}
+        public void onNodeDecommissioned(org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned event) {}
+
+        @Override
+        public void onSelfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown event) {}
 
         @Override
         public Promise<Unit> stop() {

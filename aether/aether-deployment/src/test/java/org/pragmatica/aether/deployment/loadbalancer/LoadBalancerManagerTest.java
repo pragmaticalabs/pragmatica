@@ -23,7 +23,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -85,8 +85,8 @@ class LoadBalancerManagerTest {
         }
 
         @Test
-        void dormantState_onTopologyChange_doesNothing() {
-            manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node1, List.of()));
+        void dormantState_onMembershipDecision_doesNothing() {
+            manager.onMembershipDecision(MembershipDecision.nodeRemoved(node1, List.of()));
 
             assertThat(provider.nodeRemovals).isEmpty();
         }
@@ -160,7 +160,7 @@ class LoadBalancerManagerTest {
             provider.clear();
 
             // Remove node1
-            manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node1, List.of(node2)));
+            manager.onMembershipDecision(MembershipDecision.nodeRemoved(node1, List.of(node2)));
 
             assertThat(provider.nodeRemovals).containsExactly("10.0.0.1");
         }

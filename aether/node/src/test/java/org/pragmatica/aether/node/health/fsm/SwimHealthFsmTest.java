@@ -246,9 +246,9 @@ class SwimHealthFsmTest {
         @Test
         void follower_running_peerFaultyIsCurrentLeader_doesNotRouteDisconnect() throws InterruptedException {
             // RC1-9 audit Step 3: the follower-for-dead-leader `routeDisconnect` branch
-            // is gone. Eviction now flows post-consensus via TopologyChangeNotification.
-            // NodeRemoved after the leader (re-elected) writes DECOMMISSIONED. The FAULTY
-            // observation still drives the leader-side aggregation path (emitLeaderHint
+            // is gone. Eviction now flows post-consensus via MembershipDecision.NodeRemoved
+            // after the leader (re-elected) writes DECOMMISSIONED. The FAULTY observation
+            // still drives the leader-side aggregation path (emitLeaderHint
             // + bufferHealthObservation) so re-election can complete.
             buildHarness(false); // follower
             harness.dispatch(new SwimHealthEvents.StartRequested());

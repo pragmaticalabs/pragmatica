@@ -19,8 +19,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
@@ -221,7 +221,7 @@ class ClusterTopologyManagerPhaseAwareTest {
             // notifications are flap and must be ignored. After the stability window elapses
             // (without any further edge), provisioning must dispatch.
             for (var i = 0; i < 10; i++) {
-                ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+                ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
                 Thread.sleep(20L);
             }
             Thread.sleep(STABILITY_WINDOW.millis() + 400L);

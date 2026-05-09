@@ -17,8 +17,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
@@ -132,7 +132,7 @@ class ClusterTopologyManagerProvisioningSlotTimeoutTest {
                                             5),
                                2L);
         var dispatchTimeMs = System.currentTimeMillis();
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Reconciling.class);
         var reconciling = (NodeReconcilerState.Reconciling) ctm.reconcilerState();
         assertThat(reconciling.inFlight()).hasSize(lifecycleManager.provisionCount.get());
@@ -157,7 +157,7 @@ class ClusterTopologyManagerProvisioningSlotTimeoutTest {
                                             3,
                                             5),
                                2L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         var firstWaveCount = lifecycleManager.provisionCount.get();
         assertThat(firstWaveCount).isGreaterThanOrEqualTo(1);
         Thread.sleep(200L);
@@ -168,7 +168,7 @@ class ClusterTopologyManagerProvisioningSlotTimeoutTest {
                                             5),
                                3L);
         // Next reconcile tick expires the slots and dispatches a top-up wave.
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_D));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         assertThat(lifecycleManager.provisionCount.get()).isGreaterThan(firstWaveCount);
         var afterTopup = (NodeReconcilerState.Reconciling) ctm.reconcilerState();
         assertThat(afterTopup.inFlight()).isNotEmpty();
@@ -193,7 +193,7 @@ class ClusterTopologyManagerProvisioningSlotTimeoutTest {
                                             3,
                                             5),
                                2L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeDown(PEER_C));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         var firstWaveCount = lifecycleManager.provisionCount.get();
         assertThat(firstWaveCount).isGreaterThanOrEqualTo(1);
         snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
@@ -201,7 +201,7 @@ class ClusterTopologyManagerProvisioningSlotTimeoutTest {
                                             5,
                                             5),
                                3L);
-        ctm.onTopologyChange(TopologyChangeNotification.nodeAdded(PEER_C, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_C, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
         assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
         assertThat(lifecycleManager.provisionCount.get()).isEqualTo(firstWaveCount);
     }

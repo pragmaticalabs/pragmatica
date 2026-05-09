@@ -99,7 +99,7 @@ class CoreSwimReconnectTest {
         @Test
         void singleFaulty_doesNotRouteDisconnect() throws InterruptedException {
             // RC1-9 audit Step 3: SWIM FAULTY no longer routes a local DisconnectNode.
-            // Eviction now flows post-consensus via TopologyChangeNotification.NodeRemoved
+            // Eviction now flows post-consensus via MembershipDecision.NodeRemoved
             // after the leader's HealthReconciler writes DECOMMISSIONED.
             var faultyMember = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
                                                      new InetSocketAddress("127.0.0.2", 9101));

@@ -31,6 +31,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -53,7 +54,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 /// Verifies that `QuicClusterNetwork` invokes the injected `QuicDisconnectListener`
 /// on every peer-removal view-change, alongside the existing
-/// `TopologyChangeNotification.nodeRemoved` emission. Higher layers adapt the
+/// `TransportObservation.PeerDisconnected` emission. Higher layers adapt the
 /// callback into `HealthSignal.QuicDisconnect` for the leader's HealthReconciler.
 @Timeout(10)
 class QuicClusterNetworkHintEmissionTest {
@@ -254,18 +255,19 @@ class QuicClusterNetworkHintEmissionTest {
     /// .unregisterPeer/markDeparted` enforces this; this test additionally confirms the
     /// runtime path doesn't accidentally invoke a no-op shim.
     @Test
-    void quicTransport_remove_routesNodeRemovedNotification() {
-        // RC1-9 audit Step 2 reverted: QUIC re-emits `TopologyChangeNotification.NodeRemoved`
-        // synchronously on transport REMOVE. The audit's plan to make `TopologyObserver`
-        // the SOLE emitter created a cold-boot catch-22 (LeaderElectionContext.currentTopology
-        // depends on these events; snapshot-driven equivalents only fire post-leader-elected).
-        // TopologyObserver.publishMembershipDeltas still fires its own NodeRemoved once the
-        // snapshot re-projects; consumers may see two emissions per departure but each is
-        // idempotent.
-        var removed = new CopyOnWriteArrayList<NodeId>();
+    void quicTransport_remove_routesPeerDisconnectedObservation() {
+        // RC1-9 audit Step 2 reverted: QUIC re-emits a `TransportObservation.PeerDisconnected`
+        // synchronously on transport REMOVE (post-typed-streams migration; previously this
+        // was `TopologyChangeNotification.NodeRemoved`). The audit's plan to make
+        // `TopologyObserver` the SOLE emitter created a cold-boot catch-22
+        // (LeaderElectionContext.currentTopology depends on these events; snapshot-driven
+        // equivalents only fire post-leader-elected). TopologyObserver still publishes its
+        // own decision once the snapshot re-projects on `MembershipDecision`; consumers may
+        // see one transport-level + one decision-level emission per departure, each idempotent.
+        var disconnected = new CopyOnWriteArrayList<NodeId>();
         var router = MessageRouter.mutable();
-        router.addRoute(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved.class,
-                        n -> removed.add(n.nodeId()));
+        router.addRoute(TransportObservation.PeerDisconnected.class,
+                        n -> disconnected.add(n.nodeId()));
 
         var network = createNetworkWithListener(NodeId.randomNodeId(),
                                                  List.of(),
@@ -275,8 +277,8 @@ class QuicClusterNetworkHintEmissionTest {
         var missing = new NodeId("departed-peer");
         network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
 
-        assertThat(removed)
-            .as("REMOVE emits an informational NodeRemoved notification (advisory, not authoritative)")
+        assertThat(disconnected)
+            .as("REMOVE emits an informational PeerDisconnected observation (advisory, not authoritative)")
             .containsExactly(missing);
     }
 

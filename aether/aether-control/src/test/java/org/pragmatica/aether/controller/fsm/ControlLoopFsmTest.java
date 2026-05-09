@@ -34,7 +34,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -306,7 +306,7 @@ class ControlLoopFsmTest {
         @Override public Map<String, Double> metricsFor(NodeId nodeId) { return Map.of(); }
         @Override public Map<NodeId, List<MetricsSnapshot>> historicalMetrics() { return Map.of(); }
         @Override public void removeNode(NodeId nodeId) {}
-        @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {}
+        @Override public void onMembershipDecision(MembershipDecision decision) {}
         @Override public void onClusterSyncPing(ClusterSyncPing ping) {}
         @Override public void onClusterSyncPong(ClusterSyncPong pong) {}
         @Override public long observedRabiaTerm() { return 0L; }

@@ -371,10 +371,13 @@ class ScheduledTaskManagerTest {
         public void onInvokeResponse(org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse response) {}
 
         @Override
-        public void onNodeRemoved(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved event) {}
+        public void onNodeRemoved(org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved event) {}
 
         @Override
-        public void onNodeDown(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown event) {}
+        public void onNodeDecommissioned(org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned event) {}
+
+        @Override
+        public void onSelfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown event) {}
 
         @Override
         public Promise<Unit> stop() {
@@ -431,9 +434,11 @@ class ScheduledTaskManagerTest {
         @Override public void onLeaderCommitted(NodeId leader) {}
         @Override public void triggerElection() {}
         @Override public void stop() {}
-        @Override public void nodeAdded(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded n) {}
-        @Override public void nodeRemoved(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved n) {}
-        @Override public void nodeDown(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown n) {}
+        @Override public void peerJoined(org.pragmatica.consensus.topology.TransportObservation.PeerJoined p) {}
+        @Override public void peerDisconnected(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected p) {}
+        @Override public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
+        @Override public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
+        @Override public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
         @Override public void watchQuorumState(QuorumStateNotification q) {}
     }
 }

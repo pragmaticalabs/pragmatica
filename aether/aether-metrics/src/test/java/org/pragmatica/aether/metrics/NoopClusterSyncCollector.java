@@ -12,7 +12,7 @@ import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Option;
 
 import java.util.List;
@@ -31,7 +31,7 @@ public class NoopClusterSyncCollector implements ClusterSyncCollector {
     @Override public Map<String, Double> metricsFor(NodeId nodeId) {return Map.of();}
     @Override public Map<NodeId, List<MetricsSnapshot>> historicalMetrics() {return Map.of();}
     @Override public void removeNode(NodeId nodeId) {}
-    @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {}
+    @Override public void onMembershipDecision(MembershipDecision decision) {}
     @Override public void onClusterSyncPing(ClusterSyncPing ping) {}
     @Override public void onClusterSyncPong(ClusterSyncPong pong) {}
     @Override public long observedRabiaTerm() {return 0L;}

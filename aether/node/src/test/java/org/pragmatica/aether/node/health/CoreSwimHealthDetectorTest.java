@@ -98,7 +98,7 @@ class CoreSwimHealthDetectorTest {
         @Test
         void onMemberFaulty_doesNotRouteDisconnectNode() throws InterruptedException {
             // RC1-9 audit Step 3: SWIM FAULTY no longer routes a local DisconnectNode.
-            // QUIC eviction flows post-consensus via TopologyChangeNotification.NodeRemoved
+            // QUIC eviction flows post-consensus via MembershipDecision.NodeRemoved
             // after the leader's HealthReconciler writes DECOMMISSIONED and TopologyObserver
             // fires the membership delta. The FAULTY observation still drives the
             // leader-side aggregation path (emitLeaderHint + bufferHealthObservation).
