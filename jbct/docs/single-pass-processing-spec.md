@@ -207,7 +207,6 @@ Configuration parameters:
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `skip` | boolean | `false` | Skip the entire goal. |
-| `sizeLimit` | long | `1048576` | Per-file byte size above which both format and lint are skipped. |
 | `failBeforeFormat` | boolean | `false` | If true, lint errors at fail-threshold prevent the format write for that file. |
 | `lintFailureLevel` | enum | `ERROR` | Lint diagnostic level that triggers build failure (consistent with current `LintMojo`). |
 | `failOnWarning` | boolean | `false` | Promote warnings to build failures (consistent with current Mojos). |
@@ -285,7 +284,8 @@ The new goal inherits the existing plugin's `<configuration>` shape and adds the
 ### 7.2 Skip Semantics
 
 - `skip = true` → entire goal skipped.
-- File-size limit hit → both format and lint skipped *for that file* (per user direction; uniform skip behavior, not per-goal).
+- `[files] maxFileSize` exceeded → file is filtered out by `FileCollector` upstream (single source of truth in `jbct.toml`; not duplicated at the Mojo layer).
+- `[files] excludes` glob match → file is filtered out by `FileCollector` upstream. Preferred mechanism for excluding generated code (e.g. `**/PgSqlParser.java`, `**/jbct/parser/Java25Parser.java`) since intent is explicit and immune to size changes from upstream optimizations.
 - Parse failure → both format and lint skipped for that file; parse error emitted as a diagnostic.
 
 ### 7.3 Per-Module Override
@@ -309,13 +309,22 @@ No public-API breaking changes.
 
 ### 9.1 Generated Parsers (PgSqlParser, Java25Parser)
 
-Both regenerated parsers exceed the 1 MB size limit:
-- `PgSqlParser.java`: ~4.5 MB
-- `Java25Parser.java`: ~1.6 MB
+The two regenerated parsers (`PgSqlParser.java` ~5 MB, `Java25Parser.java` ~2 MB) are excluded explicitly via `[files] excludes` in the root `jbct.toml`:
 
-Today, format skips them (size limit) and lint processes them. Under single-pass behavior with uniform size-limit skip, **both are skipped entirely**. This is the user's stated preference and matches the spirit of "generated code is exempt from JBCT discipline."
+```toml
+[files]
+excludes = [
+    ...,
+    "**/aether/pg/parser/PgSqlParser.java",
+    "**/jbct/parser/Java25Parser.java"
+]
+```
 
-If a future enhancement wants lint coverage on generated code, a `@Generated`-marker recognition flow is the natural place to add it; orthogonal to this spec.
+Empirical evidence (5/2026 measurement): if these files are *not* excluded and the size guard is raised to admit them, JBCT format reshapes ~95K lines and lint emits 12K+ diagnostics — strong noise, no signal. Generated code is exempt from JBCT discipline by design.
+
+Excluding by path (rather than relying on the size limit) is intentional: a future peglib optimization that shrinks the generated parser below the size threshold would otherwise silently pull it into linting.
+
+If a future enhancement wants targeted lint coverage on generated code, a `@Generated`-marker recognition flow is the natural place to add it; orthogonal to this spec.
 
 ### 9.2 Parse Failures
 
@@ -368,7 +377,7 @@ Exit criteria: `mvn jbct:process` works on a sample module; per-file parse count
 - Run a full reactor build; confirm no behavior regressions in any module.
 - Document the change in `CHANGELOG.md` under `[1.0.0-rc1]`.
 
-Exit criteria: `mvn install` (full reactor) green; no new lint/format diagnostics introduced; build wall-clock time measurably reduced (target: ≥ 30% reduction in `process-sources` phase wall-clock for medium-sized modules).
+Exit criteria: `mvn install` (full reactor) green; no new lint/format diagnostics introduced; behavior unchanged from `format` + `lint` separately. Wall-clock improvement is incidental — empirical measurement (5/2026) shows the savings are dominated by Maven plugin-resolution and JVM startup overhead at single-module scale (~0% measurable difference on a 64-file module). The architectural value is the cleanup itself: constant memory, one parse per file, simpler mental model, and a foundation that compounds with the upstream peglib parsing-performance work landing alongside this change.
 
 ### Phase 4 — Documentation
 
