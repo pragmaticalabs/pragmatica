@@ -62,6 +62,12 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     private final List<Consumer<SwimObservation>> pendingObservationListeners = new CopyOnWriteArrayList<>();
 
+    /// Transport-observation emitters pending wiring into the underlying [`SwimProtocol`]
+    /// once it is created in `seedAndWrap`. Bridges SWIM's protocol-level FAULTY edge
+    /// (the only edge SWIM emits to the cluster-wide `TransportObservation` stream) to
+    /// the cluster `MessageRouter`. Wired by the Aether node assembly.
+    private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
+
     private CoreSwimHealthDetector(SwimHealthContext context, SwimConfig swimConfig) {
         this.context = context;
         this.swimConfig = swimConfig;
@@ -308,6 +314,15 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         protocol().onPresent(p -> p.addObservationListener(consumer));
     }
 
+    /// Register a cluster-wide [`org.pragmatica.consensus.topology.TransportObservation`] emitter.
+    /// Invoked from `SwimProtocol.emitFaultyOrUnknown` whenever a peer transitions to FAULTY,
+    /// producing `TransportObservation.PeerObservedFaulty` for the cluster `MessageRouter`.
+    /// Buffered until the underlying [`SwimProtocol`] is constructed (start path).
+    @Contract public void addTransportObservationEmitter(SwimProtocol.TransportObservationEmitter emitter) {
+        pendingTransportObservationEmitters.add(emitter);
+        protocol().onPresent(p -> p.addTransportObservationEmitter(emitter));
+    }
+
     public Option<HealthSnapshot> currentHealth() {
         return protocol().map(SwimProtocol::currentHealth);
     }
@@ -354,6 +369,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                        GossipEncryptor encryptor) {
         seedMembers(protocol);
         pendingObservationListeners.forEach(protocol::addObservationListener);
+        pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
         return new SwimHealthEvents.ProtocolReady(protocol, transport, encryptor);
     }
 

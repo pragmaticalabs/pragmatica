@@ -17,10 +17,11 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
@@ -46,12 +47,16 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
 
 
 @SuppressWarnings("JBCT-RET-01") public interface LoadBalancerManager extends DelegatedComponent {
-    @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
+    @MessageReceiver void onMembershipDecision(MembershipDecision decision);
+    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+    @MessageReceiver void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
     @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
     @MessageReceiver void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
 
     sealed interface LoadBalancerManagerState {
-        default void onTopologyChange(TopologyChangeNotification topologyChange) {}
+        default void onMembershipDecision(MembershipDecision decision) {}
+
+        default void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {}
 
         default void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {}
 
@@ -70,12 +75,17 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                       ReentrantLock activationLock) implements LoadBalancerManagerState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
-            @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
-                switch (topologyChange){
+            @Override public void onMembershipDecision(MembershipDecision decision) {
+                switch (decision){
                     case NodeRemoved(NodeId removedNode, _) -> handleNodeDeparture(removedNode);
-                    case NodeDown(NodeId downNode, _) -> handleNodeDeparture(downNode);
+                    case NodeDecommissioned(NodeId decommissioned, _) -> handleNodeDeparture(decommissioned);
                     default -> {}
                 }
+            }
+
+            // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+            @Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+                handleNodeDeparture(selfShutdown.nodeId());
             }
 
             @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
@@ -310,8 +320,13 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                 return state.get() instanceof LoadBalancerManagerState.Active;
             }
 
-            @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
-                state.get().onTopologyChange(topologyChange);
+            @Override public void onMembershipDecision(MembershipDecision decision) {
+                state.get().onMembershipDecision(decision);
+            }
+
+            // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+            @Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+                state.get().onSelfShutdown(selfShutdown);
             }
 
             @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {

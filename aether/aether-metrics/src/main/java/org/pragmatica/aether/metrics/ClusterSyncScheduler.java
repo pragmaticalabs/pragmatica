@@ -18,10 +18,11 @@ import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -39,7 +40,7 @@ import java.util.function.Supplier;
 public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservationBuffer {
     int DEFAULT_PING_TIMEOUT_THRESHOLD = 3;
 
-    @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
+    @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
     @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
     @Contract void stop();
     @Contract void recordObservedEpoch(NodeId nodeId, Epoch epoch);
@@ -186,11 +187,11 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
         return context.fsm().current() instanceof ClusterSyncState.Pinging;
     }
 
-    @Override@Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {
-        switch (topologyChange){
-            case NodeAdded(_, List<NodeId> newTopology) -> context.setTopology(newTopology);
+    @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
+        switch (decision){
+            case NodeJoined(_, List<NodeId> newTopology) -> context.setTopology(newTopology);
             case NodeRemoved(NodeId removed, List<NodeId> newTopology) -> handleNodeRemoved(removed, newTopology);
-            default -> {}
+            case NodeDecommissioned(NodeId removed, List<NodeId> newTopology) -> handleNodeRemoved(removed, newTopology);
         }
     }
 

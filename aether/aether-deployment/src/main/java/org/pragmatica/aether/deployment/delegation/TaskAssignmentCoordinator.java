@@ -16,10 +16,10 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.NodeHealth;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -58,7 +58,7 @@ public sealed interface TaskAssignmentCoordinator {
     long FAILURE_COOLDOWN_MS = 30_000L;
 
     @Contract@MessageReceiver void onLeaderChange(LeaderChange leaderChange);
-    @Contract@MessageReceiver void onTopologyChange(TopologyChangeNotification notification);
+    @Contract@MessageReceiver void onMembershipDecision(MembershipDecision decision);
     Map<TaskGroup, TaskAssignmentValue> assignments();
     Promise<Unit> reassign(TaskGroup group, NodeId target);
 
@@ -69,7 +69,7 @@ public sealed interface TaskAssignmentCoordinator {
     record NoOpCoordinator() implements TaskAssignmentCoordinator {
         @Contract@Override public void onLeaderChange(LeaderChange leaderChange) {}
 
-        @Contract@Override public void onTopologyChange(TopologyChangeNotification notification) {}
+        @Contract@Override public void onMembershipDecision(MembershipDecision decision) {}
 
         @Override public Map<TaskGroup, TaskAssignmentValue> assignments() {
             return Map.of();
@@ -387,13 +387,10 @@ public sealed interface TaskAssignmentCoordinator {
             fsm.dispatch(new ClusterFsmEvent.LeaderChange(leaderChange.leaderId(), leaderChange.localNodeIsLeader()));
         }
 
-        @Contract@Override public void onTopologyChange(TopologyChangeNotification notification) {
-            switch (notification){
+        @Contract@Override public void onMembershipDecision(MembershipDecision decision) {
+            switch (decision){
                 case NodeRemoved(NodeId node, var topology) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node, topology));
-                case NodeDown(NodeId node, var topology) -> {
-                    if (topology.isEmpty()) {fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());} else {fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
-                                                                                                                                                     topology));}
-                }
+                case NodeDecommissioned(NodeId node, var topology) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node, topology));
                 default -> {}
             }
         }

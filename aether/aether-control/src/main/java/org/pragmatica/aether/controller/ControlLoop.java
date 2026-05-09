@@ -29,10 +29,11 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -51,7 +52,7 @@ import org.slf4j.LoggerFactory;
 
 
 @Contract public interface ControlLoop extends DelegatedComponent {
-    @MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
+    @MessageReceiver void onMembershipDecision(MembershipDecision decision);
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
     @MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
@@ -140,11 +141,11 @@ import org.slf4j.LoggerFactory;
             return ! (current instanceof ControlLoopState.Dormant || current instanceof ControlLoopState.Stopped);
         }
 
-        @Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
-            switch (topologyChange){
-                case NodeAdded(_, var newTopology) -> ctx.setTopology(newTopology);
+        @Override public void onMembershipDecision(MembershipDecision decision) {
+            switch (decision){
+                case NodeJoined(_, var newTopology) -> ctx.setTopology(newTopology);
                 case NodeRemoved(_, var newTopology) -> ctx.setTopology(newTopology);
-                default -> {}
+                case NodeDecommissioned(_, var newTopology) -> ctx.setTopology(newTopology);
             }
         }
 

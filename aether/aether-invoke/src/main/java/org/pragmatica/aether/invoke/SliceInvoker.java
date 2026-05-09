@@ -18,7 +18,8 @@ import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -97,8 +98,10 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                    int maxRetries);
     <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onInvokeResponse(InvokeResponse response);
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeRemoved(TopologyChangeNotification.NodeRemoved event);
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeDown(TopologyChangeNotification.NodeDown event);
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeRemoved(MembershipDecision.NodeRemoved event);
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event);
+    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+    @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onSelfShutdown(TransportObservation.SelfShutdown event);
     Promise<Unit> stop();
     int pendingCount();
 
@@ -679,11 +682,16 @@ class SliceInvokerImpl implements SliceInvoker {
         handlePendingResponse(pending, response);
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
+    @Override@SuppressWarnings("JBCT-RET-01") public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
         handleNodeDeparture(event.nodeId());
     }
 
-    @Override@SuppressWarnings("JBCT-RET-01") public void onNodeDown(TopologyChangeNotification.NodeDown event) {
+    @Override@SuppressWarnings("JBCT-RET-01") public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {
+        handleNodeDeparture(event.nodeId());
+    }
+
+    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+    @Override@SuppressWarnings("JBCT-RET-01") public void onSelfShutdown(TransportObservation.SelfShutdown event) {
         handleNodeDeparture(event.nodeId());
     }
 

@@ -25,7 +25,8 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Node
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
-import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.TopologyChangeReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
@@ -77,10 +78,11 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -194,8 +196,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                                      tx);
                 case VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) -> handleVersionRoutingRemove(valueRemove,
                                                                                                                                                  tx);
-                case TopologyChangeReceived(TopologyChangeNotification topologyChange) -> handleTopologyChange(topologyChange,
-                                                                                                               tx);
+                case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision,
+                                                                                                          tx);
+                case SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) -> handleSelfShutdown(selfShutdown,
+                                                                                                                 tx);
                 case NodeLifecyclePutReceived(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) -> handleNodeLifecyclePut(valuePut,
                                                                                                                                  tx);
                 case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
@@ -259,18 +263,23 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             tx.handle(() -> handleRoutingRemoval(valueRemove.cause().key()));
         }
 
-        private void handleTopologyChange(TopologyChangeNotification topologyChange,
-                                          TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            tx.handle(() -> processTopologyChange(topologyChange));
+        private void handleMembershipDecision(MembershipDecision decision,
+                                               TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processMembershipDecision(decision));
         }
 
-        private void processTopologyChange(TopologyChangeNotification topologyChange) {
-            log.info("Received topology change: {}", topologyChange);
-            switch (topologyChange){
-                case NodeAdded(NodeId addedNode, List<NodeId>_) -> handleNodeAdded(addedNode);
+        // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+        private void handleSelfShutdown(TransportObservation.SelfShutdown selfShutdown,
+                                        TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processSelfShutdown(selfShutdown.nodeId()));
+        }
+
+        private void processMembershipDecision(MembershipDecision decision) {
+            log.info("Received membership decision: {}", decision);
+            switch (decision){
+                case NodeJoined(NodeId addedNode, List<NodeId>_) -> handleNodeAdded(addedNode);
                 case NodeRemoved(NodeId removedNode, List<NodeId>_) -> handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
-                case NodeDown(NodeId downNode, List<NodeId>_) -> handleNodeDown(downNode);
-                default -> {}
+                case NodeDecommissioned(NodeId removedNode, List<NodeId>_) -> handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
             }
         }
 
@@ -279,8 +288,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             reconcile();
         }
 
-        private void handleNodeDown(NodeId downNode) {
-            log.warn("Node {} is down, triggering immediate reconciliation", downNode);
+        private void processSelfShutdown(NodeId downNode) {
+            log.warn("Self {} is shutting down, triggering immediate reconciliation", downNode);
             handleNodeRemoval(downNode).onSuccess(_ -> reconcile());
         }
 

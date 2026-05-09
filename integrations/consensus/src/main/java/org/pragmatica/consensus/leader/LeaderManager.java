@@ -15,9 +15,11 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
+import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
+import org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty;
+import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
+import org.pragmatica.consensus.topology.TransportObservation.SelfShutdown;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -65,13 +67,19 @@ public interface LeaderManager {
     void stop();
 
     @MessageReceiver
-    void nodeAdded(NodeAdded nodeAdded);
+    void peerJoined(PeerJoined peerJoined);
 
     @MessageReceiver
-    void nodeRemoved(NodeRemoved nodeRemoved);
+    void peerDisconnected(PeerDisconnected peerDisconnected);
 
     @MessageReceiver
-    void nodeDown(NodeDown nodeDown);
+    void peerObservedFaulty(PeerObservedFaulty peerObservedFaulty);
+
+    @MessageReceiver
+    void peerReconnected(PeerReconnected peerReconnected);
+
+    @MessageReceiver
+    void selfShutdown(SelfShutdown selfShutdown);
 
     @MessageReceiver
     void watchQuorumState(QuorumStateNotification quorumState);
@@ -246,36 +254,42 @@ public interface LeaderManager {
         }
 
         @Override
-        public void nodeAdded(NodeAdded nodeAdded) {
-            fsm.dispatch(new ClusterFsmEvent.NodeAdded(nodeAdded.nodeId(), nodeAdded.topology()));
+        public void peerJoined(PeerJoined peerJoined) {
+            fsm.dispatch(new ClusterFsmEvent.NodeAdded(peerJoined.nodeId(), peerJoined.topology()));
             if (localMode) {
                 electLocallyIfPossible();
             }
         }
 
         @Override
-        public void nodeRemoved(NodeRemoved nodeRemoved) {
+        public void peerDisconnected(PeerDisconnected peerDisconnected) {
             // Local mode needs the new leader to appear BEFORE the NodeGone event so the FSM
             // stays in Led (different leader) rather than going Led → ReElecting → Led, which
             // would emit an intermediate "no leader" notification unexpected for legacy consumers.
             if (localMode) {
-                dispatchLocalModeAdoption(nodeRemoved.topology());
+                dispatchLocalModeAdoption(peerDisconnected.topology());
             }
-            fsm.dispatch(new ClusterFsmEvent.NodeGone(nodeRemoved.nodeId(), nodeRemoved.topology()));
+            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerDisconnected.nodeId(), peerDisconnected.topology()));
         }
 
         @Override
-        public void nodeDown(NodeDown nodeDown) {
-            // Always dispatch; states decide. Empty topology → QuorumDisappeared; non-empty →
-            // (optional) local-mode adoption + NodeGone. No external FSM-state reads here.
-            if (nodeDown.topology().isEmpty()) {
-                fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
-                return;
-            }
+        public void peerObservedFaulty(PeerObservedFaulty peerObservedFaulty) {
+            // SWIM-FAULTY treated as departure for FSM purposes.
             if (localMode) {
-                dispatchLocalModeAdoption(nodeDown.topology());
+                dispatchLocalModeAdoption(peerObservedFaulty.topology());
             }
-            fsm.dispatch(new ClusterFsmEvent.NodeGone(nodeDown.nodeId(), nodeDown.topology()));
+            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerObservedFaulty.nodeId(), peerObservedFaulty.topology()));
+        }
+
+        @Override
+        public void peerReconnected(PeerReconnected peerReconnected) {
+            // Transparent — peer is already known to the FSM via prior PeerJoined. No event.
+        }
+
+        @Override
+        public void selfShutdown(SelfShutdown selfShutdown) {
+            // Self-shutdown is not a cluster decision — local view collapsing.
+            fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
 
         private void dispatchLocalModeAdoption(List<NodeId> topology) {

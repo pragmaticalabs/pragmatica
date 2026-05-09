@@ -9,7 +9,7 @@ package org.pragmatica.consensus.fsm;
 
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmState;
@@ -20,10 +20,15 @@ import java.util.concurrent.atomic.AtomicLong;
 /// `MessageRouter`. Every FSM that reacts to quorum / topology / leader changes calls
 /// [`#wire`] once during construction instead of repeating six `router.addRoute(...)` calls.
 ///
+/// Consumes `TransportObservation` (the fast bootstrap path) — local, partial-view, may flap.
+/// Cluster-canonical decisions live on `MembershipDecision` and are consumed elsewhere.
+///
 /// Semantic transforms applied here (not inside the FSM):
-/// - `TopologyChangeNotification.NodeRemoved` → `ClusterFsmEvent.NodeGone` (unifies with NodeDown)
-/// - `TopologyChangeNotification.NodeDown` with empty topology → `ClusterFsmEvent.QuorumDisappeared`
-/// - `TopologyChangeNotification.NodeDown` with non-empty topology → `ClusterFsmEvent.NodeGone`
+/// - `TransportObservation.PeerJoined` → `ClusterFsmEvent.NodeAdded`
+/// - `TransportObservation.PeerDisconnected` → `ClusterFsmEvent.NodeGone`
+/// - `TransportObservation.PeerObservedFaulty` → `ClusterFsmEvent.NodeGone` (FAULTY treated as departure)
+/// - `TransportObservation.PeerReconnected` → no FSM event (transparent)
+/// - `TransportObservation.SelfShutdown` → `ClusterFsmEvent.QuorumDisappeared` (topology empty by contract)
 /// - `QuorumStateNotification` stale-sequence dedup via `advanceSequence` — applied here once
 ///   so individual FSMs do not repeat the check.
 public final class ClusterFsmRouter {
@@ -32,14 +37,19 @@ public final class ClusterFsmRouter {
     public static <S extends FsmState<S, ClusterFsmEvent>> void wire(MessageRouter.MutableRouter router,
                                                                       Fsm<S, ClusterFsmEvent> fsm,
                                                                       AtomicLong quorumSequence) {
-        router.addRoute(TopologyChangeNotification.NodeAdded.class,
+        router.addRoute(TransportObservation.PeerJoined.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.NodeAdded(notification.nodeId(),
                                                                                    notification.topology())));
-        router.addRoute(TopologyChangeNotification.NodeRemoved.class,
+        router.addRoute(TransportObservation.PeerDisconnected.class,
                         notification -> fsm.dispatch(new ClusterFsmEvent.NodeGone(notification.nodeId(),
                                                                                   notification.topology())));
-        router.addRoute(TopologyChangeNotification.NodeDown.class,
-                        notification -> dispatchNodeDown(fsm, notification));
+        router.addRoute(TransportObservation.PeerObservedFaulty.class,
+                        notification -> fsm.dispatch(new ClusterFsmEvent.NodeGone(notification.nodeId(),
+                                                                                  notification.topology())));
+        router.addRoute(TransportObservation.PeerReconnected.class,
+                        ClusterFsmRouter::ignoreReconnect);
+        router.addRoute(TransportObservation.SelfShutdown.class,
+                        notification -> fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared()));
         router.addRoute(QuorumStateNotification.class,
                         notification -> dispatchQuorumState(fsm, notification, quorumSequence));
         router.addRoute(LeaderNotification.LeaderChange.class,
@@ -47,13 +57,8 @@ public final class ClusterFsmRouter {
                                                                                       notification.localNodeIsLeader())));
     }
 
-    private static <S extends FsmState<S, ClusterFsmEvent>> void dispatchNodeDown(Fsm<S, ClusterFsmEvent> fsm,
-                                                                                   TopologyChangeNotification.NodeDown notification) {
-        if (notification.topology().isEmpty()) {
-            fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
-            return;
-        }
-        fsm.dispatch(new ClusterFsmEvent.NodeGone(notification.nodeId(), notification.topology()));
+    private static void ignoreReconnect(TransportObservation.PeerReconnected reconnected) {
+        // Transparent — peer was already known to upstream consumers via prior PeerJoined.
     }
 
     private static <S extends FsmState<S, ClusterFsmEvent>> void dispatchQuorumState(Fsm<S, ClusterFsmEvent> fsm,

@@ -26,13 +26,14 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.NodeHealth;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -254,14 +255,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         reconcile();
     }
 
-    @Contract@Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
+    @Contract@Override public void onMembershipDecision(MembershipDecision decision) {
         if (!active.get()) {return;}
-        switch (topologyChange){
-            case NodeAdded added -> handleNodeAdded(added);
+        switch (decision){
+            case NodeJoined joined -> handleNodeJoined(joined);
             case NodeRemoved removed -> handleNodeRemoved(removed);
-            case NodeDown down -> handleNodeDown(down);
-            default -> {}
+            case NodeDecommissioned decommissioned -> handleNodeDecommissioned(decommissioned);
         }
+    }
+
+    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+    @Contract@Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+        if (!active.get()) {return;}
+        log.warn("CTM: Self-shutdown observed for {}, triggering immediate reconciliation", selfShutdown.nodeId());
+        maybeBumpAnchorOnHealthyOnDutyEdge("self-shutdown " + selfShutdown.nodeId());
+        reconcile();
     }
 
     @Contract@Override public void onClusterPhaseChanged(ClusterPhase newPhase) {
@@ -278,9 +286,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  newPhase);
     }
 
-    @Contract private void handleNodeAdded(NodeAdded added) {
-        log.info("CTM: Node {} added, triggering reconciliation", added.nodeId());
-        maybeBumpAnchorOnHealthyOnDutyEdge("node-added " + added.nodeId());
+    @Contract private void handleNodeJoined(NodeJoined joined) {
+        log.info("CTM: Node {} joined, triggering reconciliation", joined.nodeId());
+        maybeBumpAnchorOnHealthyOnDutyEdge("node-joined " + joined.nodeId());
         reconcile();
     }
 
@@ -290,9 +298,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         reconcile();
     }
 
-    @Contract private void handleNodeDown(NodeDown down) {
-        log.warn("CTM: Node {} is down, triggering immediate reconciliation", down.nodeId());
-        maybeBumpAnchorOnHealthyOnDutyEdge("node-down " + down.nodeId());
+    @Contract private void handleNodeDecommissioned(NodeDecommissioned decommissioned) {
+        log.warn("CTM: Node {} decommissioned, triggering immediate reconciliation", decommissioned.nodeId());
+        maybeBumpAnchorOnHealthyOnDutyEdge("node-decommissioned " + decommissioned.nodeId());
         reconcile();
     }
 

@@ -13,7 +13,7 @@ import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
@@ -57,7 +57,7 @@ public interface ClusterSyncCollector {
     record MetricsSnapshot(long timestamp, Map<String, Double> metrics){}
 
     @Contract void removeNode(NodeId nodeId);
-    @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
+    @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
     @MessageReceiver@Contract void onClusterSyncPing(ClusterSyncPing ping);
     @MessageReceiver@Contract void onClusterSyncPong(ClusterSyncPong pong);
     long observedRabiaTerm();
@@ -172,10 +172,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         historicalMetricsMap.remove(nodeId);
     }
 
-    @Override@Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {
-        switch (topologyChange){
-            case TopologyChangeNotification.NodeRemoved(var removedNode, _) -> removeNode(removedNode);
-            case TopologyChangeNotification.NodeDown(var downNode, _) -> removeNode(downNode);
+    @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
+        switch (decision){
+            case MembershipDecision.NodeRemoved(var removedNode, _) -> removeNode(removedNode);
+            case MembershipDecision.NodeDecommissioned(var decommissioned, _) -> removeNode(decommissioned);
             default -> {}
         }
     }

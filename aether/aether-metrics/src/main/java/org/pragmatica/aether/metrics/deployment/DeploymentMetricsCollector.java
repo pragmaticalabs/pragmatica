@@ -14,7 +14,7 @@ import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetrics
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPong;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -39,7 +39,7 @@ public interface DeploymentMetricsCollector {
     Map<DeploymentKey, DeploymentMetrics> inProgressDeployments();
     @MessageReceiver@Contract void onDeploymentMetricsPing(DeploymentMetricsPing ping);
     @MessageReceiver@Contract void onDeploymentMetricsPong(DeploymentMetricsPong pong);
-    @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
+    @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
     Map<String, List<DeploymentMetricsEntry>> collectLocalEntries();
 
     record DeploymentKey(Artifact artifact, NodeId nodeId){}
@@ -195,8 +195,12 @@ class DeploymentMetricsCollectorImpl implements DeploymentMetricsCollector {
         if (!pong.sender().equals(self)) {storeRemoteMetrics(pong.metrics());}
     }
 
-    @Override@Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {
-        if (topologyChange instanceof TopologyChangeNotification.NodeRemoved(NodeId removedNode, _)) {removeMetricsForNode(removedNode);}
+    @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
+        switch (decision){
+            case MembershipDecision.NodeRemoved(NodeId removedNode, _) -> removeMetricsForNode(removedNode);
+            case MembershipDecision.NodeDecommissioned(NodeId decommissioned, _) -> removeMetricsForNode(decommissioned);
+            default -> {}
+        }
     }
 
     private void removeMetricsForNode(NodeId nodeId) {

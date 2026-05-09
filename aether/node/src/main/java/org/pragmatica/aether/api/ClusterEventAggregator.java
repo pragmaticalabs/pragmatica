@@ -19,8 +19,8 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimObservation;
@@ -71,7 +71,7 @@ import java.util.function.IntSupplier;
         return buffer.filter(e -> e.timestamp().isAfter(since));
     }
 
-    public void onNodeAdded(TopologyChangeNotification.NodeAdded event) {
+    public void onNodeJoined(MembershipDecision.NodeJoined event) {
         nodeJoinTimes.put(event.nodeId().id(),
                           System.currentTimeMillis());
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_JOINED,

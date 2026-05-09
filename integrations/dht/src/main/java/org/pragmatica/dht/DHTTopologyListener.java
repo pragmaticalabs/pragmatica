@@ -16,14 +16,21 @@
 
 package org.pragmatica.dht;
 
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/// Listens for topology changes and updates the DHT ring accordingly.
+/// Listens for membership decisions and updates the DHT ring accordingly.
 /// Triggers data migration when partitions move between nodes.
+///
+/// Consumes {@link MembershipDecision} (the cluster-canonical stream) for ring
+/// updates so the DHT view matches consensus-committed membership. Also subscribes
+/// to {@link TransportObservation.SelfShutdown} for self-cleanup, since self-
+/// shutdown is not a cluster decision and never reaches `MembershipDecision`.
 public final class DHTTopologyListener {
     private static final Logger log = LoggerFactory.getLogger(DHTTopologyListener.class);
 
@@ -50,35 +57,41 @@ public final class DHTTopologyListener {
         return new DHTTopologyListener(node, Option.some(rebalancer));
     }
 
-    /// Handle a node-added event by adding the node to the consistent hash ring.
-    public void onNodeAdded(TopologyChangeNotification.NodeAdded event) {
+    /// Handle a node-joined decision by adding the node to the consistent hash ring.
+    public void onNodeJoined(MembershipDecision.NodeJoined event) {
         var addedNodeId = event.nodeId();
         log.info("DHT: Node added {}, updating ring", addedNodeId.id());
         node.ring()
             .addNode(addedNodeId);
     }
 
-    /// Handle a node-removed event by removing the node from the consistent hash ring
+    /// Handle a node-removed decision by removing the node from the consistent hash ring
     /// and triggering rebalance to restore replication factor.
-    public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
-        var removedNodeId = event.nodeId();
+    public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
+        removeFromRing(event.nodeId());
+    }
+
+    /// Handle a node-decommissioned decision identically to node-removed for ring purposes.
+    public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {
+        removeFromRing(event.nodeId());
+    }
+
+    /// Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown
+    /// is not a cluster decision. Mirrors `onNodeRemoved`; today the only `SelfShutdown`
+    /// emitter is QuicClusterNetwork on local-process SHUTDOWN, which is a no-op for the
+    /// local DHT (process is stopping). Required for symmetry with prior NodeDown handling.
+    public void onSelfShutdown(TransportObservation.SelfShutdown event) {
+        var downNodeId = event.nodeId();
+        log.info("DHT: Self shutdown {}, updating ring", downNodeId.id());
+        node.ring()
+            .removeNode(downNodeId);
+        rebalancer.onPresent(r -> r.onNodeRemoved(downNodeId));
+    }
+
+    private void removeFromRing(NodeId removedNodeId) {
         log.info("DHT: Node removed {}, updating ring", removedNodeId.id());
         node.ring()
             .removeNode(removedNodeId);
         rebalancer.onPresent(r -> r.onNodeRemoved(removedNodeId));
-    }
-
-    /// Handle a node-down event by removing the node from the consistent hash ring.
-    /// Mirrors `onNodeRemoved`; today the only `NodeDown` emitter is QuicClusterNetwork
-    /// on local-process SHUTDOWN, which is a no-op for the local DHT (process is
-    /// stopping). Required for symmetry once non-self `NodeDown` emitters land — pre-Step
-    /// 2 audit identified this as a routing gap that could leave a dead-by-shutdown
-    /// peer in the ring while other consumers had already evicted it.
-    public void onNodeDown(TopologyChangeNotification.NodeDown event) {
-        var downNodeId = event.nodeId();
-        log.info("DHT: Node down {}, updating ring", downNodeId.id());
-        node.ring()
-            .removeNode(downNodeId);
-        rebalancer.onPresent(r -> r.onNodeRemoved(downNodeId));
     }
 }

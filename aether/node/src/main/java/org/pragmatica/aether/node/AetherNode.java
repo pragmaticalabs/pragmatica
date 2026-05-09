@@ -153,7 +153,11 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
+// NOTE: cluster-wide TransportObservation referenced via FQCN
+// (`org.pragmatica.consensus.topology.TransportObservation`) to avoid the simple-name
+// collision with `org.pragmatica.swim.TransportObservation` (legacy SWIM-local hint type)
+// that is imported below.
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTConfig;
@@ -1114,12 +1118,15 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
                                                     dhtAntiEntropy::onMigrationDataResponse));
-        aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
-                                                    dhtTopologyListener::onNodeAdded));
-        aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+        aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
+                                                    dhtTopologyListener::onNodeJoined));
+        aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                                     dhtTopologyListener::onNodeRemoved));
-        aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                                    dhtTopologyListener::onNodeDown));
+        aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                                    dhtTopologyListener::onNodeDecommissioned));
+        // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+        aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
+                                                    dhtTopologyListener::onSelfShutdown));
         @SuppressWarnings({"unchecked", "rawtypes"}) MessageRouter.Entry forwardRequestRoute = MessageRouter.Entry.route(ForwardApplyRequest.class,
                                                                                                                          (ForwardApplyRequest request) -> handleForwardApplyRequest(request,
                                                                                                                                                                                     clusterNode));
@@ -1191,23 +1198,31 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
         swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
+        // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
+        // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
+        // ClusterFsmRouter, etc.) reach all `TransportObservation.PeerObservedFaulty` edges.
+        swimHealthDetector.addTransportObservationEmitter(delegateRouter::route);
         // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
         // observations directly. NODE_FAILED / NODE_LEFT events are emitted only via
         // `onNodeLifecyclePut` (the leader's HealthReconciler writing DECOMMISSIONED to
         // KV-Store with prior-state context). The SWIM-witnessed duplicate emit was
         // amplifying the membership-tracker cascade audit identified.
         // RC1-9 audit Step 3: the SWIM-FAULTY-to-disconnect short-circuit lambda is
-        // gone. QUIC eviction now flows from `TopologyChangeNotification.NodeRemoved`
+        // gone. QUIC eviction now flows from `MembershipDecision.NodeRemoved`
         // (published by `TopologyObserver.publishMembershipDeltas` after the leader's
         // `HealthReconciler` writes `DECOMMISSIONED` and the snapshot re-projects).
         // The membership-delta-driven path is a single canonical edge instead of N+1
         // fan-out across every survivor's local SWIM listener; eviction trades sub-ms
         // local-SWIM latency for a Rabia round-trip + projection (~200-500ms cloud RTT).
         var clusterNetworkRef = clusterNode.network();
-        allEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                                 (TopologyChangeNotification.NodeRemoved removed) ->
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                                 (MembershipDecision.NodeRemoved removed) ->
                                                      clusterNetworkRef.disconnect(
                                                          new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                                 (MembershipDecision.NodeDecommissioned decommissioned) ->
+                                                     clusterNetworkRef.disconnect(
+                                                         new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(decommissioned.nodeId()))));
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
@@ -2163,38 +2178,45 @@ public interface AetherNode extends ManageableNode {
                                               scheduledTaskManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
-                                              clusterDeploymentManager::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              clusterDeploymentManager::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                              clusterDeploymentManager::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
-                                              clusterTopologyManager::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              clusterTopologyManager::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                              clusterTopologyManager::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
-                                              taskAssignmentCoordinator::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              taskAssignmentCoordinator::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                              taskAssignmentCoordinator::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
-                                              metricsScheduler::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              metricsScheduler::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                              metricsScheduler::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, controlLoop::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              controlLoop::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, controlLoop::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              metricsCollector::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                              metricsCollector::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
+                                              clusterDeploymentManager::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              clusterDeploymentManager::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              clusterDeploymentManager::onMembershipDecision));
+        // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
+                                              clusterDeploymentManager::onSelfShutdown));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
+                                              clusterTopologyManager::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              clusterTopologyManager::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              clusterTopologyManager::onMembershipDecision));
+        // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
+                                              clusterTopologyManager::onSelfShutdown));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
+                                              taskAssignmentCoordinator::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              taskAssignmentCoordinator::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              taskAssignmentCoordinator::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
+                                              metricsScheduler::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              metricsScheduler::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              metricsScheduler::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class, controlLoop::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              controlLoop::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              controlLoop::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              metricsCollector::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              metricsCollector::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class,
                                               metricsCollector::onClusterSyncPing));
         entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPong.class,
@@ -2203,12 +2225,12 @@ public interface AetherNode extends ManageableNode {
                                               deploymentMetricsCollector::onDeploymentMetricsPing));
         entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPong.class,
                                               deploymentMetricsCollector::onDeploymentMetricsPong));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
-                                              deploymentMetricsCollector::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              deploymentMetricsCollector::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                              deploymentMetricsCollector::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
+                                              deploymentMetricsCollector::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              deploymentMetricsCollector::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              deploymentMetricsCollector::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentStarted.class,
                                               deploymentMetricsCollector::onDeploymentStarted));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.StateTransition.class,
@@ -2217,17 +2239,21 @@ public interface AetherNode extends ManageableNode {
                                               deploymentMetricsCollector::onDeploymentCompleted));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
                                               deploymentMetricsCollector::onDeploymentFailed));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
-                                              deploymentMetricsScheduler::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              deploymentMetricsScheduler::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                              deploymentMetricsScheduler::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class, appHttpServer::onNodeRemoved));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, appHttpServer::onNodeDown));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
+                                              deploymentMetricsScheduler::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              deploymentMetricsScheduler::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              deploymentMetricsScheduler::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class, appHttpServer::onNodeRemoved));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class, appHttpServer::onNodeDecommissioned));
+        // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class, appHttpServer::onSelfShutdown));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                               msg -> httpRouteRegistry.evictNode(msg.nodeId())));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, eventAggregator::onNodeAdded));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              msg -> httpRouteRegistry.evictNode(msg.nodeId())));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class, eventAggregator::onNodeJoined));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
@@ -2269,12 +2295,15 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
         loadBalancerManager.onPresent(lbm -> {
-                                          entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
-                                                                                lbm::onTopologyChange));
-                                          entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                                                                lbm::onTopologyChange));
-                                          entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                                                                lbm::onTopologyChange));
+                                          entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
+                                                                                lbm::onMembershipDecision));
+                                          entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                                                                lbm::onMembershipDecision));
+                                          entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                                                                lbm::onMembershipDecision));
+                                          // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+                                          entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
+                                                                                lbm::onSelfShutdown));
                                       });
         return entries;
     }

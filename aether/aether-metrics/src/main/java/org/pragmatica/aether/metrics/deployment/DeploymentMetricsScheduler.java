@@ -12,9 +12,10 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -33,7 +34,7 @@ import org.slf4j.LoggerFactory;
 public interface DeploymentMetricsScheduler extends DelegatedComponent {
     TimeSpan DEFAULT_INTERVAL = TimeSpan.timeSpan(5).seconds();
 
-    @MessageReceiver@Contract void onTopologyChange(TopologyChangeNotification topologyChange);
+    @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
     @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
     @Contract void stop();
 
@@ -99,11 +100,11 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
         return active.get();
     }
 
-    @Override@Contract public void onTopologyChange(TopologyChangeNotification topologyChange) {
-        switch (topologyChange){
-            case NodeAdded(_, List<NodeId> newTopology) -> topology.set(newTopology);
+    @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
+        switch (decision){
+            case NodeJoined(_, List<NodeId> newTopology) -> topology.set(newTopology);
             case NodeRemoved(_, List<NodeId> newTopology) -> topology.set(newTopology);
-            default -> {}
+            case NodeDecommissioned(_, List<NodeId> newTopology) -> topology.set(newTopology);
         }
     }
 

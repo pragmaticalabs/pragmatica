@@ -18,7 +18,8 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Node
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
-import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.TopologyChangeReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
@@ -51,8 +52,9 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -82,7 +84,9 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
     @Contract@MessageReceiver void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove);
     @Contract@MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
     @Contract@MessageReceiver void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
-    @Contract@MessageReceiver void onTopologyChange(TopologyChangeNotification topologyChange);
+    @Contract@MessageReceiver void onMembershipDecision(MembershipDecision decision);
+    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+    @Contract@MessageReceiver void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
     @Contract@MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
     @Contract@MessageReceiver void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
     @Contract@MessageReceiver void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove);
@@ -384,8 +388,12 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             ctx.dispatch(new SchemaVersionPutReceived(valuePut));
         }
 
-        @Contract@Override public void onTopologyChange(TopologyChangeNotification topologyChange) {
-            ctx.dispatch(new TopologyChangeReceived(topologyChange));
+        @Contract@Override public void onMembershipDecision(MembershipDecision decision) {
+            ctx.dispatch(new MembershipDecisionReceived(decision));
+        }
+
+        @Contract@Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+            ctx.dispatch(new SelfShutdownReceived(selfShutdown));
         }
     }
 }

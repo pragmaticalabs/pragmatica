@@ -21,7 +21,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.TransportObservation;
 
 
 public interface ClusterDeploymentEvents extends ClusterFsmEvent {
@@ -41,7 +42,9 @@ public interface ClusterDeploymentEvents extends ClusterFsmEvent {
 
     record VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) implements ClusterDeploymentEvents{}
 
-    record TopologyChangeReceived(TopologyChangeNotification topologyChange) implements ClusterDeploymentEvents{}
+    record MembershipDecisionReceived(MembershipDecision decision) implements ClusterDeploymentEvents{}
+
+    record SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) implements ClusterDeploymentEvents{}
 
     record NodeLifecyclePutReceived(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) implements ClusterDeploymentEvents{}
 

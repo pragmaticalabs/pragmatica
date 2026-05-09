@@ -47,7 +47,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.ProblemDetail;
@@ -100,8 +101,10 @@ public interface AppHttpServer {
     @Contract void rebuildRouter();
     boolean isRouteReady();
     @Contract void onQuorumStateChange(QuorumStateNotification notification);
-    @MessageReceiver@Contract void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
-    @MessageReceiver@Contract void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
+    @MessageReceiver@Contract void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved);
+    @MessageReceiver@Contract void onNodeDecommissioned(MembershipDecision.NodeDecommissioned nodeDecommissioned);
+    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+    @MessageReceiver@Contract void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
     Option<HttpForwarder> httpForwarder();
     Option<HttpRoutePublisher> httpRoutePublisher();
 
@@ -1184,12 +1187,17 @@ class AppHttpServerAdapter implements AppHttpServer {
         httpForwarder.onPresent(fwd -> fwd.onHttpForwardResponse(response));
     }
 
-    @Override@Contract public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
+    @Override@Contract public void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved) {
         httpForwarder.onPresent(fwd -> fwd.onNodeRemoved(nodeRemoved));
     }
 
-    @Override@Contract public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
-        httpForwarder.onPresent(fwd -> fwd.onNodeDown(nodeDown));
+    @Override@Contract public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned nodeDecommissioned) {
+        httpForwarder.onPresent(fwd -> fwd.onNodeDecommissioned(nodeDecommissioned));
+    }
+
+    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+    @Override@Contract public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+        httpForwarder.onPresent(fwd -> fwd.onSelfShutdown(selfShutdown));
     }
 
     private static final JsonMapper JSON_MAPPER = JsonMapper.defaultJsonMapper();

@@ -43,10 +43,12 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
+import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
+import org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty;
+import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
+import org.pragmatica.consensus.topology.TransportObservation.SelfShutdown;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -292,10 +294,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                        route(ConnectionEstablished.class, _ -> {}),
                                                        route(Send.class, network::handleSend),
                                                        route(Broadcast.class, network::handleBroadcast));
-        var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)
-                                                .route(route(NodeAdded.class, leaderManager::nodeAdded),
-                                                       route(NodeRemoved.class, leaderManager::nodeRemoved),
-                                                       route(NodeDown.class, leaderManager::nodeDown));
+        var transportObservationRoutes = SealedBuilder.from(TransportObservation.class)
+                                                .route(route(PeerJoined.class, leaderManager::peerJoined),
+                                                       route(PeerDisconnected.class, leaderManager::peerDisconnected),
+                                                       route(PeerObservedFaulty.class, leaderManager::peerObservedFaulty),
+                                                       route(PeerReconnected.class, leaderManager::peerReconnected),
+                                                       route(SelfShutdown.class, leaderManager::selfShutdown));
         var syncRoutes = SealedBuilder.from(Synchronous.class)
                                       .route(route(Propose.class, consensus::processPropose),
                                              route(VoteRound1.class, consensus::processVoteRound1),
@@ -312,7 +316,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         allEntries.add(topologyMgmtRoutes);
         allEntries.add(networkMsgRoutes);
         allEntries.add(networkServiceRoutes);
-        allEntries.add(topologyChangeRoutes);
+        allEntries.add(transportObservationRoutes);
         allEntries.add(syncRoutes);
         allEntries.add(asyncRoutes);
         // IMPORTANT: Order matters! Consensus must activate BEFORE LeaderManager emits LeaderChange.

@@ -16,7 +16,8 @@ import org.pragmatica.aether.management.route.RouteTarget;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.http.routing.HttpMethod;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -55,8 +56,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     Promise<HttpResponseData> forwardToAnyNode(HttpRequestContext requestContext, String requestId);
     Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext, String requestId);
     @MessageReceiver void onHttpForwardResponse(HttpForwardResponse response);
-    @MessageReceiver void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
-    @MessageReceiver void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
+    @MessageReceiver void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved);
+    @MessageReceiver void onNodeDecommissioned(MembershipDecision.NodeDecommissioned nodeDecommissioned);
+    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+    @MessageReceiver void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
 
     Fn1<Result<NodeId>, TaskGroup> UNASSIGNED_RESOLVER = group -> org.pragmatica.aether.slice.delegation.TaskAssignmentError.notAssigned(group)
                                                                                                                                         .result();
@@ -393,12 +396,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                              .onPresent(pending -> processForwardResponse(pending, response));
             }
 
-            @Override public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
+            @Override public void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved) {
                 handleNodeDeparture(nodeRemoved.nodeId());
             }
 
-            @Override public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
-                handleNodeDeparture(nodeDown.nodeId());
+            @Override public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned nodeDecommissioned) {
+                handleNodeDeparture(nodeDecommissioned.nodeId());
+            }
+
+            // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
+            @Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+                handleNodeDeparture(selfShutdown.nodeId());
             }
 
             private List<NodeId> filterConnectedNodes(Set<NodeId> nodes) {
