@@ -21,14 +21,14 @@ import org.apache.maven.plugins.annotations.Parameter;
 ///
 /// For each Java source file the goal:
 ///
-///   1. Reads the file.
-///   2. Skips both lint and format if the file exceeds [#sizeLimit] bytes.
-///   3. Parses the file once into a CST.
-///   4. Runs lint analysis on the CST (read-only, collects diagnostics).
-///   5. Runs format on the CST (produces reformatted text).
-///   6. Writes the reformatted file if the content changed.
-///   7. Emits lint diagnostics.
-///   8. Discards the CST (GC-eligible at next iteration).
+///   1. Reads the file (files exceeding `[files] maxFileSize` in `jbct.toml`, or
+///      matching `[files] excludes`, are filtered out by `FileCollector` upstream).
+///   2. Parses the file once into a CST.
+///   3. Runs lint analysis on the CST (read-only, collects diagnostics).
+///   4. Runs format on the CST (produces reformatted text).
+///   5. Writes the reformatted file if the content changed.
+///   6. Emits lint diagnostics.
+///   7. Discards the CST (GC-eligible at next iteration).
 ///
 /// Constant memory: one CST live at a time. One parse per file, instead of two
 /// (which is what running `format` then `lint` as separate goals would cost).
@@ -39,13 +39,6 @@ import org.apache.maven.plugins.annotations.Parameter;
 public class ProcessMojo extends AbstractJbctMojo {
     @Parameter(property = "jbct.includeTests", defaultValue = "true")
     protected boolean includeTests;
-
-    /// Per-file byte size above which both lint and format are skipped for that file.
-    /// Default 1 MB matches the prior FormatMojo size limit; oversize generated parsers
-    /// (e.g., PgSqlParser at ~4.5 MB, Java25Parser at ~1.6 MB) fall outside this and are
-    /// processed by neither lint nor format.
-    @Parameter(property = "jbct.sizeLimit", defaultValue = "1048576")
-    protected long sizeLimit;
 
     /// If true, lint errors at the configured failure threshold prevent the format write
     /// for that specific file. Default false — format always writes; lint failures still
@@ -74,7 +67,6 @@ public class ProcessMojo extends AbstractJbctMojo {
         var formatted = new AtomicInteger(0);
         var unchanged = new AtomicInteger(0);
         var formatErrors = new AtomicInteger(0);
-        var skipped = new AtomicInteger(0);
         var parseErrors = new AtomicInteger(0);
         var allDiagnostics = new ArrayList<Diagnostic>();
         var lintErrors = new AtomicInteger(0);
@@ -89,7 +81,6 @@ public class ProcessMojo extends AbstractJbctMojo {
                         formatted,
                         unchanged,
                         formatErrors,
-                        skipped,
                         parseErrors,
                         allDiagnostics,
                         lintErrors,
@@ -105,7 +96,7 @@ public class ProcessMojo extends AbstractJbctMojo {
             }
         }
         getLog().info("Format: " + formatted.get() + " formatted, " + unchanged.get() + " unchanged, "
-                      + formatErrors.get() + " errors, " + skipped.get() + " skipped");
+                      + formatErrors.get() + " errors");
         getLog().info("Lint: " + lintErrors.get() + " error(s), " + lintWarnings.get() + " warning(s), "
                       + lintInfos.get() + " info(s)");
 
@@ -128,7 +119,6 @@ public class ProcessMojo extends AbstractJbctMojo {
                              AtomicInteger formatted,
                              AtomicInteger unchanged,
                              AtomicInteger formatErrors,
-                             AtomicInteger skipped,
                              AtomicInteger parseErrors,
                              List<Diagnostic> allDiagnostics,
                              AtomicInteger lintErrors,
@@ -143,7 +133,6 @@ public class ProcessMojo extends AbstractJbctMojo {
                                                        formatted,
                                                        unchanged,
                                                        formatErrors,
-                                                       skipped,
                                                        parseErrors,
                                                        allDiagnostics,
                                                        lintErrors,
@@ -163,18 +152,11 @@ public class ProcessMojo extends AbstractJbctMojo {
                                   AtomicInteger formatted,
                                   AtomicInteger unchanged,
                                   AtomicInteger formatErrors,
-                                  AtomicInteger skipped,
                                   AtomicInteger parseErrors,
                                   List<Diagnostic> allDiagnostics,
                                   AtomicInteger lintErrors,
                                   AtomicInteger lintWarnings,
                                   AtomicInteger lintInfos) {
-        if (source.content().length() > sizeLimit) {
-            getLog().info("Skipping " + file + " (file size " + source.content().length()
-                          + " bytes exceeds limit of " + sizeLimit + " bytes)");
-            skipped.incrementAndGet();
-            return;
-        }
         var parseResult = parser.parseWithDiagnostics(source.content());
         if (!parseResult.isSuccess() || parseResult.node().isEmpty()) {
             parseErrors.incrementAndGet();
