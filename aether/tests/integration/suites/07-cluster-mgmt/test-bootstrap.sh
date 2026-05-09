@@ -40,7 +40,7 @@ test_bootstrap_cluster() {
 }
 
 test_cluster_forms() {
-    wait_for_cluster 180
+    wait_for_cluster 90
     log_pass "Cluster healthy after bootstrap"
 }
 

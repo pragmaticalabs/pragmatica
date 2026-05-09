@@ -97,7 +97,7 @@ test_kv_store_routes_clean() {
 }
 
 test_recovery_complete() {
-    wait_for_node_count 5 180
+    wait_for_node_count 5 90
     assert_cluster_healthy "Cluster recovered after stale route cleanup"
 }
 

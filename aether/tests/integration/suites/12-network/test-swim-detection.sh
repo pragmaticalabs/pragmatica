@@ -57,7 +57,7 @@ test_recovery_after_detection() {
     if [ -n "${KILLED_VICTIM:-}" ]; then
         start_node "$KILLED_VICTIM"
     fi
-    wait_for_node_count 5 180
+    wait_for_node_count 5 90
     assert_cluster_healthy "Cluster recovered after SWIM detection"
 }
 

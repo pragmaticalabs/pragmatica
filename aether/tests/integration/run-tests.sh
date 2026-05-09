@@ -400,8 +400,11 @@ run_cluster_b_suites() {
         # via the wait_for_cluster / wait_for_leader helpers in run_test().
         local quiesce_start
         quiesce_start=$(date +%s)
-        await_generation_quiesced "$CLUSTER_B_MGMT" "current" 120 || \
-            log_warn "Cluster B did not quiesce within 120s after suite ${suite} — continuing"
+        # 60s base × TIMEOUT_SCALE: 60s docker / 180s cloud. Best-effort barrier;
+        # continue-on-fail because each suite's own `wait_for_cluster` re-establishes
+        # preconditions if churn lingers.
+        await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || \
+            log_warn "Cluster B did not quiesce within 60s after suite ${suite} — continuing"
         local quiesce_elapsed=$(( $(date +%s) - quiesce_start ))
         printf 'quiesce_after_%s=%s\n' "$suite" "$quiesce_elapsed" >> "$TIMINGS_FILE"
     done

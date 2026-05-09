@@ -68,8 +68,8 @@ test_kill_node_and_detect_drop() {
     fi
     log_pass "Departure of ${victim} observed on /api/events"
 
-    if ! wait_for_replacement_of "$victim" "$baseline" 180; then
-        log_fail "No NODE_JOINED event for a replacement of ${victim} within 180s"
+    if ! wait_for_replacement_of "$victim" "$baseline" 90; then
+        log_fail "No NODE_JOINED event for a replacement of ${victim} within 90s"
         return 1
     fi
     log_pass "Replacement for ${victim} observed on /api/events"
@@ -90,7 +90,7 @@ test_connections_recovered() {
     if [ -n "${KILLED_VICTIM:-}" ]; then
         start_node "$KILLED_VICTIM"
     fi
-    wait_for_node_count 5 180
+    wait_for_node_count 5 90
     assert_cluster_healthy "Cluster healthy after QUIC recovery"
 }
 
