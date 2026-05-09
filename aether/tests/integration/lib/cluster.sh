@@ -257,10 +257,32 @@ wait_for_all_nodes_ready() {
     return 0
 }
 
-# Rotate MGMT_ENTRY_POINT to any surviving core node reachable on ports MGMT_PORT..MGMT_PORT+NODE_COUNT-1.
+# Rotate MGMT_ENTRY_POINT to any surviving core node reachable on the cluster's mgmt port.
 # Chaos tests that kill the current entry point call this AFTER the kill to restore CLI access.
 # Normal tests don't need this — they rely on the pinned entry point + product forwarding.
+#
+# Docker/remote: each node's mgmt is host-port-mapped on TARGET_HOST at MGMT_PORT..MGMT_PORT+N-1.
+# Cloud:        each node has its own public VM IP; mgmt port is uniform (8080 per cloud-hetzner.toml).
 rotate_mgmt_entry_point() {
+    if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
+        local mgmt_port="${MGMT_PORT:-8080}"
+        for i in $(seq 0 $((NODE_COUNT - 1))); do
+            local node_id ip
+            node_id=$(to_node_id "node-$((i + 1))" 2>/dev/null || true)
+            [ -z "$node_id" ] && continue
+            ip=$(cloud_public_ip "$node_id" 2>/dev/null || true)
+            [ -z "$ip" ] && continue
+            local endpoint="http://${ip}:${mgmt_port}"
+            if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+                export MGMT_ENTRY_POINT="$endpoint"
+                export CLUSTER_ENDPOINT="$endpoint"
+                log_info "Rotated MGMT_ENTRY_POINT to ${endpoint} (cloud)" >&2
+                return 0
+            fi
+        done
+        log_warn "rotate_mgmt_entry_point: no surviving core node reachable on ${NODE_COUNT} cloud VMs at port ${mgmt_port}" >&2
+        return 1
+    fi
     local base_port="${MGMT_PORT}"
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
