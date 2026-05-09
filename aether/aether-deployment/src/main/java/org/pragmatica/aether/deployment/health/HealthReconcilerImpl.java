@@ -142,7 +142,6 @@ final class HealthReconcilerImpl implements HealthReconciler {
     }
 
     @Override@Contract public void onSwimObservation(SwimObservation observation) {
-        log.warn("HEALTHRECONCILER-DIAG onSwimObservation: {}", observation);
         if (!started.get()) {return;}
         var nowMs = System.currentTimeMillis();
         var edge = aggregateEdge(observation, nowMs);
@@ -243,8 +242,6 @@ final class HealthReconcilerImpl implements HealthReconciler {
     private void handleAggregatedEdge(ObservationAggregator.StateChanged edge, long nowMs) {
         var currentLeader = leaderReader.get();
         var targetIsLeader = currentLeader.map(l -> l.equals(edge.target())).or(false);
-        log.warn("HEALTHRECONCILER-DIAG handleAggregatedEdge entry: target={} newState={} self={} isLeader={} leader={} targetIsLeader={}",
-                 edge.target(), edge.newState(), self, isLeader(), currentLeader, targetIsLeader);
         // Escape hatch for self-leader-eviction: when the aggregated edge target IS the
         // current cluster leader, ANY surviving node may attempt the lifecycle write.
         // Otherwise the cluster cannot evict a faulty leader: no surviving node is "the

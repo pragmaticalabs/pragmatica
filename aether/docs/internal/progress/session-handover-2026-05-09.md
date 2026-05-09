@@ -348,3 +348,42 @@ curl -s -X POST -H "Authorization: Bearer $HCLOUD_TOKEN" \
 | RC1-day budget (estimate) | 3-5 days | **2-3 days** (cloud Container freeze is 1-2 days) |
 
 **Net: 4 distinct architectural bugs root-caused and fixed (publisher heartbeat, budget calc, container restart policy, cloud test infra rotation), plus the recovery-ownership operator doc. The cloud Container kill-leader freeze is the next architectural target — diagnosed but not yet fixed.**
+
+---
+
+## 10 · Post-handover investigation: Rabia consensus stall (NEW finding)
+
+After the handover above was committed, we instrumented + tested the cloud Container freeze further. Two more architectural fixes shipped (still incomplete):
+
+### 10.1 What we shipped
+
+- **`HealthReconcilerImpl.handleAggregatedEdge` self-leader-eviction escape hatch** — when the aggregated FAULTY target IS the current cluster leader, ANY surviving node may attempt the lifecycle write. Otherwise leader-gating still applies. Rabia serializes; concurrent proposals deduplicate idempotently.
+- **`ObservationAggregator.respectColdBoot` removed** — the aggregator's per-peer `everSeenHealthy` cold-boot guard duplicated SwimProtocol's audit-Step-6 phase-gating without phase awareness, and silently dropped FAULTY edges for peers added in initial ALIVE state (no transition → no `notifyAlive` → no `recordHealthyAndEmit` → never populated `everSeenHealthy`). Trust upstream emit gating; `HealthReconciler.suppressedByPhase` still gates writes in BOOTING.
+
+Both are architecturally correct. Verified on cloud Container with diag logs: SWIM-FAULTY → onSwimObservation → handleAggregatedEdge → escape hatch fired on **all 4 surviving nodes simultaneously** at `~06:39:27`, all attempted DECOMMISSIONED writes via `proposeLifecycleWrite`.
+
+### 10.2 What still doesn't work — Rabia stall
+
+After the 4 escape-hatch firings, **NO `recordWrite` log appeared on any node**. The `commandApplier.apply(List.of(command))` Promise never resolves. Neither `onSuccess` nor `onFailure` callbacks fire.
+
+This means **Rabia consensus stalls on the post-kill DECOMMISSIONED proposal** even with 4-of-5 surviving nodes (quorum requires 3). Successful writes during boot phase (each surviving node successfully wrote ON_DUTY for itself and for core-0 between `06:38:50` and `06:38:58`) confirm Rabia consensus IS working — it just hangs specifically when proposing while the previous Rabia "round leader" / "primary proposer" is dead.
+
+JVM cloud doesn't hit this because (we hypothesize) JVM kills produce different transport-layer signals (bare process kill vs containerized SIGKILL through the Docker daemon's network namespace cleanup), causing QUIC eviction to fire faster on JVM than on Container, which in turn drives a faster Rabia round-leader transition.
+
+### 10.3 Possible directions for next session
+
+- **Investigate `RabiaEngine` round-leader election.** Where does Rabia decide who proposes, and what triggers the next round when the current proposer is unresponsive? Likely a timeout-based escape that's set too high for cloud Container teardown semantics.
+- **Compare JVM vs Container kill semantics at the QUIC layer.** Add per-peer transport-state logging in `QuicClusterNetwork.processViewChange` and `QuicPeerConnection`. Determine why eviction fires fast on JVM cloud but not on Container cloud.
+- **Force QUIC eviction independently of SWIM** when cluster has been observing FAULTY for a peer for >N seconds. Today's logic relies on QUIC's own connection-state machine.
+
+### 10.4 Commits added post-handover (pushed; tag re-moved)
+
+```
+81e48e234 fix(health): self-leader-eviction escape hatch + drop respectColdBoot suppression (with diag logs)
+```
+
+Diag logs (`HEALTHRECONCILER-DIAG`) were temporarily added to confirm the chain fires; these are removed in a follow-up commit before the tag's final move.
+
+---
+
+**Final net: 5 distinct architectural fixes (publisher heartbeat, budget calc, container restart policy, cloud test infra rotation, self-leader-eviction escape hatch + cold-boot suppression removal). Cloud Container kill-leader recovery still blocked at Rabia consensus stall — distinct architectural layer requiring follow-up.**
