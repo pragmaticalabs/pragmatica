@@ -39,14 +39,14 @@ public class FlowFormatter {
         return new FlowFormatter(FormatterConfig.defaultConfig());
     }
 
-    private static final int MAX_SOURCE_SIZE = 1_024 * 1_024;
-
     /// Format a source file using the flow-based approach.
-    /// Files exceeding 1MB are returned unchanged (generated files like parsers).
+    ///
+    /// Note: callers are responsible for size and exclude filtering. The Mojo path uses
+    /// `FileCollector` (driven by `[files] maxFileSize` and `[files] excludes` in
+    /// `jbct.toml`); direct library callers (e.g. `jbct-cli`) decide their own policy.
+    /// This method has no internal size cap — passing a multi-MB source will parse and
+    /// format that source.
     public Result<SourceFile> format(SourceFile source) {
-        if (source.content().length() > MAX_SOURCE_SIZE) {
-            return Result.success(source);
-        }
         return parse(source).map(cst -> formatParsed(cst, source));
     }
 
