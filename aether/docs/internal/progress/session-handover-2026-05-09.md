@@ -473,6 +473,42 @@ c84bc0607 fix(swim,quic): bridge SWIM-FAULTY-on-leader to QUIC disconnect to bre
 - **JVM cloud full 15-suite** still untested. Recommended.
 - **Container cloud full 15-suite** also untested at this point. Now that 02 passes, the others should follow given they exercise less-destructive paths.
 
+### 11.6 Time-budget analysis: can we reduce 1395s?
+
+Cloud Container 02-chaos at 1395s vs JVM cloud at 158s vs docker-remote at 135s. The gap is **almost entirely VM provisioning**, not anything we can fix architecturally.
+
+**Where the 1395s goes (per kill cycle):**
+- kill (~1s)
+- SWIM detect FAULTY (~10-15s; SWIM ping × suspect timeout)
+- Bridge → QUIC disconnect → re-elect → DECOMMISSIONED commit (~3-5s; we measured 4s in logs)
+- CTM auto-heal: provision replacement VM on Hetzner (~30-60s API + boot)
+- Cloud-init: apt-update + Docker install + image pull + container start (~60-120s; image pull is the slowest single step at ~30-60s)
+- aether-node boot to ON_DUTY (~5-10s)
+- Slice rebalance + topology delta + GenerationSnapshot publish (~5-10s)
+
+Per kill: ~120-220s of irreducible cloud-physics latency. Across 4 chaos tests + 1 inter-test cluster restoration each: ~10-15 of these cycles. Plus test-framework wait timeouts (180s/360s/450s) firing when something's slow. That's the 1395s budget.
+
+**Reducible without touching production semantics:**
+
+| Knob | Saving | Risk | Effort |
+|---|---|---|---|
+| Test `wait_for cluster healthy` 180s → 90s | ~minutes when steps run slow | Low (post-fix the underlying ops are faster) | Trivial — `lib/cluster.sh` constants |
+| Test `leader elected` 450s → 180s | ~minutes when steps fail | Low | Trivial |
+| Test inter-suite quiesce barrier (skip "5 nodes restored" if only quorum needed) | ~30-60s per inter-suite hand-off | Low | Small |
+| `SwimConfig.suspectTimeout` ~10s → ~5s on cloud | ~5s × 4 kills = ~20s | Medium — needs cloud RTT validation, false-positives risk | Small (config) |
+| Pre-pull aether-node into Hetzner VM snapshot (custom image) | **~30-60s per replacement × 4-5 replacements = 2-5 min** | Low — operator-side ops only | Medium (build a snapshot, point Hetzner config at it) |
+
+**Cannot safely change:**
+- `restart: "no"` on aether-node containers — CTM owns recovery; restart-policy speedup would re-introduce the `unless-stopped` race.
+- Hetzner VM creation API (~30-60s) — fundamental cloud-physics cost.
+- Reliable-broadcast policy in Rabia — per-peer retry semantics aren't session-scope work; the bridge already addresses the main symptom.
+
+**Realistic target with the 5 reducible knobs:** **~600-900s** for cloud Container 02-chaos, down from 1395s. That's still ~5x JVM cloud, but the gap then reflects genuine cloud cost, not test-framework slack.
+
+**Quickest single win:** pre-pulled VM snapshot. Pure ops, no code change, biggest absolute saving (~3-5 min). Would also speed up cluster bootstrap (Phase 5/7 DEPLOY_RUNTIME's image pull).
+
+**For RC1 release readiness:** none of the reductions are blocking. 1395s for 02-chaos cloud Container is acceptable for an integration test that's currently the second-line validation (docker-remote covers the primary path at 135s). If we want CI cycle time down for cloud-included PRs later, the test-side timeout tightening + VM snapshot are the next targets.
+
 ---
 
 **Final net (revised): 6 distinct architectural fixes shipped. Cloud Container kill-leader recovery FIXED. RC1 chaos coverage now green on docker-remote, JVM cloud, AND Container cloud. The remaining work is full-suite cloud validation + inter-suite churn polish.**
