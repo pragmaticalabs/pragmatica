@@ -153,6 +153,36 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 PeerObservationStore observationStore,
                                                                 SwimConfig swimConfig,
                                                                 BooleanSupplier isBootingSupplier) {
+        return coreSwimHealthDetector(router,
+                                      topologyConfig,
+                                      serializer,
+                                      deserializer,
+                                      signalSink,
+                                      epochSupplier,
+                                      isLeaderSupplier,
+                                      observationStore,
+                                      swimConfig,
+                                      isBootingSupplier,
+                                      _ -> {});
+    }
+
+    /// Leader-faulty evictor overload (2026-05-09). `faultyLeaderEvictor` is invoked
+    /// from `SwimHealthContext.routeFaulty` ONLY when the FAULTY peer equals the
+    /// current cluster leader. Production wires this to `clusterNetwork::disconnect`
+    /// to break the consensus.apply broadcast stall when the dead leader is still
+    /// QUIC-connected (cloud Container kill-leader case). See SwimHealthContext field
+    /// doc for the catch-22 rationale.
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                HealthSignalSink signalSink,
+                                                                Supplier<Epoch> epochSupplier,
+                                                                BooleanSupplier isLeaderSupplier,
+                                                                PeerObservationStore observationStore,
+                                                                SwimConfig swimConfig,
+                                                                BooleanSupplier isBootingSupplier,
+                                                                java.util.function.Consumer<NodeId> faultyLeaderEvictor) {
         var ctxHolder = new AtomicReference<SwimHealthContext>();
         Function<Fsm<SwimHealthState, SwimHealthEvents>, SwimHealthState> initialStateFactory = fsm -> buildContextAndStopped(fsm,
                                                                                                                               ctxHolder,
@@ -165,7 +195,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                                                                               isLeaderSupplier,
                                                                                                                               observationStore,
                                                                                                                               swimConfig,
-                                                                                                                              isBootingSupplier);
+                                                                                                                              isBootingSupplier,
+                                                                                                                              faultyLeaderEvictor);
         Fsm.fsm("swim-health",
                 topologyConfig.self().id(),
                 initialStateFactory);
@@ -183,7 +214,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                           BooleanSupplier isLeaderSupplier,
                                                           PeerObservationStore observationStore,
                                                           SwimConfig swimConfig,
-                                                          BooleanSupplier isBootingSupplier) {
+                                                          BooleanSupplier isBootingSupplier,
+                                                          java.util.function.Consumer<NodeId> faultyLeaderEvictor) {
         var ctx = new SwimHealthContext(fsm,
                                         router,
                                         topologyConfig,
@@ -195,7 +227,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                         observationStore,
                                         swimConfig,
                                         System::currentTimeMillis,
-                                        isBootingSupplier);
+                                        isBootingSupplier,
+                                        faultyLeaderEvictor);
         ctxHolder.set(ctx);
         return ctx.stopped();
     }

@@ -1163,6 +1163,15 @@ public interface AetherNode extends ManageableNode {
         // the reconciler is `start()`-ed at line 884 above so the supplier is safe
         // to consult by the time SWIM probes any peer.
         BooleanSupplier swimIsBootingSupplier = () -> healthReconciler.phase() == AetherValue.ClusterPhase.BOOTING;
+        // Leader-faulty evictor (2026-05-09): bridges SWIM-FAULTY → QUIC disconnect when
+        // the FAULTY peer IS the current cluster leader. Breaks the consensus.apply
+        // broadcast stall on cloud Container kill-leader (post-Step-3 architecture
+        // otherwise depends on consensus to evict, but consensus is what's stuck).
+        // Narrow trigger preserves Step 3's removal of the N+1 fan-out cascade for
+        // general FAULTY peers. See SwimHealthContext.faultyLeaderEvictor field doc.
+        java.util.function.Consumer<NodeId> faultyLeaderEvictor = peer ->
+            clusterNode.network().disconnect(
+                new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(peer));
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
@@ -1172,7 +1181,8 @@ public interface AetherNode extends ManageableNode {
                                                                                isLeaderSupplier,
                                                                                peerObservationStore,
                                                                                swimConfig,
-                                                                               swimIsBootingSupplier);
+                                                                               swimIsBootingSupplier,
+                                                                               faultyLeaderEvictor);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,

@@ -50,6 +50,24 @@ public final class SwimHealthContext {
     /// `() -> true` preserves legacy behavior for unit tests that don't wire a phase.
     private final BooleanSupplier isBootingSupplier;
 
+    /// Targeted leader-faulty evictor (2026-05-09) — narrow re-introduction of the
+    /// SWIM-FAULTY-to-disconnect bridge that audit Step 3 removed for general peers.
+    /// Fires ONLY when the FAULTY target equals the current cluster leader. Reason:
+    /// post-Step-3 the eviction path is consensus-driven (DECOMMISSIONED write →
+    /// snapshot delta → NodeRemoved → disconnect), but consensus.apply itself depends
+    /// on reliable-broadcast progressing — and the broadcast queues sends to the
+    /// dead-but-still-QUIC-connected leader indefinitely on cloud Container, where
+    /// QUIC's own inactivity timeout is sluggish (Docker network-namespace teardown
+    /// delays the kernel-level socket close). Catch-22 broken locally per node by
+    /// disconnecting the QUIC peer the moment SWIM marks it FAULTY-and-leader. Only
+    /// the leader case is bridged — general FAULTY peers continue through the
+    /// post-consensus path, preserving Step 3's elimination of the N+1 fan-out
+    /// cascade. Transport hygiene (DisconnectNode) is NOT subject to the
+    /// single-writer rule, so concurrent eviction calls from N surviving nodes are
+    /// idempotent at the QUIC layer (`peer.evict` is CONNECTED→EVICTED, no-op
+    /// otherwise). Default `_ -> {}` preserves legacy behavior for unit tests.
+    private final java.util.function.Consumer<NodeId> faultyLeaderEvictor;
+
     private final AtomicInteger faultyCountInWindow = new AtomicInteger();
 
     private final AtomicLong faultyWindowStart = new AtomicLong();
@@ -118,6 +136,34 @@ public final class SwimHealthContext {
                              SwimConfig swimConfig,
                              LongSupplier clock,
                              BooleanSupplier isBootingSupplier) {
+        this(fsm,
+             router,
+             topologyConfig,
+             serializer,
+             deserializer,
+             signalSink,
+             epochSupplier,
+             isLeaderSupplier,
+             observationStore,
+             swimConfig,
+             clock,
+             isBootingSupplier,
+             _ -> {});
+    }
+
+    public SwimHealthContext(Fsm<SwimHealthState, SwimHealthEvents> fsm,
+                             MessageRouter router,
+                             TopologyConfig topologyConfig,
+                             Serializer serializer,
+                             Deserializer deserializer,
+                             HealthSignalSink signalSink,
+                             Supplier<Epoch> epochSupplier,
+                             BooleanSupplier isLeaderSupplier,
+                             PeerObservationStore observationStore,
+                             SwimConfig swimConfig,
+                             LongSupplier clock,
+                             BooleanSupplier isBootingSupplier,
+                             java.util.function.Consumer<NodeId> faultyLeaderEvictor) {
         this.fsm = fsm;
         this.router = router;
         this.topologyConfig = topologyConfig;
@@ -130,6 +176,7 @@ public final class SwimHealthContext {
         this.swimConfig = swimConfig;
         this.clock = clock;
         this.isBootingSupplier = isBootingSupplier;
+        this.faultyLeaderEvictor = faultyLeaderEvictor;
         this.stopped = new SwimHealthState.Stopped(this);
         this.starting = new SwimHealthState.Starting(this);
     }
@@ -218,6 +265,12 @@ public final class SwimHealthContext {
     @Contract public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
         emitLeaderHint(peer, HealthHint.FAULTY);
         bufferHealthObservation(peer, HealthHint.FAULTY);
+        // See `faultyLeaderEvictor` field doc for the catch-22 this breaks. Narrow trigger:
+        // ONLY when the FAULTY peer IS the current cluster leader. Other peers continue
+        // through the post-consensus eviction path (audit Step 3).
+        if (currentLeader.map(peer::equals).or(false)) {
+            faultyLeaderEvictor.accept(peer);
+        }
     }
 
     public int incrementAndGetFaulty(long nowMillis) {
