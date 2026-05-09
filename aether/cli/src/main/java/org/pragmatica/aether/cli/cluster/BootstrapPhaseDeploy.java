@@ -289,7 +289,9 @@ import static org.pragmatica.lang.Result.success;
                                       int managementPort,
                                       String peers,
                                       String clusterSecret) {
-        return "docker rm -f aether-node 2>/dev/null || true" + " && docker run -d --name aether-node --restart unless-stopped --network host" + " -l aether-cluster=" + clusterName + " -l aether-node-id=" + nodeId + " -l aether-role=core" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + " -e PEERS=\"" + peers + "\"" + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " " + image;
+        // --restart no: container restart policy must not compete with CTM auto-heal.
+        // See aether/docs/operator/deployment-recovery.md.
+        return "docker rm -f aether-node 2>/dev/null || true" + " && docker run -d --name aether-node --restart no --network host" + " -l aether-cluster=" + clusterName + " -l aether-node-id=" + nodeId + " -l aether-role=core" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + " -e PEERS=\"" + peers + "\"" + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " " + image;
     }
 
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";

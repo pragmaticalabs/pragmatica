@@ -31,7 +31,9 @@ x-node-common: &node-common
     timeout: 5s
     retries: 6
     start_period: 30s
-  restart: unless-stopped
+  # restart: "no" — Aether's CTM auto-heal owns failure recovery; container restart
+  # policy must not compete with it. See aether/docs/operator/deployment-recovery.md.
+  restart: "no"
 
 services:
   # --- PostgreSQL (shared with Cluster B via dual network) ---

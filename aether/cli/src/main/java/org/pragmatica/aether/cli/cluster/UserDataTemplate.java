@@ -206,7 +206,13 @@ sealed interface UserDataTemplate {
         sb.append("docker pull \"${AETHER_IMAGE}\"\n");
         sb.append("docker run -d \\\n");
         sb.append("    --name aether-node \\\n");
-        sb.append("    --restart unless-stopped \\\n");
+        // Why --restart no: container restart policy must NOT compete with Aether's
+        // CTM auto-heal. A killed/crashed aether-node is a node failure that CTM owns
+        // (provision a fresh VM). Auto-restarting the container masks failures from
+        // CTM, resurrects DECOMMISSIONED nodes that the cluster has already evicted
+        // (single-writer rule rejects them, they flap), and defeats chaos engineering.
+        // See aether/docs/operator/deployment-recovery.md.
+        sb.append("    --restart no \\\n");
         sb.append("    --network host \\\n");
         sb.append("    -l aether-cluster=").append(clusterName)
                  .append(" \\\n");
