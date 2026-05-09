@@ -265,7 +265,9 @@ wait_for_all_nodes_ready() {
 # Cloud:        each node has its own public VM IP; mgmt port is uniform (8080 per cloud-hetzner.toml).
 rotate_mgmt_entry_point() {
     if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
-        local mgmt_port="${MGMT_PORT:-8080}"
+        # Cloud uses CLOUD_MGMT_PORT (default 8080); MGMT_PORT is docker's host-mapped
+        # port range (5150-5159) and not applicable to per-VM cloud nodes.
+        local mgmt_port="${CLOUD_MGMT_PORT:-8080}"
         for i in $(seq 0 $((NODE_COUNT - 1))); do
             local node_id ip
             node_id=$(to_node_id "node-$((i + 1))" 2>/dev/null || true)

@@ -266,9 +266,12 @@ public final class SwimHealthContext {
         emitLeaderHint(peer, HealthHint.FAULTY);
         bufferHealthObservation(peer, HealthHint.FAULTY);
         // See `faultyLeaderEvictor` field doc for the catch-22 this breaks. Narrow trigger:
-        // ONLY when the FAULTY peer IS the current cluster leader. Other peers continue
-        // through the post-consensus eviction path (audit Step 3).
-        if (currentLeader.map(peer::equals).or(false)) {
+        // ONLY when (a) cluster phase is NORMAL (not BOOTING — boot-time transient FAULTY
+        // events on the still-being-established leader would otherwise prematurely evict
+        // it) AND (b) the FAULTY peer IS the current cluster leader. Other peers, and
+        // BOOTING-phase observations, continue through the post-consensus eviction path
+        // (audit Step 3).
+        if (!isBootingSupplier.getAsBoolean() && currentLeader.map(peer::equals).or(false)) {
             faultyLeaderEvictor.accept(peer);
         }
     }
