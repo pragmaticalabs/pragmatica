@@ -587,18 +587,63 @@ slices_total_instances() {
 # instance of any slice belonging to <blueprint-coords>. Empty stdout if none found.
 # Used by 08-resources tests on cloud to retarget APP_ENDPOINT from the (possibly-non-
 # hosting) default node-1 to a node that actually has the slice.
+#
+# Response shape (from SliceRoutes::buildClusterSlicesResponse →
+# ManagementApiResponses.ClusterSliceInfo):
+#   { "slices": [
+#       { "artifact": "<group>:<artifact>:<version>",
+#         "targetInstances": N, "minInstances": M, "currentVersion": "...",
+#         "instances": [
+#           { "nodeId": "hetzner-eu-core-3", "state": "ACTIVE", "failureReason": "" },
+#           ...
+#         ] },
+#       ...
+#   ] }
+# The nodeId lives INSIDE each instances[] object. Earlier versions of this helper
+# did `tr '{' '\n'` and ANDed `artifact` + `state` + `nodeId` greps — but after the
+# split, the slice-level record carries `artifact` (no nodeId / state) and each
+# instance-level record carries `nodeId` + `state` (no artifact). The intersection is
+# empty, so the helper returned no owner even when ACTIVE instances existed → the
+# `08-resources` retarget warned and tested against the wrong VM.
+#
+# Awk-based parser walks the response top-to-bottom, tracks the most recent
+# `"artifact":"<prefix>..."` line, and emits the first nodeId whose subsequent
+# `"state":"ACTIVE"` falls within that artifact's slice block. The blueprint coord
+# `org:test-persistence:1.0.0` shares the `org:test-persistence` prefix with the slice
+# artifact `org:test-persistence-persistence-slice:1.0.0`; matching on the
+# `${coords%:*}` (group:artifact) prefix catches both forms.
 slice_owner_for() {
     local coords="$1"
-    # blueprint coords are groupId:artifactId:version; the slice artifact ids share the
-    # groupId:artifactId prefix, so match on it. Newlines per JSON object then grep.
     local prefix="${coords%:*}"
     cluster_slices \
-        | tr '{' '\n' \
-        | grep "\"artifact\"[[:space:]]*:[[:space:]]*\"${prefix}" \
-        | grep '"state"[[:space:]]*:[[:space:]]*"ACTIVE"' \
-        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | sed 's/.*"nodeId"[[:space:]]*:[[:space:]]*"//; s/"$//' \
-        | head -1
+        | awk -v prefix="$prefix" '
+            BEGIN { in_match = 0; pending_node = "" }
+            # Track when we enter a slice block whose artifact matches the prefix.
+            /"artifact"[[:space:]]*:[[:space:]]*"/ {
+                line = $0
+                sub(/.*"artifact"[[:space:]]*:[[:space:]]*"/, "", line)
+                sub(/".*/, "", line)
+                in_match = (index(line, prefix) == 1)
+                pending_node = ""
+                next
+            }
+            # Within a matching slice, capture the nodeId until we see its state.
+            in_match && /"nodeId"[[:space:]]*:[[:space:]]*"/ {
+                line = $0
+                sub(/.*"nodeId"[[:space:]]*:[[:space:]]*"/, "", line)
+                sub(/".*/, "", line)
+                pending_node = line
+                next
+            }
+            in_match && pending_node != "" && /"state"[[:space:]]*:[[:space:]]*"ACTIVE"/ {
+                print pending_node
+                exit 0
+            }
+            # Reset pending_node when we cross to the next instance without ACTIVE.
+            in_match && /"state"[[:space:]]*:[[:space:]]*"/ {
+                pending_node = ""
+            }
+        '
 }
 
 # Retarget APP_ENDPOINT to a node that hosts an ACTIVE slice belonging to <coords>.
@@ -627,12 +672,21 @@ retarget_app_endpoint_to_active_slice() {
         local owner owner_ip
         owner=$(slice_owner_for "$coords" 2>/dev/null || true)
         if [ -z "$owner" ]; then
-            log_warn "retarget: no ACTIVE owner found for ${coords}; APP_ENDPOINT unchanged"
+            # Diagnostic dump: surface the slice list so a future failure shows whether
+            # /api/slices is empty (deploy didn't propagate), all instances are still
+            # LOADING (timing window — caller didn't await ACTIVE), or the artifact
+            # prefix doesn't match (coords mismatch between blueprint and slice).
+            local diag
+            diag=$(cluster_slices 2>/dev/null \
+                       | tr -d '\n' \
+                       | grep -oE '"artifact"[[:space:]]*:[[:space:]]*"[^"]*"|"state"[[:space:]]*:[[:space:]]*"[A-Z_]*"' \
+                       | tr '\n' ' ')
+            log_warn "retarget: no ACTIVE owner found for ${coords}; APP_ENDPOINT unchanged. /api/slices: ${diag:-<empty>}"
             return 1
         fi
         owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
         if [ -z "$owner_ip" ]; then
-            log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged"
+            log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged. (Owner reported by /api/slices is not in bootstrap-state.json — node may have been replaced by CTM and not re-recorded.)"
             return 1
         fi
         APP_ENDPOINT="http://${owner_ip}:${port}"
@@ -847,23 +901,60 @@ kill_node() {
     fi
     log_info "Killing node: ${node_id}"
     if [ "$CLOUD_MODE" = "true" ]; then
-        # Cloud: each VM runs a single container named "aether-node". The container
-        # is launched with `--restart unless-stopped` so a plain `docker kill` is
-        # auto-restarted within ~2s, which is faster than SWIM's failure-detection
-        # threshold — peers never observe the gap, no NODE_LEFT/NODE_FAILED events
-        # are emitted, and tests waiting for those events time out. Disable the
-        # restart policy first so the kill is authoritative; start_node re-enables.
-        # Stderr is captured (NOT discarded — silent stderr is a trap) so a docker
-        # permission-denied or SSH failure aborts the test loudly instead of
-        # producing the previous symptom: container survives, cluster sees no
-        # failure, NODE_FAILED events never appear, test fails with no signal of
-        # what went wrong.
-        local kill_out
-        kill_out=$(cloud_ssh "$node_id" "set -e; docker update --restart=no aether-node >/dev/null; docker kill aether-node" 2>&1)
-        local kill_rc=$?
-        if [ $kill_rc -ne 0 ]; then
-            log_fail "kill_node: cloud kill of '${node_id}' failed (rc=${kill_rc}): ${kill_out}"
-            return $kill_rc
+        # Two cloud modes are supported (run-tests.sh exports CLOUD_RUNTIME):
+        #   container — VM runs a single `aether-node` Docker container
+        #   jvm       — VM runs `java -jar /opt/aether/aether-node.jar ...` directly
+        # Without this dispatch, JVM-mode VMs (which have no Docker installed by
+        # cloud-init's appendJvmInstall path) hit `bash: docker: command not found`,
+        # the kill never happens, and wait_for_node_departure times out at 60s.
+        if [ "${CLOUD_RUNTIME:-container}" = "jvm" ]; then
+            # Capture the running command line on the local test runner (NOT on the
+            # VM — the VM-side process is about to die) so start_node can replay it.
+            # cloud-init launched the JVM with `nohup java -jar ... &` (see
+            # UserDataTemplate::appendJvmRun). `ps -o command= -C java` prints the
+            # full argv of any java process; head -1 picks the aether-node JVM
+            # (cloud nodes run only one java process per VM).
+            local cmd_file="/tmp/aether-jvm-cmd-${node_id}.txt"
+            local jvm_cmd
+            jvm_cmd=$(cloud_ssh "$node_id" "ps -o command= -C java | grep -F 'aether-node.jar' | head -1" 2>&1)
+            local cap_rc=$?
+            if [ $cap_rc -ne 0 ] || [ -z "$jvm_cmd" ]; then
+                log_warn "kill_node: could not capture JVM cmdline for '${node_id}' (rc=${cap_rc}): ${jvm_cmd}. start_node will fail to relaunch."
+                : > "$cmd_file"
+            else
+                printf '%s\n' "$jvm_cmd" > "$cmd_file"
+            fi
+            local kill_out
+            # SIGTERM (default) gives the JVM ~5s to drain SWIM/QUIC; if the test
+            # needs hard-kill semantics (matches SIGKILL Docker behavior), peers
+            # still detect via SWIM timeout. pkill returns 1 when no process matched,
+            # which is a real failure (we expected a running JVM) — surface it.
+            kill_out=$(cloud_ssh "$node_id" "pkill -KILL -f 'aether-node.jar'" 2>&1)
+            local kill_rc=$?
+            if [ $kill_rc -ne 0 ]; then
+                log_fail "kill_node: cloud JVM kill of '${node_id}' failed (rc=${kill_rc}): ${kill_out}"
+                return $kill_rc
+            fi
+        else
+            # Container mode: each VM runs a single container named "aether-node".
+            # The container was launched with `--restart unless-stopped` (older cloud-
+            # init template) or `--restart no` (current). For the unless-stopped case
+            # a plain `docker kill` is auto-restarted within ~2s, faster than SWIM's
+            # failure-detection threshold — peers never observe the gap, no
+            # NODE_LEFT/NODE_FAILED events are emitted, and tests waiting for those
+            # events time out. Disable the restart policy first so the kill is
+            # authoritative; start_node re-enables. Stderr is captured (NOT discarded
+            # — silent stderr is a trap) so a docker permission-denied or SSH failure
+            # aborts the test loudly instead of producing the previous symptom:
+            # container survives, cluster sees no failure, NODE_FAILED events never
+            # appear, test fails with no signal of what went wrong.
+            local kill_out
+            kill_out=$(cloud_ssh "$node_id" "set -e; docker update --restart=no aether-node >/dev/null; docker kill aether-node" 2>&1)
+            local kill_rc=$?
+            if [ $kill_rc -ne 0 ]; then
+                log_fail "kill_node: cloud kill of '${node_id}' failed (rc=${kill_rc}): ${kill_out}"
+                return $kill_rc
+            fi
         fi
     else
         local name
@@ -881,16 +972,43 @@ start_node() {
     local node_id="$1"
     log_info "Starting node: ${node_id}"
     if [ "$CLOUD_MODE" = "true" ]; then
-        # Re-enable the restart policy that kill_node disabled, then start.
-        # Same reasoning as kill_node: capture stderr so a docker / SSH failure
-        # surfaces in the test output instead of leaving the container stopped
-        # and a downstream "wait for 5 nodes" timing out cryptically.
-        local start_out
-        start_out=$(cloud_ssh "$node_id" "set -e; docker update --restart=unless-stopped aether-node >/dev/null; docker start aether-node" 2>&1)
-        local start_rc=$?
-        if [ $start_rc -ne 0 ]; then
-            log_fail "start_node: cloud start of '${node_id}' failed (rc=${start_rc}): ${start_out}"
-            return $start_rc
+        if [ "${CLOUD_RUNTIME:-container}" = "jvm" ]; then
+            # Replay the cmdline captured by kill_node on the local test runner.
+            # The /tmp/aether-jvm-cmd-${node_id}.txt side-channel survives VM-side
+            # process death, so even if the VM had been hard-rebooted between kill
+            # and start the runner-side file is still authoritative.
+            local cmd_file="/tmp/aether-jvm-cmd-${node_id}.txt"
+            if [ ! -s "$cmd_file" ]; then
+                log_fail "start_node: cannot relaunch JVM on '${node_id}' — ${cmd_file} is missing or empty (kill_node failed to capture cmdline). Cluster will be permanently short by one node."
+                return 1
+            fi
+            local jvm_cmd
+            jvm_cmd=$(cat "$cmd_file")
+            # Re-execute under nohup with stdout/stderr redirected so SSH can return
+            # promptly. The JVM is daemonized — same end state as cloud-init's
+            # original `nohup ... &`. The remote shell quoting wraps the captured
+            # command verbatim; the cmdline does not contain single quotes (cloud-init
+            # uses `--key=value` form), so single-quote wrapping is safe.
+            local start_out
+            start_out=$(cloud_ssh "$node_id" "nohup ${jvm_cmd} >/var/log/aether-node.out 2>&1 </dev/null &" 2>&1)
+            local start_rc=$?
+            if [ $start_rc -ne 0 ]; then
+                log_fail "start_node: cloud JVM relaunch of '${node_id}' failed (rc=${start_rc}): ${start_out}"
+                return $start_rc
+            fi
+        else
+            # Container mode: re-enable the restart policy that kill_node disabled,
+            # then start. Same reasoning as kill_node: capture stderr so a docker /
+            # SSH failure surfaces in the test output instead of leaving the
+            # container stopped and a downstream "wait for 5 nodes" timing out
+            # cryptically.
+            local start_out
+            start_out=$(cloud_ssh "$node_id" "set -e; docker update --restart=unless-stopped aether-node >/dev/null; docker start aether-node" 2>&1)
+            local start_rc=$?
+            if [ $start_rc -ne 0 ]; then
+                log_fail "start_node: cloud start of '${node_id}' failed (rc=${start_rc}): ${start_out}"
+                return $start_rc
+            fi
         fi
     else
         local name
