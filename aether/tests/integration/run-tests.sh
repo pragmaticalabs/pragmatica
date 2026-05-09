@@ -64,10 +64,13 @@ CLUSTER_B_SUITES=(02 03 05 12 13)
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
+CLOUD_RUNTIME="container"
 while [ $# -gt 0 ]; do
     case "$1" in
         --env)           ENV_TYPE="$2"; shift 2 ;;
         --env=*)         ENV_TYPE="${1#*=}"; shift ;;
+        --runtime)       CLOUD_RUNTIME="$2"; shift 2 ;;
+        --runtime=*)     CLOUD_RUNTIME="${1#*=}"; shift ;;
         --suites)        SELECTED_SUITES="$2"; shift 2 ;;
         --suites=*)      SELECTED_SUITES="${1#*=}"; shift ;;
         --skip-build)    SKIP_BUILD=true; shift ;;
@@ -79,6 +82,7 @@ while [ $# -gt 0 ]; do
             echo ""
             echo "Options:"
             echo "  --env TYPE         Environment: docker, remote, or cloud (required)"
+            echo "  --runtime TYPE     Cloud runtime: container (default) or jvm (cloud-only)"
             echo "  --suites X,Y       Comma-separated suite prefixes (default: all)"
             echo "  --skip-build       Skip build.sh and blueprint builds"
             echo "  --skip-deploy      Skip cluster provisioning (reuse running clusters)"
@@ -119,6 +123,17 @@ case "$ENV_TYPE" in
         # slower in the run-5 baseline, 09-artifacts ~9× slower. Scale every wait_for_*
         # / await_generation_quiesced timeout proportionally. Override via env if needed.
         export TIMEOUT_SCALE="${TIMEOUT_SCALE:-3}"
+        case "$CLOUD_RUNTIME" in
+            container) ;;
+            jvm)
+                CLUSTER_A_NAME="cloud-test-a-jvm"
+                CLUSTER_B_NAME="cloud-test-b-jvm"
+                ;;
+            *)
+                echo "ERROR: --runtime must be 'container' or 'jvm', got: ${CLOUD_RUNTIME}"
+                exit 2
+                ;;
+        esac
         ;;
     *)
         echo "ERROR: Invalid --env value: ${ENV_TYPE}. Must be docker, remote, or cloud."
@@ -597,9 +612,19 @@ if [ "$SKIP_DEPLOY" = false ]; then
     case "$ENV_TYPE" in
         docker|remote) deploy_docker ;;
         cloud)
-            log_step "Bootstrapping cloud clusters"
+            log_step "Bootstrapping cloud clusters (runtime=${CLOUD_RUNTIME})"
+            case "$CLOUD_RUNTIME" in
+                jvm)
+                    CLOUD_TOML_A="${SCRIPT_DIR}/env/cloud-hetzner-jvm.toml"
+                    CLOUD_TOML_B="${SCRIPT_DIR}/env/cloud-hetzner-jvm-b.toml"
+                    ;;
+                *)
+                    CLOUD_TOML_A="${SCRIPT_DIR}/env/cloud-hetzner.toml"
+                    CLOUD_TOML_B="${SCRIPT_DIR}/env/cloud-hetzner-b.toml"
+                    ;;
+            esac
             if [ ${#A_SUITES[@]} -gt 0 ]; then
-                aether cluster bootstrap "${SCRIPT_DIR}/env/cloud-hetzner.toml" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
+                aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
                 # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
                 # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
                 # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
@@ -621,7 +646,7 @@ if [ "$SKIP_DEPLOY" = false ]; then
                 log_info "Skipping Cluster A bootstrap (no A-suites selected)"
             fi
             if [ ${#B_SUITES[@]} -gt 0 ]; then
-                aether cluster bootstrap "${SCRIPT_DIR}/env/cloud-hetzner-b.toml" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 300
+                aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 300
                 # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
                 cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
                 if [ -n "$cluster_b_ip" ]; then
