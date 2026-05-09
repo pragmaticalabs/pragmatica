@@ -111,8 +111,16 @@ public final class ObservationAggregator {
     private Option<StateChanged> computeEdgeForWindow(NodeId target, Deque<Entry> window, int onDutyCount, long nowMs) {
         evictStale(window, nowMs);
         var threshold = quorumThreshold(onDutyCount);
-        return tally(window, threshold).flatMap(state -> respectColdBoot(target, state))
-                    .flatMap(state -> emitIfChanged(target, state));
+        // Cold-boot suppression is handled upstream:
+        //   - SwimProtocol.emitFaultyOrUnknown gates emit by BOOTING/NORMAL phase (audit Step 6).
+        //   - HealthReconcilerImpl.suppressedByPhase gates the actual lifecycle write in BOOTING.
+        // The aggregator's prior respectColdBoot duplicated half of this logic without phase
+        // awareness: peers added in initial ALIVE state never produce a HealthyObserved
+        // (notifyAlive only fires on transition), so everSeenHealthy stayed empty even after
+        // cluster reached NORMAL phase. The result was that FAULTY edges for the leader were
+        // silently dropped on cloud Container post-kill: SWIM detected FAULTY, but the
+        // aggregator suppressed it, preventing leader-eviction. Trust upstream emit gating.
+        return tally(window, threshold).flatMap(state -> emitIfChanged(target, state));
     }
 
     @SuppressWarnings("unused") private static int quorumThreshold(int onDutyCount) {
@@ -130,12 +138,6 @@ public final class ObservationAggregator {
                               .orElseGet(Option::none);
     }
 
-    private Option<NodeLifecycleState> respectColdBoot(NodeId target, NodeLifecycleState state) {
-        if (everSeenHealthy.contains(target)) {return some(state);}
-        return state == NodeLifecycleState.ON_DUTY
-              ? some(state)
-              : none();
-    }
 
     private Option<StateChanged> emitIfChanged(NodeId target, NodeLifecycleState newState) {
         var emitted = new AtomicBoolean(false);

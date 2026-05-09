@@ -142,6 +142,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
     }
 
     @Override@Contract public void onSwimObservation(SwimObservation observation) {
+        log.warn("HEALTHRECONCILER-DIAG onSwimObservation: {}", observation);
         if (!started.get()) {return;}
         var nowMs = System.currentTimeMillis();
         var edge = aggregateEdge(observation, nowMs);
@@ -240,12 +241,28 @@ final class HealthReconcilerImpl implements HealthReconciler {
     }
 
     private void handleAggregatedEdge(ObservationAggregator.StateChanged edge, long nowMs) {
-        if (!isLeader()) {
+        var currentLeader = leaderReader.get();
+        var targetIsLeader = currentLeader.map(l -> l.equals(edge.target())).or(false);
+        log.warn("HEALTHRECONCILER-DIAG handleAggregatedEdge entry: target={} newState={} self={} isLeader={} leader={} targetIsLeader={}",
+                 edge.target(), edge.newState(), self, isLeader(), currentLeader, targetIsLeader);
+        // Escape hatch for self-leader-eviction: when the aggregated edge target IS the
+        // current cluster leader, ANY surviving node may attempt the lifecycle write.
+        // Otherwise the cluster cannot evict a faulty leader: no surviving node is "the
+        // leader" to perform the leader-gated write, NodeRemoved never fires (depends on
+        // KV-snapshot delta), and re-election never triggers — observed on cloud Container
+        // post-kill (2-min log silence after SWIM-FAULTY). Rabia serializes concurrent
+        // proposals; subsequent writes apply idempotently.
+        if (!isLeader() && !targetIsLeader) {
             log.trace("HealthReconciler: follower {} skips lifecycle write for {} -> {} (leader-gated)",
                       self,
                       edge.target(),
                       edge.newState());
             return;
+        }
+        if (targetIsLeader && !isLeader()) {
+            log.info("HealthReconciler: faulty target {} is current leader; non-leader {} attempting eviction write (self-leader-eviction escape hatch)",
+                     edge.target(),
+                     self);
         }
         var target = edge.target();
         if (cooldownActive(target, nowMs)) {
