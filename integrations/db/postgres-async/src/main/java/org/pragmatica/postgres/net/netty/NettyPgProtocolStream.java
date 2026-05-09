@@ -21,6 +21,9 @@ import org.pragmatica.postgres.message.backend.SslHandshake;
 import org.pragmatica.postgres.message.frontend.SSLRequest;
 import org.pragmatica.postgres.message.frontend.StartupMessage;
 import org.pragmatica.postgres.message.frontend.Terminate;
+import org.pragmatica.postgres.net.SslConfig;
+import org.pragmatica.postgres.sasl.ChannelBindingDigest;
+import org.pragmatica.lang.Option;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -29,6 +32,7 @@ import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.concurrent.Future;
@@ -38,9 +42,12 @@ import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.SSLParameters;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.Charset;
+import java.security.cert.X509Certificate;
 import java.util.List;
 
 import static org.pragmatica.lang.Unit.unit;
@@ -52,9 +59,10 @@ import static org.pragmatica.lang.Unit.unit;
  */
 public class NettyPgProtocolStream extends PgProtocolStream {
     private static final Logger log = LoggerFactory.getLogger(NettyPgProtocolStream.class);
-    private static final String INSECURE_TLS_PROPERTY = "pragmatica.pg.insecure-tls";
 
+    protected final SslConfig sslConfig;
     protected final boolean useSsl;
+    private final String hostname;
     private final SocketAddress address;
     private final Bootstrap channelPipeline;
     private StartupMessage startupWith;
@@ -66,10 +74,21 @@ public class NettyPgProtocolStream extends PgProtocolStream {
         }
     };
 
-    public NettyPgProtocolStream(SocketAddress address, boolean useSsl, Charset encoding, EventLoopGroup eventLoopGroup) {
+    public NettyPgProtocolStream(SocketAddress address, String hostname, SslConfig sslConfig,
+                                  Charset encoding, EventLoopGroup eventLoopGroup) {
         super(encoding);
         this.address = address;
-        this.useSsl = useSsl; // TODO: refactor into SSLConfig with trust parameters
+        this.hostname = hostname;
+        this.sslConfig = sslConfig;
+        this.useSsl = sslConfig.mode() != SslConfig.SslMode.DISABLE;
+        if (sslConfig.mode() == SslConfig.SslMode.ALLOW) {
+            // libpq's ALLOW is "plain first, retry with TLS on failure" — a connection-level
+            // retry. Pragmatic interpretation here: treat as PREFER (TLS first, fall back to
+            // plain). Both produce a working connection against either server config; the
+            // strict ALLOW semantics matter only if a network observer can be reasoned about.
+            log.warn("SslMode.ALLOW currently behaves as PREFER (TLS first, plain fallback); "
+                      + "true ALLOW (plain first, TLS retry) is tracked as follow-up");
+        }
         this.channelPipeline = new Bootstrap()
             .group(eventLoopGroup)
             .channel(NioSocketChannel.class)
@@ -156,26 +175,90 @@ public class NettyPgProtocolStream extends PgProtocolStream {
             @Override
             protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) throws Exception {
                 if (in.readableBytes() >= 1) {
-                    if ('S' == in.readByte()) { // SSL supported response
-                        ctx.pipeline().remove(this);
-                        ctx.pipeline().addFirst(
-                            buildSslContext()
-                                .newHandler(ctx.alloc()));
+                    var response = in.readByte();
+                    ctx.pipeline().remove(this);
+                    if ('S' == response) {
+                        installSslHandler(ctx);
+                    } else if (allowPlainFallback()) {
+                        // PREFER/ALLOW: server doesn't support TLS — fall back to plain text.
+                        // Reuse the SslHandshake sentinel to signal "negotiation done, proceed
+                        // to send StartupMessage" via connectSslOrDirect.
+                        log.warn("Postgres server does not support TLS; falling back to plain text per SslMode.{}",
+                                  sslConfig.mode());
+                        gotMessage(SslHandshake.INSTANCE);
                     } else {
-                        ctx.fireExceptionCaught(new IllegalStateException("SSL required but not supported by Postgres"));
+                        ctx.fireExceptionCaught(new IllegalStateException(
+                            "SSL required (SslMode." + sslConfig.mode() + ") but not supported by Postgres server"));
                     }
                 }
             }
         };
     }
 
-    private static SslContext buildSslContext() throws Exception {
+    private boolean allowPlainFallback() {
+        return sslConfig.mode() == SslConfig.SslMode.PREFER
+               || sslConfig.mode() == SslConfig.SslMode.ALLOW;
+    }
+
+    @Override
+    protected SslConfig.ChannelBinding channelBindingPolicy() {
+        return sslConfig.channelBinding();
+    }
+
+    @Override
+    protected Option<byte[]> tlsServerEndPointDigest() {
+        if (ctx == null) {
+            return Option.none();
+        }
+        var sslHandler = ctx.pipeline().get(SslHandler.class);
+        if (sslHandler == null) {
+            return Option.none();
+        }
+        try {
+            var peerCerts = sslHandler.engine().getSession().getPeerCertificates();
+            if (peerCerts.length == 0 || !(peerCerts[0] instanceof X509Certificate x509)) {
+                return Option.none();
+            }
+            return Option.some(ChannelBindingDigest.tlsServerEndPoint(x509));
+        } catch (javax.net.ssl.SSLPeerUnverifiedException e) {
+            log.debug("Cannot extract server certificate for channel binding: {}", e.getMessage());
+            return Option.none();
+        }
+    }
+
+    private void installSslHandler(ChannelHandlerContext ctx) throws Exception {
+        var port = address instanceof InetSocketAddress isa ? isa.getPort() : -1;
+        var sslHandler = buildSslContext().newHandler(ctx.alloc(), hostname, port);
+        if (sslConfig.mode() == SslConfig.SslMode.VERIFY_FULL) {
+            // Enable JDK hostname verification — without this, Netty's default
+            // SslHandler does not verify the hostname even when given hostname/port.
+            var sslEngine = sslHandler.engine();
+            var params = sslEngine.getSSLParameters();
+            params.setEndpointIdentificationAlgorithm("HTTPS");
+            sslEngine.setSSLParameters(params);
+        }
+        ctx.pipeline().addFirst(sslHandler);
+    }
+
+    private SslContext buildSslContext() throws Exception {
         var builder = SslContextBuilder.forClient();
 
-        if ("true".equalsIgnoreCase(System.getProperty(INSECURE_TLS_PROPERTY))) {
-            log.warn("*** INSECURE TLS: PostgreSQL client trusts ALL certificates (pragmatica.pg.insecure-tls=true) ***");
+        if (sslConfig.allowAllCertificates()) {
+            log.warn("*** INSECURE TLS: PostgreSQL client trusts ALL certificates (allowAllCertificates=true) ***");
             builder.trustManager(InsecureTrustManagerFactory.INSTANCE);
+        } else {
+            sslConfig.rootCertPem().onPresent(path -> builder.trustManager(path.toFile()));
         }
+
+        sslConfig.clientCertificate().onPresent(cc -> {
+            if (cc.password().isPresent()) {
+                builder.keyManager(cc.cert().toFile(), cc.key().toFile(), cc.password().or((String) null));
+            } else {
+                builder.keyManager(cc.cert().toFile(), cc.key().toFile());
+            }
+        });
+
+        sslConfig.sslContextCustomizer().onPresent(c -> c.accept(builder));
 
         return builder.build();
     }

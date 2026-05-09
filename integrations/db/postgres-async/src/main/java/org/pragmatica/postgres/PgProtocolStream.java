@@ -20,8 +20,10 @@ import org.pragmatica.postgres.message.Message;
 import org.pragmatica.postgres.message.backend.*;
 import org.pragmatica.postgres.message.frontend.*;
 import org.pragmatica.postgres.net.NotificationHandler;
+import org.pragmatica.postgres.net.SslConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
@@ -91,19 +93,54 @@ public abstract class PgProtocolStream implements ProtocolStream {
 
     @Override
     public Promise<Message> authenticate(String userName, String password, Authentication authRequired) {
-        if (authRequired.saslScramSha256()) {
-            var clientNonce = UUID.randomUUID().toString();
-            var saslInitialResponse = new SASLInitialResponse(Authentication.SUPPORTED_SASL,
-                                                              null, ""/*SaslPrep.asQueryString(userName) - Postgres requires an empty string here*/,
-                                                              clientNonce);
-            return send(saslInitialResponse)
-                .flatMap(message -> handleSaslResponse(message, password, clientNonce, saslInitialResponse));
-        } else {
-            return send(PasswordMessage.passwordMessage(userName, password, authRequired.md5salt(), encoding));
+        if (authRequired.saslScramSha256() || authRequired.saslScramSha256Plus()) {
+            return startSasl(password, authRequired);
         }
+        return send(PasswordMessage.passwordMessage(userName, password, authRequired.md5salt(), encoding));
     }
 
-    private Promise<Message> handleSaslResponse(Message message, String password, String clientNonce, SASLInitialResponse saslInitialResponse) {
+    private Promise<Message> startSasl(String password, Authentication authRequired) {
+        var policy = channelBindingPolicy();
+        var cbindData = tlsServerEndPointDigest();
+        var canUsePlus = authRequired.saslScramSha256Plus() && cbindData.isPresent();
+
+        if (policy == SslConfig.ChannelBinding.REQUIRE && !canUsePlus) {
+            return Promise.failure(new SqlError.BadAuthenticationSequence(
+                "channel_binding=require but " + (cbindData.isEmpty()
+                    ? "TLS is not active"
+                    : "server does not advertise SCRAM-SHA-256-PLUS")));
+        }
+
+        var usePlus = switch (policy) {
+            case DISABLE -> false;
+            case PREFER -> canUsePlus;
+            case REQUIRE -> true;
+        };
+
+        if (!usePlus && !authRequired.saslScramSha256()) {
+            return Promise.failure(new SqlError.BadAuthenticationSequence(
+                "Server advertises only SCRAM-SHA-256-PLUS but channel binding is unavailable"));
+        }
+
+        var mechanism = usePlus ? Authentication.SUPPORTED_SASL_PLUS : Authentication.SUPPORTED_SASL;
+        var cbindType = usePlus ? "tls-server-end-point" : null;
+        var clientNonce = UUID.randomUUID().toString();
+        var saslInitialResponse = new SASLInitialResponse(
+            mechanism,
+            cbindType,
+            cbindData.isPresent(),
+            "" /* SaslPrep.asQueryString(userName) — Postgres requires an empty string here */,
+            clientNonce);
+        var cbindBytes = usePlus ? cbindData.or((byte[]) null) : null;
+        return send(saslInitialResponse)
+            .flatMap(message -> handleSaslResponse(message, password, clientNonce, saslInitialResponse, cbindBytes));
+    }
+
+    private Promise<Message> handleSaslResponse(Message message,
+                                                 String password,
+                                                 String clientNonce,
+                                                 SASLInitialResponse saslInitialResponse,
+                                                 byte[] channelBindingData) {
         if (message instanceof Authentication authentication) {
             var serverFirstMessage = authentication.saslContinueData();
             if (serverFirstMessage != null) {
@@ -111,13 +148,27 @@ public abstract class PgProtocolStream implements ProtocolStream {
                                             serverFirstMessage,
                                             clientNonce,
                                             saslInitialResponse.gs2Header(),
-                                            saslInitialResponse.clientFirstMessageBare()));
+                                            saslInitialResponse.clientFirstMessageBare(),
+                                            channelBindingData));
             } else {
                 return Promise.failure(new SqlError.BadAuthenticationSequence("Bad SASL authentication sequence message detected on 'server-first-message' step"));
             }
         } else {
             return Promise.failure(new SqlError.BadAuthenticationSequence("Bad SASL authentication sequence detected on 'server-first-message' step"));
         }
+    }
+
+    /// Channel-binding policy from the SslConfig. Default `DISABLE` for streams that
+    /// don't override (e.g. plain-protocol tests). NettyPgProtocolStream forwards the
+    /// configured policy.
+    protected SslConfig.ChannelBinding channelBindingPolicy() {
+        return SslConfig.ChannelBinding.DISABLE;
+    }
+
+    /// Server certificate digest for `tls-server-end-point` channel binding (RFC 5929 §4.1).
+    /// Returns `Some` only when TLS is active. Default `none()` for non-TLS streams.
+    protected Option<byte[]> tlsServerEndPointDigest() {
+        return Option.none();
     }
 
     protected abstract void write(Message... messages);

@@ -21,12 +21,19 @@ import static org.pragmatica.postgres.util.HexConverter.printHexBinary;
 /**
  * @author Antti Laisi, Marat Gainullin
  */
-public record Authentication(boolean authenticationOk, boolean saslScramSha256, byte[] md5salt,
-                             String saslContinueData, byte[] saslAdditionalData) implements BackendMessage {
-    public static final Authentication OK = new Authentication(true, false, null, null, null);
-    public static final Authentication CLEAR_TEXT = new Authentication(false, false, null, null, null);
-    public static final Authentication SCRAM_SHA_256 = new Authentication(false, true, null, null, null);
+public record Authentication(boolean authenticationOk,
+                              boolean saslScramSha256,
+                              boolean saslScramSha256Plus,
+                              byte[] md5salt,
+                              String saslContinueData,
+                              byte[] saslAdditionalData) implements BackendMessage {
+    public static final Authentication OK = new Authentication(true, false, false, null, null, null);
+    public static final Authentication CLEAR_TEXT = new Authentication(false, false, false, null, null, null);
+    public static final Authentication SCRAM_SHA_256 = new Authentication(false, true, false, null, null, null);
+    public static final Authentication SCRAM_SHA_256_PLUS = new Authentication(false, false, true, null, null, null);
+    public static final Authentication SCRAM_SHA_256_BOTH = new Authentication(false, true, true, null, null, null);
     public static final String SUPPORTED_SASL = "SCRAM-SHA-256";
+    public static final String SUPPORTED_SASL_PLUS = "SCRAM-SHA-256-PLUS";
 
     public boolean saslServerFinalResponse() {
         return saslAdditionalData != null;
@@ -34,10 +41,11 @@ public record Authentication(boolean authenticationOk, boolean saslScramSha256, 
 
     @Override
     public String toString() {
-        return String.format("Authentication(success=%s, md5salt=%s, scramSha256=%s, saslContinueData=%s, saslAdditionalData=%s)",
+        return String.format("Authentication(success=%s, md5salt=%s, scramSha256=%s, scramSha256Plus=%s, saslContinueData=%s, saslAdditionalData=%s)",
                              authenticationOk,
                              md5salt != null ? printHexBinary(md5salt) : "",
                              saslScramSha256,
+                             saslScramSha256Plus,
                              saslContinueData != null ? saslContinueData : "",
                              saslAdditionalData != null ? printHexBinary(saslAdditionalData) : ""
         );
