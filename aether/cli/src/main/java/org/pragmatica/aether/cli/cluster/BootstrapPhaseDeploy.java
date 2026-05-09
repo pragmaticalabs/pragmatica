@@ -234,7 +234,7 @@ import static org.pragmatica.lang.Result.success;
         return resolveRuntimeProfile(ctx, source).map(p -> p.type() == RuntimeType.JVM).or(false);
     }
 
-    long SSH_PREFLIGHT_TIMEOUT_MS = 180_000;
+    long SSH_PREFLIGHT_TIMEOUT_MS = 300_000;
 
     long SSH_PREFLIGHT_POLL_MS = 5_000;
 
