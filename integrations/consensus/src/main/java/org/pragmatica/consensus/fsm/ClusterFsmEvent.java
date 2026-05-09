@@ -19,9 +19,11 @@ import java.util.List;
 /// is `ClusterFsmEvent`. This keeps state-handler pattern matching uniform — every event is a
 /// `ClusterFsmEvent`, whether cluster-generated or domain-specific.
 ///
-/// [`ClusterFsmRouter`] maps `MessageRouter` notifications (`TopologyChangeNotification`,
+/// [`ClusterFsmRouter`] maps `MessageRouter` notifications (`TransportObservation`,
 /// `QuorumStateNotification`, `LeaderNotification.LeaderChange`) into the concrete records
-/// below and dispatches them to the target FSM.
+/// below and dispatches them to the target FSM. (`ClusterFsmRouter` consumes the local
+/// transport stream because the leader-election FSM needs a fast-path during cluster
+/// bootstrap before consensus exists. For canonical decisions, see `MembershipDecision`.)
 public interface ClusterFsmEvent {
     record QuorumEstablished() implements ClusterFsmEvent {}
 

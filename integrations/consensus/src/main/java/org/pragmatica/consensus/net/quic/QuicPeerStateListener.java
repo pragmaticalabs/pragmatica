@@ -21,10 +21,10 @@ import org.pragmatica.lang.Contract;
 
 
 /// Listener fired on every QUIC peer-state transition emitted by `QuicClusterNetwork`,
-/// including transient eviction-driven reconnects that suppress the upstream
-/// `TopologyChangeNotification.NodeAdded` (per the flap-loop fix). Higher layers
-/// (e.g. `ClusterTopologyManager`) consume these to keep stability windows aligned
-/// with the transport's view, even when membership notifications are debounced.
+/// including transient eviction-driven reconnects whose upstream `TransportObservation.PeerJoined`
+/// is suppressed (per the flap-loop fix). Higher layers (e.g. `ClusterTopologyManager`) consume
+/// these to keep stability windows aligned with the transport's view, even when membership
+/// notifications are debounced.
 ///
 /// Distinct from [`QuicDisconnectListener`] — that listener feeds the leader's
 /// `HealthReconciler` with a `HealthSignal.QuicDisconnect` and does NOT fire on
@@ -32,12 +32,13 @@ import org.pragmatica.lang.Contract;
 /// stability bookkeeping can remain consistent with the transport.
 @Contract public interface QuicPeerStateListener {
     /// First-time peer attach (INIT/CONNECTING -> CONNECTED). Upstream consumers
-    /// receive a fresh `TopologyChangeNotification.NodeAdded`.
+    /// receive a fresh `TransportObservation.PeerJoined`.
     void onPeerJoined(NodeId nodeId);
 
     /// Reconnect after a transient eviction (EVICTED -> CONNECTED, or a stale
-    /// CONNECTED link replaced). Upstream `NodeAdded` is suppressed; consumers that
-    /// track peer-state churn (e.g., CTM stability gate) observe via this hook.
+    /// CONNECTED link replaced). Upstream `TransportObservation.PeerJoined` is suppressed;
+    /// consumers that track peer-state churn (e.g., CTM stability gate) observe via this hook
+    /// or via `TransportObservation.PeerReconnected`.
     void onPeerReconnected(NodeId nodeId);
 
     /// Peer authoritatively left (REMOVED) or QUIC view-change emitted REMOVE.

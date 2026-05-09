@@ -250,20 +250,18 @@ class QuicClusterNetworkHintEmissionTest {
     }
 
     /// R5: the peer-state listener is the only authoritative upward signal from QUIC
-    /// — no TopologyChangeNotification edges are needed for SWIM, and no emission of
+    /// — no `MembershipDecision` edges are needed for SWIM, and no emission of
     /// removed-API mutations happens. The compile-time absence of `topologyManager
     /// .unregisterPeer/markDeparted` enforces this; this test additionally confirms the
     /// runtime path doesn't accidentally invoke a no-op shim.
     @Test
     void quicTransport_remove_routesPeerDisconnectedObservation() {
-        // RC1-9 audit Step 2 reverted: QUIC re-emits a `TransportObservation.PeerDisconnected`
-        // synchronously on transport REMOVE (post-typed-streams migration; previously this
-        // was `TopologyChangeNotification.NodeRemoved`). The audit's plan to make
-        // `TopologyObserver` the SOLE emitter created a cold-boot catch-22
-        // (LeaderElectionContext.currentTopology depends on these events; snapshot-driven
-        // equivalents only fire post-leader-elected). TopologyObserver still publishes its
-        // own decision once the snapshot re-projects on `MembershipDecision`; consumers may
-        // see one transport-level + one decision-level emission per departure, each idempotent.
+        // QUIC emits `TransportObservation.PeerDisconnected` synchronously on transport REMOVE.
+        // This is the local-fast-path stream consumed by LeaderManager / ClusterFsmRouter for the
+        // bootstrap window before consensus exists. `TopologyObserver` independently publishes
+        // `MembershipDecision.NodeRemoved` once the consensus-committed snapshot re-projects,
+        // for canonical-decision consumers (CDM, CTM, LB, etc.). The two streams are
+        // type-distinct and consumed by disjoint subscribers.
         var disconnected = new CopyOnWriteArrayList<NodeId>();
         var router = MessageRouter.mutable();
         router.addRoute(TransportObservation.PeerDisconnected.class,
