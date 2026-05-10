@@ -1,4 +1,4 @@
 [
-  {"suite":"12-network","status":"failed","pass":2,"fail":1,"duration":470},
-  {"suite":"13-edge-cases","status":"failed","pass":2,"fail":1,"duration":86}
+  {"suite":"10-database","status":"passed","pass":3,"fail":0,"duration":15},
+  {"suite":"06-deployment","status":"passed","pass":5,"fail":0,"duration":47}
 ]

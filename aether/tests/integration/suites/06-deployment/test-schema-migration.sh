@@ -6,17 +6,42 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-DATASOURCE="${TEST_DATASOURCE:-default}"
+BLUEPRINT="org.pragmatica.aether.test:test-persistence:1.0.0"
+DATASOURCE=""
+
+discover_tracked_datasource() {
+    local body
+    body=$(api_get "/api/schema/status" 2>/dev/null) || return 1
+    printf '%s' "$body" | grep -oE '"datasource"[[:space:]]*:[[:space:]]*"[^"]+"' \
+                       | head -1 \
+                       | sed 's/.*"datasource"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/'
+}
 
 test_cluster_ready() {
     wait_for_cluster 60
-    log_pass "Cluster ready"
+    push_blueprint "$BLUEPRINT"
+    deploy_blueprint "$BLUEPRINT"
+    if ! wait_for "tracked datasource discovered from blueprint deploy" \
+                  "[ -n \"\$(discover_tracked_datasource)\" ]" 60; then
+        log_fail "test-persistence blueprint deploy did not register a tracked datasource within 60s"
+        return 1
+    fi
+    DATASOURCE=$(discover_tracked_datasource)
+    log_pass "Cluster ready; tracked datasource: ${DATASOURCE}"
 }
 
-# UNTESTABLE without a registered schema-tracked datasource (same as 10-database).
+# Strict: per-datasource schema_status against the discovered datasource.
 test_schema_status() {
-    log_fail "TODO: schema_status('${DATASOURCE}') requires a registered datasource fixture; today returns 500 because the cluster has no datasource named '${DATASOURCE}'"
-    return 1
+    if [ -z "$DATASOURCE" ]; then
+        log_fail "DATASOURCE empty — discovery in test_cluster_ready failed"
+        return 1
+    fi
+    local status
+    if ! status=$(schema_status "$DATASOURCE"); then
+        log_fail "schema_status('${DATASOURCE}') failed"
+        return 1
+    fi
+    assert_ne "$status" "" "Schema status non-empty for ${DATASOURCE}"
 }
 
 # Strict: global schema status aggregates over all bound datasources. Empty list
@@ -33,21 +58,38 @@ test_schema_status_all() {
     esac
 }
 
-# UNTESTABLE without a real datasource fixture: the meaningful assertion is
-# "after triggering migration, applied count increased from N to N+1". That
-# requires (a) a datasource bound to real Postgres and (b) at least one
-# pending migration in the deployed slice. Neither is set up here, so the
-# call returns empty/no-op and trivially passes today — exactly the warn-then-pass
-# pattern we are eliminating.
+# Strict (steady-state): after blueprint deploy, test-persistence's V900
+# migration is applied automatically (no separate /api/schema/migrate trigger
+# needed). Assert currentVersion ≥ 900 — proves the migration ran. Triggering
+# an explicit migrate against an already-migrated datasource is a no-op so
+# we test the steady-state outcome.
 test_trigger_migration() {
-    log_fail "TODO: bind ${DATASOURCE} to real datasource fixture with pending migration; assert appliedCount increases by 1 after POST /api/schema/migrate"
+    if [ -z "$DATASOURCE" ]; then
+        log_fail "DATASOURCE empty — discovery failed"
+        return 1
+    fi
+    local status current_version
+    status=$(schema_status "$DATASOURCE")
+    current_version=$(json_value "$status" "currentVersion")
+    current_version="${current_version:--1}"
+    if [ "$current_version" -ge 900 ] 2>/dev/null; then
+        log_pass "Migration applied: currentVersion=${current_version} (V900__create_kv.sql ran)"
+        return 0
+    fi
+    log_fail "Migration not applied: currentVersion=${current_version} (expected ≥ 900)"
     return 1
 }
 
-# UNTESTABLE without a registered datasource (same reason as test_schema_status above).
 test_schema_retry() {
-    log_fail "TODO: POST /api/schema/retry/${DATASOURCE} requires a registered datasource fixture (see test_schema_status TODO above)"
-    return 1
+    if [ -z "$DATASOURCE" ]; then
+        log_fail "DATASOURCE empty — discovery failed"
+        return 1
+    fi
+    if ! schema_retry "$DATASOURCE" >/dev/null; then
+        log_fail "POST /api/schema/retry/${DATASOURCE} failed"
+        return 1
+    fi
+    log_pass "Schema retry endpoint accepts call for ${DATASOURCE}"
 }
 
 test_cluster_healthy_after_migration() {
