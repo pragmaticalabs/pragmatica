@@ -152,7 +152,10 @@ class ClusterTopologyManagerCircuitBreakerTest {
 
         // After enough cycles, provisioning count plateaus — circuit tripped.
         var plateauCount = lifecycleManager.provisionCount.get();
-        clockMs.addAndGet(60 * 60 * 1000L);  // advance 1 h — backoff fully clear
+        // Advance past the maximum backoff (5 min) but well below the 1h auto-reset
+        // quiescence window — verifies the breaker stays tripped until an explicit
+        // reset trigger, not that it auto-clears on time alone.
+        clockMs.addAndGet(30 * 60 * 1000L);  // advance 1 h — backoff fully clear
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         assertThat(lifecycleManager.provisionCount.get())
@@ -185,7 +188,10 @@ class ClusterTopologyManagerCircuitBreakerTest {
             ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         }
         var plateauCount = lifecycleManager.provisionCount.get();
-        clockMs.addAndGet(60 * 60 * 1000L);
+        // Advance past the maximum backoff (5 min) but well below the 1h auto-reset
+        // quiescence window — verifies the breaker stays tripped until an explicit
+        // reset trigger, not that it auto-clears on time alone.
+        clockMs.addAndGet(30 * 60 * 1000L);
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         assertThat(lifecycleManager.provisionCount.get())
             .as("breaker must be tripped before reset")
@@ -225,7 +231,10 @@ class ClusterTopologyManagerCircuitBreakerTest {
             ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         }
         var plateauCount = lifecycleManager.provisionCount.get();
-        clockMs.addAndGet(60 * 60 * 1000L);
+        // Advance past the maximum backoff (5 min) but well below the 1h auto-reset
+        // quiescence window — verifies the breaker stays tripped until an explicit
+        // reset trigger, not that it auto-clears on time alone.
+        clockMs.addAndGet(30 * 60 * 1000L);
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         assertThat(lifecycleManager.provisionCount.get()).isEqualTo(plateauCount);
 
@@ -281,6 +290,50 @@ class ClusterTopologyManagerCircuitBreakerTest {
         assertThat(lifecycleManager.provisionCount.get())
             .as("deficit reconciles WITHIN backoff window must not dispatch new provisions")
             .isEqualTo(afterFirstExpire);
+    }
+
+    /// Auto-reset backstop: when the breaker has been tripped but no provisioning
+    /// failure has occurred for the auto-reset quiescence window (1h), the breaker
+    /// self-clears on the next reconcile so an unattended cluster eventually retries
+    /// without operator intervention.
+    @Test
+    void circuitBreaker_autoResets_after1hQuiescence() {
+        var slotTimeoutMs = 100L;
+        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            5),
+                               1L);
+        ctm.activate();
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B),
+                                            3,
+                                            5),
+                               2L);
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
+
+        // Trip the breaker.
+        for (var attempt = 0;attempt <6;attempt++) {
+            clockMs.addAndGet(slotTimeoutMs + (5 * 60 * 1000L));
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+        }
+        var plateauCount = lifecycleManager.provisionCount.get();
+
+        // Verify breaker is tripped (provisioning halted) at 30 min — well before the 1h auto-reset window.
+        clockMs.addAndGet(30 * 60 * 1000L);
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
+        assertThat(lifecycleManager.provisionCount.get())
+            .as("breaker must remain tripped at 30 min (well below 1h auto-reset window)")
+            .isEqualTo(plateauCount);
+
+        // Now advance past 1h auto-reset window. Next reconcile should self-clear the
+        // breaker and dispatch a fresh provisioning attempt.
+        clockMs.addAndGet(31 * 60 * 1000L);  // total elapsed since last failure: 30m + 31m = 61m > 1h
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+        assertThat(lifecycleManager.provisionCount.get())
+            .as("provisioning must resume after 1h auto-reset (no operator action required)")
+            .isGreaterThan(plateauCount);
     }
 
     private record StubView(Set<NodeId> coreMemberIds,

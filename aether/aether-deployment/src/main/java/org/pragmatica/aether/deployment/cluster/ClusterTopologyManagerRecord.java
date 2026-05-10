@@ -93,6 +93,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicInteger lastObservedHealthyOnDutyCount,
                                     AtomicInteger consecutiveProvisioningFailures,
                                     AtomicLong nextProvisioningAllowedMs,
+                                    AtomicLong lastProvisioningFailureMs,
                                     LongSupplier clock) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
 
@@ -112,6 +113,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private static final long PROVISIONING_BACKOFF_BASE_MS = 30_000L;
 
     private static final long PROVISIONING_BACKOFF_MAX_MS = 300_000L;
+
+    /// Auto-reset window for the provisioning circuit breaker. After this much time
+    /// elapsed since the last provisioning failure (with the breaker tripped and no
+    /// other reset trigger having fired — `setDesiredSize`, `onNodeReady`, phase
+    /// NORMAL transition, or operator reset), the breaker self-resets and provisioning
+    /// is allowed to attempt again. Conservative window — long enough that operators
+    /// who got paged on the original tripping event have wall-clock time to investigate
+    /// before the self-heal fires; short enough that an unattended cluster eventually
+    /// retries. 1 hour.
+    private static final long PROVISIONING_AUTO_RESET_QUIESCENCE_MS = 3_600_000L;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -147,6 +158,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
                                                 new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
                                                 new AtomicInteger(0),
+                                                new AtomicLong(0L),
                                                 new AtomicLong(0L),
                                                 clock);
     }
@@ -331,7 +343,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private boolean provisioningCircuitTripped() {
-        return consecutiveProvisioningFailures.get() >= MAX_CONSECUTIVE_PROVISIONING_FAILURES;
+        if (consecutiveProvisioningFailures.get() <MAX_CONSECUTIVE_PROVISIONING_FAILURES) {return false;}
+        // Auto-reset path: when the breaker has been tripped but no provisioning
+        // failure has occurred for `PROVISIONING_AUTO_RESET_QUIESCENCE_MS`, treat
+        // it as "the underlying issue may have resolved itself" (operator-side
+        // intervention, transient infra recovery, etc.) and clear the counter.
+        // Backstop for unattended clusters where none of the explicit reset
+        // triggers (setDesiredSize, onNodeReady, phase NORMAL, leader handoff,
+        // operator reset) ever fires.
+        var lastFailure = lastProvisioningFailureMs.get();
+        if (lastFailure > 0L && nowMs() - lastFailure >= PROVISIONING_AUTO_RESET_QUIESCENCE_MS) {
+            resetProvisioningCircuit("auto-reset after " + (PROVISIONING_AUTO_RESET_QUIESCENCE_MS / 60_000L) + "min quiescence since last failure");
+            return false;
+        }
+        return true;
     }
 
     private boolean provisioningBackoffActive(long nowMs) {
@@ -340,8 +365,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract private void recordProvisioningFailure(String reason) {
         var failures = consecutiveProvisioningFailures.incrementAndGet();
+        var nowMs = nowMs();
         var backoffMs = computeProvisioningBackoffMs(failures);
-        nextProvisioningAllowedMs.set(nowMs() + backoffMs);
+        nextProvisioningAllowedMs.set(nowMs + backoffMs);
+        lastProvisioningFailureMs.set(nowMs);
         if (failures >= MAX_CONSECUTIVE_PROVISIONING_FAILURES) {
             log.error("CTM: provisioning circuit breaker tripped — {} consecutive failure(s); reason: {}. Auto-heal halted until successful node arrival, phase NORMAL, or operator setDesiredSize.",
                       failures,
