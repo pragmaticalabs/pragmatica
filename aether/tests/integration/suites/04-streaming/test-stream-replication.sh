@@ -67,14 +67,36 @@ test_read_from_non_governor_node() {
         return 0
     fi
 
-    # Determine the management port for the alternate node
-    local node_index
-    node_index=$(echo "$alt_node" | grep -o '[0-9]*$')
-    local alt_port=$((MGMT_PORT + node_index - 1))
-    local alt_endpoint="http://${TARGET_HOST}:${alt_port}"
+    # Compose the alt node's management endpoint. Cloud and docker-remote layouts
+    # differ: cloud has one VM per node with mgmt on a fixed port (CLOUD_MGMT_PORT,
+    # default 8080), so the alt host is the node's own public IP. Docker-remote
+    # collocates all 5 nodes on TARGET_HOST and host-maps a per-node port range
+    # (MGMT_PORT + index). Mirrors the convention in `reassign_task_group`
+    # (lib/cluster.sh:1402-1407).
+    local alt_endpoint
+    if [ "${ENV_TYPE:-}" = "cloud" ]; then
+        local alt_ip
+        if ! alt_ip=$(cloud_public_ip "$alt_node"); then
+            skip_test "Read from non-governor" "cloud_public_ip lookup failed for ${alt_node}"
+            return 0
+        fi
+        alt_endpoint="http://${alt_ip}:${CLOUD_MGMT_PORT:-8080}"
+    else
+        local node_index
+        node_index=$(echo "$alt_node" | grep -o '[0-9]*$')
+        local alt_port=$((MGMT_PORT + node_index - 1))
+        alt_endpoint="http://${TARGET_HOST}:${alt_port}"
+    fi
 
-    local result
-    result=$(curl -sf -H "X-API-Key: ${API_KEY}" "${alt_endpoint}/api/streams/${STREAM_NAME}" 2>/dev/null) || true
+    local result rc
+    # `_api_call`-style error capture so a connection-refused at the alt endpoint
+    # surfaces as a warn rather than silently collapsing to empty body (which the
+    # `assert_ne` below would conflate with "stream metadata absent").
+    result=$(curl -sf -H "X-API-Key: ${API_KEY}" --connect-timeout 5 \
+                  "${alt_endpoint}/api/streams/${STREAM_NAME}" 2>/dev/null) && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ] && [ -z "$result" ]; then
+        log_warn "Read from non-governor: curl rc=${rc} from ${alt_endpoint}/api/streams/${STREAM_NAME} (empty body — treating as missing metadata for assertion)"
+    fi
 
     # Empty IS the failure mode — replication is the feature under test. If the
     # non-governor cannot serve stream metadata we have a real replication gap,
