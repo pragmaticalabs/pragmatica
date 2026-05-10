@@ -968,10 +968,14 @@ restart_all_nodes() {
     if ! wait_for_phase "NORMAL" 180; then
         log_warn "restart_all_nodes: cluster did not reach phase=NORMAL within 180s — chaos kills in next test may produce UnknownObserved (no NODE_FAILED event); proceeding with warn"
         # If NORMAL didn't arrive, CTM may be circuit-tripped from prior provisioning
-        # failures (PEERS env doesn't include CTM-replacement node-ids → 60s slot
-        # deadline expires → after 3 failures, breaker trips → handleDeficit halts).
-        # Operator-triggered reset bypasses the auto-recovery triggers (which require
-        # NORMAL transition that didn't happen).
+        # failures. Root cause is slot-deadline timing: CTM's provisioning slot uses a
+        # 60s wallclock timeout that on remote runs can expire before CTM observes the
+        # replacement's actual Rabia/SWIM join, even though the join itself succeeds
+        # (PEERS is a seed list, not an allowlist; QuicClusterNetwork#handleHello
+        # accepts unknown peers and TopologyObserver#addNode is open from gossip).
+        # After 3 such expiries the breaker trips and handleDeficit halts. Operator-
+        # triggered reset bypasses the auto-recovery triggers (which require the NORMAL
+        # transition that didn't happen).
         reset_provisioning_circuit || true
     fi
     log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced, all nodes ready)"
