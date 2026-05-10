@@ -68,8 +68,11 @@ test_kill_node_and_detect_drop() {
     fi
     log_pass "Departure of ${victim} observed on /api/events"
 
-    if ! wait_for_replacement_of "$victim" "$baseline" 90; then
-        log_fail "No NODE_JOINED event for a replacement of ${victim} within 90s"
+    # 180s base × TIMEOUT_SCALE: 180s docker / 540s cloud. CTM auto-heal on
+    # docker-remote takes 60-150s typically (provision + image pull + QUIC handshake +
+    # ON_DUTY transition); 90s was too tight without a pre-pulled snapshot.
+    if ! wait_for_replacement_of "$victim" "$baseline" 180; then
+        log_fail "No NODE_JOINED event for a replacement of ${victim} within 180s"
         return 1
     fi
     log_pass "Replacement for ${victim} observed on /api/events"
