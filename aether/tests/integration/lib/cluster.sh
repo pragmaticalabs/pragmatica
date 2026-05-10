@@ -846,7 +846,17 @@ _docker_container_name() {
     # Remote Docker compose files name containers `aether-<cluster_id>-<node_id>`
     # (aether-a-node-1, aether-b-node-2, ...). Fall back for older single-cluster
     # environments that just use `aether-<node_id>`.
+    #
+    # CTM-provisioned replacement containers carry their own `aether-core-...`
+    # prefix from DockerComputeProvider (see drop_ctm_replacements); their name
+    # IS the node_id. Detect and pass through unchanged — without this the
+    # kill_node target was synthesized as `aether-b-aether-core-node-X-<uuid>`,
+    # which doesn't exist; `docker kill` returned "No such container" and the
+    # test silently believed the kill landed.
     local node_id="$1"
+    case "$node_id" in
+        aether-core-*) printf '%s' "$node_id"; return ;;
+    esac
     if [ -n "${CLUSTER_ID:-}" ]; then
         printf 'aether-%s-%s' "$CLUSTER_ID" "$node_id"
     else
