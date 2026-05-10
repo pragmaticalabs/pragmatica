@@ -81,8 +81,14 @@ import org.slf4j.LoggerFactory;
         private void handleLocalAssignment(TaskGroup taskGroup, List<DelegatedComponent> groupComponents) {
             var inactive = groupComponents.stream().filter(c -> !c.isActive())
                                                  .toList();
+            // When all components are already active, the leader's reconcile may still
+            // re-issue ASSIGNED (e.g., after a transient SUSPECTED health blip flips the
+            // owner out of `collectHealthyCoreNodes`, then back in). Without re-publishing
+            // ACTIVE the KV stays at ASSIGNED indefinitely and tests asserting "all task
+            // groups ACTIVE" hang. `reportActivationSuccess` is an idempotent Put.
             if (inactive.isEmpty()) {
-                log.debug("Task group {} already active on node {}, ignoring duplicate assignment", taskGroup, self);
+                log.debug("Task group {} already active on node {}, re-confirming ACTIVE in KV", taskGroup, self);
+                reportActivationSuccess(taskGroup);
                 return;
             }
             log.info("Task group {} assigned to this node {}, activating {} components",
