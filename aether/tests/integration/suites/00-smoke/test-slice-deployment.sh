@@ -34,30 +34,24 @@ test_blueprint_listed() {
 }
 
 test_app_endpoint_reachable() {
-    # App HTTP server doesn't have /api/health — that's on the management port.
-    # Check that the app port is accepting connections (any non-5xx response).
-    wait_for "app endpoint ready" "curl -s -o /dev/null -w '%{http_code}' ${APP_ENDPOINT}/ 2>/dev/null | grep -qv '^000'" 60
-    local status
-    status=$(http_status "${APP_ENDPOINT}/")
-    if [ "$status" -ge 200 ] && [ "$status" -lt 500 ] 2>/dev/null; then
-        log_pass "App HTTP server responding (status: ${status})"
-        return 0
-    fi
-    log_fail "App HTTP server not responding (status: ${status})"
-    return 1
+    # Use app_route_wired against a known slice route (EchoSlice exposes /health
+    # via its health() method). app_route_wired distinguishes route-missing 404
+    # (sendNoRouteFound problem+json) from a real handler response, so it proves
+    # the slice route table is populated — not just that the TCP socket accepts.
+    wait_for "EchoSlice /health route wired" \
+        "app_route_wired \"${APP_ENDPOINT}/health\"" 60 || {
+        log_fail "App route /health not wired within timeout"
+        return 1
+    }
+    log_pass "App HTTP server responding (EchoSlice /health route wired)"
 }
 
 test_app_request_succeeds() {
-    # Simple GET to verify the deployed app is serving
-    local status
-    status=$(http_status "${APP_ENDPOINT}/" -H "X-API-Key: ${API_KEY}")
-    # Accept 200 or 404 (app is responding, specific route may not exist)
-    if [ "$status" -ge 200 ] && [ "$status" -lt 500 ] 2>/dev/null; then
-        log_pass "App responds to requests (status: ${status})"
-        return 0
-    fi
-    log_fail "App not responding (status: ${status})"
-    return 1
+    # The deployed EchoSlice serves /health → 200 OK with {"status":"healthy"}.
+    # Strict: anything other than 200 (including 404, 401, 503) is a real failure.
+    assert_http_status "${APP_ENDPOINT}/health" "200" \
+        "EchoSlice /health returns 200" \
+        -H "X-API-Key: ${API_KEY}"
 }
 
 run_test "Push artifacts" test_push_artifacts

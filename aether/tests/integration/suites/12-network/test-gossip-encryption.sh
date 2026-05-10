@@ -21,9 +21,8 @@ test_gossip_encryption_active_via_config() {
     local config
     config=$(cluster_config)
     if [ -z "$config" ]; then
-        log_warn "Cluster config unavailable"
-        log_pass "Config endpoint responds"
-        return 0
+        log_fail "TODO: cluster_config returned empty — cannot verify gossip encryption flag"
+        return 1
     fi
 
     local encryption_enabled="unknown"
@@ -46,11 +45,14 @@ test_gossip_encryption_active_via_config() {
     if [ "$encryption_enabled" = "true" ]; then
         log_pass "Gossip encryption confirmed enabled in config"
     elif [ "$encryption_enabled" = "unknown" ]; then
-        log_warn "Gossip encryption status not found in config — checking via logs/metrics"
-        log_pass "Config endpoint responds"
+        # Per user policy: untestable -> log_fail with TODO. The fallback to
+        # "QUIC provides encryption by default" is an assertion-by-rationalization;
+        # exposing this as a real failure forces us to wire a deterministic key.
+        log_fail "TODO: gossip encryption flag not exposed at known config paths (tls.enabled, tls.gossipEncryption, security.enabled, gossip.encrypted) — wire a deterministic config key OR tcpdump-verify the gossip wire is not plaintext"
+        return 1
     else
-        log_warn "Gossip encryption may be disabled: ${encryption_enabled}"
-        log_pass "Config endpoint responds"
+        log_fail "Gossip encryption explicitly disabled in config: ${encryption_enabled}"
+        return 1
     fi
 }
 
@@ -58,17 +60,19 @@ test_gossip_encryption_via_transport() {
     local metrics
     metrics=$(api_get "/api/metrics/transport")
     if [ -z "$metrics" ]; then
-        log_warn "Transport metrics unavailable"
-        log_pass "Transport endpoint responds"
-        return 0
+        log_fail "TODO: /api/metrics/transport returned empty — cannot verify encryption metrics"
+        return 1
     fi
 
     # Check for encryption-related metrics
     if echo "$metrics" | grep -qiE 'encrypt|tls|cipher|handshake' 2>/dev/null; then
         log_pass "Encryption-related transport metrics present"
     else
-        log_warn "No explicit encryption metrics — encryption may be implicit via QUIC"
-        log_pass "Transport metrics available (QUIC provides encryption by default)"
+        # Per user policy: "QUIC provides encryption by default" is rationalization,
+        # not a verifiable assertion. Either expose an encryption metric OR
+        # tcpdump-verify the wire is not plaintext.
+        log_fail "TODO: no encryption-related transport metrics (encrypt|tls|cipher|handshake) exposed; expose explicit metric OR tcpdump-verify gossip wire is not plaintext"
+        return 1
     fi
 }
 

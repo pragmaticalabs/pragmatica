@@ -18,49 +18,42 @@ test_cluster_ready() {
     log_pass "Cluster ready with baseline slice deployment"
 }
 
+# UNTESTABLE without a real datasource fixture: POST /api/schema/baseline returns
+# 500 "Schema status not found for datasource" when the named datasource is not
+# registered. The test-persistence blueprint deployed above registers slice-internal
+# state, NOT a schema-tracked datasource named "${DATASOURCE}". Fixing this requires
+# either binding ${DATASOURCE} to a real Postgres with applied migrations OR exposing
+# a fixture endpoint that registers a synthetic datasource. The prior "endpoint smoke"
+# conversion was wishful — the endpoint isn't a smoke target without a fixture.
 test_schema_baseline_endpoint() {
-    local result
-    result=$(api_post "/api/schema/baseline/${DATASOURCE}" "{}")
-    if [ -n "$result" ]; then
-        log_pass "Schema baseline triggered for ${DATASOURCE}"
-    else
-        log_warn "Baseline returned empty — endpoint may not be configured"
-        log_pass "Baseline endpoint responds"
-    fi
+    log_fail "TODO: POST /api/schema/baseline/${DATASOURCE} requires a registered schema-tracked datasource fixture; today the call returns 500 because the cluster has no datasource named '${DATASOURCE}'"
+    return 1
 }
 
+# UNTESTABLE without a real datasource fixture: the meaningful assertion is
+# "after baseline, schema status reports state=BASELINED with the baseline
+# version recorded". The test cluster does not bind ${DATASOURCE} to a real
+# Postgres with applied migrations, so observed state is empty/UNKNOWN and
+# any reading would trivially pass.
 test_schema_status_after_baseline() {
-    sleep 3
-    local status
-    status=$(schema_status "$DATASOURCE")
-    if [ -n "$status" ]; then
-        local state
-        state=$(json_value "$status" "state")
-        if [ -z "$state" ]; then
-            state=$(json_value "$status" "status")
-        fi
-        state="${state:-UNKNOWN}"
-        log_info "Schema state after baseline: ${state}"
-        log_pass "Schema status available after baseline"
-    else
-        log_pass "Schema status endpoint responds after baseline"
-    fi
+    log_fail "TODO: bind ${DATASOURCE} to a real datasource fixture and assert state == BASELINED with baselineVersion field present after POST /api/schema/baseline"
+    return 1
 }
 
+# Strict: slices must remain active after baselining (baseline must not destabilise
+# the cluster). slices_total_instances() is real cluster state.
 test_slices_active_after_baseline() {
     local instances
     instances=$(slices_total_instances)
     assert_gt "$instances" "0" "Slices still active after baseline: ${instances} instances"
 }
 
+# UNTESTABLE without a real datasource fixture (same reason as test_schema_baseline_endpoint).
+# Idempotency is a meaningful property to assert, but only against an endpoint that returns
+# 2xx in the first place — which requires a registered datasource.
 test_baseline_idempotent() {
-    local result
-    result=$(api_post "/api/schema/baseline/${DATASOURCE}" "{}")
-    if [ -n "$result" ]; then
-        log_pass "Baseline idempotent (second call succeeded)"
-    else
-        log_pass "Baseline idempotent (second call returned empty)"
-    fi
+    log_fail "TODO: idempotency assertion requires a registered datasource fixture (see test_schema_baseline_endpoint TODO above)"
+    return 1
 }
 
 test_cluster_healthy_after_baseline() {

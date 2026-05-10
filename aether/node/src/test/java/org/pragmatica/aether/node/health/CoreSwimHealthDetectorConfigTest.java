@@ -31,8 +31,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// silently overwritten by `SwimConfig.DEFAULT`.
 ///
 /// Before the fix `CoreSwimHealthDetector` hardcoded `SwimConfig.DEFAULT`
-/// (suspectTimeout=15s) regardless of the parsed config — pushing single-kill detection
-/// latency to ~16-18s. After the fix the detector honors caller-supplied timeouts.
+/// (suspectTimeout=10s) regardless of the parsed config — pushing single-kill detection
+/// latency to ~11-13s. After the fix the detector honors caller-supplied timeouts.
 class CoreSwimHealthDetectorConfigTest {
 
     private static final NodeId SELF = new NodeId("self-1");
@@ -63,10 +63,9 @@ class CoreSwimHealthDetectorConfigTest {
 
     @Test
     void fromTimeouts_swimTimeoutsDefaults_matchLegacySwimConfigDefault() {
-        // The toml default suspectTimeout matches `SwimConfig.DEFAULT` (15s) — conservative
-        // for cold-boot Docker containers. The wiring win is that operators can lower it via
-        // `[timeouts.swim] suspect_timeout = "5s"` for faster detection on stable hardware,
-        // without code change.
+        // The toml default suspectTimeout matches `SwimConfig.DEFAULT` (10s). The wiring
+        // win is that operators can lower it via `[timeouts.swim] suspect_timeout = "5s"`
+        // for faster detection on stable hardware, without code change.
         var defaults = SwimTimeouts.swimTimeouts();
 
         assertThat(defaults.suspectTimeout().millis())

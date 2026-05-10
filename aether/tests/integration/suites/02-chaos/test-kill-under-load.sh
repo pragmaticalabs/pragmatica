@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
+source "${SCRIPT_DIR}/../../lib/topology.sh"
+source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 LOAD_DURATION="${LOAD_DURATION:-60}"
 LOAD_RPS="${LOAD_RPS:-5}"
@@ -23,7 +25,8 @@ test_kill_during_load() {
     # Start background load against management health endpoint
     start_mgmt_load "$LOAD_RPS" "$LOAD_DURATION" "/health/live"
 
-    # Wait for load to establish
+    # Load establishment is genuinely time-based (load.sh ramps RPS via sleep);
+    # this is not a chaos-timing sleep, so it stays.
     sleep 5
 
     # Kill a non-leader node
@@ -31,8 +34,24 @@ test_kill_during_load() {
     leader=$(cluster_leader)
     local victim
     victim=$(pick_non_leader "$leader")
+    KILLED_VICTIM="$victim"
+
+    # Capture topology baseline BEFORE the kill so the event-driven barrier
+    # below scopes its event search correctly.
+    local baseline
+    baseline=$(topology_now)
+
     log_info "Killing ${victim} under load"
     kill_node "$victim"
+
+    # Event-driven barrier: assert SWIM detected the failure mid-load. Without
+    # this we'd silently pass even if SWIM detection broke entirely (load
+    # finishes, error rate happens to be acceptable, no one notices).
+    if ! wait_for_node_departure "$victim" "$baseline" 60; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for ${victim} within 60s under load"
+        return 1
+    fi
+    log_pass "Departure of ${victim} observed under load"
 
     # Let load continue through the disruption
     log_info "Waiting for load to complete"
@@ -63,8 +82,13 @@ test_auto_heal() {
 }
 
 cleanup() {
+    # Event-driven pre-quiesce barrier (replaces `sleep 3`).
+    local cleanup_baseline
+    cleanup_baseline=$(topology_now)
     restart_all_nodes
-    sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
+    if ! wait_for_replacement_of "${KILLED_VICTIM:-$(mgmt_entry_point_node)}" "$cleanup_baseline" 60; then
+        log_warn "No NODE_JOINED rejoin event observed within 60s after restart_all_nodes"
+    fi
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
         log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }

@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
+source "${SCRIPT_DIR}/../../lib/topology.sh"
+source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 test_initial_state() {
     wait_for_cluster 60
@@ -23,15 +25,22 @@ test_kill_non_leader() {
     victim=$(pick_non_leader "$leader")
     assert_ne "$victim" "" "Non-leader identified: ${victim}"
 
+    # Capture topology baseline BEFORE kill so the event-driven barrier can
+    # scope its search to the post-kill window.
+    KILLED_VICTIM="$victim"
+    KILLED_BASELINE=$(topology_now)
+
     log_info "Killing non-leader: ${victim}"
     kill_node "$victim"
 
-    # Give auto-heal a chance to observe the failure. We don't assert a specific
-    # intermediate count because CTM reconciliation may have already restored or
-    # even transiently provisioned extra nodes — the only invariants that matter
-    # are covered by subsequent tests (leader stable, cluster healthy, back to 5).
-    sleep 10
-    log_pass "Kill observed (current count: $(cluster_node_count))"
+    # Event-driven barrier (replaces `sleep 10`). The previous sleep absorbed
+    # SWIM detection regressions silently; this assertion fails fast if the
+    # surviving nodes don't observe NODE_LEFT/NODE_FAILED for the victim within 60s.
+    if ! wait_for_node_departure "$victim" "$KILLED_BASELINE" 60; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for ${victim} within 60s"
+        return 1
+    fi
+    log_pass "Departure of ${victim} observed via /api/events (current count: $(cluster_node_count))"
 }
 
 test_leader_unchanged() {
@@ -60,8 +69,15 @@ test_auto_heal() {
 }
 
 cleanup() {
+    # Event-driven pre-quiesce barrier (replaces `sleep 3`). Author admitted the
+    # sleep masks the race — without it await_generation_quiesced returns OK
+    # before churn starts. Wait for any rejoin event before requesting quiescence.
+    local cleanup_baseline
+    cleanup_baseline=$(topology_now)
     restart_all_nodes
-    sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
+    if ! wait_for_replacement_of "${KILLED_VICTIM:-$(mgmt_entry_point_node)}" "$cleanup_baseline" 60; then
+        log_warn "No NODE_JOINED rejoin event observed within 60s after restart_all_nodes"
+    fi
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
         log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }

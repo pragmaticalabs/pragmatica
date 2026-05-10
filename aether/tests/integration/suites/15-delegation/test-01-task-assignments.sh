@@ -93,9 +93,16 @@ test_deployment_group_functional() {
     status=$(task_group_status "DEPLOYMENT")
     assert_eq "$status" "ACTIVE" "DEPLOYMENT group is ACTIVE"
 
-    # CDM functionality check: slices endpoint should respond
-    local slices
-    slices=$(cluster_slices 2>/dev/null || echo "")
+    # CDM functionality check: slices endpoint should respond. Don't `|| echo ""`
+    # — that masks CLI failure as a passing path. Capture stderr + rc and surface
+    # the real error.
+    local slices slices_rc
+    slices=$(cluster_slices 2>&1)
+    slices_rc=$?
+    if [ "$slices_rc" -ne 0 ]; then
+        log_fail "cluster_slices CLI failed (rc=${slices_rc}): $(printf '%s' "$slices" | head -c 200)"
+        return 1
+    fi
     assert_ne "$slices" "" "Slices endpoint responds (CDM functional)"
 }
 

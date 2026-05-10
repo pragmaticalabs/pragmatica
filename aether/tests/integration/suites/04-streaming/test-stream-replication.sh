@@ -42,12 +42,10 @@ test_stream_visible_on_governor() {
 test_read_events_from_partition() {
     local result
     result=$(api_get "/api/streams/read/${STREAM_NAME}/0?from=0&max=10")
-    if [ -n "$result" ]; then
-        assert_contains "$result" "events" "Events readable from partition 0"
-    else
-        log_warn "Read endpoint returned empty — stream may not have flushed yet"
-        return 0
-    fi
+    # Empty response IS the failure mode — after publishing 10 events the read
+    # endpoint must return a non-empty payload containing the "events" field.
+    assert_ne "$result" "" "Read endpoint returns non-empty payload after publish"
+    assert_contains "$result" "events" "Events readable from partition 0"
 }
 
 # Attempt to read stream data via a non-leader node.
@@ -78,13 +76,11 @@ test_read_from_non_governor_node() {
     local result
     result=$(curl -sf -H "X-API-Key: ${API_KEY}" "${alt_endpoint}/api/streams/${STREAM_NAME}" 2>/dev/null) || true
 
-    if [ -n "$result" ]; then
-        assert_contains "$result" "$STREAM_NAME" "Stream metadata accessible from non-governor node"
-    else
-        log_warn "Stream not yet accessible from non-governor node (replication transport may not be wired)"
-        log_info "TODO: Once ReplicationTransport is connected in AetherNode, this test should assert event data"
-        return 0
-    fi
+    # Empty IS the failure mode — replication is the feature under test. If the
+    # non-governor cannot serve stream metadata we have a real replication gap,
+    # not a "not yet wired" excuse to log_warn and pass.
+    assert_ne "$result" "" "Stream metadata reachable from non-governor ${alt_node}"
+    assert_contains "$result" "$STREAM_NAME" "Stream metadata accessible from non-governor node"
 }
 
 test_stream_in_list_after_replication() {

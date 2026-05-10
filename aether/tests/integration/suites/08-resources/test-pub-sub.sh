@@ -17,7 +17,11 @@ test_cluster_ready() {
 test_stream_exists_or_created() {
     local streams
     streams=$(stream_list)
-    if echo "$streams" | grep -q "$STREAM_NAME" 2>/dev/null; then
+    # Match exact JSON field "name":"<STREAM_NAME>" (with optional whitespace) so
+    # that a different stream whose name is a prefix of $STREAM_NAME (or contains
+    # $STREAM_NAME inside another field, e.g. a description) does NOT cause a
+    # false positive. Allow optional whitespace between the colon and the value.
+    if printf '%s' "$streams" | grep -qE "\"name\"[[:space:]]*:[[:space:]]*\"${STREAM_NAME}\""; then
         log_pass "Stream ${STREAM_NAME} already exists"
     else
         log_info "Stream ${STREAM_NAME} not found — publishing will auto-create"

@@ -6,35 +6,51 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
+ALERT_NAME="integration-test-alert-$$"
+ALERT_METRIC="test.integration.counter"
+
 test_cluster_ready() {
     wait_for_cluster 60
     log_pass "Cluster ready"
 }
 
+# Smoke: thresholds endpoint must respond 200 (covered earlier by alerts coverage,
+# but kept explicit). An empty list IS a valid response — there may be zero
+# thresholds — so we assert HTTP status, not body content.
 test_thresholds_endpoint() {
-    local thresholds
-    thresholds=$(api_get "/api/thresholds")
-    if [ -n "$thresholds" ]; then
-        log_pass "Thresholds endpoint returns data"
-    else
-        log_pass "Thresholds endpoint responds (empty is valid)"
-    fi
+    assert_http_status "${CLUSTER_ENDPOINT}/api/thresholds" "200" \
+        "GET /api/thresholds returns 200" \
+        -H "X-API-Key: ${API_KEY}"
 }
 
+# Strict: POST a threshold, then GET /api/thresholds and verify it appears.
+# This converts "endpoint responds" into "endpoint accepts and persists my write".
 test_set_alert_threshold() {
-    local body='{"metric":"test.integration.counter","operator":"gt","value":0,"severity":"warning","name":"integration-test-alert"}'
-    local result
-    result=$(api_post "/api/thresholds" "$body")
-    if [ -n "$result" ]; then
-        log_pass "Alert threshold set"
-    else
-        log_warn "Threshold creation returned empty — alerting may not be configured"
-        log_pass "Thresholds endpoint responds"
+    # Server contract: ThresholdRequest{metric, warning, critical} — see AlertRoutes.java.
+    # The prior body shape `{metric,operator,value,severity,name}` was wrong; server
+    # rejected with 500 "Missing metric, warning, or critical field". The pre-strict
+    # assertion warn-then-pass demotion silently swallowed it.
+    local body
+    body="{\"metric\":\"${ALERT_METRIC}\",\"warning\":1,\"critical\":5}"
+    local create_result
+    if ! create_result=$(api_post "/api/thresholds" "$body"); then
+        log_fail "POST /api/thresholds failed (api_post returned non-zero)"
+        return 1
     fi
+    # Read back and verify our threshold appears in the list (matched by metric name —
+    # the server response shape uses the metric as the identity, not a synthetic name).
+    local thresholds
+    if ! thresholds=$(api_get "/api/thresholds"); then
+        log_fail "GET /api/thresholds failed after creation"
+        return 1
+    fi
+    assert_contains "$thresholds" "$ALERT_METRIC" \
+        "Created threshold for metric '${ALERT_METRIC}' is visible in /api/thresholds"
 }
 
+# Generating load is mechanical — the real assertion is whether an alert is
+# emitted, which lives in test_check_alerts_fired below.
 test_trigger_alert_condition() {
-    # Generate load to trigger alert condition
     for i in $(seq 1 20); do
         api_get "/api/status" > /dev/null 2>&1 || true
     done
@@ -42,47 +58,21 @@ test_trigger_alert_condition() {
     log_pass "Generated load to trigger alert"
 }
 
+# UNTESTABLE without product wiring: the test threshold targets a metric
+# (`test.integration.counter`) that the runtime does not actually publish, so
+# no alert can ever fire. Honestly testing "alert fires when condition holds"
+# requires either (a) a synthetic metric we can drive from the test, or
+# (b) an alert-injection management endpoint. Neither exists today.
 test_check_alerts_fired() {
-    local alerts
-    alerts=$(api_get "/api/alerts")
-    if [ -n "$alerts" ]; then
-        local count
-        # Count alert entries: count opening braces in alerts array or top-level array
-        if echo "$alerts" | grep -q "\"alerts\""; then
-            count=$(json_array_length "$alerts" "alerts")
-        else
-            count=$(json_array_length "$alerts")
-        fi
-        if [ "$count" -gt 0 ] 2>/dev/null; then
-            log_pass "Alerts fired: ${count} alert(s)"
-        else
-            log_warn "No alerts triggered — threshold may not match any active metric"
-            log_pass "Alerts endpoint responds"
-        fi
-    else
-        log_warn "Alerts endpoint returned empty"
-        log_pass "Alerts endpoint responds"
-    fi
+    log_fail "TODO: alert-firing assertion requires synthetic metric injection or a test-controllable threshold target — no product mechanism today"
+    return 1
 }
 
+# UNTESTABLE for the same reason as above: there are no alerts to inspect, so
+# field-shape assertions cannot run without first being able to produce one.
 test_alerts_have_fields() {
-    local alerts
-    alerts=$(api_get "/api/alerts")
-    if [ -z "$alerts" ]; then
-        log_pass "Alerts endpoint responds (no alerts to verify fields)"
-        return 0
-    fi
-
-    local has_fields="no"
-    if echo "$alerts" | grep -qE '"(name|alertName|metric)"[[:space:]]*:'; then
-        has_fields="yes"
-    fi
-    if [ "$has_fields" = "yes" ]; then
-        log_pass "Alert entries contain expected fields"
-    else
-        log_warn "Alert entries missing name/severity fields"
-        log_pass "Alerts endpoint returns data"
-    fi
+    log_fail "TODO: alert-entry shape assertion is gated on the same alert-injection capability missing for test_check_alerts_fired"
+    return 1
 }
 
 test_cluster_healthy_after_alerts() {

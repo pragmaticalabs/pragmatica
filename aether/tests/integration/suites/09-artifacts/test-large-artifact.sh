@@ -32,7 +32,9 @@ push_and_verify_size() {
     actual_size=$(wc -c < "$push_file" | tr -d ' ')
     log_info "Generated ${label} artifact: ${actual_size} bytes"
 
-    # Push
+    # Push — must be 2xx. Use positive form so a non-numeric status (e.g. empty
+    # string from a curl crash) hits the failure branch instead of silently
+    # passing through `[ ... ] 2>/dev/null` arith errors.
     local push_status
     push_status=$(curl -s -o /dev/null -w "%{http_code}" \
         -X PUT \
@@ -40,18 +42,18 @@ push_and_verify_size() {
         -H "Content-Type: application/octet-stream" \
         --data-binary "@${push_file}" \
         "${CLUSTER_ENDPOINT}/repository/org/test/${ARTIFACT_BASE}/${label}/${ARTIFACT_BASE}-${label}.jar")
-    if [ "$push_status" -lt 200 ] || [ "$push_status" -ge 300 ] 2>/dev/null; then
-        log_fail "Push ${label} returned ${push_status}"
+    if ! { [ "$push_status" -ge 200 ] && [ "$push_status" -lt 300 ]; } 2>/dev/null; then
+        log_fail "Push ${label} returned ${push_status} (expected 2xx)"
         return 1
     fi
 
-    # Resolve
+    # Resolve — must be 2xx. Same positive-form rationale as the push check.
     local resolve_status
     resolve_status=$(curl -s -o "$resolve_file" -w "%{http_code}" \
         -H "X-API-Key: ${API_KEY}" \
         "${CLUSTER_ENDPOINT}/repository/org/test/${ARTIFACT_BASE}/${label}/${ARTIFACT_BASE}-${label}.jar")
-    if [ "$resolve_status" -lt 200 ] || [ "$resolve_status" -ge 300 ] 2>/dev/null; then
-        log_fail "Resolve ${label} returned ${resolve_status}"
+    if ! { [ "$resolve_status" -ge 200 ] && [ "$resolve_status" -lt 300 ]; } 2>/dev/null; then
+        log_fail "Resolve ${label} returned ${resolve_status} (expected 2xx)"
         return 1
     fi
 

@@ -13,61 +13,38 @@ test_cluster_ready() {
     log_pass "Cluster ready"
 }
 
+# UNTESTABLE without a registered schema-tracked datasource: GET /api/schema/status
+# returns 500 "Schema status not found for datasource" when the named datasource is
+# not bound. The test-persistence blueprint deployed by the suite registers slice-
+# internal state but NOT a schema-tracked datasource. The prior "endpoint smoke"
+# conversion was wishful — without a fixture this assertion is structural, not behavioural.
 test_schema_status_before_retry() {
-    local status
-    status=$(schema_status "$DATASOURCE")
-    if [ -n "$status" ]; then
-        log_pass "Schema status available before retry"
-    else
-        log_pass "Schema status endpoint responds (empty is valid)"
-    fi
+    log_fail "TODO: schema_status('${DATASOURCE}') requires a registered datasource fixture; today returns 500 because the cluster has no datasource named '${DATASOURCE}'"
+    return 1
 }
 
+# UNTESTABLE without a registered datasource (same reason). POST /api/schema/retry
+# returns 500 "Schema is not in FAILED state" only AFTER datasource registration.
+# Without the fixture, returns 500 "Schema status not found for datasource".
 test_schema_retry_endpoint() {
-    local result
-    result=$(schema_retry "$DATASOURCE")
-    if [ -n "$result" ]; then
-        log_pass "Schema retry triggered for ${DATASOURCE}"
-    else
-        log_warn "Retry returned empty — may have nothing to retry"
-        log_pass "Retry endpoint responds"
-    fi
+    log_fail "TODO: POST /api/schema/retry/${DATASOURCE} requires a registered datasource fixture (see test_schema_status_before_retry TODO above)"
+    return 1
 }
 
+# UNTESTABLE without a failure-injection fixture: the meaningful assertion is
+# "after a failed migration, retry transitions state from FAILED → HEALTHY".
+# Without a way to introduce a failed migration first, this test is observing
+# the steady-state schema status and any value (or empty body) trivially passes.
 test_schema_status_after_retry() {
-    sleep 5
-    local status
-    status=$(schema_status "$DATASOURCE")
-    if [ -n "$status" ]; then
-        local has_error="no"
-        local schema_state
-        schema_state=$(json_value "$status" "state")
-        if [ -z "$schema_state" ]; then
-            schema_state=$(json_value "$status" "status")
-        fi
-        if echo "$schema_state" | grep -qiE 'FAILED|ERROR'; then
-            has_error="yes"
-        fi
-        if [ "$has_error" = "yes" ]; then
-            log_warn "Schema still in error state after retry"
-            log_pass "Schema retry was attempted (state may require manual fix)"
-        else
-            log_pass "Schema status healthy after retry"
-        fi
-    else
-        log_pass "Schema status endpoint responds after retry"
-    fi
+    log_fail "TODO: requires fault-injection fixture (deploy slice with deliberately-failing migration, then retry, then assert state transitions FAILED → HEALTHY)"
+    return 1
 }
 
+# UNTESTABLE without a registered datasource (same reason). Idempotency is a real
+# property to assert, but only against an endpoint that returns 2xx in the first place.
 test_retry_idempotent() {
-    # Retry again — should not cause errors
-    local result
-    result=$(schema_retry "$DATASOURCE")
-    if [ -n "$result" ]; then
-        log_pass "Schema retry idempotent (second call succeeded)"
-    else
-        log_pass "Schema retry idempotent (second call returned empty — no work needed)"
-    fi
+    log_fail "TODO: idempotency assertion requires a registered datasource fixture (see test_schema_retry_endpoint TODO above)"
+    return 1
 }
 
 test_cluster_healthy_after_retry() {

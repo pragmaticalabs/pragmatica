@@ -181,7 +181,7 @@ _api_call() {
 
 api_delete() {
     local path="$1"
-    curl -sfk -X DELETE -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}${path}"
+    _api_call DELETE "${CLUSTER_ENDPOINT}${path}"
 }
 
 # Per-node HTTP helpers — for legitimate per-node state queries.
@@ -192,14 +192,13 @@ api_delete() {
 node_api_get() {
     local offset="$1" path="$2"
     local port=$((MGMT_PORT + offset))
-    curl -sfk -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}${path}"
+    _api_call GET "http://${TARGET_HOST}:${port}${path}"
 }
 
 node_api_post() {
     local offset="$1" path="$2" body="${3:-"{}"}"
     local port=$((MGMT_PORT + offset))
-    curl -sfk -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-        -d "$body" "http://${TARGET_HOST}:${port}${path}"
+    _api_call POST "http://${TARGET_HOST}:${port}${path}" "$body"
 }
 
 # Back-compat shims — forward to the MGMT_ENTRY_POINT, no client-side failover.
@@ -213,17 +212,18 @@ direct_api_post() {
     api_post "$1" "${2:-"{}"}"
 }
 
-# HTTP helpers — app HTTP (port 8070)
+# HTTP helpers — app HTTP (port 8070).
+# Routes through _api_call so HTTP error bodies surface as warn diagnostics rather
+# than being silently dropped by `curl -sf` (the trap `_api_call` was built to fix).
 app_get() {
     local path="$1"
-    curl -sfk -H "X-API-Key: ${API_KEY}" "${APP_ENDPOINT}${path}"
+    _api_call GET "${APP_ENDPOINT}${path}"
 }
 
 app_post() {
     local path="$1"
     local body="${2:-"{}"}"
-    curl -sfk -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-        -d "$body" "${APP_ENDPOINT}${path}"
+    _api_call POST "${APP_ENDPOINT}${path}" "$body"
 }
 
 # Raw curl (no -f) — returns status code
@@ -240,17 +240,33 @@ wait_for() {
     # Scale timeouts on slower environments (cloud VMs have higher inter-node latency than
     # docker-localhost). TIMEOUT_SCALE=3 default for cloud, 1 elsewhere — set in run-tests.sh.
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
-    local elapsed=0
+    local elapsed=0 rc errfile
+    errfile=$(mktemp)
     log_info "Waiting for: ${description} (timeout: ${timeout}s)"
     while [ "$elapsed" -lt "$timeout" ]; do
-        if eval "$check_cmd" > /dev/null 2>&1; then
-            log_pass "${description} (${elapsed}s)"
-            return 0
-        fi
+        # Capture rc without tripping `set -e` from the caller — `eval` as a standalone
+        # command would propagate its non-zero exit and abort the entire script when
+        # the predicate is simply false. The `&& rc=0 || rc=$?` idiom swallows the exit
+        # code into a captured variable, equivalent to the legacy `if eval; then`
+        # protection without re-introducing the if/then nesting.
+        eval "$check_cmd" > /dev/null 2>"$errfile" && rc=0 || rc=$?
+        case "$rc" in
+            0)
+                log_pass "${description} (${elapsed}s)"
+                rm -f "$errfile"
+                return 0
+                ;;
+            2|127)
+                # Bash parse error / command not found — predicate is buggy, not just false.
+                # Surface it so a test author can fix the typo instead of waiting for timeout.
+                log_warn "wait_for predicate emitted shell error (rc=${rc}): $(head -c 300 < "$errfile")"
+                ;;
+        esac
         sleep "$interval"
         elapsed=$((elapsed + interval))
     done
     log_fail "${description} (timed out after ${timeout}s)"
+    rm -f "$errfile"
     return 1
 }
 

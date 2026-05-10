@@ -42,11 +42,16 @@ public record SwimConfig(TimeSpan period,
                          TimeSpan startupDelay) {
 
     /// Default configuration — suitable for Docker and containerized environments.
+    /// `suspectTimeout` is the dominant hop in the SWIM detection chain; lowered
+    /// from 15s to 10s to bring p95 detection well under the 60s integration-test
+    /// SLO without inviting false-positive FAULTY transitions under transient
+    /// packet loss (the chain still requires a successful indirect-probe round
+    /// to fail before SUSPECT is entered).
     public static final SwimConfig DEFAULT = swimConfig(
         timeSpan(1).seconds(),
         timeSpan(800).millis(),
         3,
-        timeSpan(15).seconds(),
+        timeSpan(10).seconds(),
         8,
         timeSpan(5).seconds(),
         timeSpan(10).seconds()

@@ -39,7 +39,8 @@ test_sustained_publish() {
             -H "Content-Type: application/json" \
             -d "$payload")
 
-        if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+        # Strict 2xx only — 3xx (redirects) is not a successful publish.
+        if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
             success=$((success + 1))
         else
             failure=$((failure + 1))

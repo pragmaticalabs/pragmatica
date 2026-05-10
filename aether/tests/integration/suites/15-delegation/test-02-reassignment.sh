@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
+source "${SCRIPT_DIR}/../../lib/topology.sh"
 
 : "${AETHER_SSH_USER:=aether}"
 
@@ -114,12 +115,25 @@ test_node_failure_reassignment() {
         log_info "SCALING now on: ${scaling_node}"
     fi
 
+    # Capture topology baseline BEFORE the kill so the event-driven barrier can
+    # scope its event search to the post-kill window.
+    local baseline
+    baseline=$(topology_now)
+
     # Kill the node hosting SCALING
     log_info "Killing node: ${scaling_node}"
     kill_node "$scaling_node"
 
+    # Event-driven barrier (replaces `sleep 5  # Allow SWIM to detect failure`).
+    # Hardcoded 5s was less than SWIM's detection period under load; this fails
+    # fast if SWIM regresses past 30s rather than racing wait_for_task_active.
+    if ! wait_for_node_departure "$scaling_node" "$baseline" 60; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for ${scaling_node} within 30s"
+        return 1
+    fi
+    log_pass "Departure of ${scaling_node} observed via /api/events"
+
     # Wait for SCALING to be reassigned to a different node
-    sleep 5  # Allow SWIM to detect failure
     wait_for_task_active "SCALING" 60
 
     local new_node

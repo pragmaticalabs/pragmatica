@@ -119,6 +119,12 @@ case "$ENV_TYPE" in
     remote)
         : "${TARGET_HOST:?TARGET_HOST must be set for remote env}"
         : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote env}"
+        # Remote runs Docker on a Hetzner-class host: inter-node latency and
+        # provisioning jitter are between docker-localhost and cloud. SWIM detection
+        # chain (15s suspectTimeout + 10s reconciler cooldown + probe round-robin slip)
+        # sits in the 50-60s p95 band, hard-bumping the suite's 60s detection wall
+        # without scaling. Override via env if needed.
+        export TIMEOUT_SCALE="${TIMEOUT_SCALE:-2}"
         ;;
     cloud)
         : "${HCLOUD_TOKEN:?HCLOUD_TOKEN must be set for cloud env}"

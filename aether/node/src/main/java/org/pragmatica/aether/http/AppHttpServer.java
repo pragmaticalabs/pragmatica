@@ -761,6 +761,18 @@ class AppHttpServerAdapter implements AppHttpServer {
                         requestId);
             return;
         }
+        if (routeRegistry.findRoute(method, request.path()).isPresent()) {
+            log.debug("Route table propagation lag for {} {} [{}] — registry has it, snapshot not refreshed yet",
+                      method,
+                      request.path(),
+                      requestId);
+            sendProblem(response,
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "Route table propagating; retry after a moment",
+                        request.path(),
+                        requestId);
+            return;
+        }
         log.warn("No route found for {} {} [{}]", method, request.path(), requestId);
         sendProblem(response,
                     HttpStatus.NOT_FOUND,

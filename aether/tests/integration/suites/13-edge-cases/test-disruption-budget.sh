@@ -70,25 +70,23 @@ test_drain_beyond_budget_rejected() {
     log_info "Attempting to drain third node: ${node3}"
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
+    log_info "Third drain response: ${status}"
 
-    # Budget enforcement is conditional on live ON_DUTY count: it rejects only when
-    # operationalAfterDrain < majority(initialTopology). With CTM auto-heal active,
-    # earlier-drained nodes are replaced and ON_DUTY can be restored before the third
-    # drain — in which case 200 is the *correct* answer (capacity is healthy). We can't
-    # deterministically force a budget-trip on docker-remote without disabling auto-heal,
-    # so accept either outcome and verify the response is well-formed.
-    if [ "$status" -eq 409 ] 2>/dev/null; then
-        log_pass "Third drain rejected by disruption budget (${status}) — budget tripped"
-    elif [ "$status" -ge 400 ] && [ "$status" -lt 500 ] 2>/dev/null; then
-        log_pass "Third drain rejected (${status})"
-    elif [ "$status" -eq 503 ] 2>/dev/null; then
-        log_pass "Third drain rejected — service unavailable (${status})"
-    elif [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
-        log_pass "Third drain accepted (${status}) — auto-heal restored capacity, budget not threatened"
-    else
-        log_fail "Third drain unexpected status ${status}"
-        return 1
-    fi
+    # TODO: this test cannot prove disruption-budget enforcement on a fixture with
+    # CTM auto-heal active. With auto-heal, earlier-drained nodes are replaced
+    # before the third drain lands, ON_DUTY is restored, and the budget is *not*
+    # threatened — so 200 is "correct" here. With auto-heal disabled, this drain
+    # would deterministically return 409 (budget tripped). Accepting both outcomes
+    # (current state) means the test passes for *every* possible response, which
+    # makes it incapable of catching a budget regression.
+    #
+    # Required capability: a fixture toggle to disable CTM auto-heal for this
+    # suite (e.g., FIXTURE=no-auto-heal in 13-edge-cases/suite.conf), then assert
+    # exact status=409 with a problem+json body whose `type` identifies the
+    # disruption-budget rejection. Until that toggle exists, the test is broken
+    # by design and must FAIL so the gap stays visible.
+    log_fail "TODO: test cannot prove budget rejection without disabling CTM auto-heal in fixture (status was ${status}). Required: fixture toggle + assert_eq status 409 + problem+json type check."
+    return 1
 }
 
 test_quorum_preserved() {
@@ -103,11 +101,18 @@ test_reactivate_nodes() {
         log_info "Reactivating drained nodes"
         # If lifecycle JSON contains any drain-related state, reactivate all known nodes
         if echo "$lifecycle" | grep -qiE 'drain'; then
+            local errfile
+            errfile=$(mktemp)
             echo "$lifecycle" | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' | while read -r nid; do
                 if [ -n "$nid" ]; then
-                    activate_node "$nid" 2>/dev/null || true
+                    # Capture stderr; surface failures as warnings instead of `|| true`
+                    # which silently masks management-API regressions during cleanup.
+                    if ! activate_node "$nid" 2>"$errfile"; then
+                        log_warn "activate_node ${nid} failed: $(head -c 300 < "$errfile")"
+                    fi
                 fi
             done
+            rm -f "$errfile"
         fi
     fi
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "reactivation did not quiesce"

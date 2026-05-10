@@ -25,12 +25,27 @@ test_cluster_exists() {
 test_destroy_cluster() {
     if command -v aether &>/dev/null; then
         log_info "Running: aether cluster destroy --yes"
-        aether cluster destroy --yes
+        if ! aether cluster destroy --yes; then
+            log_fail "aether cluster destroy --yes failed"
+            return 1
+        fi
         log_pass "Destroy command completed"
     else
         log_info "No aether CLI — destroying via Docker directly"
-        remote_exec "docker ps -a --filter 'name=aether-' --format '{{.Names}}' | xargs -r docker stop" 2>/dev/null || true
-        remote_exec "docker ps -a --filter 'name=aether-' --format '{{.Names}}' | xargs -r docker rm -f" 2>/dev/null || true
+        # Don't `2>/dev/null || true` — that hides stderr AND ignores rc, so a
+        # remote_exec failure would be invisible. Capture stderr, log on failure.
+        local stop_err rm_err stop_rc rm_rc
+        stop_err=$(remote_exec "docker ps -a --filter 'name=aether-' --format '{{.Names}}' | xargs -r docker stop" 2>&1)
+        stop_rc=$?
+        if [ "$stop_rc" -ne 0 ]; then
+            log_warn "docker stop returned rc=${stop_rc}: $(printf '%s' "$stop_err" | head -c 300)"
+        fi
+        rm_err=$(remote_exec "docker ps -a --filter 'name=aether-' --format '{{.Names}}' | xargs -r docker rm -f" 2>&1)
+        rm_rc=$?
+        if [ "$rm_rc" -ne 0 ]; then
+            log_fail "docker rm -f returned rc=${rm_rc}: $(printf '%s' "$rm_err" | head -c 300)"
+            return 1
+        fi
         log_pass "Docker containers removed"
     fi
 }
@@ -59,9 +74,21 @@ test_no_containers_running() {
 }
 
 test_data_cleaned() {
-    local data_exists
-    data_exists=$(remote_exec "ls \$HOME/aether/data/ 2>/dev/null | wc -l | tr -d ' '" 2>/dev/null || echo "0")
-    if [ "$data_exists" = "0" ] || [ -z "$data_exists" ]; then
+    # Don't `|| echo "0"` — that defaults to the success path on ANY error
+    # (network, ssh, missing helper). Use a sentinel so the assertion fails
+    # loudly on infra trouble instead of silently passing.
+    local data_exists data_rc
+    data_exists=$(remote_exec "ls \$HOME/aether/data/ 2>/dev/null | wc -l | tr -d ' '")
+    data_rc=$?
+    if [ "$data_rc" -ne 0 ]; then
+        log_fail "remote_exec ls failed (rc=${data_rc}): cannot verify data cleanup"
+        return 1
+    fi
+    if [ -z "$data_exists" ]; then
+        log_fail "remote_exec ls returned empty output: cannot verify data cleanup"
+        return 1
+    fi
+    if [ "$data_exists" = "0" ]; then
         log_pass "Aether data directory clean"
     else
         log_warn "Data directory not empty (${data_exists} files) — may need manual cleanup"

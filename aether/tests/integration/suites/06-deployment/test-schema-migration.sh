@@ -13,45 +13,41 @@ test_cluster_ready() {
     log_pass "Cluster ready"
 }
 
+# UNTESTABLE without a registered schema-tracked datasource (same as 10-database).
 test_schema_status() {
-    local status
-    status=$(schema_status "$DATASOURCE")
-    # May return empty if no schema configured — that is acceptable
-    if [ -n "$status" ]; then
-        log_pass "Schema status available for ${DATASOURCE}"
-    else
-        log_warn "Schema status empty — datasource may not be configured"
-        log_pass "Schema status endpoint responds"
-    fi
+    log_fail "TODO: schema_status('${DATASOURCE}') requires a registered datasource fixture; today returns 500 because the cluster has no datasource named '${DATASOURCE}'"
+    return 1
 }
 
+# Strict: global schema status aggregates over all bound datasources. Empty list
+# is a valid result when no datasources are bound; assert JSON-shaped response.
 test_schema_status_all() {
     local status
-    status=$(schema_status)
-    assert_ne "$status" "" "Global schema status returns data"
+    if ! status=$(schema_status); then
+        log_fail "Global schema_status failed"
+        return 1
+    fi
+    case "$status" in
+        \[*|\{*) log_pass "Global schema status returns JSON-shaped body (${#status} bytes)" ;;
+        *) log_fail "Global schema status response is not JSON-shaped: $(printf '%s' "$status" | head -c 100)"; return 1 ;;
+    esac
 }
 
+# UNTESTABLE without a real datasource fixture: the meaningful assertion is
+# "after triggering migration, applied count increased from N to N+1". That
+# requires (a) a datasource bound to real Postgres and (b) at least one
+# pending migration in the deployed slice. Neither is set up here, so the
+# call returns empty/no-op and trivially passes today — exactly the warn-then-pass
+# pattern we are eliminating.
 test_trigger_migration() {
-    local result
-    result=$(schema_migrate "$DATASOURCE")
-    # May succeed or fail depending on whether migrations exist
-    if [ -n "$result" ]; then
-        log_pass "Schema migration triggered for ${DATASOURCE}"
-    else
-        log_warn "Migration returned empty — may have no pending migrations"
-        log_pass "Migration endpoint responds"
-    fi
+    log_fail "TODO: bind ${DATASOURCE} to real datasource fixture with pending migration; assert appliedCount increases by 1 after POST /api/schema/migrate"
+    return 1
 }
 
+# UNTESTABLE without a registered datasource (same reason as test_schema_status above).
 test_schema_retry() {
-    local result
-    result=$(schema_retry "$DATASOURCE")
-    if [ -n "$result" ]; then
-        log_pass "Schema retry triggered for ${DATASOURCE}"
-    else
-        log_warn "Retry returned empty — may have nothing to retry"
-        log_pass "Retry endpoint responds"
-    fi
+    log_fail "TODO: POST /api/schema/retry/${DATASOURCE} requires a registered datasource fixture (see test_schema_status TODO above)"
+    return 1
 }
 
 test_cluster_healthy_after_migration() {

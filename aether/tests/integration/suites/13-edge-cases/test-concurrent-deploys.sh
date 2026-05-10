@@ -81,15 +81,16 @@ test_concurrent_deploy() {
 
     log_info "Stream A (${STREAM_A}): ${status_a}, Stream B (${STREAM_B}): ${status_b}"
 
-    # Both should succeed (2xx) or already exist (conflict is acceptable)
+    # Both publishes must succeed (2xx). 404 from a missing route or 401 from an
+    # auth misconfig is NOT "publish succeeded" — accepting <500 hid those.
     local a_ok=false b_ok=false
-    if [ "$status_a" -ge 200 ] && [ "$status_a" -lt 500 ] 2>/dev/null; then a_ok=true; fi
-    if [ "$status_b" -ge 200 ] && [ "$status_b" -lt 500 ] 2>/dev/null; then b_ok=true; fi
+    if [ "$status_a" -ge 200 ] && [ "$status_a" -lt 300 ] 2>/dev/null; then a_ok=true; fi
+    if [ "$status_b" -ge 200 ] && [ "$status_b" -lt 300 ] 2>/dev/null; then b_ok=true; fi
 
     if [ "$a_ok" = true ] && [ "$b_ok" = true ]; then
-        log_pass "Both concurrent stream publishes completed without 5xx errors"
+        log_pass "Both concurrent stream publishes returned 2xx (A=${status_a}, B=${status_b})"
     else
-        log_fail "Concurrent publish failure: A=${status_a}, B=${status_b}"
+        log_fail "Concurrent publish failure: A=${status_a}, B=${status_b} (expected 2xx for both)"
         return 1
     fi
 }
@@ -129,12 +130,22 @@ test_artifact_isolation() {
         slice_count=$(json_array_length "$slices")
     fi
     log_info "Total slice types: ${slice_count}"
-    if [ "$slice_count" -ge 1 ] 2>/dev/null; then
-        log_pass "Slice types present (${slice_count}) — artifacts isolated"
-    else
-        log_warn "No distinct slice types found"
-        log_pass "Slices endpoint responds"
-    fi
+
+    # TODO: this test cannot prove artifact isolation. Both STREAM_A and STREAM_B
+    # are auto-created by the same baseline blueprint (test-echo) — there is no
+    # second distinct artifact in the fixture, so /api/slices reports a single
+    # slice type regardless of how many streams were published. A pass on
+    # slice_count >= 1 (or the previous fallback "Slices endpoint responds")
+    # proves nothing about isolation between artifacts.
+    #
+    # Required capability: deploy a SECOND blueprint (e.g. test-echo + a sibling
+    # test-isolation slice with its own coordinates), then assert that BOTH
+    # artifact identifiers appear in /api/slices and their NodeRoutesKey entries
+    # are namespaced disjointly. Until the fixture provides two distinct
+    # artifacts, this test is structurally broken and must FAIL so the gap
+    # remains visible.
+    log_fail "TODO: artifact isolation cannot be proven with a single-blueprint fixture (slice_count=${slice_count}). Required: deploy 2 distinct blueprints + assert both visible with disjoint route namespaces."
+    return 1
 }
 
 test_cluster_healthy_after_concurrent_deploys() {

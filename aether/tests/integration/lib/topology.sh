@@ -171,13 +171,22 @@ wait_for_replacement_of() {
 # Usage: observe_quorum_window "$baseline" 5
 #   → prints "min=<n> quorum=<n> ok" and returns 0 on pass, 1 on violation.
 observe_quorum_window() {
-    local baseline="$1" expected_size="${2:-5}"
+    local baseline="$1" expected_size="${2:-5}" allow_empty="${3:-false}"
     local quorum=$(( (expected_size + 1 + 1) / 2 ))  # ceil((N+1)/2)
     local events
     events=$(topology_events_since "$baseline" 2>/dev/null) || events=""
     if [ -z "$events" ]; then
-        echo "min=$expected_size quorum=$quorum ok (no events in window)"
-        return 0
+        # Fail-closed by default. The sole caller is a kill-scenario test that MUST
+        # observe at least one NODE_LEFT/NODE_FAILED in the window — "no events" means
+        # either the event buffer flushed (hiding the dip) or the kill never landed.
+        # Either way, the previous "ok (no events in window)" print was a green sticker.
+        # Pass `allow_empty=true` (3rd arg) for passive-observation callers.
+        if [ "$allow_empty" = "true" ]; then
+            echo "min=$expected_size quorum=$quorum ok (no events in window; allow_empty)"
+            return 0
+        fi
+        echo "min=? quorum=$quorum FAIL (no events in window — kill not observed OR event buffer lost)"
+        return 1
     fi
     # Extract every clusterSize value from NODE_JOINED / NODE_LEFT events in order.
     # These are the running cluster member counts as observed locally.

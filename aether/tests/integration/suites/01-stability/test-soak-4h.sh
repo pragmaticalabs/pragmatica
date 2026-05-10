@@ -62,7 +62,8 @@ test_app_reachable() {
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/json" \
         -d '{"value":"soak-baseline"}')
-    if [ "$seed_status" -ge 200 ] && [ "$seed_status" -lt 400 ] 2>/dev/null; then
+    # Strict 2xx only — 3xx (redirects) is not a successful PUT here.
+    if [ "$seed_status" -ge 200 ] && [ "$seed_status" -lt 300 ] 2>/dev/null; then
         log_pass "Soak key seeded (status: ${seed_status})"
     else
         log_fail "Failed to seed soak key (status: ${seed_status})"

@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
+source "${SCRIPT_DIR}/../../lib/topology.sh"
+source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 test_initial_state() {
     wait_for_cluster 60
@@ -19,23 +21,40 @@ test_kill_leader_and_reelect() {
     old_leader=$(cluster_leader)
     assert_ne "$old_leader" "" "Leader identified: ${old_leader}"
 
+    # Capture topology baseline BEFORE the kill so wait_for_node_departure can
+    # scope its event search to the post-kill window.
+    local baseline
+    baseline=$(topology_now)
+
     log_info "Killing leader: ${old_leader}"
     kill_node "$old_leader"
-    # Legitimate chaos window: give SWIM/Rabia failure detection a window to fire.
-    sleep 10
 
     # Pinned MGMT_ENTRY_POINT may have been the leader we just killed — rotate to a
-    # surviving core node so CLI calls below can reach the cluster.
+    # surviving core node so CLI/event calls below can reach the cluster.
     rotate_mgmt_entry_point || log_warn "No surviving core node reachable"
 
-    # Poll for new leader via CLI failover (server-side quiescence may lag without a
-    # live leader to advance the snapshot; wait_for_leader polls direct mgmt ports).
-    # Rabia re-election can take up to ~60s in adverse timing.
-    wait_for_leader 150 || log_warn "Post-kill: no new leader observed within 150s"
+    # Event-driven barrier: wait for surviving nodes to actually observe the
+    # leader's departure (NODE_LEFT/NODE_FAILED) instead of sleeping. If SWIM
+    # detection regresses past 30s this fails fast — the previous `sleep 10`
+    # absorbed any such regression silently.
+    if ! wait_for_node_departure "$old_leader" "$baseline" 60; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for old leader ${old_leader} within 30s"
+        return 1
+    fi
+    log_pass "Departure of ${old_leader} observed via /api/events"
+
+    # Fail-closed: the previous `|| log_warn` demoted a real flake (no leader
+    # within 150s) into a passing test by allowing the next assert_ne to read
+    # whatever the CLI happened to return.
+    if ! wait_for_leader 150; then
+        log_fail "Post-kill: no new leader observed within 150s"
+        return 1
+    fi
     local new_leader
     new_leader=$(cluster_leader)
     assert_ne "$new_leader" "" "New leader elected: ${new_leader}"
     assert_ne "$new_leader" "none" "New leader is not 'none'"
+    assert_ne "$new_leader" "$old_leader" "New leader ${new_leader} differs from killed leader ${old_leader}"
     log_info "Leader after kill: ${new_leader} (was: ${old_leader})"
 }
 
@@ -64,8 +83,21 @@ test_auto_heal() {
 
 # Restore cluster for next test suite — ClusterGeneration barrier is deterministic.
 cleanup() {
+    # Capture baseline before restart so the event-driven barrier below sees the
+    # restart-induced rejoin churn (NODE_JOINED) without racing pre-existing events.
+    local cleanup_baseline
+    cleanup_baseline=$(topology_now)
     restart_all_nodes
-    sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
+    # Event-driven pre-quiesce barrier: previously a hardcoded `sleep 3` "let
+    # reconnection churn start bumping epoch before we ask for quiescence". The
+    # author admitted this masks the race — without the sleep, await_generation_quiesced
+    # could return OK before churn started. Wait for any surviving node to emit
+    # a NODE_JOINED for any peer (post-restart rejoin). On this same baseline
+    # the joined-other helper requires excluding a node id; we use the killed
+    # leader sentinel so any other rejoin counts.
+    if ! wait_for_replacement_of "$(mgmt_entry_point_node)" "$cleanup_baseline" 60; then
+        log_warn "No NODE_JOINED rejoin event observed within 60s after restart_all_nodes"
+    fi
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
         log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }
@@ -81,7 +113,15 @@ run_test "Initial 5 nodes" test_initial_state
 # / health-with-4-nodes / auto-heal asserts) rather than fail or risk a flaky
 # pass. The remaining suites still exercise the cluster recovery invariants.
 _pinned=$(mgmt_entry_point_node)
-_current_leader=$(cluster_leader 2>/dev/null || echo "")
+# Don't bypass the pinned-leader gate on a CLI hiccup: capture rc and fail
+# loudly. Empty string previously masked CLI failure as "no skip needed".
+_current_leader=$(cluster_leader 2>/dev/null)
+_leader_rc=$?
+if [ "$_leader_rc" -ne 0 ] || [ -z "$_current_leader" ]; then
+    log_fail "cluster_leader CLI returned rc=${_leader_rc}, leader='${_current_leader}' — cannot evaluate pinned-leader gate"
+    print_summary
+    exit 1
+fi
 if [ -n "$_pinned" ] && [ "$_current_leader" = "$_pinned" ]; then
     skip_test "Kill leader and re-elect" \
         "leader '${_current_leader}' is the pinned MGMT entry-point node on cluster ${CLUSTER_ID:-<none>}; no safe in-test rotation on cluster B (restart: no)"

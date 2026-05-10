@@ -21,71 +21,31 @@ test_generate_traceable_requests() {
     log_pass "Generated 20 traceable requests"
 }
 
+# Endpoint smoke check — must respond 200. Body content (whether traces are
+# captured at all) is asserted in the field-level tests below.
 test_traces_endpoint() {
-    local traces
-    traces=$(api_get "/api/traces")
-    assert_ne "$traces" "" "Traces endpoint returns data"
+    assert_http_status "${CLUSTER_ENDPOINT}/api/traces" "200" \
+        "GET /api/traces returns 200" \
+        -H "X-API-Key: ${API_KEY}"
 }
 
+# UNTESTABLE without product capability: tracing is not auto-enabled in the
+# integration cluster, and there is no management endpoint to enable it or
+# inject a deterministic trace. Without a way to *cause* a trace to exist,
+# we cannot assert the trace's shape — empty body would silently pass.
 test_traces_contain_request_id() {
-    local traces
-    traces=$(api_get "/api/traces")
-    if [ -z "$traces" ]; then
-        log_warn "Traces empty — tracing may not be enabled"
-        log_pass "Traces endpoint responds"
-        return 0
-    fi
-
-    local has_request_id="no"
-    if echo "$traces" | grep -qE '"(requestId|traceId|id)"[[:space:]]*:'; then
-        has_request_id="yes"
-    fi
-    if [ "$has_request_id" = "yes" ]; then
-        log_pass "Traces contain requestId/traceId"
-    else
-        log_warn "No requestId/traceId found in trace entries"
-        log_pass "Traces endpoint returns data"
-    fi
+    log_fail "TODO: trace injection mechanism not yet exposed via API — cannot assert requestId/traceId field shape until traces can be deterministically produced"
+    return 1
 }
 
 test_traces_contain_duration() {
-    local traces
-    traces=$(api_get "/api/traces")
-    if [ -z "$traces" ]; then
-        log_pass "Traces endpoint responds (empty)"
-        return 0
-    fi
-
-    local has_duration="no"
-    if echo "$traces" | grep -qE '"(duration|durationMs|elapsed)"[[:space:]]*:'; then
-        has_duration="yes"
-    fi
-    if [ "$has_duration" = "yes" ]; then
-        log_pass "Traces contain duration info"
-    else
-        log_warn "No duration field found in trace entries"
-        log_pass "Traces endpoint returns data"
-    fi
+    log_fail "TODO: trace injection mechanism not yet exposed via API — cannot assert duration field shape until traces can be deterministically produced"
+    return 1
 }
 
 test_traces_contain_depth() {
-    local traces
-    traces=$(api_get "/api/traces")
-    if [ -z "$traces" ]; then
-        log_pass "Traces endpoint responds (empty)"
-        return 0
-    fi
-
-    local has_depth="no"
-    if echo "$traces" | grep -qE '"(depth|spanCount|spans)"[[:space:]]*:'; then
-        has_depth="yes"
-    fi
-    if [ "$has_depth" = "yes" ]; then
-        log_pass "Traces contain depth/span info"
-    else
-        log_warn "No depth/span field found in trace entries"
-        log_pass "Traces endpoint returns data"
-    fi
+    log_fail "TODO: trace injection mechanism not yet exposed via API — cannot assert depth/span field shape until traces can be deterministically produced"
+    return 1
 }
 
 run_test "Cluster ready" test_cluster_ready

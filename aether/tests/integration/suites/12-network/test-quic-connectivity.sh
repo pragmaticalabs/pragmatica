@@ -18,11 +18,8 @@ test_all_nodes_connected() {
     local metrics
     metrics=$(api_get "/api/metrics/transport")
     if [ -z "$metrics" ]; then
-        log_warn "Transport metrics unavailable — verifying via node count"
-        local count
-        count=$(cluster_node_count)
-        assert_eq "$count" "5" "All 5 nodes visible (transport metrics unavailable)"
-        return 0
+        log_fail "TODO: /api/metrics/transport returned empty — cannot verify QUIC active connections"
+        return 1
     fi
 
     local connections
@@ -38,12 +35,12 @@ test_all_nodes_connected() {
     if [ "$connections" -gt 0 ] 2>/dev/null; then
         log_pass "Active QUIC connections: ${connections}"
     elif [ "$connections" = "-1" ]; then
-        log_warn "Could not extract connection count from transport metrics"
-        local count
-        count=$(cluster_node_count)
-        assert_eq "$count" "5" "All 5 nodes visible"
+        # Per user policy: do NOT substitute cluster_node_count for connectionCount —
+        # that's a wrong-proxy assertion (5 nodes != 5 active QUIC connections).
+        log_fail "TODO: QUIC active-connection count not exposed in /api/metrics/transport (looked for connectionCount, connections, *connect*active*); cannot verify"
+        return 1
     else
-        log_fail "No active QUIC connections"
+        log_fail "No active QUIC connections (count=${connections})"
         return 1
     fi
 }

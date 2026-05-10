@@ -24,7 +24,9 @@ test_stream_publisher_provisioned() {
     local streams
     streams=$(stream_list)
     assert_ne "$streams" "" "Stream list returns data after deployment"
-    if echo "$streams" | grep -q "$STREAM_NAME" 2>/dev/null; then
+    # Exact-field match — see test-pub-sub.sh for rationale (substring grep
+    # matches prefix/embedded names and creates false positives).
+    if printf '%s' "$streams" | grep -qE "\"name\"[[:space:]]*:[[:space:]]*\"${STREAM_NAME}\""; then
         log_pass "StreamPublisher provisioned: ${STREAM_NAME} visible"
     else
         log_warn "Stream ${STREAM_NAME} not in list — may use different name"
@@ -54,15 +56,30 @@ test_subscriber_receives_notifications() {
 }
 
 test_analytics_counts_increment() {
-    # Publish another batch and check stream info changes
+    # Publish another batch and check stream info changes. Track publish failures
+    # explicitly — silently absorbing them with `|| true` would hide a stream
+    # outage during the analytics window.
     local info_before info_after
     info_before=$(stream_info "$STREAM_NAME")
 
-    for i in $(seq 1 5); do
+    local batch=5 failures=0
+    for i in $(seq 1 "$batch"); do
         local payload="{\"key\":\"analytics-${i}\",\"data\":\"analytics-check\",\"timestamp\":$(now_epoch)}"
-        stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1 || true
+        if ! stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
+            failures=$((failures + 1))
+        fi
     done
     sleep 2
+
+    # Threshold: tolerate at most 1 transient failure out of 5 (e.g., owner
+    # rebalance mid-batch). 2+ means the stream is broken — assert hard.
+    if [ "$failures" -gt 1 ]; then
+        log_fail "Analytics-batch publish failed ${failures}/${batch} times (threshold: <=1)"
+        return 1
+    fi
+    if [ "$failures" -gt 0 ]; then
+        log_warn "Analytics-batch publish: ${failures}/${batch} transient failure(s) within tolerance"
+    fi
 
     info_after=$(stream_info "$STREAM_NAME")
     if [ -n "$info_before" ] && [ -n "$info_after" ]; then

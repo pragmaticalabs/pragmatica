@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
+source "${SCRIPT_DIR}/../../lib/topology.sh"
+source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 test_initial_state() {
     wait_for_cluster 60
@@ -23,13 +25,32 @@ test_kill_two_nodes() {
     victim1=$(echo "$victims" | head -1)
     victim2=$(echo "$victims" | tail -1)
 
+    # Capture topology baseline before any kills so the event-driven barriers
+    # below can scope their searches to the post-kill window.
+    local baseline
+    baseline=$(topology_now)
+    KILLED_VICTIM1="$victim1"
+    KILLED_VICTIM2="$victim2"
+
     log_info "Killing node 1: ${victim1}"
     kill_node "$victim1"
-    # Legitimate chaos timing: give SWIM a window to detect the first failure
-    # before the second kill (emulates staggered real-world failures).
-    sleep 5
+
+    # Event-driven barrier between the two kills (replaces `sleep 5`). Emulates
+    # staggered failure where the second kill happens AFTER SWIM has actually
+    # detected the first — fails fast if SWIM regresses past 30s.
+    if ! wait_for_node_departure "$victim1" "$baseline" 60; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for first victim ${victim1} within 30s"
+        return 1
+    fi
+    log_pass "Departure of ${victim1} observed"
+
     log_info "Killing node 2: ${victim2}"
     kill_node "$victim2"
+    if ! wait_for_node_departure "$victim2" "$baseline" 60; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for second victim ${victim2} within 30s"
+        return 1
+    fi
+    log_pass "Departure of ${victim2} observed"
 
     # ClusterGeneration commits the post-kill membership view. After quiescence
     # the count reflects whatever CTM has done — just assert quorum.
@@ -64,8 +85,13 @@ test_auto_heal() {
 }
 
 cleanup() {
+    # Event-driven pre-quiesce barrier (replaces `sleep 3`).
+    local cleanup_baseline
+    cleanup_baseline=$(topology_now)
     restart_all_nodes
-    sleep 3  # let reconnection churn start bumping epoch before we ask for quiescence
+    if ! wait_for_replacement_of "${KILLED_VICTIM1:-$(mgmt_entry_point_node)}" "$cleanup_baseline" 60; then
+        log_warn "No NODE_JOINED rejoin event observed within 60s after restart_all_nodes"
+    fi
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
         log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
 }

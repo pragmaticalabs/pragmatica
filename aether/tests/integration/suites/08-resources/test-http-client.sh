@@ -40,15 +40,14 @@ test_mgmt_content_type() {
 }
 
 test_mgmt_invalid_path() {
-    local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/nonexistent-endpoint-xyz")
-    # Expect 404 or similar non-5xx
-    if [ "$status" -lt 500 ] 2>/dev/null; then
-        log_pass "Invalid path returns non-5xx status: ${status}"
-        return 0
-    fi
-    log_fail "Invalid path returns 5xx: ${status}"
-    return 1
+    # The contract: an AUTHENTICATED request to an unknown management path must return
+    # 404. Without auth, the security middleware returns 401 BEFORE route lookup runs
+    # (intentional: don't leak which paths exist to unauthenticated callers). Pass the
+    # API key so the request reaches the router and surfaces the genuine "no such route"
+    # 404 we're asserting against.
+    assert_http_status "${CLUSTER_ENDPOINT}/api/nonexistent-endpoint-xyz" "404" \
+        "Invalid management path returns 404" \
+        -H "X-API-Key: ${API_KEY}"
 }
 
 test_mgmt_concurrent_requests() {

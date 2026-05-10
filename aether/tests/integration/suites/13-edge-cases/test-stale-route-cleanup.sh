@@ -29,15 +29,16 @@ test_slices_deployed() {
 }
 
 test_app_routes_reachable() {
-    # Verify at least one app route works before killing
-    local status
-    status=$(http_status "${APP_ENDPOINT}/health" -H "X-API-Key: ${API_KEY}")
-    if [ "$status" -ge 200 ] && [ "$status" -lt 500 ] 2>/dev/null; then
-        log_pass "App route reachable (status: ${status})"
-    else
-        # Try management health instead
-        assert_cluster_healthy "Management routes reachable"
+    # Probe the actual app-route surface — EchoSlice's /health route. Use
+    # app_route_wired (positive readiness) which distinguishes route-missing 404
+    # from a real handler response. NO management-API fallback: this test exists
+    # to prove the APP route is wired; falling back to /api/status would swap
+    # subjects (mgmt port healthy != app route reachable) and pass falsely.
+    if ! app_route_wired "${APP_ENDPOINT}/health" "${API_KEY}"; then
+        log_fail "App route ${APP_ENDPOINT}/health not wired (expected EchoSlice handler to respond)"
+        return 1
     fi
+    log_pass "App route /health wired (positive readiness via app_route_wired)"
 }
 
 test_kill_node_hosting_routes() {
@@ -76,17 +77,21 @@ test_kill_node_hosting_routes() {
 }
 
 test_no_502_504_after_cleanup() {
-    # Previous test already waited for generation quiescence — no pre-sample sleep needed.
+    # The killed node hosted APP routes — probing /api/status (mgmt port) would
+    # measure the management API surface, not the route table that the kill
+    # invalidated. Probe the actual APP route (EchoSlice /health) instead so a
+    # stale-route 502/504 (from sendNoRouteFound or upstream proxy) actually
+    # surfaces. Previous test already waited for generation quiescence.
     local bad_status=0
     for i in $(seq 1 10); do
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/status" -H "X-API-Key: ${API_KEY}")
+        status=$(http_status "${APP_ENDPOINT}/health" -H "X-API-Key: ${API_KEY}")
         if [ "$status" = "502" ] || [ "$status" = "504" ]; then
             bad_status=$((bad_status + 1))
         fi
         sleep 1
     done
-    assert_eq "$bad_status" "0" "No 502/504 responses after route cleanup (${bad_status}/10 bad)"
+    assert_eq "$bad_status" "0" "No 502/504 on APP route /health after cleanup (${bad_status}/10 bad)"
 }
 
 test_kv_store_routes_clean() {

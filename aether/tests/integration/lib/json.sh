@@ -5,9 +5,16 @@
 # produced by Aether management APIs — predictable, flat-ish JSON with known fields.
 # For complex queries, use the Aether CLI with --format value --field <dotpath>.
 
-# Extract a string or number value for a given key from JSON
+# Extract a string or number value for a given key from JSON.
 # Handles: "key":"value", "key": "value", "key":123, "key": null
 # Usage: json_value '{"name":"test","count":5}' "name" → test
+#
+# WARNING — this matches the FIRST occurrence of `"key"` in the document. Inner
+# objects with the same key name silently shadow outer values: in
+# `{"a":{"name":"inner"},"name":"outer"}`, json_value …'name' returns "inner",
+# not "outer". For correctness-critical lookups, prefer the Aether CLI:
+#   aether_field <subcommand> <field-name>     # uses --format value --field <dotpath>
+# which uses a real JSON parser. Use json_value only for known-flat documents.
 json_value() {
     local json="$1" key="$2"
     # Match "key": "string_value" or "key": number_value
@@ -35,9 +42,19 @@ json_path() {
     printf '%s' "$current"
 }
 
-# Count elements in a JSON array at a given key
+# Count elements in a JSON array at a given key.
 # Usage: json_array_length '[1,2,3]' → 3
 #        json_array_length '{"items":[1,2,3]}' "items" → 3
+#
+# WARNING — the awk `},{` field-split is naive:
+#   - works for arrays of objects: `[{"a":1},{"b":2}]` → 2 ✓
+#   - over-counts strings containing commas: `["a,b"]` → 2 ✗
+#   - over-counts nested arrays: `[[1,2],[3,4]]` → 4 ✗
+#   - returns "0" for empty arrays via the early return below
+# For arrays of objects (the common case in Aether responses) it is correct.
+# For arrays of primitives or nested structure, prefer the Aether CLI's
+# --field <path>.<index> or count via a structural marker (e.g.,
+# count occurrences of a known per-element field via grep -o "\"id\":").
 json_array_length() {
     local json="$1" key="${2:-}"
     local array_content

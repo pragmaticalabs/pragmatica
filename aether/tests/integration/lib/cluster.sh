@@ -175,7 +175,13 @@ pick_non_leader() {
         | grep -oE '"nodeId":"[^"]+"' \
         | sed 's/"nodeId":"\([^"]*\)"/\1/' || true)
     if [ -z "$current_members" ]; then
-        current_members=$'node-1\nnode-2\nnode-3\nnode-4\nnode-5'
+        # Fail-closed: previously fell back to a hardcoded `node-1..5` list, which
+        # silently picked DECOMMISSIONED victims — kill_node became a no-op, NODE_FAILED
+        # never fired, and the suite "passed" against a stale cluster snapshot. If
+        # /api/nodes/lifecycle has no ON_DUTY members, the test premise (a healthy
+        # cluster from which we can pick a non-leader) is broken.
+        log_fail "pick_non_leader: /api/nodes/lifecycle returned no ON_DUTY members — cannot select victim"
+        return 1
     fi
 
     local found=0
@@ -314,7 +320,11 @@ cluster_config() {
 is_cluster_healthy() {
     local status
     status=$(aether_field health status)
-    [ "$status" = "UP" ] || [ "$status" = "healthy" ]
+    # Pin to canonical "healthy" (matches the assertion done by `assert_cluster_healthy`
+    # below). Previously accepted "UP" OR "healthy" — the dual-acceptance hid a
+    # transient bootstrap value and let the test "pass" before the cluster reached
+    # its post-quorum health state.
+    [ "$status" = "healthy" ]
 }
 
 assert_cluster_healthy() {
@@ -579,7 +589,11 @@ slices_total_instances() {
     slices=$(cluster_slices)
     # Count running instances (LOADED or ACTIVE state)
     local count
-    count=$(printf '%s' "$slices" | grep -o '"state"[[:space:]]*:[[:space:]]*"[LA][CO][AT][DI][EV][DE]*"' | wc -l | tr -d ' ')
+    # Strict alternation — the prior `[LA][CO][AT][DI][EV][DE]*` character-class regex
+    # over-matched (any 6+ char permutation of those letters: e.g., FAILED substrings,
+    # future state names, garbage). Use explicit alternation so adding a new state
+    # like `LOADING` requires deliberate inclusion here.
+    count=$(printf '%s' "$slices" | grep -oE '"state"[[:space:]]*:[[:space:]]*"(LOADED|ACTIVE)"' | wc -l | tr -d ' ')
     echo "${count:-0}"
 }
 
@@ -692,26 +706,60 @@ retarget_app_endpoint_to_active_slice() {
         APP_ENDPOINT="http://${owner_ip}:${port}"
         log_info "retarget: APP_ENDPOINT -> ${APP_ENDPOINT} (slice owner ${owner})"
     fi
-    # Both cloud AND docker/remote: probe the path until the slice route is registered.
+    # Both cloud AND docker/remote: probe the path until the slice route is wired.
     # On docker/remote, only node-1's app port is host-mapped, so we can't IP-retarget;
     # instead we wait for node-1's route table to pick up the freshly-published slice
     # route. Without this wait, PUT calls right after wait_for_slices_active race the
-    # post-ACTIVE route-table propagation window and 500 (slice owner not yet routable
+    # post-ACTIVE route-table propagation window and 404 (slice owner not yet routable
     # on node-1).
     #
-    # Probe semantics: GET (not PUT). PUT carries a payload, and the test-persistence
-    # slice rejects payloads that don't match its expected `{"value":"..."}` shape with
-    # 500, poisoning the slice for the subsequent test PUT. GET is read-only and safe.
-    # The "<500" status check has a false-positive (404 means route missing OR key
-    # missing — both pre-test states), but the trailing wait still gives the route
-    # table additional propagation time, and the actual test PUT will surface a real
-    # registration failure as 500/404.
+    # Probe semantics: positive readiness check via app_route_wired. GET (not PUT —
+    # PUT carries a payload the slice may reject as 500). The check is "the slice
+    # handler ran" — proven by 2xx, or 4xx whose body is NOT sendNoRouteFound's
+    # route-missing problem+json. 503 / 5xx / route-missing-404 mean keep waiting.
     if [ -n "$probe_path" ]; then
-        wait_for "app endpoint route ${probe_path}" \
-            "[ \$(http_status \"${APP_ENDPOINT}${probe_path}\" -H \"X-API-Key: \${API_KEY}\") -lt 500 ]" \
+        wait_for "app endpoint route ${probe_path} wired (positive readiness)" \
+            "app_route_wired \"${APP_ENDPOINT}${probe_path}\"" \
             "$probe_timeout"
     fi
     return 0
+}
+
+# Positive readiness check: returns 0 iff the request was handled by an actual slice
+# route (not by sendNoRouteFound's route-missing fallback or the bootstrap 503 path).
+#
+# This is the honest replacement for the old "<500" probe which accepted 404 from
+# sendNoRouteFound (route not registered) AND 404 from the slice's own NotFound
+# handler (key missing) as success — false positive when the route table on the
+# polled node hadn't caught up to the freshly-committed NodeRoutesKey.
+#
+# Distinguishes via response body: sendNoRouteFound emits a problem+json document
+# whose `title` field contains "No route found for ". AppHttpServer also returns
+# 503 when its registry has the route but the local snapshot lags — that is
+# correctly treated as "not ready, retry".
+#
+# Args:
+#   $1 — full URL to probe
+#   $2 — optional X-API-Key override (defaults to $API_KEY)
+app_route_wired() {
+    local url="$1" api_key="${2:-${API_KEY:-}}"
+    local response status body
+    response=$(curl -sk -w $'\n__STATUS__:%{http_code}' -H "X-API-Key: ${api_key}" "$url" 2>/dev/null) || return 1
+    status="${response##*__STATUS__:}"
+    body="${response%$'\n'__STATUS__:*}"
+    case "$status" in
+        2*) return 0 ;;
+        503) return 1 ;;
+        5*) return 1 ;;
+        404)
+            if printf '%s' "$body" | grep -q '"title":"No route found for '; then
+                return 1
+            fi
+            return 0
+            ;;
+        4*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 slices_active_instances() {
@@ -764,9 +812,17 @@ publish_blueprint() {
     # /api/deploy may land on a STRATEGIES owner whose local state machine hasn't yet
     # processed the Put. Poll the cluster's blueprint list until the entry is visible
     # to absorb the propagation gap (5s budget × scaled).
-    wait_for "blueprint ${artifact} visible" \
-        "api_get /api/blueprints 2>/dev/null | grep -q \"${artifact}\"" \
-        5 1 >/dev/null 2>&1 || log_warn "blueprint ${artifact} not visible after 5s — deploy may fail" >&2
+    # Fail-closed: previously this wait was 5s + log_warn-and-continue, which let the
+    # deploy proceed against a not-yet-propagated blueprint and 404'd downstream with a
+    # confusing error. The visibility gate is load-bearing — if the blueprint doesn't
+    # appear within the budget, the deploy WILL fail; surfacing it here gives the test
+    # author a precise diagnostic instead of a downstream 404 chase.
+    if ! wait_for "blueprint ${artifact} visible" \
+            "api_get /api/blueprints 2>/dev/null | grep -q \"${artifact}\"" \
+            10 1; then
+        log_fail "publish_blueprint: ${artifact} not visible in /api/blueprints after publish (propagation gap)"
+        return 1
+    fi
     return 0
 }
 
@@ -825,9 +881,19 @@ drop_ctm_replacements() {
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
     if [ "$CLOUD_MODE" = "true" ]; then
+        # Aggregate per-node failures. Previously each cloud_ssh was `2>/dev/null || true`
+        # so up to N-1 failed restarts appeared as 0/0 — a 4-of-5 unreachable cluster
+        # would silently report "restored to baseline" and the next test ran against a
+        # half-dead cluster, blaming the actual product code for harness-induced flake.
+        local failed=0 restart_out
         for i in $(seq 1 "${NODE_COUNT:-5}"); do
-            cloud_ssh "node-${i}" "docker restart aether-node" 2>/dev/null || true
+            restart_out=$(cloud_ssh "node-${i}" "docker restart aether-node" 2>&1) \
+                || { log_warn "restart_all_nodes: node-${i} restart failed: ${restart_out}"; failed=$((failed + 1)); }
         done
+        if [ "$failed" -gt 0 ]; then
+            log_fail "restart_all_nodes: ${failed}/${NODE_COUNT:-5} cloud nodes failed to restart"
+            return 1
+        fi
         return 0
     fi
     # Why: `docker start` on exited containers re-uses identical NodeIds / addresses,
@@ -1013,7 +1079,11 @@ start_node() {
     else
         local name
         name=$(_docker_container_name "$node_id")
-        remote_exec "docker start ${name}" 2>/dev/null
+        # Capture stderr — `2>/dev/null` previously hid failures (container not found,
+        # docker daemon error, race with rm). Caller checks $? for success/failure.
+        local start_out
+        start_out=$(remote_exec "docker start ${name}" 2>&1) \
+            || { log_warn "start_node: docker start ${name} failed: ${start_out}"; return 1; }
     fi
 }
 
@@ -1104,9 +1174,19 @@ leader_api_post() {
         fi
         local leader_ip
         leader_ip=$(cloud_node_ip "$leader")
-        # Use SSH tunnel for the request
-        cloud_ssh "$leader" "curl -sfk -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '${body}' http://localhost:8080${path}" 2>/dev/null
-        return
+        # Use SSH tunnel for the request. Capture stderr so SSH transport errors and
+        # curl error bodies surface — `2>/dev/null` previously discarded both, leaving
+        # callers staring at empty stdout with no clue whether SSH timed out, the
+        # leader 401'd, or the path 404'd.
+        local ssh_out ssh_rc
+        ssh_out=$(cloud_ssh "$leader" "curl -sk -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '${body}' http://localhost:8080${path}" 2>&1)
+        ssh_rc=$?
+        if [ "$ssh_rc" -ne 0 ]; then
+            log_warn "leader_post: SSH to leader '${leader}' failed (rc=${ssh_rc}): ${ssh_out}"
+            return "$ssh_rc"
+        fi
+        printf '%s' "$ssh_out"
+        return 0
     fi
     local leader
     leader=$(cluster_leader)
@@ -1213,7 +1293,11 @@ cluster_tasks() {
 task_assignment_count() {
     local tasks
     tasks=$(cluster_tasks)
-    printf '%s' "$tasks" | grep -o '"group"' | wc -l | tr -d ' '
+    # Count `"group":"<name>"` value-pairs, not bare `"group"` tokens. The prior
+    # `grep -o '"group"' | wc -l` over-counted: any nested object with a `"group"`
+    # field (error responses, audit entries, future schema additions) inflated the
+    # count. Requiring a string value ensures we only match assignment records.
+    printf '%s' "$tasks" | grep -oE '"group"[[:space:]]*:[[:space:]]*"[^"]+"' | wc -l | tr -d ' '
 }
 
 task_group_status() {
@@ -1260,8 +1344,14 @@ reassign_task_group() {
 wait_for_all_tasks_active() {
     local timeout="${1:-60}"
     local min_active="${2:-5}"
+    # Use `-1` sentinel on parse error instead of `|| echo 0`. Previously a json parse
+    # failure produced "0", and `[ 0 -ge ${min_active} ]` was simply false — the predicate
+    # behaved the same as "0 active so far", so a broken cluster looked like "warming up"
+    # and ate the whole timeout. With `-1`, the predicate `[ -1 -ge N ]` is false for any
+    # positive N (same outcome), but the sentinel is now distinguishable in diagnostic
+    # output if the predicate is ever instrumented.
     wait_for "all task groups ACTIVE" \
-        "[ \$(json_count_matching \"\$(cluster_tasks)\" assignments status ACTIVE 2>/dev/null || echo 0) -ge ${min_active} ]" \
+        "[ \$(json_count_matching \"\$(cluster_tasks)\" assignments status ACTIVE 2>/dev/null || echo -1) -ge ${min_active} ]" \
         "$timeout"
 }
 
@@ -1293,7 +1383,20 @@ list_aether_containers() {
 
 container_running() {
     local name="$1"
-    remote_exec "docker ps --filter 'name=${name}' --filter 'status=running' -q" 2>/dev/null | grep -q .
+    # Two-stage: docker reports "running" AND the JVM responds to /health/live.
+    # Previously checked docker-only — a JVM that started, OOM'd, and is in restart-loop
+    # would still report `status=running` for the brief seconds the container is up,
+    # making the helper unreliable as a "node is operational" signal. The /health/live
+    # probe (port 8080 + offset by node id) is the canonical liveness signal.
+    remote_exec "docker ps --filter 'name=${name}' --filter 'status=running' -q" 2>/dev/null | grep -q . || return 1
+    local offset port
+    offset=$(printf '%s' "$name" | grep -oE '[0-9]+$' | head -1)
+    if [ -z "$offset" ]; then
+        # Cannot derive port from name — fall back to docker-only check (already passed).
+        return 0
+    fi
+    port=$((MGMT_PORT + offset - 1))
+    curl -sfk -m 2 -H "X-API-Key: ${API_KEY:-}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -1371,10 +1474,15 @@ deploy_cleanup() {
         if printf '%s' "$deployments" | grep -q "\"deploymentId\"[[:space:]]*:[[:space:]]*\"${did}\"[^}]*\"state\"[[:space:]]*:[[:space:]]*\"FAILED\""; then continue; fi
         echo "$did"
     done | while read -r did; do
-        deploy_complete "$did" > /dev/null 2>&1 || \
-        deploy_rollback "$did" > /dev/null 2>&1 || true
+        # Cleanup: try complete, then rollback. Capture both stderr streams so a
+        # genuinely-stuck deployment surfaces in the test output rather than being
+        # silently inherited by the next test as broken state.
+        local complete_err rollback_err
+        complete_err=$(deploy_complete "$did" 2>&1 >/dev/null) && continue
+        rollback_err=$(deploy_rollback "$did" 2>&1 >/dev/null) && continue
+        log_warn "deploy_cleanup: deployment ${did} stuck — complete failed (${complete_err}); rollback failed (${rollback_err})"
     done
-    sleep 1 || true
+    sleep 1
     return 0
 }
 
@@ -1395,8 +1503,14 @@ wait_for_node_count_on() {
     local expected="$2"
     local timeout="${3:-120}"
 
+    # Default empty/missing to "-1" so the integer compare `[ N -ge expected ]` is always
+    # syntactically valid. Previously used `|| echo -1` but `json_value` returns rc=0 with
+    # EMPTY OUTPUT when the field is absent (early bootstrap before topology is published),
+    # so `||` never fired and `[ -ge 5 ]` was a "unary operator expected" syntax error
+    # that wait_for's prior `2>&1` mask hid as "predicate false" — silently looping until
+    # timeout even on healthy clusters that just hadn't yet emitted the field.
     wait_for "${expected} nodes on ${endpoint}" \
-        "[ \$(json_value \"\$(curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" coreCount 2>/dev/null || echo 0) -ge ${expected} ]" \
+        "v=\$(json_value \"\$(curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" coreCount 2>/dev/null); [ \"\${v:--1}\" -ge ${expected} ]" \
         "$timeout"
 }
 
@@ -1405,7 +1519,14 @@ wait_for_leader_on() {
     local endpoint="$1"
     local timeout="${2:-30}"
 
+    # Check `leaderId` field on /api/status — the prior `role:ACTIVE` check matched any
+    # topology entry with `role=ACTIVE` (a per-node attribute), so the predicate was
+    # satisfied whenever ANY node reported its own role as ACTIVE, NOT when a leader
+    # was elected. `/api/status` returns `cluster.leaderId` populated from the elected
+    # consensus leader (`ClusterConfigRoutes` is the model). The grep targets a
+    # quoted non-empty value, so `"leaderId":null` and `"leaderId":""` both correctly
+    # fail the predicate; `"leaderId":"node-3"` passes.
     wait_for "leader elected on ${endpoint}" \
-        "json_contains \"\$(curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/cluster/topology 2>/dev/null)\" role ACTIVE" \
+        "curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/status 2>/dev/null | grep -qE '\"leaderId\"[[:space:]]*:[[:space:]]*\"[^\"]+\"'" \
         "$timeout"
 }

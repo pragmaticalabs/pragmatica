@@ -15,7 +15,13 @@ public record HealthReconcilerConfig(long aggregationWindowMs,
         recoveryStableWindowMs = Math.max(1L, recoveryStableWindowMs);
     }
 
-    public static final HealthReconcilerConfig DEFAULT = new HealthReconcilerConfig(5_000L, 10_000L, 5_000L, 30_000L);
+    /// Defaults: 5s aggregation, 5s cooldown, 5s stable, 30s recovery-stable.
+    /// `cooldownMs` lowered from 10s to 5s to remove the dominant suppression hop
+    /// in the post-SWIM detection chain — at 10s the cooldown collided with leader
+    /// phase-transition writes and silently deferred FAULTY commits past the 60s
+    /// integration-test SLO. 5s preserves flap-protection (slower than the SWIM
+    /// suspect window itself, so revival races stale observations safely).
+    public static final HealthReconcilerConfig DEFAULT = new HealthReconcilerConfig(5_000L, 5_000L, 5_000L, 30_000L);
 
     public static HealthReconcilerConfig healthReconcilerConfig() {
         return DEFAULT;
