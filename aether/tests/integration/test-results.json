@@ -1,17 +1,4 @@
 [
-  {"suite":"00-smoke","status":"passed","pass":2,"fail":0,"duration":12},
-  {"suite":"07-cluster-mgmt","status":"passed","pass":4,"fail":0,"duration":22},
-  {"suite":"06-deployment","status":"failed","pass":4,"fail":1,"duration":42},
-  {"suite":"09-artifacts","status":"passed","pass":3,"fail":0,"duration":21},
-  {"suite":"04-streaming","status":"passed","pass":4,"fail":0,"duration":52},
-  {"suite":"10-database","status":"failed","pass":0,"fail":3,"duration":10},
-  {"suite":"14-storage","status":"passed","pass":2,"fail":0,"duration":5},
-  {"suite":"11-observability","status":"failed","pass":3,"fail":2,"duration":18},
-  {"suite":"08-resources","status":"passed","pass":5,"fail":0,"duration":62},
-  {"suite":"15-delegation","status":"passed","pass":2,"fail":0,"duration":24},
-  {"suite":"02-chaos","status":"passed","pass":4,"fail":0,"duration":1876},
-  {"suite":"03-scaling","status":"passed","pass":3,"fail":0,"duration":198},
-  {"suite":"05-security","status":"passed","pass":3,"fail":0,"duration":76},
-  {"suite":"12-network","status":"failed","pass":1,"fail":2,"duration":38},
-  {"suite":"13-edge-cases","status":"failed","pass":1,"fail":2,"duration":270}
+  {"suite":"12-network","status":"failed","pass":2,"fail":1,"duration":470},
+  {"suite":"13-edge-cases","status":"failed","pass":2,"fail":1,"duration":86}
 ]

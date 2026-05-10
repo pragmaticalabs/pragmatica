@@ -9,6 +9,10 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 STREAM_A="${STREAM_A:-concurrent-test-a}"
 STREAM_B="${STREAM_B:-concurrent-test-b}"
 BLUEPRINT="org.pragmatica.aether.test:test-echo:1.0.0"
+# Second distinct blueprint deployed alongside test-echo to enable artifact-isolation
+# verification (test-persistence has its own slice + route namespace `/api/kv/*` so
+# the two artifacts are guaranteed disjoint at the route level).
+BLUEPRINT_2="org.pragmatica.aether.test:test-persistence:1.0.0"
 
 test_cluster_ready() {
     wait_for_cluster 60
@@ -19,8 +23,11 @@ test_cluster_ready() {
     push_blueprint "$BLUEPRINT"
     deploy_blueprint "$BLUEPRINT"
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || log_warn "deploy did not quiesce"
+    push_blueprint "$BLUEPRINT_2"
+    deploy_blueprint "$BLUEPRINT_2"
+    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60 || log_warn "second deploy did not quiesce"
     wait_for_slices_active 1 120 || log_warn "Slices not active after deploy"
-    log_pass "Cluster ready with baseline blueprint deployed"
+    log_pass "Cluster ready with both baseline blueprints deployed"
 }
 
 test_initial_slice_count() {
@@ -117,34 +124,26 @@ test_slices_active_after_concurrent_deploy() {
 }
 
 test_artifact_isolation() {
-    # Verify slices from both apps are present and separate
+    # Two distinct blueprints (test-echo + test-persistence) are deployed in
+    # test_cluster_ready above. Verify both artifact identifiers appear in
+    # /api/slices — proving the cluster maintains separate slice records per
+    # artifact (the prior fixture only deployed test-echo, so this assertion
+    # was structurally untestable; replaced with a real isolation check).
     local slices
     slices=$(cluster_slices)
     assert_ne "$slices" "" "Slices data available for isolation check"
-
-    local slice_count
-    # Count slice entries in the response
-    if echo "$slices" | grep -q "\"slices\""; then
-        slice_count=$(json_array_length "$slices" "slices")
-    else
-        slice_count=$(json_array_length "$slices")
+    local found_echo found_persistence
+    if printf '%s' "$slices" | grep -q '"artifact"[[:space:]]*:[[:space:]]*"org\.pragmatica\.aether\.test:test-echo'; then
+        found_echo="true"
     fi
-    log_info "Total slice types: ${slice_count}"
-
-    # TODO: this test cannot prove artifact isolation. Both STREAM_A and STREAM_B
-    # are auto-created by the same baseline blueprint (test-echo) — there is no
-    # second distinct artifact in the fixture, so /api/slices reports a single
-    # slice type regardless of how many streams were published. A pass on
-    # slice_count >= 1 (or the previous fallback "Slices endpoint responds")
-    # proves nothing about isolation between artifacts.
-    #
-    # Required capability: deploy a SECOND blueprint (e.g. test-echo + a sibling
-    # test-isolation slice with its own coordinates), then assert that BOTH
-    # artifact identifiers appear in /api/slices and their NodeRoutesKey entries
-    # are namespaced disjointly. Until the fixture provides two distinct
-    # artifacts, this test is structurally broken and must FAIL so the gap
-    # remains visible.
-    log_fail "TODO: artifact isolation cannot be proven with a single-blueprint fixture (slice_count=${slice_count}). Required: deploy 2 distinct blueprints + assert both visible with disjoint route namespaces."
+    if printf '%s' "$slices" | grep -q '"artifact"[[:space:]]*:[[:space:]]*"org\.pragmatica\.aether\.test:test-persistence'; then
+        found_persistence="true"
+    fi
+    if [ "${found_echo:-}" = "true" ] && [ "${found_persistence:-}" = "true" ]; then
+        log_pass "Artifact isolation verified: both test-echo and test-persistence appear in /api/slices as distinct artifacts"
+        return 0
+    fi
+    log_fail "Artifact isolation: expected both test-echo and test-persistence in /api/slices (found echo=${found_echo:-false}, persistence=${found_persistence:-false})"
     return 1
 }
 

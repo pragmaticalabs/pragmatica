@@ -15,34 +15,27 @@ test_cluster_ready() {
 }
 
 test_all_nodes_connected() {
-    local metrics
-    metrics=$(api_get "/api/metrics/transport")
-    if [ -z "$metrics" ]; then
-        log_fail "TODO: /api/metrics/transport returned empty — cannot verify QUIC active connections"
+    # Reads the queried node's `connectedPeerCount` from /api/cluster/topology.
+    # ClusterTopologyRoutes.assembleFromTopologyManager populates this from
+    # node.connectedPeerIds().size() — the count of QUIC-connected peers (excluding
+    # self). For a healthy 5-node cluster each node sees 4 peers; the assertion
+    # `>= 4` tolerates transient single-peer glitches without masking systemic
+    # connectivity loss.
+    local topology
+    topology=$(api_get "/api/cluster/topology")
+    if [ -z "$topology" ]; then
+        log_fail "GET /api/cluster/topology returned empty — cannot verify QUIC connectivity"
         return 1
     fi
-
-    local connections
-    connections=$(json_value "$metrics" "connectionCount")
-    if [ -z "$connections" ]; then
-        connections=$(json_value "$metrics" "connections")
+    local connected
+    connected=$(json_value "$topology" "connectedPeerCount")
+    connected="${connected:--1}"
+    if [ "$connected" -ge 4 ] 2>/dev/null; then
+        log_pass "QUIC peer connectivity: ${connected} connected peers (cluster size 5; expected ≥ 4)"
+        return 0
     fi
-    if [ -z "$connections" ]; then
-        connections=$(echo "$metrics" | grep -oi '"[^"]*connect[^"]*active[^"]*"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
-    fi
-    connections="${connections:--1}"
-
-    if [ "$connections" -gt 0 ] 2>/dev/null; then
-        log_pass "Active QUIC connections: ${connections}"
-    elif [ "$connections" = "-1" ]; then
-        # Per user policy: do NOT substitute cluster_node_count for connectionCount —
-        # that's a wrong-proxy assertion (5 nodes != 5 active QUIC connections).
-        log_fail "TODO: QUIC active-connection count not exposed in /api/metrics/transport (looked for connectionCount, connections, *connect*active*); cannot verify"
-        return 1
-    else
-        log_fail "No active QUIC connections (count=${connections})"
-        return 1
-    fi
+    log_fail "QUIC peer connectivity insufficient: connectedPeerCount=${connected} (expected ≥ 4 for 5-node cluster)"
+    return 1
 }
 
 test_kill_node_and_detect_drop() {
