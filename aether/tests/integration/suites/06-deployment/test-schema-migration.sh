@@ -58,25 +58,38 @@ test_schema_status_all() {
     esac
 }
 
-# Strict (steady-state): after blueprint deploy, test-persistence's V900
-# migration is applied automatically (no separate /api/schema/migrate trigger
-# needed). Assert currentVersion ≥ 900 — proves the migration ran. Triggering
-# an explicit migrate against an already-migrated datasource is a no-op so
-# we test the steady-state outcome.
+# Predicate for wait_for: schema_status reports currentVersion ≥ 900 for the
+# discovered datasource. Returns 0 (true) on success, non-zero on miss / parse
+# failure. Uses ${v:--1} to convert "missing field" to a value that fails the
+# numeric comparison rather than tripping a syntax error in `[ "" -ge 900 ]`.
+_migration_at_v900() {
+    local v
+    v=$(json_value "$(schema_status "$DATASOURCE")" "currentVersion") || return 1
+    [ "${v:--1}" -ge 900 ] 2>/dev/null
+}
+
+# Steady-state: after blueprint deploy, test-persistence's V900 migration is
+# applied automatically by the reactive schema flow (BlueprintService writes
+# SchemaVersionKey{status=PENDING} → CDM observes ValuePut → orchestrator runs
+# migrateIfNeeded). The flow takes wall-clock time — variable on slower
+# networks (cloud public-IP QUIC), and racy against any parallel test that
+# POSTs /api/schema/baseline against the same datasource (see investigation
+# 2026-05-10c on JBCT). Poll currentVersion until ≥ 900 with a budget rather
+# than reading once at an arbitrary snapshot.
 test_trigger_migration() {
     if [ -z "$DATASOURCE" ]; then
         log_fail "DATASOURCE empty — discovery failed"
         return 1
     fi
-    local status current_version
-    status=$(schema_status "$DATASOURCE")
-    current_version=$(json_value "$status" "currentVersion")
-    current_version="${current_version:--1}"
-    if [ "$current_version" -ge 900 ] 2>/dev/null; then
+    if wait_for "migration applied (currentVersion ≥ 900) for ${DATASOURCE}" _migration_at_v900 60; then
+        local current_version
+        current_version=$(json_value "$(schema_status "$DATASOURCE")" "currentVersion")
         log_pass "Migration applied: currentVersion=${current_version} (V900__create_kv.sql ran)"
         return 0
     fi
-    log_fail "Migration not applied: currentVersion=${current_version} (expected ≥ 900)"
+    local final_version
+    final_version=$(json_value "$(schema_status "$DATASOURCE")" "currentVersion")
+    log_fail "Migration not applied within budget: final currentVersion=${final_version:--1} (expected ≥ 900)"
     return 1
 }
 
