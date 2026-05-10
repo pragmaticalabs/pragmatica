@@ -51,7 +51,10 @@ test_rolling_complete() {
 }
 
 cleanup() {
+    # Restore baseline v1.0.0 ACTIVE for any subsequent test in this suite.
     deploy_cleanup || true
+    deploy_blueprint "$BLUEPRINT_V1" >/dev/null 2>&1 || \
+        log_warn "cleanup: failed to revert active version to ${BLUEPRINT_V1}"
 }
 
 run_test "Cluster ready" test_cluster_ready

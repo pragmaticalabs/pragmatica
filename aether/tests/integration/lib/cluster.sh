@@ -957,6 +957,17 @@ restart_all_nodes() {
         log_fail "restart_all_nodes: not all nodes reported /health/ready=UP within 90s — next test would hit a half-warm node"
         return 1
     fi
+    # SWIM cold-boot guard (non-fatal): `phase=BOOTING` causes
+    # `SwimProtocol.emitFaultyOrUnknown` to emit `UnknownObserved` (NOT
+    # `FaultyObserved`) for any peer not yet in `everSeenHealthy`, suppressing
+    # NODE_LEFT/NODE_FAILED events. We try to wait for NORMAL but do NOT fail-close
+    # — the cluster's NORMAL transition can take >180s under cluster A+B concurrent
+    # load (5s stable window + leader-side aggregation cycles) and a hard fail
+    # cascades into broken cleanup state for every subsequent test. Subsequent chaos
+    # tests will still detect their own NORMAL phase via the cluster's behaviour.
+    if ! wait_for_phase "NORMAL" 180; then
+        log_warn "restart_all_nodes: cluster did not reach phase=NORMAL within 180s — chaos kills in next test may produce UnknownObserved (no NODE_FAILED event); proceeding with warn"
+    fi
     log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced, all nodes ready)"
     return 0
 }
@@ -1160,9 +1171,34 @@ scale_cluster() {
     local leader
     leader=$(cluster_leader)
     log_info "Scaling cluster to ${target} nodes (leader: ${leader})" >&2
-    # Must hit the leader — CTM.setDesiredSize() only activates on leader
-    local result
-    result=$(leader_api_post "/api/cluster/scale" "{\"coreCount\":${target},\"expectedVersion\":0}")
+    # Must hit the leader — CTM.setDesiredSize() only activates on leader.
+    # Direct timed POST (bypasses leader_api_post's _resolve_live_endpoint round trip
+    # so the curl `-m 30` actually bounds the call). Previously a non-responsive
+    # leader could hang the whole suite indefinitely; failing fast here lets the
+    # test report a real diagnostic instead of stalling.
+    local endpoint url result rc
+    if [ "$CLOUD_MODE" = "true" ]; then
+        local leader_ip
+        leader_ip=$(cloud_node_ip "$leader" 2>/dev/null || echo "")
+        if [ -z "$leader_ip" ]; then
+            log_warn "scale_cluster: cannot resolve cloud IP for leader '${leader}'; falling back to MGMT entry point"
+            endpoint="${CLUSTER_ENDPOINT}"
+        else
+            endpoint="http://${leader_ip}:8080"
+        fi
+        url="${endpoint}/api/cluster/scale"
+        result=$(cloud_ssh "$leader" "curl -sk -m 30 -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '{\"coreCount\":${target},\"expectedVersion\":0}' http://localhost:8080/api/cluster/scale" 2>&1)
+        rc=$?
+    else
+        url="${CLUSTER_ENDPOINT}/api/cluster/scale"
+        result=$(curl -sk -m 30 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+                      -d "{\"coreCount\":${target},\"expectedVersion\":0}" "$url" 2>&1)
+        rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+        log_warn "scale_cluster: POST /api/cluster/scale rc=${rc} (likely 30s timeout — cluster degraded; CTM circuit breaker may be tripped). Output: $(printf '%s' "$result" | head -c 300)"
+        return 1
+    fi
     log_info "Scale result: ${result}" >&2
 }
 
@@ -1484,13 +1520,16 @@ deploy_cleanup() {
         if printf '%s' "$deployments" | grep -q "\"deploymentId\"[[:space:]]*:[[:space:]]*\"${did}\"[^}]*\"state\"[[:space:]]*:[[:space:]]*\"FAILED\""; then continue; fi
         echo "$did"
     done | while read -r did; do
-        # Cleanup: try complete, then rollback. Capture both stderr streams so a
-        # genuinely-stuck deployment surfaces in the test output rather than being
-        # silently inherited by the next test as broken state.
+        # Cleanup: prefer ROLLBACK first (restores to baseline) then complete as last
+        # resort. The previous order (complete first) caused 06-deployment test cascade:
+        # test-deploy-canary's cleanup completed 1.0.1 → 1.0.1 became active → next
+        # test (test-deploy-rolling) tried to deploy 1.0.1 again and got 500 "already
+        # active". Rolling back leaves 1.0.0 active and each test starts from a known
+        # baseline. Capture stderr so a stuck deployment surfaces.
         local complete_err rollback_err
-        complete_err=$(deploy_complete "$did" 2>&1 >/dev/null) && continue
         rollback_err=$(deploy_rollback "$did" 2>&1 >/dev/null) && continue
-        log_warn "deploy_cleanup: deployment ${did} stuck — complete failed (${complete_err}); rollback failed (${rollback_err})"
+        complete_err=$(deploy_complete "$did" 2>&1 >/dev/null) && continue
+        log_warn "deploy_cleanup: deployment ${did} stuck — rollback failed (${rollback_err}); complete failed (${complete_err})"
     done
     sleep 1
     return 0

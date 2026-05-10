@@ -16,6 +16,12 @@ DETECTION_TIMEOUT="${SWIM_DETECTION_TIMEOUT:-15}"
 
 test_cluster_ready() {
     wait_for_cluster 60
+    # SWIM cold-boot suppression bypass: kills against a phase=BOOTING cluster
+    # produce UnknownObserved (not FaultyObserved), so no NODE_FAILED event fires.
+    # Wait for phase=NORMAL so the kill below is observed canonically.
+    if ! wait_for_phase "NORMAL" 180; then
+        log_warn "Cluster did not reach phase=NORMAL within 180s — chaos kill may be silently absorbed by cold-boot suppression"
+    fi
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "5" "Initial: 5 nodes"

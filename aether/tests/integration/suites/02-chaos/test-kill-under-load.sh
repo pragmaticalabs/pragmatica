@@ -15,6 +15,8 @@ MAX_ERROR_RATE="${MAX_ERROR_RATE:-10.0}"
 
 test_initial_state() {
     wait_for_cluster 60
+    # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
+    wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still BOOTING; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
     wait_for_leader 60
     local count
     count=$(cluster_node_count)

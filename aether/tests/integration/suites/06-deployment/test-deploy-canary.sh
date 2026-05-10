@@ -70,7 +70,13 @@ test_canary_complete() {
 }
 
 cleanup() {
+    # Restore baseline v1.0.0 ACTIVE so the next test (blue-green / rolling) can
+    # cleanly upgrade to v1.0.1. Without this, canary's `deploy_complete` leaves
+    # v1.0.1 ACTIVE and the next `deploy_start v1.0.1` returns 500 "already active".
+    # `/api/blueprint/deploy` is the redeployment-safe endpoint (downgrade allowed).
     deploy_cleanup || true
+    deploy_blueprint "$BLUEPRINT_V1" >/dev/null 2>&1 || \
+        log_warn "cleanup: failed to revert active version to ${BLUEPRINT_V1}"
 }
 
 run_test "Cluster ready" test_cluster_ready
