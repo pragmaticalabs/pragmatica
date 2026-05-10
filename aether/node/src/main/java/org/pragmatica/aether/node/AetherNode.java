@@ -2253,7 +2253,12 @@ public interface AetherNode extends ManageableNode {
                                               msg -> httpRouteRegistry.evictNode(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               msg -> httpRouteRegistry.evictNode(msg.nodeId())));
-        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class, eventAggregator::onNodeJoined));
+        // NODE_JOINED user-facing event reflects transport-level visibility (PeerJoined)
+        // rather than the consensus-level membership decision. Required for CTM-provisioned
+        // replacements that re-occupy the same node-id slot — no MembershipDecision delta
+        // fires for those, but the fresh QUIC handshake produces a TransportObservation.
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
+                                              eventAggregator::onPeerJoined));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));

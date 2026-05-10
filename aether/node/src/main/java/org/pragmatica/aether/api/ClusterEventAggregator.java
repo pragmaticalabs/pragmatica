@@ -21,6 +21,7 @@ import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimObservation;
@@ -71,7 +72,17 @@ import java.util.function.IntSupplier;
         return buffer.filter(e -> e.timestamp().isAfter(since));
     }
 
-    public void onNodeJoined(MembershipDecision.NodeJoined event) {
+    /// NODE_JOINED in the user-facing event stream represents transport-level visibility
+    /// ("this node observed a peer connect") rather than canonical cluster-membership
+    /// decisions. This matters because CTM provisions replacements that re-occupy the same
+    /// node-id slot — `MembershipDecision.NodeJoined` doesn't fire (no `coreMemberIds`
+    /// delta) but `TransportObservation.PeerJoined` does (the new VM completes a fresh
+    /// QUIC handshake). Tests asserting NODE_JOINED for replacements depend on the
+    /// transport-level visibility.
+    ///
+    /// For canonical-membership state-machines (CDM, CTM, etc.) that need consensus-driven
+    /// decisions, see `MembershipDecision.NodeJoined` consumed elsewhere.
+    public void onPeerJoined(TransportObservation.PeerJoined event) {
         nodeJoinTimes.put(event.nodeId().id(),
                           System.currentTimeMillis());
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_JOINED,
