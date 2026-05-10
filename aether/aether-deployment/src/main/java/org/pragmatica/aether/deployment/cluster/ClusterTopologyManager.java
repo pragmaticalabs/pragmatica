@@ -45,6 +45,21 @@ import java.util.function.Supplier;
     void deactivate();
     TopologyObserver observer();
 
+    /// Snapshot of the provisioning circuit breaker state — exposed for operator
+    /// observability and for the `POST /api/cluster/topology/circuit-breaker/reset`
+    /// endpoint to confirm pre/post state when resetting.
+    record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
+
+    CircuitBreakerState circuitBreakerState();
+
+    /// Operator-triggered reset of the provisioning circuit breaker. Auto-reset
+    /// triggers (`setDesiredSize`, `onNodeReady`, phase NORMAL transition,
+    /// leader-handoff `activate()`) cover the steady-state cases; this method
+    /// is the explicit knob for ops scenarios where none of those have fired
+    /// (e.g., cluster stuck in BOOTING after sustained chaos but no scale
+    /// operation pending). Returns the prior failure count for the audit log.
+    int resetCircuitBreaker(String reason);
+
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,

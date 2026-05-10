@@ -368,6 +368,15 @@ public sealed interface ManagementApiResponses {
 
     record GovernorInfo(String governorId, String community, int memberCount, List<String> members){}
 
+    /// Snapshot of CTM provisioning circuit breaker state. `tripped=true` means
+    /// CTM `handleDeficit` is a no-op until reset; recovery triggers are
+    /// documented in `ClusterTopologyManager.resetCircuitBreaker`.
+    record CircuitBreakerStatusResponse(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped){}
+
+    /// Result of POST `/api/cluster/topology/circuit-breaker/reset`.
+    /// `priorFailureCount` is the number of consecutive failures cleared.
+    record CircuitBreakerResetResponse(String status, int priorFailureCount){}
+
     record ClusterConfigResponse(String tomlContent,
                                  String clusterName,
                                  String version,

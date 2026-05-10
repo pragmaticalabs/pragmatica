@@ -43,6 +43,8 @@ public enum ManagementRoute {
     CLUSTER_CONFIG_STATUS(GET, "/api/cluster/status", List.of(), ANY),
     CLUSTER_CONFIG_APPLY(POST, "/api/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_SCALE(POST, "/api/cluster/scale", List.of(), LEADER),
+    CLUSTER_CIRCUIT_BREAKER_STATUS(GET, "/api/cluster/topology/circuit-breaker", List.of(), LEADER),
+    CLUSTER_CIRCUIT_BREAKER_RESET(POST, "/api/cluster/topology/circuit-breaker/reset", List.of(), LEADER),
     CLUSTER_UPGRADE(POST, "/api/cluster/upgrade", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_TASK_REASSIGN(PUT, "/api/cluster/tasks/reassign", List.of("group"), LEADER),
     DEPLOY_START(POST, "/api/deploy", List.of(), taskGroup(STRATEGIES)),

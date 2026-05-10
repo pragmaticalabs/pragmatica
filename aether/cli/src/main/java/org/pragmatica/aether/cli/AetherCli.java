@@ -1897,12 +1897,38 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "topology", description = "Show cluster topology growth status") static class TopologyStatusCommand implements Callable<Integer> {
+    @Command(name = "topology", description = "Cluster topology operations", subcommands = {TopologyStatusCommand.CircuitBreakerCommand.class}) static class TopologyStatusCommand implements Callable<Integer> {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
             var response = parent.fetch(CLUSTER_TOPOLOGY);
             return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+
+        @Command(name = "circuit-breaker", description = "CTM provisioning circuit breaker", subcommands = {CircuitBreakerCommand.StatusCommand.class, CircuitBreakerCommand.ResetCommand.class}) static class CircuitBreakerCommand implements Runnable {
+            @CommandLine.ParentCommand private TopologyStatusCommand topologyParent;
+
+            @Contract@Override public void run() {
+                CommandLine.usage(this, System.out);
+            }
+
+            @Command(name = "status", description = "Show CTM provisioning circuit breaker state") static class StatusCommand implements Callable<Integer> {
+                @CommandLine.ParentCommand private CircuitBreakerCommand cbParent;
+
+                @Override public Integer call() {
+                    var response = cbParent.topologyParent.parent.fetch(CLUSTER_CIRCUIT_BREAKER_STATUS);
+                    return OutputFormatter.printQuery(response, cbParent.topologyParent.parent.outputOptions());
+                }
+            }
+
+            @Command(name = "reset", description = "Reset the CTM provisioning circuit breaker (operator override; use after fixing the underlying provisioning issue)") static class ResetCommand implements Callable<Integer> {
+                @CommandLine.ParentCommand private CircuitBreakerCommand cbParent;
+
+                @Override public Integer call() {
+                    var response = cbParent.topologyParent.parent.post(CLUSTER_CIRCUIT_BREAKER_RESET, "{}");
+                    return OutputFormatter.printAction(response, cbParent.topologyParent.parent.outputOptions(), "Circuit breaker reset");
+                }
+            }
         }
     }
 

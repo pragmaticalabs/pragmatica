@@ -967,6 +967,12 @@ restart_all_nodes() {
     # tests will still detect their own NORMAL phase via the cluster's behaviour.
     if ! wait_for_phase "NORMAL" 180; then
         log_warn "restart_all_nodes: cluster did not reach phase=NORMAL within 180s — chaos kills in next test may produce UnknownObserved (no NODE_FAILED event); proceeding with warn"
+        # If NORMAL didn't arrive, CTM may be circuit-tripped from prior provisioning
+        # failures (PEERS env doesn't include CTM-replacement node-ids → 60s slot
+        # deadline expires → after 3 failures, breaker trips → handleDeficit halts).
+        # Operator-triggered reset bypasses the auto-recovery triggers (which require
+        # NORMAL transition that didn't happen).
+        reset_provisioning_circuit || true
     fi
     log_info "restart_all_nodes: cluster recovered (${NODE_COUNT:-5} nodes, leader elected, generation quiesced, all nodes ready)"
     return 0
@@ -1164,6 +1170,25 @@ seed_cluster_config() {
     json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":0}"
     # Must hit the leader — CTM only runs on leader
     leader_api_post "/api/cluster/config" "$json_body"
+}
+
+# Operator-triggered reset of the CTM provisioning circuit breaker. Calls the
+# leader-routed POST /api/cluster/topology/circuit-breaker/reset; the server
+# returns the prior consecutive-failure count (audit log). Use between
+# disruptive tests when restart_all_nodes did not converge to phase=NORMAL
+# (i.e., CTM may be circuit-tripped from prior provisioning failures).
+# Hard 15s timeout — call is a single KV-side reset, not a provisioning op.
+reset_provisioning_circuit() {
+    local result rc
+    result=$(curl -sk -m 15 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+                  -d '{}' "${CLUSTER_ENDPOINT}/api/cluster/topology/circuit-breaker/reset" 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_warn "reset_provisioning_circuit: POST failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
+        return 1
+    fi
+    log_info "reset_provisioning_circuit: ${result}"
+    return 0
 }
 
 scale_cluster() {

@@ -4,9 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
+import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
@@ -50,8 +55,35 @@ public final class ClusterTopologyRoutes implements RouteSource {
         return Stream.of(ManagementRoutes.<ClusterTopologyStatusResponse>route(ManagementRoute.CLUSTER_TOPOLOGY)
                                          .toJson(topologyHandler),
                          ManagementRoutes.<GovernorsResponse>route(ManagementRoute.CLUSTER_GOVERNORS)
-                                         .toJson(this::buildGovernorsResponse));
+                                         .toJson(this::buildGovernorsResponse),
+                         ManagementRoutes.<CircuitBreakerStatusResponse>route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS)
+                                         .toJson(_ -> buildCircuitBreakerStatus()),
+                         ManagementRoutes.<CircuitBreakerResetResponse>route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET)
+                                         .toJson(_ -> resetCircuitBreaker()));
     }
+
+    private Promise<CircuitBreakerStatusResponse> buildCircuitBreakerStatus() {
+        return ctmOpt().map(ctm -> {
+            var state = ctm.circuitBreakerState();
+            return new CircuitBreakerStatusResponse(state.consecutiveFailures(),
+                                                    state.trippedAt(),
+                                                    state.nextAllowedMs(),
+                                                    state.tripped());
+        }).async(CTM_UNAVAILABLE);
+    }
+
+    private Promise<CircuitBreakerResetResponse> resetCircuitBreaker() {
+        return ctmOpt().map(ctm -> {
+            var prior = ctm.resetCircuitBreaker("/api/cluster/topology/circuit-breaker/reset");
+            return new CircuitBreakerResetResponse("reset", prior);
+        }).async(CTM_UNAVAILABLE);
+    }
+
+    private Option<ClusterTopologyManager> ctmOpt() {
+        return nodeSupplier.get().clusterTopologyManager();
+    }
+
+    private static final Cause CTM_UNAVAILABLE = Causes.cause("Cluster topology manager not available on this node (not the leader, or node not yet activated)");
 
     private GovernorsResponse buildGovernorsResponse() {
         var node = nodeSupplier.get();

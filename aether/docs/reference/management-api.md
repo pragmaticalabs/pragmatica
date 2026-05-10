@@ -1778,6 +1778,36 @@ Scale the cluster core node count. Validates quorum safety (minimum 3, odd count
 }
 ```
 
+### GET /api/cluster/topology/circuit-breaker
+
+Snapshot of the CTM (Cluster Topology Manager) provisioning circuit breaker. The breaker trips after `MAX_CONSECUTIVE_PROVISIONING_FAILURES` (default 3) failed slot-deadline expirations or provider API rejections, halting auto-heal until a recovery trigger fires (`setDesiredSize`, `onNodeReady`, phase NORMAL transition, leader handoff, or operator reset).
+
+**RBAC:** ADMIN · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "consecutiveFailures": 0,
+  "trippedAt": 3,
+  "nextAllowedMs": 0,
+  "tripped": false
+}
+```
+
+### POST /api/cluster/topology/circuit-breaker/reset
+
+Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing an underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (above) have fired. Returns the prior consecutive-failure count for the audit log.
+
+**RBAC:** ADMIN · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "status": "reset",
+  "priorFailureCount": 3
+}
+```
+
 ### POST /api/cluster/upgrade
 
 Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store config. Full rolling upgrade orchestration uses existing RollingUpdateManager infrastructure.

@@ -363,6 +363,26 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
     }
 
+    @Override public CircuitBreakerState circuitBreakerState() {
+        var failures = consecutiveProvisioningFailures.get();
+        return new CircuitBreakerState(failures,
+                                       MAX_CONSECUTIVE_PROVISIONING_FAILURES,
+                                       nextProvisioningAllowedMs.get(),
+                                       failures >= MAX_CONSECUTIVE_PROVISIONING_FAILURES);
+    }
+
+    @Override public int resetCircuitBreaker(String reason) {
+        var prev = consecutiveProvisioningFailures.get();
+        resetProvisioningCircuit("operator: " + reason);
+        // Force a reconcile attempt — operator-triggered reset implies "I fixed
+        // the underlying issue, please retry now". Without this, deficit handling
+        // doesn't run until the next state-change event arrives.
+        if (active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {
+            reconcile();
+        }
+        return prev;
+    }
+
     private static long computeProvisioningBackoffMs(int failureCount) {
         if (failureCount <= 0) {return 0L;}
         var shift = Math.min(failureCount - 1, 5);

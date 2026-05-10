@@ -1198,6 +1198,32 @@ aether cluster topology
 # lb-passive        PASSIVE     HEALTHY       aether-lb                             0.0.0.0:7000
 ```
 
+### `aether topology circuit-breaker status`
+
+Show the CTM (Cluster Topology Manager) provisioning circuit breaker state. The breaker trips after 3 consecutive provisioning failures and halts auto-heal until reset.
+
+```bash
+aether topology circuit-breaker status
+```
+
+Example output:
+```json
+{"consecutiveFailures": 0, "trippedAt": 3, "nextAllowedMs": 0, "tripped": false}
+```
+
+### `aether topology circuit-breaker reset`
+
+Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing the underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (`scale`, node-ready, phase NORMAL, leader handoff) have fired. Returns the prior consecutive-failure count.
+
+```bash
+aether topology circuit-breaker reset
+```
+
+Example output:
+```json
+{"status": "reset", "priorFailureCount": 3}
+```
+
 ### `aether cluster generation`
 
 Show the current cluster generation snapshot as observed by the queried node. The snapshot summarises the leader-projected epoch, core members, communities, and DHT partition ownership. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
