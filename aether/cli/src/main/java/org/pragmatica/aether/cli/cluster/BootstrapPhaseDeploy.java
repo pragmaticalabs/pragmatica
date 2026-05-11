@@ -289,8 +289,6 @@ import static org.pragmatica.lang.Result.success;
                                       int managementPort,
                                       String peers,
                                       String clusterSecret) {
-        // --restart no: container restart policy must not compete with CTM auto-heal.
-        // See aether/docs/operator/deployment-recovery.md.
         return "docker rm -f aether-node 2>/dev/null || true" + " && docker run -d --name aether-node --restart no --network host" + " -l aether-cluster=" + clusterName + " -l aether-node-id=" + nodeId + " -l aether-role=core" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + " -e PEERS=\"" + peers + "\"" + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " " + image;
     }
 
@@ -486,8 +484,6 @@ import static org.pragmatica.lang.Result.success;
         var peersEnv = peers.isEmpty()
                       ? ""
                       : " -e PEERS=\"" + peers + "\"";
-        // --restart no: same rationale as buildRestartCommand above — CTM owns
-        // recovery; auto-restart competes with auto-heal and resurrects evicted nodes.
         var startCommand = "mkdir -p /opt/aether/config" + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest" + " && docker run -d --name aether-node --restart no --network host" + " -l aether-cluster=" + clusterName + " -e NODE_ID=\"" + nodeId + "\"" + " -e CLUSTER_PORT=\"" + clusterPort + "\"" + " -e MANAGEMENT_PORT=\"" + managementPort + "\"" + peersEnv + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret + "\"" + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + " ghcr.io/pragmaticalabs/aether-node:latest";
         return RemoteCommandRunner.ssh(host, startCommand, sshConfig).mapToUnit();
     }

@@ -124,7 +124,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
         var intendedSize = nodeSupplier.get().initialTopology()
-                                            .size();
+                                           .size();
         var minAvailable = (intendedSize / 2) + 1;
         var operationalAfterDrain = countOnDuty() - 1;
         if (operationalAfterDrain >= minAvailable) {return Promise.success(new TransitionResult(true,

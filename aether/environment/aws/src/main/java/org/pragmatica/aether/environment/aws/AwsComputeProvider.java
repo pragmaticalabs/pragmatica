@@ -49,7 +49,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.runInstances(buildRunRequest(Option.empty(),
-                                                   config.userData())).flatMap(response -> tagAndMapFirstInstance(response, defaultTags()))
+                                                   config.userData())).flatMap(response -> tagAndMapFirstInstance(response,
+                                                                                                                  defaultTags()))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 
@@ -57,7 +58,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         var zone = extractAvailabilityZone(spec.placement());
         var userData = spec.userData().or(config.userData());
         var tags = tagsFor(spec.context());
-        return client.runInstances(buildRunRequest(zone, userData)).flatMap(response -> tagAndMapFirstInstance(response, tags))
+        return client.runInstances(buildRunRequest(zone, userData)).flatMap(response -> tagAndMapFirstInstance(response,
+                                                                                                               tags))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 
@@ -97,19 +99,13 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     private Promise<InstanceInfo> tagAndMapFirstInstance(RunInstancesResponse response, Map<String, String> tags) {
         var instance = response.instances().getFirst();
         var instanceId = instance.instanceId();
-        return client.createTags(List.of(instanceId),
-                                 tags)
-        .map(unit -> toInstanceInfo(instance));
+        return client.createTags(List.of(instanceId), tags).map(unit -> toInstanceInfo(instance));
     }
 
     private static Map<String, String> defaultTags() {
         return Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE);
     }
 
-    /// Translate a [ProvisionContext] into AWS tag entries. The well-known
-    /// `aether-cluster` / `aether-role` / `aether-source` slots are emitted
-    /// alongside the managed marker; caller-supplied [ProvisionContext#extraTags]
-    /// are folded in last (extras win on key collision).
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
         var tags = new java.util.HashMap<String, String>();
         tags.put(MANAGED_TAG_KEY, MANAGED_TAG_VALUE);

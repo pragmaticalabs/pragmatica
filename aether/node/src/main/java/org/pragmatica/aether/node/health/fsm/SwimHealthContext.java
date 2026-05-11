@@ -42,30 +42,7 @@ public final class SwimHealthContext {
     private final PeerObservationStore observationStore;
     private final SwimConfig swimConfig;
     private final LongSupplier clock;
-    /// Audit Step 6 (2026-05-07) — phase-aware SWIM cold-boot suppression. `true` when
-    /// the cluster is in `BOOTING` phase (FAULTY for never-HEALTHY peers should be
-    /// suppressed to `UnknownObserved`); `false` in `NORMAL` (always emit
-    /// `FaultyObserved` regardless of `everSeenHealthy`). Production wiring sources
-    /// this from `HealthReconciler.phase() == ClusterPhase.BOOTING`. Default
-    /// `() -> true` preserves legacy behavior for unit tests that don't wire a phase.
     private final BooleanSupplier isBootingSupplier;
-
-    /// Targeted leader-faulty evictor (2026-05-09) — narrow re-introduction of the
-    /// SWIM-FAULTY-to-disconnect bridge that audit Step 3 removed for general peers.
-    /// Fires ONLY when the FAULTY target equals the current cluster leader. Reason:
-    /// post-Step-3 the eviction path is consensus-driven (DECOMMISSIONED write →
-    /// snapshot delta → NodeRemoved → disconnect), but consensus.apply itself depends
-    /// on reliable-broadcast progressing — and the broadcast queues sends to the
-    /// dead-but-still-QUIC-connected leader indefinitely on cloud Container, where
-    /// QUIC's own inactivity timeout is sluggish (Docker network-namespace teardown
-    /// delays the kernel-level socket close). Catch-22 broken locally per node by
-    /// disconnecting the QUIC peer the moment SWIM marks it FAULTY-and-leader. Only
-    /// the leader case is bridged — general FAULTY peers continue through the
-    /// post-consensus path, preserving Step 3's elimination of the N+1 fan-out
-    /// cascade. Transport hygiene (DisconnectNode) is NOT subject to the
-    /// single-writer rule, so concurrent eviction calls from N surviving nodes are
-    /// idempotent at the QUIC layer (`peer.evict` is CONNECTED→EVICTED, no-op
-    /// otherwise). Default `_ -> {}` preserves legacy behavior for unit tests.
     private final java.util.function.Consumer<NodeId> faultyLeaderEvictor;
 
     private final AtomicInteger faultyCountInWindow = new AtomicInteger();
@@ -221,7 +198,6 @@ public final class SwimHealthContext {
         return isLeaderSupplier;
     }
 
-    /// Phase-aware cold-boot suppression gate. See [`#isBootingSupplier`] field doc.
     public BooleanSupplier isBootingSupplier() {
         return isBootingSupplier;
     }
@@ -256,24 +232,10 @@ public final class SwimHealthContext {
         };
     }
 
-    /// RC1-9 audit Step 3: the leader-only `routeDisconnect(peer)` and the
-    /// follower-for-dead-leader `routeDisconnect(peer)` are both gone. QUIC eviction
-    /// now flows via `TopologyChangeNotification.NodeRemoved` after the leader's
-    /// `HealthReconciler` writes `DECOMMISSIONED` and `TopologyObserver` publishes
-    /// the membership delta. The leader-side aggregation path
-    /// (`emitLeaderHint` + `bufferHealthObservation`) is preserved.
     @Contract public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
         emitLeaderHint(peer, HealthHint.FAULTY);
         bufferHealthObservation(peer, HealthHint.FAULTY);
-        // See `faultyLeaderEvictor` field doc for the catch-22 this breaks. Narrow trigger:
-        // ONLY when (a) cluster phase is NORMAL (not BOOTING — boot-time transient FAULTY
-        // events on the still-being-established leader would otherwise prematurely evict
-        // it) AND (b) the FAULTY peer IS the current cluster leader. Other peers, and
-        // BOOTING-phase observations, continue through the post-consensus eviction path
-        // (audit Step 3).
-        if (!isBootingSupplier.getAsBoolean() && currentLeader.map(peer::equals).or(false)) {
-            faultyLeaderEvictor.accept(peer);
-        }
+        if (!isBootingSupplier.getAsBoolean() && currentLeader.map(peer::equals).or(false)) {faultyLeaderEvictor.accept(peer);}
     }
 
     public int incrementAndGetFaulty(long nowMillis) {

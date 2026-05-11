@@ -83,7 +83,8 @@ import static org.pragmatica.lang.Option.option;
     private Result<ParsedConfig> applyClusterNameOverride(ParsedConfig parsed) {
         if (clusterNameOverride == null || clusterNameOverride.isBlank()) {return Result.success(parsed);}
         return parsed.config().withClusterName(clusterNameOverride)
-                                       .map(updated -> new ParsedConfig(updated, parsed.rawToml()));
+                            .map(updated -> new ParsedConfig(updated,
+                                                             parsed.rawToml()));
     }
 
     private Result<ParsedConfig> parseConfig() {

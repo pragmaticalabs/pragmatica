@@ -111,15 +111,6 @@ public final class ObservationAggregator {
     private Option<StateChanged> computeEdgeForWindow(NodeId target, Deque<Entry> window, int onDutyCount, long nowMs) {
         evictStale(window, nowMs);
         var threshold = quorumThreshold(onDutyCount);
-        // Cold-boot suppression is handled upstream:
-        //   - SwimProtocol.emitFaultyOrUnknown gates emit by BOOTING/NORMAL phase (audit Step 6).
-        //   - HealthReconcilerImpl.suppressedByPhase gates the actual lifecycle write in BOOTING.
-        // The aggregator's prior respectColdBoot duplicated half of this logic without phase
-        // awareness: peers added in initial ALIVE state never produce a HealthyObserved
-        // (notifyAlive only fires on transition), so everSeenHealthy stayed empty even after
-        // cluster reached NORMAL phase. The result was that FAULTY edges for the leader were
-        // silently dropped on cloud Container post-kill: SWIM detected FAULTY, but the
-        // aggregator suppressed it, preventing leader-eviction. Trust upstream emit gating.
         return tally(window, threshold).flatMap(state -> emitIfChanged(target, state));
     }
 
@@ -137,7 +128,6 @@ public final class ObservationAggregator {
                               .map(Option::some)
                               .orElseGet(Option::none);
     }
-
 
     private Option<StateChanged> emitIfChanged(NodeId target, NodeLifecycleState newState) {
         var emitted = new AtomicBoolean(false);

@@ -203,19 +203,11 @@ sealed interface UserDataTemplate {
 
     private static void appendContainerRun(StringBuilder sb, String clusterName, String nodeId) {
         sb.append("# --- Pull and run ---\n");
-        // Pre-pulled VM snapshots may already carry the image — skip the pull when
-        // it's already locally cached. See aether/docs/operator/vm-snapshot.md.
         sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
         sb.append("    docker pull \"${AETHER_IMAGE}\"\n");
         sb.append("fi\n");
         sb.append("docker run -d \\\n");
         sb.append("    --name aether-node \\\n");
-        // Why --restart no: container restart policy must NOT compete with Aether's
-        // CTM auto-heal. A killed/crashed aether-node is a node failure that CTM owns
-        // (provision a fresh VM). Auto-restarting the container masks failures from
-        // CTM, resurrects DECOMMISSIONED nodes that the cluster has already evicted
-        // (single-writer rule rejects them, they flap), and defeats chaos engineering.
-        // See aether/docs/operator/deployment-recovery.md.
         sb.append("    --restart no \\\n");
         sb.append("    --network host \\\n");
         sb.append("    -l aether-cluster=").append(clusterName)
@@ -250,8 +242,6 @@ sealed interface UserDataTemplate {
         sb.append("    apt-get install -y -qq temurin-25-jre\n");
         sb.append("fi\n");
         sb.append("mkdir -p /opt/aether\n");
-        // Pre-pulled VM snapshots may already carry the JAR — skip the download when
-        // a non-empty file is already present. See aether/docs/operator/vm-snapshot.md.
         sb.append("if [ ! -s /opt/aether/aether-node.jar ]; then\n");
         sb.append("    curl -fsSL -o /opt/aether/aether-node.jar \\\n");
         sb.append("        \"").append(jarUrl)

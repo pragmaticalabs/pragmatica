@@ -135,13 +135,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  topologyMode(topologyManager));
     }
 
-    /// `TopologyManager` is the public interface; mode lives on `TopologyObserver`.
-    /// Manager instances in production are observers, but defensive isinstance keeps
-    /// test stubs (which may not extend `TopologyObserver`) safe.
     private static String topologyMode(TopologyManager tm) {
         return (tm instanceof TopologyObserver observer)
-               ? observer.topologyMode().name()
-               : TopologyObserver.TopologyMode.NORMAL.name();
+              ? observer.topologyMode().name()
+              : TopologyObserver.TopologyMode.NORMAL.name();
     }
 
     private static int snapshotCoreCount(ClusterGenerationSnapshot snapshot) {

@@ -83,26 +83,27 @@ import static org.pragmatica.lang.Result.success;
     private static Map<String, SourceCleanupHandle> parseSources(JsonNode node) {
         if (node.isMissingNode() || node.isNull() || !node.isObject()) {return Map.of();}
         var sources = new LinkedHashMap<String, SourceCleanupHandle>();
-        for (var entry : node.properties()) {
-            var handle = parseSourceCleanupHandle(entry.getValue());
-            if (handle != null) {sources.put(entry.getKey(), handle);}
-        }
+        for (var entry : node.properties()) {parseSourceCleanupHandle(entry.getValue()).onPresent(handle -> sources.put(entry.getKey(),
+                                                                                                                        handle));}
         return Map.copyOf(sources);
     }
 
-    private static SourceCleanupHandle parseSourceCleanupHandle(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isObject()) {return null;}
+    private static Option<SourceCleanupHandle> parseSourceCleanupHandle(JsonNode node) {
+        if (node.isMissingNode() || node.isNull() || !node.isObject()) {return Option.none();}
         var provider = node.path("provider").asText("");
         var regionText = node.path("region").asText("");
-        var region = regionText.isEmpty() ? Option.<String>none() : Option.some(regionText);
+        var region = regionText.isEmpty()
+                    ? Option.<String>none()
+                    : Option.some(regionText);
         var envVars = parseStringMap(node.path("credentialEnvVars"));
-        return SourceCleanupHandle.sourceCleanupHandle(provider, region, envVars);
+        return Option.some(SourceCleanupHandle.sourceCleanupHandle(provider, region, envVars));
     }
 
     private static Map<String, String> parseStringMap(JsonNode node) {
         if (node.isMissingNode() || node.isNull() || !node.isObject()) {return Map.of();}
         var map = new LinkedHashMap<String, String>();
-        for (var entry : node.properties()) {map.put(entry.getKey(), entry.getValue().asText(""));}
+        for (var entry : node.properties()) {map.put(entry.getKey(),
+                                                     entry.getValue().asText(""));}
         return Map.copyOf(map);
     }
 

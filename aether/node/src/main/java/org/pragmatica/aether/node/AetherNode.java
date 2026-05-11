@@ -1154,24 +1154,9 @@ public interface AetherNode extends ManageableNode {
         var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
                                                  swimTimeouts.probeTimeout(),
                                                  swimTimeouts.suspectTimeout());
-        // Audit Step 6 (2026-05-07): phase-aware SWIM cold-boot suppression. SWIM
-        // suppresses FAULTY-for-never-HEALTHY peers ONLY while the cluster is in
-        // BOOTING; once `HealthReconciler` projects NORMAL, FAULTY edges always
-        // emit so a peer killed before its first successful Ping still produces a
-        // cluster-visible observation, drives the `DECOMMISSIONED` write, and the
-        // downstream `NODE_LEFT` event. Lambda captures `healthReconciler` by ref;
-        // the reconciler is `start()`-ed at line 884 above so the supplier is safe
-        // to consult by the time SWIM probes any peer.
         BooleanSupplier swimIsBootingSupplier = () -> healthReconciler.phase() == AetherValue.ClusterPhase.BOOTING;
-        // Leader-faulty evictor (2026-05-09): bridges SWIM-FAULTY → QUIC disconnect when
-        // the FAULTY peer IS the current cluster leader. Breaks the consensus.apply
-        // broadcast stall on cloud Container kill-leader (post-Step-3 architecture
-        // otherwise depends on consensus to evict, but consensus is what's stuck).
-        // Narrow trigger preserves Step 3's removal of the N+1 fan-out cascade for
-        // general FAULTY peers. See SwimHealthContext.faultyLeaderEvictor field doc.
-        java.util.function.Consumer<NodeId> faultyLeaderEvictor = peer ->
-            clusterNode.network().disconnect(
-                new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(peer));
+        java.util.function.Consumer<NodeId> faultyLeaderEvictor = peer -> clusterNode.network()
+                                                                                             .disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(peer));
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
@@ -1191,23 +1176,9 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
         swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
-        // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
-        // observations directly. NODE_FAILED / NODE_LEFT events are emitted only via
-        // `onNodeLifecyclePut` (the leader's HealthReconciler writing DECOMMISSIONED to
-        // KV-Store with prior-state context). The SWIM-witnessed duplicate emit was
-        // amplifying the membership-tracker cascade audit identified.
-        // RC1-9 audit Step 3: the SWIM-FAULTY-to-disconnect short-circuit lambda is
-        // gone. QUIC eviction now flows from `TopologyChangeNotification.NodeRemoved`
-        // (published by `TopologyObserver.publishMembershipDeltas` after the leader's
-        // `HealthReconciler` writes `DECOMMISSIONED` and the snapshot re-projects).
-        // The membership-delta-driven path is a single canonical edge instead of N+1
-        // fan-out across every survivor's local SWIM listener; eviction trades sub-ms
-        // local-SWIM latency for a Rabia round-trip + projection (~200-500ms cloud RTT).
         var clusterNetworkRef = clusterNode.network();
         allEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                                 (TopologyChangeNotification.NodeRemoved removed) ->
-                                                     clusterNetworkRef.disconnect(
-                                                         new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
+                                                 (TopologyChangeNotification.NodeRemoved removed) -> clusterNetworkRef.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)

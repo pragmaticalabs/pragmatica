@@ -57,8 +57,6 @@ public record ProvisionContext(String clusterName,
 
     public static final String PROVISIONED_BY_CTM = "ctm";
 
-    /// Compact constructor — defensively copies [#extraTags] so callers can't
-    /// mutate the captured Map after construction.
     public ProvisionContext {
         extraTags = Map.copyOf(extraTags);
     }
@@ -74,8 +72,6 @@ public record ProvisionContext(String clusterName,
         return new ProvisionContext(clusterName, role, sourceName, nodeId, peers, coreMax, provisionedBy, extraTags);
     }
 
-    /// Convenience factory for the common "I just need a context with defaults"
-    /// case (no nodeId, no peers, no extra tags, default coreMax).
     public static ProvisionContext provisionContext(String clusterName,
                                                     String role,
                                                     String sourceName,
@@ -91,11 +87,25 @@ public record ProvisionContext(String clusterName,
     }
 
     public ProvisionContext withNodeId(String value) {
-        return new ProvisionContext(clusterName, role, sourceName, Option.some(value), peers, coreMax, provisionedBy, extraTags);
+        return new ProvisionContext(clusterName,
+                                    role,
+                                    sourceName,
+                                    Option.some(value),
+                                    peers,
+                                    coreMax,
+                                    provisionedBy,
+                                    extraTags);
     }
 
     public ProvisionContext withPeers(String value) {
-        return new ProvisionContext(clusterName, role, sourceName, nodeId, Option.some(value), coreMax, provisionedBy, extraTags);
+        return new ProvisionContext(clusterName,
+                                    role,
+                                    sourceName,
+                                    nodeId,
+                                    Option.some(value),
+                                    coreMax,
+                                    provisionedBy,
+                                    extraTags);
     }
 
     public ProvisionContext withCoreMax(int value) {

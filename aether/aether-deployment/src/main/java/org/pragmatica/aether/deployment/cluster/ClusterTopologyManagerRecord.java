@@ -103,9 +103,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private static final long BOOTSTRAP_GRACE_MS = 60_000L;
 
-    // Circuit breaker: stop runaway provisioning when replacements consistently fail to join.
-    // Counter increments on each API rejection or slot deadline expiry; resets on successful node arrival,
-    // cluster phase NORMAL transition, leader (re)activation, or operator setDesiredSize.
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
 
     private static final long PROVISIONING_BACKOFF_BASE_MS = 30_000L;
@@ -350,15 +347,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract private void resetProvisioningCircuit(String reason) {
         var prev = consecutiveProvisioningFailures.getAndSet(0);
         nextProvisioningAllowedMs.set(0L);
-        if (prev > 0) {
-            log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prev);
-        }
+        if (prev > 0) {log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)",
+                                reason,
+                                prev);}
     }
 
     private static long computeProvisioningBackoffMs(int failureCount) {
         if (failureCount <= 0) {return 0L;}
         var shift = Math.min(failureCount - 1, 5);
-        var raw = PROVISIONING_BACKOFF_BASE_MS << shift;
+        var raw = PROVISIONING_BACKOFF_BASE_MS<<shift;
         return Math.min(raw, PROVISIONING_BACKOFF_MAX_MS);
     }
 
@@ -1022,10 +1019,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                      .flatMap(nodeId -> observer.get(nodeId).stream())
                                      .map(ClusterTopologyManagerRecord::formatPeerEntry)
                                      .collect(Collectors.joining(","));
-        // Pass cluster name explicitly so the provider's default `aether-cluster=unknown`
-        // (used when [cloud.discovery] cluster_name is missing from node config) is overridden.
-        // Avoids orphaned VMs that the cluster name-scoped reaper / discovery polling can't see.
-        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
+        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName)
+                                                 .or("");
         return ProvisionContext.provisionContext(clusterName,
                                                  "core",
                                                  "default",

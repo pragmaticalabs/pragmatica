@@ -97,15 +97,12 @@ import java.util.List;
                                                                           Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         System.out.printf("  Destroying VM %s (provider: %s)...%n", vm.resourceId(), vm.provider());
         return resolveComputeForVm(state, vm, cloudComputeResolver).flatMap(compute -> terminateInstance(compute,
-                                                                                                          vm.resourceId()));
+                                                                                                         vm.resourceId()));
     }
 
-    /// Prefer the persisted source handle (env-var names + region as recorded at
-    /// bootstrap time). Fall back to the legacy hardcoded-env-var resolver only
-    /// when the state file predates the handle (backward compat).
     private static Result<ComputeProvider> resolveComputeForVm(BootstrapState state,
-                                                                CreatedResource.ProvisionedVm vm,
-                                                                Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+                                                               CreatedResource.ProvisionedVm vm,
+                                                               Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         var handle = state.sources().get(vm.sourceName());
         if (handle == null) {return cloudComputeResolver.apply(vm.provider());}
         return ProviderResolver.resolveCloudComputeFromHandle(handle);
