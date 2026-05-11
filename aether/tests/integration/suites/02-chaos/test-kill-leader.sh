@@ -83,36 +83,15 @@ test_auto_heal() {
     assert_eq "$count" "5" "Auto-heal restored cluster to exactly 5 nodes"
 }
 
-# Restore cluster for next test suite — ClusterGeneration barrier is deterministic.
+# Restore cluster for next test suite via semantic baseline restore.
+# `restore_cluster_baseline` re-enables auto-heal, resets the CTM circuit
+# breaker, reactivates any DRAINING nodes, scales to NODE_COUNT, then waits
+# for N ON_DUTY healthy cores + generation quiescence + soft phase=NORMAL.
+# This replaces the old fixed-fixture `restart_all_nodes` flow which forced
+# the original 5 compose containers back and fought CTM auto-heal.
 cleanup() {
-    # Capture baseline before restart so the event-driven barrier below sees the
-    # restart-induced rejoin churn (NODE_JOINED) without racing pre-existing events.
-    local cleanup_baseline
-    cleanup_baseline=$(topology_now)
-    restart_all_nodes
-    # Event-driven pre-quiesce barrier: previously a hardcoded `sleep 3` "let
-    # reconnection churn start bumping epoch before we ask for quiescence". The
-    # author admitted this masks the race — without the sleep, await_generation_quiesced
-    # could return OK before churn started. Wait for any surviving node to emit
-    # a NODE_JOINED for any peer (post-restart rejoin). On this same baseline
-    # the joined-other helper requires excluding a node id; we use the killed
-    # leader sentinel so any other rejoin counts.
-    if ! wait_for_replacement_of "$(mgmt_entry_point_node)" "$cleanup_baseline" 60; then
-        log_warn "No NODE_JOINED rejoin event observed within 60s after restart_all_nodes"
-    fi
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
-        log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
-    # Phase=NORMAL barrier (post-quiesce). Without it, the next chaos test (or
-    # 03-scaling's first scale-down) inherits a still-BOOTING cluster —
-    # SwimProtocol.emitFaultyOrUnknown suppresses NODE_FAILED for any peer not in
-    # `everSeenHealthy`, so subsequent kills register as UnknownObserved and
-    # downstream tests time out at the 60s departure-event wait. Soft on docker-
-    # remote (log_warn): cluster B compose-restart genuinely cannot reach NORMAL
-    # within a hard budget — fail-loud here cascades a single test-infra slowness
-    # into 5+ downstream cluster B test failures. Subsequent tests already use
-    # their own `wait_for_phase` warns; the suite tally pinpoints the issue.
-    wait_for_phase "NORMAL" 300 || \
-        log_warn "cleanup: cluster phase did not reach NORMAL within 300s; subsequent destructive tests may surface SWIM cold-boot suppression as opaque NODE_FAILED-not-observed failures"
+    restore_cluster_baseline || \
+        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
 }
 
 run_test "Initial 5 nodes" test_initial_state

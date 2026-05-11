@@ -91,6 +91,30 @@ cluster_phase() {
     aether_field status clusterPhase
 }
 
+# Count nodes whose per-node lifecycle atom reports state=ON_DUTY. HealthReconciler
+# is the single writer of NodeLifecycleKey (spec §4.3 P4) and only transitions
+# JOINING→ON_DUTY once the node has cleared the healthy + committed barrier, so
+# state=ON_DUTY is the operator-visible "healthy and on duty" signal — the same
+# predicate the docs/operator use. Used by `restore_cluster_baseline` to assert
+# the cluster has converged to N healthy cores AFTER CTM auto-heal, without
+# requiring those cores to be the original five compose nodes (CTM replacements
+# come up with fresh NodeIds — fighting that is what `restart_all_nodes` did).
+cluster_node_count_on_duty_healthy() {
+    local lifecycle
+    lifecycle=$(api_get "/api/nodes/lifecycle" 2>/dev/null || true)
+    if [ -z "$lifecycle" ]; then
+        echo 0
+        return 0
+    fi
+    # Same parser as pick_non_leader — handles both key orders that the API
+    # emits depending on Jackson field ordering. Each match represents one
+    # ON_DUTY entry; counting matches gives the ON_DUTY-healthy core total.
+    printf '%s' "$lifecycle" \
+        | grep -oE '"nodeId":"[^"]+","state":"ON_DUTY"|"state":"ON_DUTY","nodeId":"[^"]+"' \
+        | wc -l \
+        | tr -d ' '
+}
+
 # Whether the cluster currently has quorum (leader committed AND ≥ ⌈N/2⌉+1 ON_DUTY nodes).
 # Returns "true" or "false" (cluster.quorate field on StatusResponse).
 cluster_quorate() {
@@ -900,6 +924,18 @@ drop_ctm_replacements() {
     remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-) 2>/dev/null || true" 2>/dev/null
 }
 
+## DEPRECATED for routine cleanup — prefer `restore_cluster_baseline`. This
+## helper forces the cluster back to the FIXED compose-node set (5 cores with
+## original NodeIds), which fights the product model: killed nodes go
+## DECOMMISSIONED and CTM auto-provisions replacements with new NodeIds. The
+## semantic-cleanup helper (`restore_cluster_baseline` above) asserts the
+## product invariant "N ON_DUTY healthy cores" and lets CTM keep replacements.
+##
+## Kept callable for the (few) tests that genuinely need hard-restart
+## semantics — e.g. recovery scenarios that explicitly require the original
+## NodeIds to rejoin after a crash, or harness-level cluster reset between
+## entire test suites (not per-test cleanup).
+##
 ## Restart all stopped containers of the active cluster + drop any CTM-provisioned
 ## replacements. This is a TEST LIFECYCLE primitive (not race compensation) — destructive
 ## suites kill nodes; before the next suite runs we bring the cluster back to baseline.
@@ -1119,6 +1155,17 @@ kill_node() {
     fi
 }
 
+# DEPRECATED for chaos-test recovery — prefer waiting for CTM auto-heal via
+# `wait_for "${target} ON_DUTY healthy cores" ...` or `restore_cluster_baseline`.
+# Restarting the killed container brings the original NodeId back, but the
+# cluster has already DECOMMISSIONED that ID (single-writer rule on
+# NodeLifecycleKey) and CTM has provisioned a replacement — the cluster sees
+# the restarted container as a stale identity and the test ends up in a
+# "killed+restarted+replaced" 6-node state.
+#
+# Kept callable for tests that genuinely need same-ID rejoin semantics
+# (currently 15-delegation/test-02-reassignment.sh, which restarts a scaling
+# node before it has been DECOMMISSIONED).
 start_node() {
     local node_id="$1"
     log_info "Starting node: ${node_id}"
@@ -1307,6 +1354,108 @@ auto_heal_enabled() {
         return 1
     fi
     printf '%s' "$value"
+    return 0
+}
+
+# Semantic cluster-baseline restore (replaces `restart_all_nodes`).
+#
+# `restart_all_nodes` modeled the cluster as a fixed set of five compose
+# containers with stable NodeIds — it executed `docker compose down/up`,
+# dropped CTM-provisioned replacements, and waited for the ORIGINAL five
+# cores to come back. This fights the product: killed nodes go DECOMMISSIONED
+# (single-writer rule on NodeLifecycleKey — see spec §4.3 P4) and CTM auto-
+# heal provisions replacements with new NodeIds. The cluster IS elastic;
+# tests need to assert the post-state in product terms.
+#
+# `restore_cluster_baseline` consumes operator-visible signals only:
+#   1. Re-enable CTM auto-heal (tests that exercised disruption budget may
+#      have disabled it; the next suite expects deficits to self-heal).
+#   2. Reset the CTM provisioning circuit breaker (a previous suite that
+#      tripped it would block the auto-heal we just re-enabled).
+#   3. Reactivate any DRAINING nodes left behind by an intentional drain test.
+#   4. Set desired cluster size to NODE_COUNT (default 5) via /api/cluster/scale.
+#   5. Wait for exactly NODE_COUNT ON_DUTY healthy cores — ANY NodeIds, not
+#      the original compose set. CTM is free to keep replacements; what we
+#      care about is the operator-visible invariant "5 healthy cores".
+#   6. Await ClusterGeneration quiescence so any in-flight reassignment commits
+#      before the next suite reads cluster state.
+#   7. Soft phase=NORMAL barrier (log_warn on miss; some pre-D.3 paths can
+#      take longer than the budget under cumulative load).
+#
+# Returns 0 on full success, 1 if any of the hard barriers (steps 4-6) fail.
+# Steps 1-3 are best-effort (log_warn) — they are pre-conditions for the
+# hard barriers, and if those barriers pass anyway the cluster IS at
+# baseline regardless of which pre-condition was actually needed.
+restore_cluster_baseline() {
+    local target="${NODE_COUNT:-5}"
+    log_info "Restoring cluster to baseline (semantic): ${target} ON_DUTY healthy cores"
+
+    # 1. Auto-heal — tests that ran disruption-budget or manual-only-recovery
+    # scenarios may have disabled it. Idempotent: enabling an already-enabled
+    # toggle is a no-op on the server side.
+    enable_auto_heal || log_warn "restore_cluster_baseline: enable_auto_heal failed (proceeding)"
+
+    # 2. Circuit breaker — a previous suite that exhausted CTM provisioning
+    # slots will have tripped the breaker; leaving it tripped means step 5's
+    # wait will time out even though desired size is 5.
+    reset_provisioning_circuit || log_warn "restore_cluster_baseline: reset_provisioning_circuit failed (proceeding)"
+
+    # 3. Reactivate any DRAINING node a test explicitly drained. Parse
+    # /api/nodes/lifecycle for state=DRAINING entries and POST activate. The
+    # parser tolerates both Jackson field orderings (see pick_non_leader for
+    # the same idiom).
+    local lifecycle draining
+    lifecycle=$(api_get "/api/nodes/lifecycle" 2>/dev/null || true)
+    if [ -n "$lifecycle" ]; then
+        draining=$(printf '%s' "$lifecycle" \
+            | grep -oE '"nodeId":"[^"]+","state":"DRAINING"|"state":"DRAINING","nodeId":"[^"]+"' \
+            | grep -oE '"nodeId":"[^"]+"' \
+            | sed 's/"nodeId":"\([^"]*\)"/\1/' || true)
+        if [ -n "$draining" ]; then
+            while IFS= read -r node_id; do
+                [ -z "$node_id" ] && continue
+                log_info "restore_cluster_baseline: reactivating DRAINING node ${node_id}"
+                activate_node "$node_id" >/dev/null 2>&1 || \
+                    log_warn "restore_cluster_baseline: activate_node ${node_id} failed (proceeding)"
+            done <<< "$draining"
+        fi
+    fi
+
+    # 4. Desired size — covers tests that left the cluster scaled to a non-5
+    # value (e.g. 03-scaling, or a suite that disabled auto-heal and let
+    # nodes go DECOMMISSIONED).
+    if ! scale_cluster "$target"; then
+        log_warn "restore_cluster_baseline: scale_cluster ${target} failed (cluster may already be at target — proceeding to wait)"
+    fi
+
+    # 5. Hard barrier — exactly N ON_DUTY healthy cores. 300s budget covers
+    # CTM provision (image pull on cold cache) + JVM boot + QUIC mesh + SWIM
+    # convergence + JOINING→ON_DUTY commit, mirroring the restart_all_nodes
+    # SLA envelope but measured against the product invariant rather than
+    # container set membership.
+    if ! wait_for "${target} ON_DUTY healthy cores" \
+        "[ \$(cluster_node_count_on_duty_healthy) -eq ${target} ]" 300; then
+        log_fail "restore_cluster_baseline: failed to converge to ${target} ON_DUTY healthy cores within 300s (current=$(cluster_node_count_on_duty_healthy))"
+        return 1
+    fi
+
+    # 6. Generation quiescence — ensures any in-flight slice/task reassignment
+    # triggered by the convergence above has committed before the next suite
+    # reads cluster state. Hard fail: if generation never quiesces the next
+    # test sees mid-reassignment epoch flicker.
+    if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 90; then
+        log_fail "restore_cluster_baseline: generation did not quiesce within 90s"
+        return 1
+    fi
+
+    # 7. Soft phase=NORMAL — same rationale as the legacy restart_all_nodes
+    # tail. Pre-D.3 (phase-split) paths can take >180s under cluster A+B
+    # concurrent load and a hard fail cascades into broken cleanup state.
+    if ! wait_for_phase "NORMAL" 180; then
+        log_warn "restore_cluster_baseline: phase did not reach NORMAL within 180s; subsequent destructive tests may see SWIM cold-boot suppression (UnknownObserved instead of FaultyObserved)"
+    fi
+
+    log_info "restore_cluster_baseline: cluster at baseline (${target} ON_DUTY healthy cores, generation quiesced)"
     return 0
 }
 

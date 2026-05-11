@@ -61,11 +61,17 @@ test_swim_detection_time() {
 }
 
 test_recovery_after_detection() {
-    drop_ctm_replacements
-    if [ -n "${KILLED_VICTIM:-}" ]; then
-        start_node "$KILLED_VICTIM"
+    # Recovery is CTM's job — we already asserted SWIM detected the departure.
+    # Assert the post-recovery invariant via the operator-visible signal: 5
+    # ON_DUTY healthy cores. Do NOT call `start_node "$KILLED_VICTIM"` — the
+    # killed node is DECOMMISSIONED, CTM has provisioned a replacement, and
+    # restarting the original would leave the cluster in a stale-identity
+    # 6-node state.
+    if ! wait_for "5 ON_DUTY healthy cores after SWIM detection" \
+        "[ \$(cluster_node_count_on_duty_healthy) -eq 5 ]" 90; then
+        log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 90s after kill+auto-heal"
+        return 1
     fi
-    wait_for_node_count 5 90
     assert_cluster_healthy "Cluster recovered after SWIM detection"
 }
 

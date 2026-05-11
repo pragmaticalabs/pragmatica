@@ -87,20 +87,12 @@ test_auto_heal() {
 }
 
 cleanup() {
-    # Event-driven pre-quiesce barrier (replaces `sleep 3`).
-    local cleanup_baseline
-    cleanup_baseline=$(topology_now)
-    restart_all_nodes
-    if ! wait_for_replacement_of "${KILLED_VICTIM1:-$(mgmt_entry_point_node)}" "$cleanup_baseline" 60; then
-        log_warn "No NODE_JOINED rejoin event observed within 60s after restart_all_nodes"
-    fi
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
-        log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
-    # Phase=NORMAL barrier — see test-kill-leader.sh:cleanup() for full rationale.
-    # Soft on docker-remote (log_warn) because cluster B compose-restart cannot
-    # reach NORMAL within budget without cascading 5+ downstream test failures.
-    wait_for_phase "NORMAL" 300 || \
-        log_warn "cleanup: cluster phase did not reach NORMAL within 300s; SWIM cold-boot suppression may surface in subsequent destructive tests"
+    # Semantic baseline restore — see test-kill-leader.sh:cleanup() for the
+    # rationale. `restore_cluster_baseline` re-enables auto-heal, resets the
+    # CTM circuit breaker, scales to NODE_COUNT, then waits for N ON_DUTY
+    # healthy cores + generation quiescence + soft phase=NORMAL.
+    restore_cluster_baseline || \
+        log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
 }
 
 run_test "Initial 5 nodes" test_initial_state
