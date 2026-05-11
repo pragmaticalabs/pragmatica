@@ -417,6 +417,16 @@ run_cluster_b_suites() {
         # preconditions if churn lingers.
         await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || \
             log_warn "Cluster B did not quiesce within 60s after suite ${suite} — continuing"
+        # Phase=NORMAL barrier: addresses the documented 02-chaos→03-scaling
+        # regression (investigation 2026-05-11) where elevated quorum latency from
+        # cluster B's chaos-tail makes the next suite's consensus puts (e.g.
+        # /api/cluster/scale) hit their curl timeout. Wait up to 180s × TIMEOUT_SCALE
+        # for phase=NORMAL so the next suite enters a settled cluster. Soft on
+        # failure — the chaos-test recovery may genuinely need >540s on docker-remote
+        # and the next suite's own preconditions will surface that case.
+        export CLUSTER_ENDPOINT="$CLUSTER_B_MGMT"
+        wait_for_phase "NORMAL" 180 || \
+            log_warn "Cluster B did not reach phase=NORMAL within budget after suite ${suite} — next suite may inherit BOOTING state"
         local quiesce_elapsed=$(( $(date +%s) - quiesce_start ))
         printf 'quiesce_after_%s=%s\n' "$suite" "$quiesce_elapsed" >> "$TIMINGS_FILE"
     done

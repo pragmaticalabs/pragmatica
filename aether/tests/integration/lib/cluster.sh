@@ -1303,10 +1303,12 @@ scale_cluster() {
     leader=$(cluster_leader)
     log_info "Scaling cluster to ${target} nodes (leader: ${leader})" >&2
     # Must hit the leader — CTM.setDesiredSize() only activates on leader.
-    # Direct timed POST (bypasses leader_api_post's _resolve_live_endpoint round trip
-    # so the curl `-m 30` actually bounds the call). Previously a non-responsive
-    # leader could hang the whole suite indefinitely; failing fast here lets the
-    # test report a real diagnostic instead of stalling.
+    # Direct timed POST. 90s budget (raised from 30s 2026-05-11): on cluster B
+    # downstream of 02-chaos the consensus put for ClusterConfig can take 15-60s
+    # under elevated quorum latency (per investigation 2026-05-11 — Seed step 14s
+    # + scaled-in-config Put). 30s rejected legitimate slow-but-eventual-success
+    # calls as test failures; 90s lets them complete while still bounding genuinely
+    # stuck states (no leader / partition / consensus deadlock).
     local endpoint url result rc
     if [ "$CLOUD_MODE" = "true" ]; then
         local leader_ip
@@ -1318,16 +1320,16 @@ scale_cluster() {
             endpoint="http://${leader_ip}:8080"
         fi
         url="${endpoint}/api/cluster/scale"
-        result=$(cloud_ssh "$leader" "curl -sk -m 30 -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '{\"coreCount\":${target},\"expectedVersion\":0}' http://localhost:8080/api/cluster/scale" 2>&1)
+        result=$(cloud_ssh "$leader" "curl -sk -m 90 -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '{\"coreCount\":${target},\"expectedVersion\":0}' http://localhost:8080/api/cluster/scale" 2>&1)
         rc=$?
     else
         url="${CLUSTER_ENDPOINT}/api/cluster/scale"
-        result=$(curl -sk -m 30 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        result=$(curl -sk -m 90 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
                       -d "{\"coreCount\":${target},\"expectedVersion\":0}" "$url" 2>&1)
         rc=$?
     fi
     if [ "$rc" -ne 0 ]; then
-        log_warn "scale_cluster: POST /api/cluster/scale rc=${rc} (likely 30s timeout — cluster degraded; CTM circuit breaker may be tripped). Output: $(printf '%s' "$result" | head -c 300)"
+        log_warn "scale_cluster: POST /api/cluster/scale rc=${rc} (likely 90s timeout — cluster degraded; CTM circuit breaker may be tripped). Output: $(printf '%s' "$result" | head -c 300)"
         return 1
     fi
     log_info "Scale result: ${result}" >&2
