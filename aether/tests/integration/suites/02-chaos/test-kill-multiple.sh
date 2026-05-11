@@ -96,6 +96,13 @@ cleanup() {
     fi
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 180 || \
         log_warn "Cluster did not quiesce after destructive suite; next suite may inherit churn"
+    # Fail-loud phase=NORMAL barrier — see test-kill-leader.sh:cleanup() for full
+    # rationale. Without this, the next 02-chaos test inherits a BOOTING cluster
+    # and SWIM cold-boot suppression masks every subsequent NODE_FAILED.
+    if ! wait_for_phase "NORMAL" 300; then
+        log_fail "cleanup: cluster phase did not reach NORMAL within 300s. Subsequent destructive tests would fail under SWIM cold-boot suppression — investigate cluster B state."
+        return 1
+    fi
 }
 
 run_test "Initial 5 nodes" test_initial_state
