@@ -42,7 +42,10 @@ import static org.pragmatica.lang.Result.success;
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        var ctx = ProvisionContext.provisionContext("default", "core", "default", ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+        var ctx = ProvisionContext.provisionContext("default",
+                                                    "core",
+                                                    "default",
+                                                    ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
         return provision(ProvisionSpec.provisionSpec(instanceType, "docker", "default", ctx).unwrap());
     }
 

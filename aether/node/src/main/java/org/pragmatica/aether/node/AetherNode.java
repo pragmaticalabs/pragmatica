@@ -1217,6 +1217,7 @@ public interface AetherNode extends ManageableNode {
         var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
                                                  swimTimeouts.probeTimeout(),
                                                  swimTimeouts.suspectTimeout());
+<<<<<<< HEAD
         // Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). SWIM suppresses
         // FAULTY-for-never-HEALTHY peers ONLY while the cluster is in `COLD_BOOT`
         // (initial formation, never reached quorum). In `NORMAL` and `RECOVERING`,
@@ -1236,6 +1237,11 @@ public interface AetherNode extends ManageableNode {
         java.util.function.Consumer<NodeId> faultyLeaderEvictor = peer ->
             clusterNode.network().disconnect(
                 new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(peer));
+=======
+        BooleanSupplier swimIsBootingSupplier = () -> healthReconciler.phase() == AetherValue.ClusterPhase.BOOTING;
+        java.util.function.Consumer<NodeId> faultyLeaderEvictor = peer -> clusterNode.network()
+                                                                                             .disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(peer));
+>>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
@@ -1260,6 +1266,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    swimHealthDetector,
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
+<<<<<<< HEAD
         swimHealthDetector.addObservationListener(membershipFsm::onSwimObservation);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
@@ -1286,6 +1293,12 @@ public interface AetherNode extends ManageableNode {
                                                  (MembershipDecision.NodeDecommissioned decommissioned) ->
                                                      clusterNetworkRef.disconnect(
                                                          new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(decommissioned.nodeId()))));
+=======
+        swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
+        var clusterNetworkRef = clusterNode.network();
+        allEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                                 (TopologyChangeNotification.NodeRemoved removed) -> clusterNetworkRef.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
+>>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)

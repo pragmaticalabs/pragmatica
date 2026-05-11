@@ -10,6 +10,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.regex.Pattern;
 
+
 /// Cluster identity value object — single source of truth for cluster name across:
 ///   - bootstrap config TOML (`[cluster] name = ...`)
 ///   - composed runtime TOML (`[cluster] name`, `[cloud.discovery] cluster_name`)
@@ -33,12 +34,9 @@ public record ClusterIdentity(String name, String version) {
 
     private static Result<Unit> validateName(String candidate) {
         if (candidate == null || candidate.isBlank()) {return new InvalidName("Cluster name must not be blank").result();}
-        if (!NAME_PATTERN.matcher(candidate).matches()) {
-            return new InvalidName("Cluster name '" + candidate + "' does not match required pattern " + NAME_PATTERN.pattern())
-                    .result();
-        }
+        if (!NAME_PATTERN.matcher(candidate).matches()) {return new InvalidName("Cluster name '" + candidate + "' does not match required pattern " + NAME_PATTERN.pattern()).result();}
         return Result.success(Unit.unit());
     }
 
-    public record InvalidName(String message) implements Cause {}
+    public record InvalidName(String message) implements Cause{}
 }

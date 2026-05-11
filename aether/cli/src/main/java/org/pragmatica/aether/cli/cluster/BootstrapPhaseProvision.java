@@ -79,24 +79,17 @@ import static org.pragmatica.lang.Result.success;
     }
 
     static BootstrapState stampSourceHandle(BootstrapState state,
-                                             String rawToml,
-                                             String sourceName,
-                                             SourceProfile source,
-                                             String providerName) {
+                                            String rawToml,
+                                            String sourceName,
+                                            SourceProfile source,
+                                            String providerName) {
         if (source.type() != SourceType.CLOUD) {return state;}
         var envVars = extractEnvVarNames(rawToml, sourceName);
         var handle = SourceCleanupHandle.sourceCleanupHandle(providerName, source.region(), envVars);
         return state.withSource(sourceName, handle);
     }
 
-    /// Re-parse raw TOML to recover the `${env:NAME}` env-var name the operator wrote
-    /// for the named source's `credentials` field. By the time we have a `SourceProfile`
-    /// the `ConfigReferenceResolver.resolveAll` step has already substituted the value;
-    /// the raw name is otherwise lost. The recovered name is recorded under each
-    /// credential-key alias the per-provider factory may consume (`api_token`,
-    /// `access_key`, `credentials_file`) — mirroring `ProviderResolver.buildCloudConfig`.
-    @SuppressWarnings("JBCT-PAT-01") static Map<String, String> extractEnvVarNames(String rawToml,
-                                                                                    String sourceName) {
+    @SuppressWarnings("JBCT-PAT-01") static Map<String, String> extractEnvVarNames(String rawToml, String sourceName) {
         if (rawToml == null || rawToml.isEmpty()) {return Map.of();}
         var stanza = extractStanza(rawToml, sourceName);
         if (stanza.isEmpty()) {return Map.of();}
@@ -125,11 +118,6 @@ import static org.pragmatica.lang.Result.success;
               : rawToml.substring(headerIndex, after);
     }
 
-    /// Credential-key aliases for cloud sources. Mirrors the schema accepted by
-    /// `ProviderResolver.buildCloudConfig`: a single TOML `credentials` value is
-    /// echoed under three logical keys so any per-provider factory can read whichever
-    /// it expects (Hetzner: `api_token`; AWS: `access_key`; GCP/Azure file paths:
-    /// `credentials_file`).
     List<String> CREDENTIAL_FIELD_KEYS = List.of("api_token", "access_key", "credentials_file");
 
     static String resolveProviderName(SourceProfile source) {
@@ -302,7 +290,7 @@ import static org.pragmatica.lang.Result.success;
                                                                                          instanceType,
                                                                                          role.value(),
                                                                                          context).map(spec -> applyZone(spec,
-                                                                                                                       zone))
+                                                                                                                        zone))
                                                                                         .map(spec -> spec.withUserData(userData)));
     }
 

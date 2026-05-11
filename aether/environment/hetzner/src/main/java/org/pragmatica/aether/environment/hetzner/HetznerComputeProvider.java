@@ -46,7 +46,9 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        var defaultLabels = buildLabels(config.clusterName().or("unknown"), "core", "");
+        var defaultLabels = buildLabels(config.clusterName().or("unknown"),
+                                        "core",
+                                        "");
         return client.createServer(buildCreateRequest(config.region(),
                                                       defaultLabels,
                                                       config.userData())).map(HetznerComputeProvider::toInstanceInfo)
@@ -58,10 +60,14 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var location = extractLocation(spec.placement());
         var userData = spec.userData().or(config.userData());
         var labels = labelsFor(spec.context());
+<<<<<<< HEAD
         return client.createServer(buildCreateRequest(location,
                                                       labels,
                                                       userData)).map(HetznerComputeProvider::toInstanceInfo)
                                   .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
+=======
+        return client.createServer(buildCreateRequest(location, labels, userData)).map(HetznerComputeProvider::toInstanceInfo)
+>>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
 
@@ -150,11 +156,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                        labels);
     }
 
-    /// Derive Hetzner-spec labels from a [ProvisionContext]. Pulls the well-known
-    /// fields (cluster, role, source) into Hetzner's `aether-*` dashed naming and
-    /// folds in any caller-supplied [ProvisionContext#extraTags] that pass the
-    /// Hetzner key/value regex; everything else is logged-and-dropped (the caller
-    /// is expected to deliver such metadata via `userData`).
     private Map<String, String> labelsFor(ProvisionContext ctx) {
         var clusterLabel = clusterNameOrDefault(ctx);
         var role = ctx.role().isEmpty()

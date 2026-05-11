@@ -117,7 +117,9 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return "";
     }
 
-    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride, String userData, Map<String, String> labels) {
+    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride,
+                                                     String userData,
+                                                     Map<String, String> labels) {
         var name = generateInstanceName();
         var machineType = config.machineType();
         var disk = buildBootDisk();
@@ -136,9 +138,6 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
     }
 
-    /// Translate a [ProvisionContext] into GCP labels. Well-known `aether-*`
-    /// slots are emitted alongside the managed marker; caller-supplied
-    /// [ProvisionContext#extraTags] are folded in last (extras win on collision).
     private static Map<String, String> labelsFor(ProvisionContext ctx) {
         var labels = new java.util.HashMap<String, String>();
         labels.put(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
