@@ -106,23 +106,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private static final long BOOTSTRAP_GRACE_MS = 60_000L;
 
-    // Circuit breaker: stop runaway provisioning when replacements consistently fail to join.
-    // Counter increments on each API rejection or slot deadline expiry; resets on successful node arrival,
-    // cluster phase NORMAL transition, leader (re)activation, or operator setDesiredSize.
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
 
     private static final long PROVISIONING_BACKOFF_BASE_MS = 30_000L;
 
     private static final long PROVISIONING_BACKOFF_MAX_MS = 300_000L;
 
-    /// Auto-reset window for the provisioning circuit breaker. After this much time
-    /// elapsed since the last provisioning failure (with the breaker tripped and no
-    /// other reset trigger having fired — `setDesiredSize`, `onNodeReady`, phase
-    /// NORMAL transition, or operator reset), the breaker self-resets and provisioning
-    /// is allowed to attempt again. Conservative window — long enough that operators
-    /// who got paged on the original tripping event have wall-clock time to investigate
-    /// before the self-heal fires; short enough that an unattended cluster eventually
-    /// retries. 1 hour.
     private static final long PROVISIONING_AUTO_RESET_QUIESCENCE_MS = 3_600_000L;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
@@ -278,7 +267,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
     }
 
-    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
     @Contract@Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
         if (!active.get()) {return;}
         log.warn("CTM: Self-shutdown observed for {}, triggering immediate reconciliation", selfShutdown.nodeId());
@@ -346,13 +334,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private boolean provisioningCircuitTripped() {
         if (consecutiveProvisioningFailures.get() <MAX_CONSECUTIVE_PROVISIONING_FAILURES) {return false;}
-        // Auto-reset path: when the breaker has been tripped but no provisioning
-        // failure has occurred for `PROVISIONING_AUTO_RESET_QUIESCENCE_MS`, treat
-        // it as "the underlying issue may have resolved itself" (operator-side
-        // intervention, transient infra recovery, etc.) and clear the counter.
-        // Backstop for unattended clusters where none of the explicit reset
-        // triggers (setDesiredSize, onNodeReady, phase NORMAL, leader handoff,
-        // operator reset) ever fires.
         var lastFailure = lastProvisioningFailureMs.get();
         if (lastFailure > 0L && nowMs() - lastFailure >= PROVISIONING_AUTO_RESET_QUIESCENCE_MS) {
             resetProvisioningCircuit("auto-reset after " + (PROVISIONING_AUTO_RESET_QUIESCENCE_MS / 60_000L) + "min quiescence since last failure");
@@ -387,9 +368,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract private void resetProvisioningCircuit(String reason) {
         var prev = consecutiveProvisioningFailures.getAndSet(0);
         nextProvisioningAllowedMs.set(0L);
-        if (prev > 0) {
-            log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)", reason, prev);
-        }
+        if (prev > 0) {log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)",
+                                reason,
+                                prev);}
     }
 
     @Override public CircuitBreakerState circuitBreakerState() {
@@ -403,12 +384,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override public int resetCircuitBreaker(String reason) {
         var prev = consecutiveProvisioningFailures.get();
         resetProvisioningCircuit("operator: " + reason);
-        // Force a reconcile attempt — operator-triggered reset implies "I fixed
-        // the underlying issue, please retry now". Without this, deficit handling
-        // doesn't run until the next state-change event arrives.
-        if (active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {
-            reconcile();
-        }
+        if (active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {reconcile();}
         return prev;
     }
 
@@ -419,25 +395,27 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override public boolean setAutoHealEnabled(boolean enabled, String reason) {
         var prev = autoHealEnabled.getAndSet(enabled);
         if (prev == enabled) {
-            log.info("CTM: auto-heal already {} (reason: {}) — no-op", enabled ? "enabled" : "disabled", reason);
+            log.info("CTM: auto-heal already {} (reason: {}) — no-op", enabled
+                                                                      ? "enabled"
+                                                                      : "disabled", reason);
             return prev;
         }
         log.warn("CTM: auto-heal {} (operator: {}) — prior state was {}",
-                 enabled ? "ENABLED" : "DISABLED",
+                 enabled
+                 ? "ENABLED"
+                 : "DISABLED",
                  reason,
-                 prev ? "enabled" : "disabled");
-        // Re-enabling: nudge a reconcile so any pending deficit is picked up
-        // immediately rather than waiting for the next state-change event.
-        if (enabled && active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {
-            reconcile();
-        }
+                 prev
+                 ? "enabled"
+                 : "disabled");
+        if (enabled && active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {reconcile();}
         return prev;
     }
 
     private static long computeProvisioningBackoffMs(int failureCount) {
         if (failureCount <= 0) {return 0L;}
         var shift = Math.min(failureCount - 1, 5);
-        var raw = PROVISIONING_BACKOFF_BASE_MS << shift;
+        var raw = PROVISIONING_BACKOFF_BASE_MS<<shift;
         return Math.min(raw, PROVISIONING_BACKOFF_MAX_MS);
     }
 
@@ -1107,10 +1085,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                      .flatMap(nodeId -> observer.get(nodeId).stream())
                                      .map(ClusterTopologyManagerRecord::formatPeerEntry)
                                      .collect(Collectors.joining(","));
-        // Pass cluster name explicitly so the provider's default `aether-cluster=unknown`
-        // (used when [cloud.discovery] cluster_name is missing from node config) is overridden.
-        // Avoids orphaned VMs that the cluster name-scoped reaper / discovery polling can't see.
-        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
+        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName)
+                                                 .or("");
         return ProvisionContext.provisionContext(clusterName,
                                                  "core",
                                                  "default",

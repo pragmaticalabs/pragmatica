@@ -142,15 +142,21 @@ class HealthReconcilerTest {
         void reconciler_cooldown_suppressesRepeatedWritesWithinWindow() {
             // 30s cooldown → after a SWIM-driven aggregated edge produces a write,
             // a subsequent same-state SWIM-driven edge within the cooldown window must
-            // be suppressed. With single-observer leader-gated mode, leader's local SWIM
-            // observation alone reaches the threshold, so this is now directly testable.
+            // be suppressed. Threshold-quorum migration (RC1): onDutyCount=1 floors
+            // threshold to 1 so the leader's single local SWIM observation alone reaches
+            // the aggregator threshold (production cross-node observation propagation is
+            // a follow-up; per-API the public surface still only feeds SELF observations).
             var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 30_000L, 5_000L, 30_000L);
             var reconciler = buildReconciler(3, config);
             reconciler.start();
-            onDutyCount.set(3);
+            onDutyCount.set(1);
             // First SWIM HEALTHY observation: leader writes ON_DUTY, recordWrite stamps lastWriteAt.
+            // A ClusterPhase RECOVERING write may be interleaved because onDutyCount=1 < quorum;
+            // filter on lifecycle writes specifically.
             reconciler.onSwimObservation(healthy(TARGET));
-            assertThat(applier.commands).hasSize(1);
+            assertThat(applier.commands.stream().filter(HealthReconcilerTest::isLifecycleWriteFor).count())
+                    .as("Exactly one TARGET lifecycle write recorded")
+                    .isEqualTo(1L);
             assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
             // Reset edge state in aggregator (recordWrite did this) — to force a fresh edge
             // emission, the aggregator's lastAggregated must differ from the next observation.
@@ -158,8 +164,10 @@ class HealthReconcilerTest {
             // a recently-written lastWriteAt, the cooldown gate must suppress the FAULTY write.
             applier.commands.clear();
             reconciler.onSwimObservation(faulty(TARGET));
-            // Cooldown still active → suppressed
-            assertThat(applier.commands).isEmpty();
+            // Cooldown still active → no lifecycle write for TARGET (phase writes don't count)
+            assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
+                    .as("Cooldown suppresses repeated TARGET lifecycle writes within window")
+                    .isTrue();
         }
 
         // Contract change (commit 81e48e234, "drop respectColdBoot suppression"):
@@ -173,11 +181,14 @@ class HealthReconcilerTest {
         @Test
         void reconciler_suppressedByPhase_inBooting_evenWhenNeverHealthy() {
             // BOOTING + never-HEALTHY → suppressedByPhase blocks the DECOMMISSIONED write.
+            // onDutyCount=1 floors threshold to 1 so a single SELF observation drives the
+            // aggregator edge (post threshold-quorum migration the production aggregator
+            // requires majority; this test pins the phase-gate behavior in isolation).
             var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
             reconciler.start();
             reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.BOOTING));
             phaseRef.set(ClusterPhase.BOOTING);
-            onDutyCount.set(3);
+            onDutyCount.set(1);
             reconciler.onSwimObservation(faulty(TARGET));
             assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
                     .as("BOOTING phase suppresses DECOMMISSIONED lifecycle write")
@@ -187,12 +198,12 @@ class HealthReconcilerTest {
         @Test
         void reconciler_suppressedByPhase_inBooting_evenWhenEverHealthy() {
             // BOOTING + previously-HEALTHY → suppressedByPhase still blocks. Phase gate
-            // is independent of everSeenHealthy.
+            // is independent of everSeenHealthy. onDutyCount=1 (see note above).
             var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
             reconciler.start();
             // First, in NORMAL, drive an ON_DUTY edge so the aggregator records HEALTHY.
             phaseRef.set(ClusterPhase.NORMAL);
-            onDutyCount.set(3);
+            onDutyCount.set(1);
             reconciler.onSwimObservation(healthy(TARGET));
             assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
             applier.commands.clear();
@@ -211,10 +222,11 @@ class HealthReconcilerTest {
             // case: the old aggregator's respectColdBoot used to filter this out, which
             // silently dropped FAULTY edges for the leader on cloud Container post-kill.
             // Now the reconciler trusts upstream gating and writes DECOMMISSIONED.
+            // onDutyCount=1 floors threshold to 1 (see notes on threshold migration).
             var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
             reconciler.start();
             phaseRef.set(ClusterPhase.NORMAL);
-            onDutyCount.set(3);
+            onDutyCount.set(1);
             reconciler.onSwimObservation(faulty(TARGET));
             assertThat(applier.commands.stream().anyMatch(HealthReconcilerTest::isLifecycleWriteFor))
                     .as("NORMAL phase + never-HEALTHY: leader writes DECOMMISSIONED")
@@ -429,10 +441,16 @@ class HealthReconcilerTest {
         }
     }
 
+    /// Returns the state of the most recent NodeLifecycle Put recorded by `applier`.
+    /// Filters out ClusterPhase Puts that may have been interleaved by the phase
+    /// transition logic when the test sets onDutyCount < quorum.
     private static NodeLifecycleState lastWriteState(RecordingApplier applier) {
-        var last = applier.commands.get(applier.commands.size() - 1);
-        var put = (KVCommand.Put<?, ?>) last;
-        return ((NodeLifecycleValue) put.value()).state();
+        return applier.commands.stream()
+                                .filter(cmd -> cmd instanceof KVCommand.Put<?, ?> put && put.key() instanceof NodeLifecycleKey)
+                                .map(cmd -> (KVCommand.Put<?, ?>) cmd)
+                                .map(put -> ((NodeLifecycleValue) put.value()).state())
+                                .reduce((_, last) -> last)
+                                .orElseThrow(() -> new AssertionError("no NodeLifecycle write recorded"));
     }
 
     private static boolean isClusterPhaseNormal(KVCommand<?> cmd) {

@@ -23,8 +23,37 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
 
+/// Cross-node SWIM observation aggregator.
+///
+/// Each observation (from `observer` about `target`) is appended to a per-target
+/// sliding window. Once `target` accumulates at least `quorumThreshold(onDutyCount)`
+/// distinct observers agreeing on the same observed lifecycle state within the
+/// `aggregationWindowMs` window, a single `StateChanged` edge is emitted. Below
+/// the threshold the observation is kept pending — subsequent observations
+/// re-evaluate the tally.
+///
+/// **Threshold semantics (RC1 single-witness → majority migration).** Previously
+/// `quorumThreshold` returned `1`, so the leader's local SWIM observation alone
+/// could advance `NodeLifecycleKey` to `DECOMMISSIONED`. That caused divergence
+/// between consensus state and the SWIM membership view when a kill was observed
+/// inconsistently across peers (the dominant root cause of `No NODE_LEFT/NODE_FAILED
+/// event within 60s` failures in 02-chaos and 12-network). The threshold is now a
+/// classic majority quorum `(onDutyCount / 2) + 1`, derived from the on-duty count
+/// **at observation time** so concurrent scale events do not race the threshold.
+///
+/// **Window.** `aggregationWindowMs` bounds how long an unfulfilled observation is
+/// retained as pending — observations older than the window are evicted on the next
+/// `onObservation` call and no longer count toward the tally. The window is sized
+/// to match SWIM `suspectTimeout` (default 10s) so WAN jitter cannot defeat the
+/// majority while the SWIM detector itself can still confirm FAULTY.
+///
+/// **Leader-failure path.** Leader-failure detection is owned by
+/// `LeaderElectionFsm` and does NOT route through this aggregator. The escape hatch
+/// in `HealthReconcilerImpl.handleAggregatedEdge` lets any surviving node attempt
+/// the lifecycle write when the aggregated edge target IS the current leader; this
+/// is independent of the threshold logic here.
 public final class ObservationAggregator {
-    public static final long DEFAULT_AGGREGATION_WINDOW_MS = 5_000L;
+    public static final long DEFAULT_AGGREGATION_WINDOW_MS = 10_000L;
 
     public record StateChanged(NodeId target, NodeLifecycleState newState){}
 
@@ -74,6 +103,11 @@ public final class ObservationAggregator {
                             .or(0);
     }
 
+    public int observerCount(NodeId target, NodeLifecycleState state) {
+        return Option.option(windows.get(target)).map(window -> countDistinctObserversForState(window, state))
+                            .or(0);
+    }
+
     private void recordCleanup(NodeId target, NodeId observer, Option<NodeLifecycleState> translated, long nowMs) {
         var window = windows.computeIfAbsent(target, _ -> new ConcurrentLinkedDeque<>());
         evictStale(window, nowMs);
@@ -111,20 +145,13 @@ public final class ObservationAggregator {
     private Option<StateChanged> computeEdgeForWindow(NodeId target, Deque<Entry> window, int onDutyCount, long nowMs) {
         evictStale(window, nowMs);
         var threshold = quorumThreshold(onDutyCount);
-        // Cold-boot suppression is handled upstream:
-        //   - SwimProtocol.emitFaultyOrUnknown gates emit by BOOTING/NORMAL phase (audit Step 6).
-        //   - HealthReconcilerImpl.suppressedByPhase gates the actual lifecycle write in BOOTING.
-        // The aggregator's prior respectColdBoot duplicated half of this logic without phase
-        // awareness: peers added in initial ALIVE state never produce a HealthyObserved
-        // (notifyAlive only fires on transition), so everSeenHealthy stayed empty even after
-        // cluster reached NORMAL phase. The result was that FAULTY edges for the leader were
-        // silently dropped on cloud Container post-kill: SWIM detected FAULTY, but the
-        // aggregator suppressed it, preventing leader-eviction. Trust upstream emit gating.
         return tally(window, threshold).flatMap(state -> emitIfChanged(target, state));
     }
 
-    @SuppressWarnings("unused") private static int quorumThreshold(int onDutyCount) {
-        return 1;
+    static int quorumThreshold(int onDutyCount) {
+        return onDutyCount <= 1
+              ? 1
+              : (onDutyCount / 2) + 1;
     }
 
     private static Option<NodeLifecycleState> tally(Deque<Entry> window, int threshold) {
@@ -137,7 +164,6 @@ public final class ObservationAggregator {
                               .map(Option::some)
                               .orElseGet(Option::none);
     }
-
 
     private Option<StateChanged> emitIfChanged(NodeId target, NodeLifecycleState newState) {
         var emitted = new AtomicBoolean(false);
@@ -155,6 +181,14 @@ public final class ObservationAggregator {
     private static int countDistinctObservers(Deque<Entry> window) {
         var observers = new HashSet<NodeId>();
         window.forEach(entry -> observers.add(entry.observer()));
+        return observers.size();
+    }
+
+    private static int countDistinctObserversForState(Deque<Entry> window, NodeLifecycleState state) {
+        var observers = new HashSet<NodeId>();
+        window.stream().filter(entry -> entry.observed() == state)
+                     .map(Entry::observer)
+                     .forEach(observers::add);
         return observers.size();
     }
 }

@@ -48,7 +48,6 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
 
 @SuppressWarnings("JBCT-RET-01") public interface LoadBalancerManager extends DelegatedComponent {
     @MessageReceiver void onMembershipDecision(MembershipDecision decision);
-    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
     @MessageReceiver void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
     @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
     @MessageReceiver void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
@@ -83,7 +82,6 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                 }
             }
 
-            // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
             @Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
                 handleNodeDeparture(selfShutdown.nodeId());
             }
@@ -324,7 +322,6 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                 state.get().onMembershipDecision(decision);
             }
 
-            // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
             @Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
                 state.get().onSelfShutdown(selfShutdown);
             }

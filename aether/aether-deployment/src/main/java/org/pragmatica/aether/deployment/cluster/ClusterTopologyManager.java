@@ -37,7 +37,6 @@ import java.util.function.Supplier;
     int configuredSize();
     void onNodeReady(NodeId nodeId);
     void onMembershipDecision(MembershipDecision decision);
-    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
     void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
     void onClusterConfigChanged();
     void onClusterPhaseChanged(ClusterPhase newPhase);
@@ -45,33 +44,11 @@ import java.util.function.Supplier;
     void deactivate();
     TopologyObserver observer();
 
-    /// Snapshot of the provisioning circuit breaker state — exposed for operator
-    /// observability and for the `POST /api/cluster/topology/circuit-breaker/reset`
-    /// endpoint to confirm pre/post state when resetting.
-    record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
+    record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped){}
 
     CircuitBreakerState circuitBreakerState();
-
-    /// Operator-triggered reset of the provisioning circuit breaker. Auto-reset
-    /// triggers (`setDesiredSize`, `onNodeReady`, phase NORMAL transition,
-    /// leader-handoff `activate()`) cover the steady-state cases; this method
-    /// is the explicit knob for ops scenarios where none of those have fired
-    /// (e.g., cluster stuck in BOOTING after sustained chaos but no scale
-    /// operation pending). Returns the prior failure count for the audit log.
     int resetCircuitBreaker(String reason);
-
-    /// Whether CTM auto-heal (deficit-driven replacement provisioning) is
-    /// currently enabled. Default `true`. When `false`, `handleDeficit` is a
-    /// no-op — operators can use this gate during disruption-budget testing,
-    /// planned maintenance windows, or any scenario where the cluster should
-    /// not automatically rebuild after node loss.
     boolean isAutoHealEnabled();
-
-    /// Operator-triggered toggle of CTM auto-heal. Returns the prior enabled
-    /// state for the audit log. The change applies immediately to the next
-    /// `handleDeficit` invocation — already-in-flight provisioning attempts
-    /// continue to completion (they have separate cancel paths via
-    /// `cancelInFlightProvisions`).
     boolean setAutoHealEnabled(boolean enabled, String reason);
 
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,

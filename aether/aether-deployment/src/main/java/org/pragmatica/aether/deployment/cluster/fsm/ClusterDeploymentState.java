@@ -196,10 +196,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                                      tx);
                 case VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) -> handleVersionRoutingRemove(valueRemove,
                                                                                                                                                  tx);
-                case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision,
-                                                                                                          tx);
+                case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision, tx);
                 case SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) -> handleSelfShutdown(selfShutdown,
-                                                                                                                 tx);
+                                                                                                                tx);
                 case NodeLifecyclePutReceived(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) -> handleNodeLifecyclePut(valuePut,
                                                                                                                                  tx);
                 case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
@@ -264,11 +263,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void handleMembershipDecision(MembershipDecision decision,
-                                               TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+                                              TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
             tx.handle(() -> processMembershipDecision(decision));
         }
 
-        // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         private void handleSelfShutdown(TransportObservation.SelfShutdown selfShutdown,
                                         TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
             tx.handle(() -> processSelfShutdown(selfShutdown.nodeId()));

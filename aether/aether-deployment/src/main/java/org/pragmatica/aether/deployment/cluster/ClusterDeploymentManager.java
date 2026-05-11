@@ -85,7 +85,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
     @Contract@MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
     @Contract@MessageReceiver void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
     @Contract@MessageReceiver void onMembershipDecision(MembershipDecision decision);
-    // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
     @Contract@MessageReceiver void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
     @Contract@MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
     @Contract@MessageReceiver void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
