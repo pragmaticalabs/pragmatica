@@ -10,17 +10,21 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC
 # Environment
 : "${TARGET_HOST:?TARGET_HOST must be set}"
 
-MGMT_PORT="${MGMT_PORT:-5150}"
+# MGMT_PORT = base of the per-node direct mgmt port range (set by run-tests.sh:
+# 5151 for cluster A, 5161 for cluster B). MGMT_PORT+i resolves to node-{i+1}'s
+# direct host-mapped mgmt port (gateway-bypass; used by per-node probes such as
+# wait_for_all_nodes_ready and rotate_mgmt_entry_point on cloud env).
+MGMT_PORT="${MGMT_PORT:-5151}"
 APP_PORT="${APP_PORT:-8070}"
 LB_PORT="${LB_PORT:-9090}"
 LB_MGMT_PORT="${LB_MGMT_PORT:-9091}"
-# Witness (operator entry point) — stable node that tests MUST NOT kill.
-# Tests hit MGMT_ENTRY_POINT for every management call; the product's HttpForwardRequest
-# routes the request to the appropriate node. Exercises the forwarding contract rather
-# than relying on client-side port-hopping.
-# Default cluster-B witness: port 5165 (aether-b-witness). Cluster A is non-destructive —
-# its tests can keep targeting MGMT_PORT (5150).
-MGMT_ENTRY_POINT="${MGMT_ENTRY_POINT:-http://${TARGET_HOST}:${MGMT_PORT}}"
+# MGMT_ENTRY_POINT is the cluster's stable management endpoint. On docker/remote
+# this resolves to the nginx mgmt-gateway sidecar (aether-{a,b}-mgmt-gateway,
+# host ports 5150 / 5160). The gateway round-robins /api/* across all 5 cores
+# and skips dead upstreams via proxy_next_upstream, so the endpoint survives
+# killing any single core including the leader. On cloud (no gateway yet) it
+# resolves to a specific VM and rotate_mgmt_entry_point() handles failover.
+MGMT_ENTRY_POINT="${MGMT_ENTRY_POINT:-http://${TARGET_HOST}:5150}"
 # App traffic → LB public port; management API → MGMT_ENTRY_POINT (witness or LB).
 CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-${MGMT_ENTRY_POINT}}"
 APP_ENDPOINT="${APP_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"

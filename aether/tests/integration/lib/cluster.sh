@@ -124,35 +124,36 @@ cluster_node_list() {
 }
 
 # Resolve the pinned MGMT entry-point node ID for the active cluster.
-# On cluster B (destructive, `restart: "no"` policy) node-1 is the stable CLI
-# entry point — its host-mapped management port is what `run-tests.sh` re-pins
-# `MGMT_ENTRY_POINT` to in every fresh suite subshell. If we kill node-1 and
-# the container doesn't restart, every subsequent cluster-B suite times out
-# its `wait_for_cluster` gate because there is no live mgmt endpoint at the
-# pinned port.
+#
+# HISTORICAL CONTEXT: prior to the mgmt-gateway sidecar (aether-{a,b}-mgmt-gateway),
+# MGMT_ENTRY_POINT was pinned to node-1's host-mapped port. Cluster B used
+# `restart: "no"`, so killing node-1 stranded every subsequent suite at a dead
+# port -- forcing a pile of "if leader == pinned, skip this test" gates.
+#
+# Now that nginx sidecars own ports 5150 (A) and 5160 (B) and round-robin to
+# any healthy core via proxy_next_upstream, there is no pinned node and any
+# core (including node-1, including the current leader) is a valid kill target.
+# This helper therefore returns empty by default. Callers that historically
+# relied on the pinned-node return value treat empty as "no pinning constraint"
+# (see pick_non_leader / kill_node / wait_for_replacement_of usage).
 #
 # Selection order:
-#   1. Explicit env override `MGMT_ENTRY_POINT_NODE` (per-suite escape hatch).
-#   2. Cluster B default: node-1.
-#   3. Cluster A or unspecified: empty (no pinning constraint).
+#   1. Explicit env override `MGMT_ENTRY_POINT_NODE` (per-suite escape hatch
+#      preserved for any future cloud-mode pinning -- cloud has no gateway yet).
+#   2. Otherwise: empty.
 mgmt_entry_point_node() {
     if [ -n "${MGMT_ENTRY_POINT_NODE:-}" ]; then
         printf '%s' "$MGMT_ENTRY_POINT_NODE"
-        return 0
-    fi
-    if [ "${CLUSTER_ID:-}" = "b" ]; then
-        printf 'node-1'
         return 0
     fi
     printf ''
 }
 
 # Pick a non-leader node from the cluster's CURRENT live membership.
-# Excludes BOTH the leader AND the pinned MGMT entry-point node (cluster B
-# only — cluster A has no pinning constraint). Fails loudly if no candidate
-# remains rather than silently returning the entry point — a kill of the
-# entry point on cluster B's `restart: "no"` policy turns one suite failure
-# into five (every subsequent cluster-B suite times out its mgmt gate).
+# Always excludes the leader. Additionally excludes any explicitly pinned MGMT
+# entry-point node (MGMT_ENTRY_POINT_NODE env override -- empty in normal
+# docker/remote runs since the mgmt-gateway sidecar removed the need for
+# client-side node pinning). Fails loudly if no candidate remains.
 #
 # Source of truth: `/api/nodes/lifecycle` filtered to state=ON_DUTY. This
 # excludes nodes that were drained / killed / decommissioned by earlier
@@ -265,11 +266,23 @@ wait_for_all_nodes_ready() {
 
 # Rotate MGMT_ENTRY_POINT to any surviving core node reachable on the cluster's mgmt port.
 # Chaos tests that kill the current entry point call this AFTER the kill to restore CLI access.
-# Normal tests don't need this — they rely on the pinned entry point + product forwarding.
 #
-# Docker/remote: each node's mgmt is host-port-mapped on TARGET_HOST at MGMT_PORT..MGMT_PORT+N-1.
-# Cloud:        each node has its own public VM IP; mgmt port is uniform (8080 per cloud-hetzner.toml).
+# Docker/remote: the mgmt-gateway sidecar (aether-{a,b}-mgmt-gateway) already
+# provides core-independent management access on the entry-point port. If the
+# gateway responds to /gateway/live, this function is a no-op -- rotating to a
+# direct core port would actually REGRESS the test by re-pinning to one core
+# and re-introducing the pinned-leader problem we just removed.
+# Cloud: each node has its own public VM IP; mgmt port is uniform (8080 per
+# cloud-hetzner.toml). No gateway yet on cloud, so rotation still applies.
 rotate_mgmt_entry_point() {
+    # Short-circuit when the docker mgmt-gateway sidecar is healthy. The
+    # gateway is the canonical entry point on docker/remote envs; rotating
+    # off it would re-pin MGMT_ENTRY_POINT to a single core's direct port.
+    if [ "${ENV_TYPE:-docker}" != "cloud" ]; then
+        if curl -sfk -m 2 "${MGMT_ENTRY_POINT}/gateway/live" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
     if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
         # Cloud uses CLOUD_MGMT_PORT (default 8080); MGMT_PORT is docker's host-mapped
         # port range (5150-5159) and not applicable to per-VM cloud nodes.
@@ -1025,16 +1038,16 @@ restart_all_nodes() {
 
 kill_node() {
     local node_id="$1"
-    # Pinned-entry-point guard: cluster B's compose file uses `restart: "no"` so
-    # a killed container does not come back; killing the node bound to the
-    # pinned MGMT host port permanently strands every subsequent suite (each
-    # opens a fresh subshell and re-pins MGMT_ENTRY_POINT to the same dead
-    # port). Refuse the kill — the caller should pick a different victim or
-    # rotate the entry point first.
+    # Defensive guard: if a suite explicitly set MGMT_ENTRY_POINT_NODE (escape
+    # hatch for cloud env where the mgmt-gateway sidecar isn't deployed yet),
+    # refuse to kill that node -- otherwise the suite's own pinning request
+    # would be silently violated. In normal docker/remote runs the mgmt-gateway
+    # sidecar owns the entry-point port so mgmt_entry_point_node() returns
+    # empty and any core (including the leader) is a valid victim.
     local pinned
     pinned=$(mgmt_entry_point_node)
     if [ -n "$pinned" ] && [ "$node_id" = "$pinned" ]; then
-        log_fail "kill_node: refusing to kill pinned MGMT entry-point node '${node_id}' on cluster ${CLUSTER_ID:-<none>} (restart policy 'no' would leave subsequent suites without a mgmt endpoint). Rotate MGMT_ENTRY_POINT_NODE or pick a different victim."
+        log_fail "kill_node: refusing to kill explicitly pinned MGMT entry-point node '${node_id}' (MGMT_ENTRY_POINT_NODE='${MGMT_ENTRY_POINT_NODE:-}'). Unset the override or pick a different victim."
         return 1
     fi
     log_info "Killing node: ${node_id}"

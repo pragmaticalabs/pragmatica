@@ -117,35 +117,20 @@ cleanup() {
 
 run_test "Initial 5 nodes" test_initial_state
 
-# Pinned-leader skip gate: cluster B's compose file uses `restart: "no"` so
-# killing the node bound to the pinned MGMT host port permanently strands every
-# subsequent suite. Cluster B has no safe in-test rotation: stop+start on the
-# pinned node does not restore the host-mapped port, and disturbing topology by
-# killing a non-leader can re-elect the same pinned node again. When leader ==
-# pinned at this point, skip the kill-leader scenario (and the dependent quorum
-# / health-with-4-nodes / auto-heal asserts) rather than fail or risk a flaky
-# pass. The remaining suites still exercise the cluster recovery invariants.
-_pinned=$(mgmt_entry_point_node)
-# Don't bypass the pinned-leader gate on a CLI hiccup: capture rc and fail
-# loudly. Empty string previously masked CLI failure as "no skip needed".
-_current_leader=$(cluster_leader 2>/dev/null)
-_leader_rc=$?
-if [ "$_leader_rc" -ne 0 ] || [ -z "$_current_leader" ]; then
-    log_fail "cluster_leader CLI returned rc=${_leader_rc}, leader='${_current_leader}' — cannot evaluate pinned-leader gate"
-    print_summary
-    exit 1
-fi
-if [ -n "$_pinned" ] && [ "$_current_leader" = "$_pinned" ]; then
-    skip_test "Kill leader and re-elect" \
-        "leader '${_current_leader}' is the pinned MGMT entry-point node on cluster ${CLUSTER_ID:-<none>}; no safe in-test rotation on cluster B (restart: no)"
-    skip_test "Cluster has quorum" "depends on Kill leader (skipped)"
-    skip_test "Health with 4 nodes" "depends on Kill leader (skipped)"
-    skip_test "Auto-heal restores to 5" "depends on Kill leader (skipped)"
-else
-    run_test "Kill leader and re-elect" test_kill_leader_and_reelect
-    run_test "Cluster has quorum" test_cluster_has_quorum
-    run_test "Health with 4 nodes" test_health_with_4_nodes
-    run_test "Auto-heal restores to 5" test_auto_heal
-fi
+# Pinned-leader skip gate REMOVED: cluster B now runs an nginx mgmt sidecar
+# (aether-b-mgmt-gateway) that owns MGMT_ENTRY_POINT host port 5160 and
+# round-robins /api requests across all 5 cores via proxy_next_upstream. The
+# gateway survives any single-core failure, so killing the leader -- even when
+# it's the node that was historically pinned as the operator entry point --
+# no longer strands the harness. All four downstream scenarios are exercised
+# unconditionally.
+#
+# If a future cloud-env or other deployment lacks the gateway, set
+# MGMT_ENTRY_POINT_NODE to re-introduce a pinning constraint; mgmt_entry_point_node()
+# will surface the override and the historical gate can be reinstated locally.
+run_test "Kill leader and re-elect" test_kill_leader_and_reelect
+run_test "Cluster has quorum" test_cluster_has_quorum
+run_test "Health with 4 nodes" test_health_with_4_nodes
+run_test "Auto-heal restores to 5" test_auto_heal
 cleanup
 print_summary

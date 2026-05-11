@@ -38,6 +38,10 @@ export QUIESCED_TIMINGS_FILE="$TIMINGS_FILE"
 # Cluster A: non-destructive (parallel)
 COMPOSE_A="${SCRIPT_DIR}/docker-compose-a.yml"
 CLUSTER_A_NAME="test-a"
+# 5150 is owned by aether-a-mgmt-gateway (nginx sidecar) which round-robins /api
+# requests across all 5 cores and skips dead upstreams via proxy_next_upstream.
+# MGMT_ENTRY_POINT therefore survives any single-core failure; tests can target
+# this endpoint without pinning to a specific node's lifecycle.
 CLUSTER_A_MGMT="http://${TARGET_HOST:-localhost}:5150"
 # Direct (LB-less) app-HTTP fallback — node-1's host-mapped app port (see docker-compose-a.yml)
 CLUSTER_A_APP_DIRECT="http://${TARGET_HOST:-localhost}:8070"
@@ -47,10 +51,10 @@ CLUSTER_A_LB_MGMT=""
 # Cluster B: destructive (sequential)
 COMPOSE_B="${SCRIPT_DIR}/docker-compose-b.yml"
 CLUSTER_B_NAME="test-b"
-# CLUSTER_B_MGMT pins to node-1's management port (5160). Node-1 is the stable operator
-# entry point for Cluster B — tests MUST NOT kill node-1. All management calls are
-# forwarded internally by the cluster via HttpForwardRequest. This exercises the
-# product's forwarding contract instead of client-side port-hopping.
+# 5160 is owned by aether-b-mgmt-gateway (nginx sidecar). The gateway is what
+# decouples MGMT_ENTRY_POINT from any single core's lifecycle on cluster B's
+# `restart: "no"` policy -- destructive tests can now kill ANY core, including
+# node-1 or the current leader, without stranding the harness on a dead port.
 CLUSTER_B_MGMT="http://${TARGET_HOST:-localhost}:5160"
 # Direct (LB-less) app-HTTP fallback — node-1's host-mapped app port (see docker-compose-b.yml)
 CLUSTER_B_APP_DIRECT="http://${TARGET_HOST:-localhost}:8080"
@@ -266,15 +270,18 @@ run_suite() {
         lb_app="${CLUSTER_A_LB_APP:-$CLUSTER_A_APP_DIRECT}"
         lb_mgmt="${CLUSTER_A_LB_MGMT:-$CLUSTER_A_MGMT}"
         cluster_id="a"
-        # Cluster A is non-destructive — no witness; node-1 mgmt (5150) doubles as entry point.
-        node_base="5150"
+        # Direct per-node mgmt ports = 5151..5155 (node-1..node-5); 5150 is the
+        # mgmt sidecar gateway. MGMT_PORT+i convention now resolves node-{i+1}.
+        node_base="5151"
     else
         cluster_endpoint="$CLUSTER_B_MGMT"
         lb_app="${CLUSTER_B_LB_APP:-$CLUSTER_B_APP_DIRECT}"
         lb_mgmt="${CLUSTER_B_LB_MGMT:-$CLUSTER_B_MGMT}"
         cluster_id="b"
-        # Core nodes 5160–5164; node-1 is pinned entry point (never killed).
-        node_base="5160"
+        # Direct per-node mgmt ports = 5161..5165 (node-1..node-5); 5160 is the
+        # mgmt sidecar gateway. Killing ANY core is now safe -- gateway routes
+        # via proxy_next_upstream to a surviving upstream.
+        node_base="5161"
     fi
 
     # Export for the suite scripts

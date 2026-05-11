@@ -47,7 +47,10 @@ topology_events_since() {
             base_urls+=("http://${node_ip}:${mgmt_port}")
         done
     else
-        local base_port="${MGMT_PORT:-5150}"
+        # Per-node direct mgmt ports start at 5151 (cluster A) or 5161 (B); run-tests.sh
+        # exports MGMT_PORT explicitly. The default here matters only if a suite is run
+        # standalone -- pick cluster A's base.
+        local base_port="${MGMT_PORT:-5151}"
         for i in $(seq 0 $((count - 1))); do
             base_urls+=("http://${TARGET_HOST}:$((base_port + i))")
         done

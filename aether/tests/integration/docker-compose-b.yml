@@ -44,6 +44,11 @@ x-node-common: &node-common
 
 services:
   # --- 5-node Aether Cluster B ---
+  # Direct per-node mgmt ports moved to 5161-5165 (was 5160-5164). 5160 is now
+  # owned by the mgmt sidecar gateway (aether-b-mgmt-gateway) so MGMT_ENTRY_POINT
+  # survives killing ANY core including node-1 / the leader. The MGMT_PORT+i
+  # convention now resolves node-i+1 -> 5161+i; lib/cluster.sh + run-tests.sh
+  # rebased to 5161.
   aether-b-node-1:
     <<: *node-common
     container_name: aether-b-node-1
@@ -52,7 +57,7 @@ services:
       <<: *node-env
       NODE_ID: "node-1"
     ports:
-      - "5160:8080"   # Management API
+      - "5161:8080"   # Direct mgmt (gateway-bypass)
       - "8080:8070"   # App HTTP
       - "9092:8070"   # LB app port
       - "9093:8080"   # LB mgmt port
@@ -65,7 +70,7 @@ services:
       <<: *node-env
       NODE_ID: "node-2"
     ports:
-      - "5161:8080"
+      - "5162:8080"
       - "8081:8070"
 
   aether-b-node-3:
@@ -76,7 +81,7 @@ services:
       <<: *node-env
       NODE_ID: "node-3"
     ports:
-      - "5162:8080"
+      - "5163:8080"
       - "8082:8070"
 
   aether-b-node-4:
@@ -87,7 +92,7 @@ services:
       <<: *node-env
       NODE_ID: "node-4"
     ports:
-      - "5163:8080"
+      - "5164:8080"
       - "8083:8070"
 
   aether-b-node-5:
@@ -98,8 +103,33 @@ services:
       <<: *node-env
       NODE_ID: "node-5"
     ports:
-      - "5164:8080"
+      - "5165:8080"
       - "8084:8070"
+
+  # --- Management API sidecar gateway ---
+  # nginx reverse proxy that round-robins /api/* and /health/* requests across
+  # the 5 cores via cluster-internal hostnames (aether-b-node-{1..5}:8080).
+  # proxy_next_upstream skips dead cores. Owns host port 5160 so MGMT_ENTRY_POINT
+  # is decoupled from any single core's lifecycle -- destructive tests can now
+  # kill ANY core (including node-1, including the leader) without losing
+  # management-API access.
+  aether-b-mgmt-gateway:
+    image: nginx:1.27-alpine
+    container_name: aether-b-mgmt-gateway
+    hostname: aether-b-mgmt-gateway
+    networks:
+      - aether-b-network
+    ports:
+      - "5160:8080"   # MGMT_ENTRY_POINT (was node-1 direct)
+    volumes:
+      - ./nginx-mgmt-gateway-b.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/gateway/live"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 5s
+    restart: "no"
 
 networks:
   aether-b-network:
