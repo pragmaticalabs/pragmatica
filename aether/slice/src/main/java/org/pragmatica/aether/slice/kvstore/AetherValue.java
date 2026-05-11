@@ -10,6 +10,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
@@ -1325,6 +1326,16 @@ import static org.pragmatica.lang.Option.none;
     record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt) implements AetherValue {
         public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId) {
             return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis());
+        }
+    }
+
+    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue {
+        public static StreamConfigValue streamConfigValue(StreamConfig config) {
+            return new StreamConfigValue(config, System.currentTimeMillis());
+        }
+
+        public static StreamConfigValue streamConfigValue(StreamConfig config, long createdAt) {
+            return new StreamConfigValue(config, createdAt);
         }
     }
 

@@ -7,8 +7,13 @@ package org.pragmatica.aether.slice.kvstore;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ExecutionMode;
+import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
@@ -147,6 +152,7 @@ import static org.pragmatica.lang.Result.success;
             case AbTestKey _ -> "ab-test";
             case AbTestRoutingKey _ -> "ab-test-routing";
             case StreamMetadataKey _ -> "stream-meta";
+            case StreamConfigKey _ -> "stream-config";
             case StreamPartitionAssignmentKey _ -> "stream-assign";
             case StreamCursorCheckpointKey _ -> "stream-cursor";
             case StreamRegistrationKey _ -> "stream-reg";
@@ -214,6 +220,7 @@ import static org.pragmatica.lang.Result.success;
             case AbTestValue v -> serializeAbTest(v);
             case AbTestRoutingValue v -> serializeAbTestRouting(v);
             case StreamMetadataValue v -> serializeStreamMetadata(v);
+            case StreamConfigValue v -> serializeStreamConfig(v);
             case StreamPartitionAssignmentValue v -> serializeStreamPartitionAssignment(v);
             case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);
             case StreamRegistrationValue v -> serializeStreamRegistration(v);
@@ -407,6 +414,7 @@ import static org.pragmatica.lang.Result.success;
             case "storage-block" -> parseStorageBlockEntry(identity, rawValue);
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             case "task-assignment" -> parseTaskAssignmentEntry(identity, rawValue);
+            case "stream-config" -> parseStreamConfigEntry(identity, rawValue);
             case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
             case "consumer-group" -> parseConsumerGroupEntry(identity, rawValue);
             case "api-key" -> parseApiKeyEntry(identity, rawValue);
@@ -974,6 +982,64 @@ import static org.pragmatica.lang.Result.success;
         return Result.lift(() -> Long.parseLong(parts[1]))
                           .flatMap(ts -> Result.lift(() -> TaskAssignmentValue.AssignmentStatus.valueOf(parts[2]))
                                                     .map(status -> new TaskAssignmentValue(nodeId, ts, status, parts[3])));
+    }
+
+    private static String serializeStreamConfig(StreamConfigValue v) {
+        var config = v.config();
+        var retention = config.retention();
+        var encryptionKeyId = config.encryptionKeyId().or("");
+        return config.partitions() + PIPE
+               + config.autoOffsetReset() + PIPE
+               + config.maxEventSizeBytes() + PIPE
+               + config.consistencyMode().name() + PIPE
+               + config.minSyncReplicas() + PIPE
+               + config.compression().name() + PIPE
+               + encryptionKeyId + PIPE
+               + retention.maxCount() + PIPE
+               + retention.maxBytes() + PIPE
+               + retention.maxAgeMs() + PIPE
+               + retention.mode().name() + PIPE
+               + v.createdAt();
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamConfigEntry(String identity, String raw) {
+        var parts = raw.split("(?<!\\\\)\\|", - 1);
+        if (parts.length != 12) {return parseFailure("stream-config value requires 12 fields, got " + parts.length);}
+        return StreamConfigKey.streamConfigKey("stream-config/" + identity, true)
+                                              .flatMap(key -> buildStreamConfigValue(identity, parts).map(value -> entry(key,
+                                                                                                                          value)));
+    }
+
+    private static Result<StreamConfigValue> buildStreamConfigValue(String streamName, String[] parts) {
+        return Result.lift(() -> assembleStreamConfigValue(streamName, parts));
+    }
+
+    private static StreamConfigValue assembleStreamConfigValue(String streamName, String[] parts) {
+        var partitions = Integer.parseInt(parts[0]);
+        var autoOffsetReset = parts[1];
+        var maxEventSizeBytes = Long.parseLong(parts[2]);
+        var consistencyMode = ConsistencyMode.valueOf(parts[3]);
+        var minSyncReplicas = Integer.parseInt(parts[4]);
+        var compression = StreamCompression.valueOf(parts[5]);
+        var encryptionKeyId = parts[6].isEmpty()
+                             ? Option.<String>none()
+                             : Option.some(parts[6]);
+        var retention = new RetentionPolicy(Long.parseLong(parts[7]),
+                                            Long.parseLong(parts[8]),
+                                            Long.parseLong(parts[9]),
+                                            RetentionMode.valueOf(parts[10]),
+                                            Option.none());
+        var createdAt = Long.parseLong(parts[11]);
+        var config = StreamConfig.streamConfig(streamName,
+                                               partitions,
+                                               retention,
+                                               autoOffsetReset,
+                                               maxEventSizeBytes,
+                                               consistencyMode,
+                                               minSyncReplicas,
+                                               compression,
+                                               encryptionKeyId);
+        return new StreamConfigValue(config, createdAt);
     }
 
     private static String serializeCloudCredentials(CloudCredentialsValue v) {

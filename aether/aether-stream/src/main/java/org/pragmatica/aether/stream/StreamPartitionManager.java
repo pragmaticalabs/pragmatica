@@ -6,18 +6,30 @@ package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -26,6 +38,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 public final class StreamPartitionManager implements AutoCloseable {
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
+    private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
 
     private final ConcurrentHashMap<String, StreamEntry> streams = new ConcurrentHashMap<>();
 
@@ -34,31 +47,55 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final long maxTotalBytes;
     private final EvictionListener evictionListener;
     private final ReplicationManager replicationManager;
+    private final Option<ClusterNode<KVCommand<AetherKey>>> clusterNode;
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
-                                   ReplicationManager replicationManager) {
+                                   ReplicationManager replicationManager,
+                                   Option<ClusterNode<KVCommand<AetherKey>>> clusterNode) {
         this.maxTotalBytes = maxTotalBytes;
         this.evictionListener = evictionListener;
         this.replicationManager = replicationManager;
+        this.clusterNode = clusterNode;
     }
 
     public static StreamPartitionManager streamPartitionManager() {
-        return new StreamPartitionManager(DEFAULT_MAX_TOTAL_BYTES, EvictionListener.NOOP, ReplicationManager.NONE);
+        return new StreamPartitionManager(DEFAULT_MAX_TOTAL_BYTES,
+                                          EvictionListener.NOOP,
+                                          ReplicationManager.NONE,
+                                          Option.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes) {
-        return new StreamPartitionManager(maxTotalBytes, EvictionListener.NOOP, ReplicationManager.NONE);
+        return new StreamPartitionManager(maxTotalBytes, EvictionListener.NOOP, ReplicationManager.NONE, Option.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, EvictionListener evictionListener) {
-        return new StreamPartitionManager(maxTotalBytes, evictionListener, ReplicationManager.NONE);
+        return new StreamPartitionManager(maxTotalBytes, evictionListener, ReplicationManager.NONE, Option.none());
     }
 
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 EvictionListener evictionListener,
                                                                 ReplicationManager replicationManager) {
-        return new StreamPartitionManager(maxTotalBytes, evictionListener, replicationManager);
+        return new StreamPartitionManager(maxTotalBytes, evictionListener, replicationManager, Option.none());
+    }
+
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                ReplicationManager replicationManager,
+                                                                ClusterNode<KVCommand<AetherKey>> clusterNode) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          replicationManager,
+                                          Option.some(clusterNode));
+    }
+
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                ClusterNode<KVCommand<AetherKey>> clusterNode) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          EvictionListener.NOOP,
+                                          ReplicationManager.NONE,
+                                          Option.some(clusterNode));
     }
 
     public long totalAllocatedBytes() {
@@ -81,12 +118,67 @@ public final class StreamPartitionManager implements AutoCloseable {
             return StreamError.General.STREAM_ALREADY_EXISTS.result();
         }
         totalAllocatedBytes.addAndGet(requiredBytes);
+        publishStreamConfig(config);
         return success(unit());
     }
 
     public Result<Unit> destroyStream(String streamName) {
         return option(streams.remove(streamName)).toResult(new StreamError.StreamNotFound(streamName))
-                     .flatMap(this::closeAndRelease);
+                     .flatMap(this::closeAndRelease)
+                     .onSuccess(_ -> publishStreamConfigRemoval(streamName));
+    }
+
+    @Contract private void publishStreamConfig(StreamConfig config) {
+        clusterNode.onPresent(node -> applyPutCommand(node, config));
+    }
+
+    @Contract private void publishStreamConfigRemoval(String streamName) {
+        clusterNode.onPresent(node -> applyRemoveCommand(node, streamName));
+    }
+
+    private void applyPutCommand(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config) {
+        var key = StreamConfigKey.streamConfigKey(config.name());
+        var value = StreamConfigValue.streamConfigValue(config);
+        var put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+        node.apply(List.of(put))
+                  .onFailure(cause -> log.warn("Failed to publish stream config for {}: {}",
+                                               config.name(),
+                                               cause.message()));
+    }
+
+    private void applyRemoveCommand(ClusterNode<KVCommand<AetherKey>> node, String streamName) {
+        var key = StreamConfigKey.streamConfigKey(streamName);
+        var remove = new KVCommand.Remove<AetherKey>(key);
+        node.apply(List.of(remove))
+                  .onFailure(cause -> log.warn("Failed to publish stream config removal for {}: {}",
+                                               streamName,
+                                               cause.message()));
+    }
+
+    @MessageReceiver public void onStreamConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put) {
+        var streamName = put.cause().key()
+                                       .streamName();
+        var config = put.cause().value()
+                                    .config();
+        streams.computeIfAbsent(streamName, _ -> hydrateEntry(config));
+    }
+
+    @MessageReceiver public void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> remove) {
+        var streamName = remove.cause().key()
+                                             .streamName();
+        removeAndReleaseIfPresent(streamName);
+    }
+
+    @SuppressWarnings("JBCT-RET-03") private void removeAndReleaseIfPresent(String streamName) {
+        var existing = streams.remove(streamName);
+        if (existing != null) {closeAndRelease(existing);}
+    }
+
+    private StreamEntry hydrateEntry(StreamConfig config) {
+        var requiredBytes = calculateStreamBytes(config);
+        var entry = StreamEntry.fromConfig(config, evictionListener);
+        totalAllocatedBytes.addAndGet(requiredBytes);
+        return entry;
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {

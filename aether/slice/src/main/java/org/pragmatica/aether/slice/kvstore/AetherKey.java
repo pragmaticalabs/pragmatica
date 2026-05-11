@@ -1082,7 +1082,32 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
+    record StreamConfigKey(String streamName) implements AetherKey {
+        private static final String PREFIX = "stream-config/";
+
+        @Override public String asString() {
+            return PREFIX + streamName;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static StreamConfigKey streamConfigKey(String streamName) {
+            return new StreamConfigKey(streamName);
+        }
+
+        public static Result<StreamConfigKey> streamConfigKey(String key, boolean isKey) {
+            if (!key.startsWith(PREFIX)) {return STREAM_CONFIG_KEY_FORMAT_ERROR.apply(key).result();}
+            var name = key.substring(PREFIX.length());
+            if (name.isEmpty()) {return STREAM_CONFIG_KEY_FORMAT_ERROR.apply(key).result();}
+            return success(new StreamConfigKey(name));
+        }
+    }
+
     Fn1<Cause, String> TASK_ASSIGNMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid task-assignment key format: %s");
+
+    Fn1<Cause, String> STREAM_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-config key format: %s");
 
     Fn1<Cause, String> CLOUD_CREDENTIALS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cloud-credentials key format: %s");
 

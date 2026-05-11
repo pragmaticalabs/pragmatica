@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
-public enum StreamCompression {
+import org.pragmatica.serialization.Codec;
+
+@Codec public enum StreamCompression {
     NONE,
     LZ4,
     ZSTD

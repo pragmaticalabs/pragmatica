@@ -5,11 +5,12 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.serialization.Codec;
 
 import static org.pragmatica.lang.Option.none;
 
 
-public record RetentionPolicy(long maxCount,
+@Codec public record RetentionPolicy(long maxCount,
                               long maxBytes,
                               long maxAgeMs,
                               RetentionMode mode,

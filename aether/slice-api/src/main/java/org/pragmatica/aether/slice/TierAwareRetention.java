@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
-public record TierAwareRetention(long postSealBufferMs, long postSealMaxCount) {
+import org.pragmatica.serialization.Codec;
+
+@Codec public record TierAwareRetention(long postSealBufferMs, long postSealMaxCount) {
     private static final long DEFAULT_POST_SEAL_BUFFER_MS = 60_000L;
 
     private static final long DEFAULT_POST_SEAL_MAX_COUNT = 10_000L;

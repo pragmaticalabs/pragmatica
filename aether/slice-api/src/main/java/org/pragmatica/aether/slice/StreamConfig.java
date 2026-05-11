@@ -5,11 +5,12 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.serialization.Codec;
 
 import static org.pragmatica.lang.Option.none;
 
 
-public record StreamConfig(String name,
+@Codec public record StreamConfig(String name,
                            int partitions,
                            RetentionPolicy retention,
                            String autoOffsetReset,

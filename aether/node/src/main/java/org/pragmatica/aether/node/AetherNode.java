@@ -1364,7 +1364,14 @@ public interface AetherNode extends ManageableNode {
         allEntries.addAll(spokesmanKvRouter.asRouteEntries());
         metricsCollector.addPongListener(spokesmanPingLoop::onClusterSyncPong);
         var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
-        var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes);
+        var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes, clusterNode);
+        var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
+                                                       .onPut(AetherKey.StreamConfigKey.class,
+                                                              streamPartitionManager::onStreamConfigPut)
+                                                       .onRemove(AetherKey.StreamConfigKey.class,
+                                                                 streamPartitionManager::onStreamConfigRemove)
+                                                       .build();
+        allEntries.addAll(streamConfigKvRouter.asRouteEntries());
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
         var streamStorage = createStreamStorage(dhtClientOption);
