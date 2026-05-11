@@ -678,45 +678,58 @@ slice_owner_for() {
 # leaves APP_ENDPOINT at a usable value (original LB on docker, retargeted on cloud).
 retarget_app_endpoint_to_active_slice() {
     local coords="$1" port="${2:-8070}" probe_path="${3:-}" probe_timeout="${4:-30}"
+    # Identify a node that currently hosts an ACTIVE instance of the artifact so
+    # we can probe / PUT against that node directly rather than racing route-table
+    # propagation across the cluster.
+    local owner
+    owner=$(slice_owner_for "$coords" 2>/dev/null || true)
+    if [ -z "$owner" ]; then
+        # Diagnostic dump: surface the slice list so a future failure shows whether
+        # /api/slices is empty (deploy didn't propagate), all instances are still
+        # LOADING (timing window — caller didn't await ACTIVE), or the artifact
+        # prefix doesn't match (coords mismatch between blueprint and slice).
+        local diag
+        diag=$(cluster_slices 2>/dev/null \
+                   | tr -d '\n' \
+                   | grep -oE '"artifact"[[:space:]]*:[[:space:]]*"[^"]*"|"state"[[:space:]]*:[[:space:]]*"[A-Z_]*"' \
+                   | tr '\n' ' ')
+        log_warn "retarget: no ACTIVE owner found for ${coords}; APP_ENDPOINT unchanged. /api/slices: ${diag:-<empty>}"
+        return 1
+    fi
     if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
-        # Cloud: each node has its own public IP. Find an ACTIVE slice owner and
-        # retarget APP_ENDPOINT to its IP so the test bypasses cross-node forwarding
-        # (which on cloud means the cluster's app-HTTP forwarder, which has its own
-        # route-table propagation window).
-        local owner owner_ip
-        owner=$(slice_owner_for "$coords" 2>/dev/null || true)
-        if [ -z "$owner" ]; then
-            # Diagnostic dump: surface the slice list so a future failure shows whether
-            # /api/slices is empty (deploy didn't propagate), all instances are still
-            # LOADING (timing window — caller didn't await ACTIVE), or the artifact
-            # prefix doesn't match (coords mismatch between blueprint and slice).
-            local diag
-            diag=$(cluster_slices 2>/dev/null \
-                       | tr -d '\n' \
-                       | grep -oE '"artifact"[[:space:]]*:[[:space:]]*"[^"]*"|"state"[[:space:]]*:[[:space:]]*"[A-Z_]*"' \
-                       | tr '\n' ' ')
-            log_warn "retarget: no ACTIVE owner found for ${coords}; APP_ENDPOINT unchanged. /api/slices: ${diag:-<empty>}"
-            return 1
-        fi
+        # Cloud: each node has its own public IP at the same logical app port.
+        local owner_ip
         owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
         if [ -z "$owner_ip" ]; then
             log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged. (Owner reported by /api/slices is not in bootstrap-state.json — node may have been replaced by CTM and not re-recorded.)"
             return 1
         fi
         APP_ENDPOINT="http://${owner_ip}:${port}"
-        log_info "retarget: APP_ENDPOINT -> ${APP_ENDPOINT} (slice owner ${owner})"
+    else
+        # Docker/remote: TARGET_HOST host-maps each node's app port consecutively
+        # (cluster A: 8070..8074; cluster B: 8080..8084). The `port` parameter is
+        # the base (node-1's host port); derive the owner's port from the node-id's
+        # numeric suffix. Without this retarget, the test always probes node-1, and
+        # if the slice ACTIVATED on a different node node-1's NodeRoutesKey snapshot
+        # may not yet contain the route — PUTs land as 404 from sendNoRouteFound
+        # rather than reaching the slice handler.
+        local owner_idx
+        owner_idx=$(echo "$owner" | grep -oE '[0-9]+$')
+        if [ -z "$owner_idx" ]; then
+            log_warn "retarget: could not parse node-index from owner '${owner}'; APP_ENDPOINT unchanged"
+            return 1
+        fi
+        local owner_port=$((port + owner_idx - 1))
+        APP_ENDPOINT="http://${TARGET_HOST}:${owner_port}"
     fi
-    # Both cloud AND docker/remote: probe the path until the slice route is wired.
-    # On docker/remote, only node-1's app port is host-mapped, so we can't IP-retarget;
-    # instead we wait for node-1's route table to pick up the freshly-published slice
-    # route. Without this wait, PUT calls right after wait_for_slices_active race the
-    # post-ACTIVE route-table propagation window and 404 (slice owner not yet routable
-    # on node-1).
+    log_info "retarget: APP_ENDPOINT -> ${APP_ENDPOINT} (slice owner ${owner})"
+    # Probe the path until the slice route is wired (positive readiness).
     #
-    # Probe semantics: positive readiness check via app_route_wired. GET (not PUT —
-    # PUT carries a payload the slice may reject as 500). The check is "the slice
-    # handler ran" — proven by 2xx, or 4xx whose body is NOT sendNoRouteFound's
-    # route-missing problem+json. 503 / 5xx / route-missing-404 mean keep waiting.
+    # Probe semantics: GET against probe_path. The check is "the slice handler ran"
+    # — proven by 2xx, or 4xx whose body is NOT sendNoRouteFound's route-missing
+    # problem+json. 503 / 5xx / route-missing-404 mean keep waiting. PUT is not
+    # used because the slice may reject the payload (500) even when the route is
+    # wired.
     if [ -n "$probe_path" ]; then
         wait_for "app endpoint route ${probe_path} wired (positive readiness)" \
             "app_route_wired \"${APP_ENDPOINT}${probe_path}\"" \
@@ -891,14 +904,42 @@ drop_ctm_replacements() {
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
     if [ "$CLOUD_MODE" = "true" ]; then
-        # Aggregate per-node failures. Previously each cloud_ssh was `2>/dev/null || true`
-        # so up to N-1 failed restarts appeared as 0/0 — a 4-of-5 unreachable cluster
-        # would silently report "restored to baseline" and the next test ran against a
-        # half-dead cluster, blaming the actual product code for harness-induced flake.
-        local failed=0 restart_out
+        # Two cloud modes are supported (run-tests.sh exports CLOUD_RUNTIME):
+        #   container — VM runs a single `aether-node` Docker container
+        #   jvm       — VM runs `java -jar /opt/aether/aether-node.jar ...` directly
+        # Without this dispatch, JVM-mode VMs (no Docker installed) hit
+        # `bash: docker: command not found` and `restart_all_nodes` reports 5/5
+        # failures — every cluster B chaos suite then cascades into harness-induced
+        # failure rather than exercising the product.
+        local failed=0
         for i in $(seq 1 "${NODE_COUNT:-5}"); do
-            restart_out=$(cloud_ssh "node-${i}" "docker restart aether-node" 2>&1) \
-                || { log_warn "restart_all_nodes: node-${i} restart failed: ${restart_out}"; failed=$((failed + 1)); }
+            if [ "${CLOUD_RUNTIME:-container}" = "jvm" ]; then
+                # JVM mode: capture cmdline → kill → relaunch. Mirrors kill_node +
+                # start_node's JVM branches. The captured cmdline is written to
+                # /tmp/aether-jvm-cmd-${node_id}.txt on the local test runner so
+                # destructive tests later in the suite can use it.
+                local cmd_file="/tmp/aether-jvm-cmd-node-${i}.txt"
+                local jvm_cmd
+                jvm_cmd=$(cloud_ssh "node-${i}" "ps -o command= -C java | grep -F 'aether-node.jar' | head -1" 2>&1)
+                local cap_rc=$?
+                if [ "$cap_rc" -ne 0 ] || [ -z "$jvm_cmd" ]; then
+                    log_warn "restart_all_nodes: could not capture JVM cmdline for node-${i} (rc=${cap_rc}): ${jvm_cmd}"
+                    failed=$((failed + 1))
+                    continue
+                fi
+                printf '%s\n' "$jvm_cmd" > "$cmd_file"
+                local kill_out
+                kill_out=$(cloud_ssh "node-${i}" "pkill -KILL -f 'aether-node.jar'" 2>&1) \
+                    || { log_warn "restart_all_nodes: node-${i} JVM kill failed: ${kill_out}"; failed=$((failed + 1)); continue; }
+                local start_out
+                start_out=$(cloud_ssh "node-${i}" "nohup ${jvm_cmd} >/var/log/aether-node.out 2>&1 </dev/null &" 2>&1) \
+                    || { log_warn "restart_all_nodes: node-${i} JVM relaunch failed: ${start_out}"; failed=$((failed + 1)); continue; }
+            else
+                # Container mode: aggregate per-node `docker restart` failures.
+                local restart_out
+                restart_out=$(cloud_ssh "node-${i}" "docker restart aether-node" 2>&1) \
+                    || { log_warn "restart_all_nodes: node-${i} restart failed: ${restart_out}"; failed=$((failed + 1)); }
+            fi
         done
         if [ "$failed" -gt 0 ]; then
             log_fail "restart_all_nodes: ${failed}/${NODE_COUNT:-5} cloud nodes failed to restart"

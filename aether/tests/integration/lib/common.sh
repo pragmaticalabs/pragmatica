@@ -103,12 +103,24 @@ aether_json() {
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-log_info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
+# Prefix log lines with `[SUITE/TEST]` when SUITE_TAG (and optionally TEST_TAG) is set
+# by `run_suite`/`run_test`. Without this, parallel cluster A suites interleave their
+# output and attribution becomes impossible — e.g. session 2026-05-10c misattributed a
+# 4256s "deploy" duration to the wrong suite because the stdout of two parallel suites
+# arrived in undefined order. Empty when no SUITE_TAG (e.g. lib code that runs outside
+# a suite context).
+_log_prefix() {
+    if [ -n "${SUITE_TAG:-}" ]; then
+        printf '[%s%s] ' "$SUITE_TAG" "${TEST_TAG:+/$TEST_TAG}"
+    fi
+}
+
+log_info()  { echo -e "${GREEN}[INFO]${NC}  $(_log_prefix)$1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(_log_prefix)$1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log_pass()  { echo -e "${GREEN}[PASS]${NC}  $1"; }
-log_fail()  { echo -e "${RED}[FAIL]${NC}  $1"; }
-log_step()  { echo -e "${BLUE}[STEP]${NC}  $1"; }
+log_pass()  { echo -e "${GREEN}[PASS]${NC}  $(_log_prefix)$1"; }
+log_fail()  { echo -e "${RED}[FAIL]${NC}  $(_log_prefix)$1"; }
+log_step()  { echo -e "${BLUE}[STEP]${NC}  $(_log_prefix)$1"; }
 
 # ---------------------------------------------------------------------------
 # HTTP helpers — management API
@@ -230,6 +242,28 @@ app_post() {
 http_status() {
     local url="$1"; shift
     curl -sk -o /dev/null -w "%{http_code}" "$@" "$url"
+}
+
+# Like http_status but captures the response body on non-2xx and surfaces it as
+# a log_warn. Same stdout contract as http_status (status code only) so callers
+# can drop-in replace when they need diagnostic visibility on failure. Body is
+# truncated to the first 500 bytes (newlines stripped) — enough to surface a
+# problem+json `detail` / exception summary without flooding the log.
+http_status_with_body() {
+    local url="$1"; shift
+    local body_file status
+    body_file=$(mktemp)
+    status=$(curl -sk -o "$body_file" -w "%{http_code}" "$@" "$url")
+    case "$status" in
+        2*) ;; # success — no diagnostic dump
+        *)
+            local body
+            body=$(head -c 500 "$body_file" 2>/dev/null | tr -d '\n')
+            log_warn "http ${status} ${url} :: body=${body:-<empty>}"
+            ;;
+    esac
+    rm -f "$body_file"
+    printf '%s' "$status"
 }
 
 # ---------------------------------------------------------------------------
@@ -606,6 +640,11 @@ run_test() {
     local name="$1" fn="$2"
     local sanitized_name
     sanitized_name=$(echo "$name" | tr ' /' '_' | tr -cd '[:alnum:]_-')
+    # Stamp TEST_TAG so log_* lines emitted by the test function are attributable
+    # to the correct (suite, test) pair under cluster A's parallel execution.
+    # Cleared at function exit so logs emitted by surrounding scaffolding don't
+    # leak the last test's name.
+    export TEST_TAG="$sanitized_name"
     echo ""
     log_step "=== TEST: ${name} ==="
 
@@ -631,6 +670,7 @@ run_test() {
         collect_metrics_after "$sanitized_name"
         print_metrics_summary "$sanitized_name"
     fi
+    unset TEST_TAG
 }
 
 skip_test() {

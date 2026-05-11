@@ -38,7 +38,11 @@ test_deploy_sql_app() {
 test_put_kv_pair() {
     local payload='{"value":"integration-test-value"}'
     local result
-    result=$(http_status "${APP_ENDPOINT}/api/kv/test-key" \
+    # http_status_with_body so a 5xx surfaces the response body (problem+json detail
+    # or stack-trace head) — without it the test logs an opaque "500" and the cloud
+    # vs docker root cause distinction (DB pool unreachable vs route-table churn)
+    # is invisible to investigators.
+    result=$(http_status_with_body "${APP_ENDPOINT}/api/kv/test-key" \
         -X PUT \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/json" \
@@ -54,7 +58,7 @@ test_put_kv_pair() {
 test_get_kv_pair() {
     local payload='{"value":"resolve-test-value"}'
     local put_status
-    put_status=$(http_status "${APP_ENDPOINT}/api/kv/resolve-key" \
+    put_status=$(http_status_with_body "${APP_ENDPOINT}/api/kv/resolve-key" \
         -X PUT \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/json" \

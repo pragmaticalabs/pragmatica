@@ -306,6 +306,11 @@ run_suite() {
     log_info "  SUITE: ${suite_name} (cluster ${target_cluster})"
     log_info "============================================"
 
+    # Stamp SUITE_TAG so every log line from this suite's children is attributable
+    # to a specific suite — essential when MAX_PARALLEL > 1 for cluster A, where
+    # multiple suites' stdout interleaves. Combined with TEST_TAG (set by run_test
+    # in lib/common.sh) the format is `[suite-name/test_name]`.
+    export SUITE_TAG="$suite_name"
     local suite_pass=0 suite_fail=0
     for test_file in "$suite_dir"/test-*.sh; do
         [ -f "$test_file" ] || continue
@@ -316,6 +321,7 @@ run_suite() {
             suite_fail=$((suite_fail + 1))
         fi
     done
+    unset SUITE_TAG
 
     local duration=$(( $(date +%s) - start_time ))
     local status="passed"
