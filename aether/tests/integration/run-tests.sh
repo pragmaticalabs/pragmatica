@@ -486,7 +486,13 @@ deploy_docker() {
         docker volume rm -f aether_pgdata 2>/dev/null || true
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
+        # D.1 nginx mgmt-gateway sidecar: clean any stale directory docker may have
+        # created at the mount path on a prior failed compose-up (when the conf
+        # file was missing, docker silently mkdir'd a placeholder). scp will then
+        # fail with "dest open ... Permission denied" because the path is a dir.
+        remote_exec "rm -rf ~/nginx-mgmt-gateway-a.conf ~/nginx-mgmt-gateway-b.conf 2>/dev/null || true"
         remote_scp "$COMPOSE_A" "~/docker-compose-a.yml"
+        remote_scp "${SCRIPT_DIR}/nginx-mgmt-gateway-a.conf" "~/nginx-mgmt-gateway-a.conf"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true; docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
     fi
 
@@ -496,6 +502,7 @@ deploy_docker() {
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
+        remote_scp "${SCRIPT_DIR}/nginx-mgmt-gateway-b.conf" "~/nginx-mgmt-gateway-b.conf"
         remote_exec "cd ~ && docker compose -f docker-compose-b.yml down -v 2>/dev/null || true; docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
     fi
 }
