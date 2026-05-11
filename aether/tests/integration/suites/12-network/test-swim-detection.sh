@@ -18,9 +18,13 @@ test_cluster_ready() {
     wait_for_cluster 60
     # SWIM cold-boot suppression bypass: kills against a phase=BOOTING cluster
     # produce UnknownObserved (not FaultyObserved), so no NODE_FAILED event fires.
-    # Wait for phase=NORMAL so the kill below is observed canonically.
+    # Wait for phase=NORMAL so the kill below is observed canonically. Fail-fast
+    # (not log_warn) — without NORMAL the test_swim_detection_time assertion below
+    # collapses to an opaque "no event within 60s", which masks the real precondition
+    # gap.
     if ! wait_for_phase "NORMAL" 180; then
-        log_warn "Cluster did not reach phase=NORMAL within 180s — chaos kill may be silently absorbed by cold-boot suppression"
+        log_fail "Cluster phase did not reach NORMAL within 180s — SWIM cold-boot guard would suppress NODE_FAILED for the kill below"
+        return 1
     fi
     local count
     count=$(cluster_node_count)
