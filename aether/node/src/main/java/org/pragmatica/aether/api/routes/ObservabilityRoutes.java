@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.ManagementApiResponses.TraceInjectResponse;
 import org.pragmatica.aether.api.ObservabilityDepthRegistry;
 import org.pragmatica.aether.invoke.InvocationNode;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
@@ -43,6 +44,8 @@ public final class ObservabilityRoutes implements RouteSource {
 
     record SetDepthRequest(String artifact, String method, int depthThreshold){}
 
+    record InjectTraceRequest(String operation, Long durationMs, Integer depth, String requestId, String traceId){}
+
     @Override public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<Object>route(ManagementRoute.TRACES_QUERY)
                                          .withQuery(QueryParameter.aString("limit"),
@@ -53,6 +56,9 @@ public final class ObservabilityRoutes implements RouteSource {
                                          .toValue(this::handleQueryTraces)
                                          .asJson(),
                          ManagementRoutes.<TraceStats>route(ManagementRoute.TRACES_STATS).toJson(this::handleTraceStats),
+                         ManagementRoutes.<TraceInjectResponse>route(ManagementRoute.TRACES_INJECT)
+                                         .withBody(InjectTraceRequest.class)
+                                         .toJson(this::handleInjectTrace),
                          ManagementRoutes.<Object>route(ManagementRoute.TRACE_BY_REQUEST_ID)
                                          .withPath(aString())
                                          .to(this::handleTraceByRequestId)
@@ -67,6 +73,25 @@ public final class ObservabilityRoutes implements RouteSource {
                                                    aString())
                                          .to(this::handleDeleteDepth)
                                          .asJson());
+    }
+
+    private Promise<TraceInjectResponse> handleInjectTrace(InjectTraceRequest req) {
+        return traceStore.inject(req.operation(),
+                                 Option.option(req.durationMs()),
+                                 Option.option(req.depth()),
+                                 Option.option(req.requestId()),
+                                 Option.option(req.traceId())).map(ObservabilityRoutes::toTraceInjectResponse)
+                                .async();
+    }
+
+    private static TraceInjectResponse toTraceInjectResponse(InvocationNode node) {
+        var durationMs = node.durationNs() / 1_000_000L;
+        return new TraceInjectResponse(node.requestId(),
+                                       node.requestId(),
+                                       node.callee(),
+                                       durationMs,
+                                       node.depth(),
+                                       node.timestamp().toString());
     }
 
     private Object handleQueryTraces(Option<String> limitOpt,

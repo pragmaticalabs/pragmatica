@@ -204,6 +204,13 @@ public sealed interface ManagementApiResponses {
 
     record AlertInjectResponse(String alertId, String name, String severity, String message, long timestamp){}
 
+    record TraceInjectResponse(String traceId,
+                               String requestId,
+                               String operation,
+                               long durationMs,
+                               int depth,
+                               String timestamp){}
+
     record LogLevelSetResponse(String status, String logger, String level){}
 
     record LogLevelResetResponse(String status, String logger){}

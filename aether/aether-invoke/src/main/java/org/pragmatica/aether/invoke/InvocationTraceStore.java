@@ -4,14 +4,26 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 
 
 public final class InvocationTraceStore {
     private static final int DEFAULT_CAPACITY = 50_000;
+
+    private static final long DEFAULT_INJECTED_DURATION_MS = 10L;
+
+    private static final String INJECTED_NODE_ID = "@injected";
+
+    private static final String INJECTED_CALLER = "@injected";
 
     private final InvocationNode[] buffer;
     private final int capacity;
@@ -43,6 +55,67 @@ public final class InvocationTraceStore {
             if (size <capacity) {size++;}
         } finally {
             lock.unlock();
+        }
+    }
+
+    public Result<InvocationNode> inject(String operation,
+                                         Option<Long> durationMs,
+                                         Option<Integer> depth,
+                                         Option<String> requestId,
+                                         Option<String> traceId) {
+        return validateInjectionInput(operation).map(_ -> stampAndStoreInjection(operation,
+                                                                                 durationMs,
+                                                                                 depth,
+                                                                                 requestId,
+                                                                                 traceId));
+    }
+
+    private static Result<String> validateInjectionInput(String operation) {
+        if (operation == null || operation.isBlank()) {return InjectionError.OPERATION_REQUIRED.result();}
+        return Result.success(operation);
+    }
+
+    private InvocationNode stampAndStoreInjection(String operation,
+                                                  Option<Long> durationMs,
+                                                  Option<Integer> depth,
+                                                  Option<String> requestId,
+                                                  Option<String> traceId) {
+        var resolvedRequestId = requestId.filter(InvocationTraceStore::nonBlank).orElse(() -> traceId.filter(InvocationTraceStore::nonBlank))
+                                                .or(InvocationTraceStore::generateUuid);
+        var resolvedDepth = depth.or(0);
+        var resolvedDurationMs = durationMs.or(DEFAULT_INJECTED_DURATION_MS);
+        var durationNs = Math.max(0L, resolvedDurationMs) * 1_000_000L;
+        var node = new InvocationNode(resolvedRequestId,
+                                      resolvedDepth,
+                                      Instant.now(),
+                                      INJECTED_NODE_ID,
+                                      INJECTED_CALLER,
+                                      operation,
+                                      durationNs,
+                                      InvocationNode.Outcome.SUCCESS,
+                                      Option.none(),
+                                      true,
+                                      0);
+        record(node);
+        return node;
+    }
+
+    private static String generateUuid() {
+        return UUID.randomUUID().toString();
+    }
+
+    private static boolean nonBlank(String s) {
+        return ! s.isBlank();
+    }
+
+    private enum InjectionError implements Cause {
+        OPERATION_REQUIRED("Injected trace requires a non-blank operation");
+        private final String message;
+        InjectionError(String message) {
+            this.message = message;
+        }
+        @Override public String message() {
+            return message;
         }
     }
 

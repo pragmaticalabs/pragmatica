@@ -174,6 +174,7 @@ public enum ManagementRoute {
     LOG_LEVEL_RESET(DELETE, "/api/logging/levels", List.of("logger"), ANY),
     TRACES_QUERY(GET, "/api/traces", List.of(), ANY),
     TRACES_STATS(GET, "/api/traces/stats", List.of(), ANY),
+    TRACES_INJECT(POST, "/api/traces/inject", List.of(), ANY),
     TRACE_BY_REQUEST_ID(GET, "/api/traces", List.of("requestId"), ANY),
     OBSERVABILITY_DEPTH_GET(GET, "/api/observability/depth", List.of(), ANY),
     OBSERVABILITY_DEPTH_SET(POST, "/api/observability/depth", List.of(), ANY),

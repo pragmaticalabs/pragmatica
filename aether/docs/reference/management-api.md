@@ -1200,6 +1200,37 @@ Get aggregated trace statistics.
 }
 ```
 
+### POST /api/traces/inject
+
+Insert a synthetic trace entry directly into the node-local trace store. The entry is visible via `GET /api/traces` immediately after this call returns and is indistinguishable in shape from runtime-emitted traces, except for the synthetic `nodeId=@injected` / `caller=@injected` markers. Used by integration tests and operator tooling when no deterministic invocation path can produce a trace under test.
+
+**RBAC:** OPERATOR · **Routing:** ANY (node-local; the invocation trace store is not consensus-replicated, so the inject lands on the receiving node and the read-back must hit the same node)
+
+**Request:**
+```json
+{
+  "operation": "processOrder",
+  "durationMs": 123,
+  "depth": 2,
+  "requestId": "req-abc-123",
+  "traceId": "trace-xyz-789"
+}
+```
+
+`operation` is required and maps to the trace's `callee` field. `durationMs` defaults to `10`, `depth` defaults to `0`. `requestId` and `traceId` are independently optional; if both are omitted, a UUID is generated and used as the trace correlator; if only `traceId` is given, it fills the `requestId` slot (the trace store keys entries by `requestId`).
+
+**Response:**
+```json
+{
+  "traceId": "req-abc-123",
+  "requestId": "req-abc-123",
+  "operation": "processOrder",
+  "durationMs": 123,
+  "depth": 2,
+  "timestamp": "2026-05-11T08:30:00.000Z"
+}
+```
+
 ---
 
 ## Observability Depth

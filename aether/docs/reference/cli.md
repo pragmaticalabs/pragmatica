@@ -653,7 +653,17 @@ aether traces get <requestId>
 
 # Show trace statistics
 aether traces stats
+
+# Inject a synthetic trace entry (operator-driven; visible via 'aether traces list')
+aether traces inject \
+    --operation processOrder \
+    [--duration-ms 123] \
+    [--depth 2] \
+    [--request-id req-abc-123] \
+    [--trace-id trace-xyz-789]
 ```
+
+The `inject` subcommand inserts a synthetic trace entry directly into the node-local trace store, bypassing the runtime invocation pipeline. The entry is visible in `aether traces list` immediately. Used by integration tests and operator tooling when no deterministic invocation path can produce a trace under test. `--operation` is required; `--duration-ms` defaults to `10`, `--depth` defaults to `0`. `--request-id` and `--trace-id` are independently optional — a UUID is generated when both are omitted; if only `--trace-id` is given, it fills the `requestId` slot.
 
 #### observability
 

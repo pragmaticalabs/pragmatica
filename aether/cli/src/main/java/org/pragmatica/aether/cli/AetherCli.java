@@ -1526,7 +1526,7 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "traces", description = "View distributed invocation traces", subcommands = {TracesCommand.ListCommand.class, TracesCommand.GetCommand.class, TracesCommand.StatsCommand.class}) static class TracesCommand implements Runnable {
+    @Command(name = "traces", description = "View distributed invocation traces", subcommands = {TracesCommand.ListCommand.class, TracesCommand.GetCommand.class, TracesCommand.StatsCommand.class, TracesCommand.InjectCommand.class}) static class TracesCommand implements Runnable {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
@@ -1572,6 +1572,42 @@ import static org.pragmatica.lang.Option.some;
             @Override public Integer call() {
                 var response = tracesParent.parent.fetch(TRACES_STATS);
                 return OutputFormatter.printQuery(response, tracesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "inject", description = "Inject a synthetic trace entry (operator-driven; visible via 'aether traces list')") static class InjectCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private TracesCommand tracesParent;
+
+            @CommandLine.Option(names = {"-o", "--operation"}, description = "Operation/callee name for the trace (required)", required = true) private String operation;
+
+            @CommandLine.Option(names = {"-d", "--duration-ms"}, description = "Duration in milliseconds (default 10)") private Long durationMs;
+
+            @CommandLine.Option(names = {"--depth"}, description = "Call depth (default 0)") private Integer depth;
+
+            @CommandLine.Option(names = {"--request-id"}, description = "Request id (UUID generated if omitted)") private String requestId;
+
+            @CommandLine.Option(names = {"--trace-id"}, description = "Trace id (UUID generated if omitted)") private String traceId;
+
+            @Override public Integer call() {
+                var body = buildInjectBody();
+                var response = tracesParent.parent.post(TRACES_INJECT, body);
+                return OutputFormatter.printQuery(response, tracesParent.parent.outputOptions());
+            }
+
+            private String buildInjectBody() {
+                var sb = new StringBuilder("{\"operation\":\"").append(escapeJson(operation))
+                                                                .append("\"");
+                if (durationMs != null) {sb.append(",\"durationMs\":").append(durationMs);}
+                if (depth != null) {sb.append(",\"depth\":").append(depth);}
+                if (requestId != null) {sb.append(",\"requestId\":\"").append(escapeJson(requestId))
+                                                  .append("\"");}
+                if (traceId != null) {sb.append(",\"traceId\":\"").append(escapeJson(traceId))
+                                                .append("\"");}
+                return sb.append("}").toString();
+            }
+
+            private static String escapeJson(String s) {
+                return s.replace("\\", "\\\\").replace("\"", "\\\"");
             }
         }
     }
