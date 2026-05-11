@@ -86,7 +86,7 @@ cluster_node_count_quiesced() {
 
 # Spec §4.4 / §10 P7: tests must consume the same operator-visible signals.
 # `clusterPhase` is published by HealthReconciler via consensus on ClusterPhaseKey
-# and projected to every node. Empty/default → "BOOTING".
+# and projected to every node. Empty/default → "COLD_BOOT".
 cluster_phase() {
     aether_field status clusterPhase
 }
@@ -1047,14 +1047,16 @@ restart_all_nodes() {
         log_fail "restart_all_nodes: not all nodes reported /health/ready=UP within 90s — next test would hit a half-warm node"
         return 1
     fi
-    # SWIM cold-boot guard (non-fatal): `phase=BOOTING` causes
+    # SWIM cold-boot guard (non-fatal): `phase=COLD_BOOT` causes
     # `SwimProtocol.emitFaultyOrUnknown` to emit `UnknownObserved` (NOT
     # `FaultyObserved`) for any peer not yet in `everSeenHealthy`, suppressing
-    # NODE_LEFT/NODE_FAILED events. We try to wait for NORMAL but do NOT fail-close
-    # — the cluster's NORMAL transition can take >180s under cluster A+B concurrent
-    # load (5s stable window + leader-side aggregation cycles) and a hard fail
-    # cascades into broken cleanup state for every subsequent test. Subsequent chaos
-    # tests will still detect their own NORMAL phase via the cluster's behaviour.
+    # NODE_LEFT/NODE_FAILED events. After D.3 (2026-05-11) the post-restart cluster
+    # enters RECOVERING (not COLD_BOOT) because nodes were Healthy in the prior
+    # NORMAL period — RECOVERING bypasses suppression and emits FaultyObserved like
+    # NORMAL. We still wait for NORMAL to ensure HealthReconciler writes lifecycle
+    # transitions and CTM auto-heal is re-enabled before the next chaos test fires.
+    # Non-fatal: a hard fail cascades into broken cleanup state for every subsequent
+    # test.
     if ! wait_for_phase "NORMAL" 180; then
         log_warn "restart_all_nodes: cluster did not reach phase=NORMAL within 180s — chaos kills in next test may produce UnknownObserved (no NODE_FAILED event); proceeding with warn"
         # If NORMAL didn't arrive, CTM may be circuit-tripped from prior provisioning

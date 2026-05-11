@@ -171,7 +171,7 @@ class HealthReconcilerSelfOnDutyAtomTest {
             var reconciler = HealthReconciler.healthReconciler(SELF,
                                                                3,
                                                                _ -> Option.none(),
-                                                               () -> Option.some(ClusterPhase.BOOTING),
+                                                               () -> Option.some(ClusterPhase.COLD_BOOT),
                                                                () -> Option.some(SELF),
                                                                onDutyCount::get,
                                                                applier,
@@ -182,7 +182,7 @@ class HealthReconcilerSelfOnDutyAtomTest {
             reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.NORMAL));
 
             assertThat(observed).extracting(ClusterPhaseChanged::current)
-                                .containsExactly(ClusterPhase.BOOTING, ClusterPhase.NORMAL);
+                                .containsExactly(ClusterPhase.COLD_BOOT, ClusterPhase.NORMAL);
         }
     }
 

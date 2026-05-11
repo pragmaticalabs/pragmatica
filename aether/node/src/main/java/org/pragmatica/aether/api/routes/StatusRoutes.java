@@ -135,7 +135,7 @@ public final class StatusRoutes implements RouteSource {
                            .filter(ClusterPhaseValue.class::isInstance)
                            .map(ClusterPhaseValue.class::cast)
                            .map(v -> v.phase().name())
-                           .or(ClusterPhase.BOOTING.name());
+                           .or(ClusterPhase.COLD_BOOT.name());
     }
 
     private static int quorumOf(int n) {

@@ -49,6 +49,10 @@ final class LegacyLifecycleWriterFixture {
             @Override public Promise<Unit> requestActivate(NodeId target) {
                 return write(target, NodeLifecycleState.ON_DUTY, commandApplier, lifecycleReader, clock);
             }
+
+            @Override public Promise<Unit> requestFailedDrain(NodeId target) {
+                return write(target, NodeLifecycleState.FAILED_DRAIN, commandApplier, lifecycleReader, clock);
+            }
         };
     }
 

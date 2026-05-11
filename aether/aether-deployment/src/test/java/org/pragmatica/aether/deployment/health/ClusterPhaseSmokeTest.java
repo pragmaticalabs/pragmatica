@@ -23,13 +23,13 @@ import static org.pragmatica.consensus.NodeId.nodeId;
 
 /// Smoke-level integration check for the cluster-phase contract — full multi-node cluster
 /// startup is exercised in R9. R3 verifies that:
-///  - newly-constructed reconciler reports `BOOTING` until a `ClusterPhaseValue` Put commits
+///  - newly-constructed reconciler reports `COLD_BOOT` until a `ClusterPhaseValue` Put commits
 ///  - ClusterPhaseKey wiring round-trips through `onClusterPhasePut`
 class ClusterPhaseSmokeTest {
     private static final NodeId SELF = nodeId("self").unwrap();
 
     @Test
-    void clusterPhase_initialValue_isBooting() {
+    void clusterPhase_initialValue_isColdBoot() {
         var reconciler = HealthReconciler.healthReconciler(SELF,
                                                            3,
                                                            _ -> Option.<NodeLifecycleValue>none(),
@@ -38,8 +38,8 @@ class ClusterPhaseSmokeTest {
                                                            () -> 0,
                                                            cmds -> Promise.success(List.<Object>of()),
                                                            HealthReconcilerConfig.DEFAULT);
-        // Pre-start phase: the implementation defaults to BOOTING.
-        assertThat(reconciler.phase()).isEqualTo(ClusterPhase.BOOTING);
+        // Pre-start phase: the implementation defaults to COLD_BOOT.
+        assertThat(reconciler.phase()).isEqualTo(ClusterPhase.COLD_BOOT);
     }
 
     @Test
@@ -50,7 +50,7 @@ class ClusterPhaseSmokeTest {
         var reconciler = HealthReconciler.healthReconciler(SELF,
                                                            3,
                                                            _ -> Option.<NodeLifecycleValue>none(),
-                                                           () -> Option.some(ClusterPhase.BOOTING),
+                                                           () -> Option.some(ClusterPhase.COLD_BOOT),
                                                            () -> Option.some(SELF),
                                                            () -> 3,
                                                            cmds -> {

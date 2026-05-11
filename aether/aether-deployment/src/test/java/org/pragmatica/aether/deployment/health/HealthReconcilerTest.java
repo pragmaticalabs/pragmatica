@@ -172,7 +172,7 @@ class HealthReconcilerTest {
 
         // Contract change (commit 81e48e234, "drop respectColdBoot suppression"):
         // The reconciler's cold-boot suppression no longer keys off everSeenHealthy.
-        // The phase gate `suppressedByPhase` only fires when phase == BOOTING. In NORMAL
+        // The phase gate `suppressedByPhase` only fires when phase == COLD_BOOT. In NORMAL
         // phase the reconciler now writes DECOMMISSIONED regardless of whether the target
         // was ever observed HEALTHY (the upstream SwimProtocol.emitFaultyOrUnknown gate
         // owns that filtering, and tests that feed observations directly to the reconciler
@@ -180,24 +180,24 @@ class HealthReconcilerTest {
         // The 2x2 truth table below pins the new contract end-to-end.
         @Test
         void reconciler_suppressedByPhase_inBooting_evenWhenNeverHealthy() {
-            // BOOTING + never-HEALTHY → suppressedByPhase blocks the DECOMMISSIONED write.
+            // COLD_BOOT + never-HEALTHY → suppressedByPhase blocks the DECOMMISSIONED write.
             // onDutyCount=1 floors threshold to 1 so a single SELF observation drives the
             // aggregator edge (post threshold-quorum migration the production aggregator
             // requires majority; this test pins the phase-gate behavior in isolation).
             var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
             reconciler.start();
-            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.BOOTING));
-            phaseRef.set(ClusterPhase.BOOTING);
+            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.COLD_BOOT));
+            phaseRef.set(ClusterPhase.COLD_BOOT);
             onDutyCount.set(1);
             reconciler.onSwimObservation(faulty(TARGET));
             assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
-                    .as("BOOTING phase suppresses DECOMMISSIONED lifecycle write")
+                    .as("COLD_BOOT phase suppresses DECOMMISSIONED lifecycle write")
                     .isTrue();
         }
 
         @Test
         void reconciler_suppressedByPhase_inBooting_evenWhenEverHealthy() {
-            // BOOTING + previously-HEALTHY → suppressedByPhase still blocks. Phase gate
+            // COLD_BOOT + previously-HEALTHY → suppressedByPhase still blocks. Phase gate
             // is independent of everSeenHealthy. onDutyCount=1 (see note above).
             var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
             reconciler.start();
@@ -207,12 +207,12 @@ class HealthReconcilerTest {
             reconciler.onSwimObservation(healthy(TARGET));
             assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
             applier.commands.clear();
-            // Now flip to BOOTING and feed FAULTY: the phase gate suppresses the write.
-            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.BOOTING));
-            phaseRef.set(ClusterPhase.BOOTING);
+            // Now flip to COLD_BOOT and feed FAULTY: the phase gate suppresses the write.
+            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.COLD_BOOT));
+            phaseRef.set(ClusterPhase.COLD_BOOT);
             reconciler.onSwimObservation(faulty(TARGET));
             assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
-                    .as("BOOTING phase suppresses DECOMMISSIONED write regardless of prior HEALTHY")
+                    .as("COLD_BOOT phase suppresses DECOMMISSIONED write regardless of prior HEALTHY")
                     .isTrue();
         }
 
@@ -380,15 +380,15 @@ class HealthReconcilerTest {
 
     @Nested class PhaseTransitions {
         @Test
-        void reconciler_phaseTransitionsBootingToNormal_onStableLeaderAndOnDuty() {
+        void reconciler_phaseTransitionsColdBootToNormal_onStableLeaderAndOnDuty() {
             // Use a tiny stable window so the test completes quickly
             var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 30_000L, 1L, 30_000L);
             var reconciler = buildReconciler(3, config);
             reconciler.start();
-            // Reset to BOOTING (start() reads from phaseReader which returns NORMAL by default)
-            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.BOOTING));
-            phaseRef.set(ClusterPhase.BOOTING);
-            // Pre-conditions: leader present, all 3 ON_DUTY
+            // Reset to COLD_BOOT (start() reads from phaseReader which returns NORMAL by default)
+            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.COLD_BOOT));
+            phaseRef.set(ClusterPhase.COLD_BOOT);
+            // Pre-conditions: leader present, quorum=2 of 3 ON_DUTY satisfied
             onDutyCount.set(3);
             // First observation establishes stable marker
             reconciler.onSwimObservation(healthy(TARGET));

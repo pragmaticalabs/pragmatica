@@ -92,6 +92,7 @@ public enum ManagementRoute {
     NODE_DRAIN(POST, "/api/node/drain", List.of("nodeId"), taskGroup(DEPLOYMENT)),
     NODE_ACTIVATE(POST, "/api/node/activate", List.of("nodeId"), taskGroup(DEPLOYMENT)),
     NODE_SHUTDOWN(POST, "/api/node/shutdown", List.of("nodeId"), taskGroup(DEPLOYMENT)),
+    NODE_INFLIGHT(GET, "/api/node/inflight", List.of(), LOCAL),
     SCHEMA_STATUS_ALL(GET, "/api/schema/status", List.of(), taskGroup(DEPLOYMENT)),
     SCHEMA_STATUS_ONE(GET, "/api/schema/status", List.of("datasource"), taskGroup(DEPLOYMENT)),
     SCHEMA_HISTORY(GET, "/api/schema/history", List.of("datasource"), taskGroup(DEPLOYMENT)),

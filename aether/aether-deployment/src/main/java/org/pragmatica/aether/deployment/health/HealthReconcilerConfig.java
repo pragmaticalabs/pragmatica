@@ -15,7 +15,17 @@ public record HealthReconcilerConfig(long aggregationWindowMs,
         recoveryStableWindowMs = Math.max(1L, recoveryStableWindowMs);
     }
 
-    public static final HealthReconcilerConfig DEFAULT = new HealthReconcilerConfig(10_000L, 5_000L, 5_000L, 30_000L);
+    /// Defaults (D.3, 2026-05-11):
+    /// - `aggregationWindowMs=10_000L` matches SWIM `suspectTimeout` so per-target
+    ///   sliding observation windows align with the failure detector.
+    /// - `cooldownMs=5_000L` debounces back-to-back lifecycle writes for the same target.
+    /// - `stableWindowMs=5_000L` is the COLD_BOOT → NORMAL dwell required after quorum.
+    /// - `recoveryStableWindowMs=5_000L` is the RECOVERING → NORMAL dwell. Lowered from
+    ///   the historical 30s to 5s per D.3 spec — operator-free recovery from sustained
+    ///   chaos / compose-restart must complete on the same order as cold-boot stability;
+    ///   the longer 30s window left cluster B integration tests waiting >180s for NORMAL
+    ///   after destructive churn, defeating downstream NODE_FAILED detection.
+    public static final HealthReconcilerConfig DEFAULT = new HealthReconcilerConfig(10_000L, 5_000L, 5_000L, 5_000L);
 
     public static HealthReconcilerConfig healthReconcilerConfig() {
         return DEFAULT;

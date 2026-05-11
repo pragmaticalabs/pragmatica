@@ -42,12 +42,14 @@ public final class SwimHealthContext {
     private final PeerObservationStore observationStore;
     private final SwimConfig swimConfig;
     private final LongSupplier clock;
-    /// Audit Step 6 (2026-05-07) — phase-aware SWIM cold-boot suppression. `true` when
-    /// the cluster is in `BOOTING` phase (FAULTY for never-HEALTHY peers should be
-    /// suppressed to `UnknownObserved`); `false` in `NORMAL` (always emit
-    /// `FaultyObserved` regardless of `everSeenHealthy`). Production wiring sources
-    /// this from `HealthReconciler.phase() == ClusterPhase.BOOTING`. Default
-    /// `() -> true` preserves legacy behavior for unit tests that don't wire a phase.
+    /// Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). `true` when the
+    /// cluster is in `COLD_BOOT` phase (FAULTY for never-HEALTHY peers should be
+    /// suppressed to `UnknownObserved`); `false` in `NORMAL` and `RECOVERING` (always
+    /// emit `FaultyObserved` regardless of `everSeenHealthy`). Production wiring
+    /// sources this from `HealthReconciler.phase() == ClusterPhase.COLD_BOOT` — the
+    /// `RECOVERING` branch is the critical compose-restart fix where peers were
+    /// previously visible-and-Healthy. Default `() -> true` preserves legacy behavior
+    /// for unit tests that don't wire a phase.
     private final BooleanSupplier isBootingSupplier;
 
     /// Targeted leader-faulty evictor (2026-05-09) — narrow re-introduction of the
@@ -266,11 +268,11 @@ public final class SwimHealthContext {
         emitLeaderHint(peer, HealthHint.FAULTY);
         bufferHealthObservation(peer, HealthHint.FAULTY);
         // See `faultyLeaderEvictor` field doc for the catch-22 this breaks. Narrow trigger:
-        // ONLY when (a) cluster phase is NORMAL (not BOOTING — boot-time transient FAULTY
-        // events on the still-being-established leader would otherwise prematurely evict
-        // it) AND (b) the FAULTY peer IS the current cluster leader. Other peers, and
-        // BOOTING-phase observations, continue through the post-consensus eviction path
-        // (audit Step 3).
+        // ONLY when (a) cluster phase is NORMAL or RECOVERING (not COLD_BOOT — boot-time
+        // transient FAULTY events on the still-being-established leader would otherwise
+        // prematurely evict it) AND (b) the FAULTY peer IS the current cluster leader.
+        // Other peers, and COLD_BOOT-phase observations, continue through the
+        // post-consensus eviction path (audit Step 3).
         if (!isBootingSupplier.getAsBoolean() && currentLeader.map(peer::equals).or(false)) {
             faultyLeaderEvictor.accept(peer);
         }

@@ -46,7 +46,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// R7 acceptance tests:
-///   1. Auto-heal must be suspended in BOOTING / RECOVERING phases (no provisioning, no
+///   1. Auto-heal must be suspended in COLD_BOOT / RECOVERING phases (no provisioning, no
 ///      decommissioning).
 ///   2. Phase transition back to NORMAL must restart the stability timer from zero (post-
 ///      RECOVERING is treated as freshly stable, not resumed).
@@ -118,8 +118,8 @@ class ClusterTopologyManagerPhaseAwareTest {
 
     @Nested class PhaseAwareSuspension {
         @Test
-        void ctm_suspendedInBootingPhase_doesNotProvision() throws InterruptedException {
-            phase.set(ClusterPhase.BOOTING);
+        void ctm_suspendedInColdBootPhase_doesNotProvision() throws InterruptedException {
+            phase.set(ClusterPhase.COLD_BOOT);
             var ctm = createCtm();
             // Snapshot has a deficit (3/5) AND already-stable anchor.
             snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
@@ -131,7 +131,7 @@ class ClusterTopologyManagerPhaseAwareTest {
             // Wait long enough for a safety-net poll cycle.
             Thread.sleep(STABILITY_WINDOW.millis() + 400L);
             assertThat(lifecycleManager.provisionCount.get())
-                    .as("BOOTING phase suspends provisioning")
+                    .as("COLD_BOOT phase suspends provisioning")
                     .isZero();
         }
 
@@ -154,7 +154,7 @@ class ClusterTopologyManagerPhaseAwareTest {
         }
 
         @Test
-        void ctm_phaseTransitionToBooting_cancelsInFlightStabilityWindow() {
+        void ctm_phaseTransitionToColdBoot_cancelsInFlightStabilityWindow() {
             phase.set(ClusterPhase.NORMAL);
             var ctm = createCtm();
             snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
@@ -164,8 +164,8 @@ class ClusterTopologyManagerPhaseAwareTest {
                                    1L);
             ctm.activate();
             // Phase transitions away from NORMAL — no provisioning even after stability window.
-            phase.set(ClusterPhase.BOOTING);
-            ctm.onClusterPhaseChanged(ClusterPhase.BOOTING);
+            phase.set(ClusterPhase.COLD_BOOT);
+            ctm.onClusterPhaseChanged(ClusterPhase.COLD_BOOT);
             assertThat(lifecycleManager.provisionCount.get()).isZero();
         }
 
@@ -344,6 +344,7 @@ class ClusterTopologyManagerPhaseAwareTest {
         final AtomicInteger drainCount = new AtomicInteger();
         final AtomicInteger decommissionCount = new AtomicInteger();
         final AtomicInteger activateCount = new AtomicInteger();
+        final AtomicInteger failedDrainCount = new AtomicInteger();
 
         @Override public Promise<Unit> requestDrain(NodeId target) {
             drainCount.incrementAndGet();
@@ -357,6 +358,11 @@ class ClusterTopologyManagerPhaseAwareTest {
 
         @Override public Promise<Unit> requestActivate(NodeId target) {
             activateCount.incrementAndGet();
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<Unit> requestFailedDrain(NodeId target) {
+            failedDrainCount.incrementAndGet();
             return Promise.success(Unit.unit());
         }
     }

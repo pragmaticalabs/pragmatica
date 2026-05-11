@@ -79,16 +79,16 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final SwimMembershipListener listener;
     private final NodeId selfId;
     private final InetSocketAddress selfAddress;
-    /// Phase gate for cold-boot FAULTY suppression (audit Step 6, 2026-05-07):
-    ///   `true`  — cluster is still BOOTING; preserve `everSeenHealthy` per-peer
-    ///             cold-boot suppression (a never-healthy peer transitions to
-    ///             `UnknownObserved`, not `FaultyObserved`).
-    ///   `false` — cluster has reached NORMAL; ALWAYS emit `FaultyObserved` on the
-    ///             FAULTY edge regardless of `everSeenHealthy`. This fixes the
-    ///             container-restart-during-cold-boot regression where a peer killed
-    ///             before its first successful Ping never produced any cluster-visible
-    ///             observation, blocking `HealthReconciler` aggregation and the
-    ///             downstream `DECOMMISSIONED` write / `NODE_LEFT` event.
+    /// Phase gate for cold-boot FAULTY suppression (D.3, 2026-05-11):
+    ///   `true`  — cluster is in `COLD_BOOT` (never had quorum); preserve the
+    ///             `everSeenHealthy` per-peer cold-boot suppression — a never-healthy
+    ///             peer transitions to `UnknownObserved`, not `FaultyObserved`.
+    ///   `false` — cluster is in `NORMAL` or `RECOVERING`; ALWAYS emit `FaultyObserved`
+    ///             on the FAULTY edge regardless of `everSeenHealthy`. The `RECOVERING`
+    ///             branch is the critical fix for compose-restart: peers were Healthy
+    ///             in the prior `NORMAL` period, so a post-restart kill must produce
+    ///             `FaultyObserved` to drive `HealthReconciler` aggregation, the
+    ///             downstream `DECOMMISSIONED` write, and the `NODE_LEFT` event.
     /// The default `() -> true` keeps the legacy cold-boot-suppression behavior for
     /// callers (notably unit tests) that don't wire a phase source.
     private final BooleanSupplier isBooting;
@@ -762,26 +762,29 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Emit FAULTY on edge.
     ///
-    /// Phase-aware cold-boot suppression (audit Step 6, 2026-05-07):
-    /// - In `BOOTING` phase, preserve the legacy per-peer `everSeenHealthy` gate: a
-    ///   peer that has never been observed HEALTHY emits `UnknownObserved` so noisy
-    ///   bootstrap-time SWIM transitions do not flood `HealthReconciler` with
-    ///   unactionable FAULTY edges.
-    /// - In `NORMAL` phase, ALWAYS emit `FaultyObserved` regardless of
-    ///   `everSeenHealthy`. This eliminates the container-restart-during-cold-boot
-    ///   regression where a peer killed before its first successful Ping never
-    ///   produced any cluster-visible observation, leaving `HealthReconciler` with
-    ///   no signal to write `DECOMMISSIONED` and no downstream `NODE_LEFT` event.
+    /// Phase-aware cold-boot suppression (D.3 three-phase model, 2026-05-11):
+    /// - In `COLD_BOOT` phase (`isBooting=true`), preserve the per-peer
+    ///   `everSeenHealthy` gate: a peer that has never been observed HEALTHY emits
+    ///   `UnknownObserved` so noisy bootstrap-time SWIM transitions do not flood
+    ///   `HealthReconciler` with unactionable FAULTY edges.
+    /// - In `NORMAL` and `RECOVERING` phases (`isBooting=false`), ALWAYS emit
+    ///   `FaultyObserved` regardless of `everSeenHealthy`. The `RECOVERING` branch
+    ///   is the critical compose-restart fix: peers were visible-and-Healthy in the
+    ///   prior `NORMAL` period (their `everSeenHealthy` flag is preserved across
+    ///   protocol life), so a post-restart kill must produce a cluster-visible
+    ///   `FaultyObserved`. This drives `HealthReconciler` aggregation, the
+    ///   `DECOMMISSIONED` write, and the downstream `NODE_LEFT` / `NODE_FAILED`
+    ///   event that integration tests depend on.
     private void emitFaultyOrUnknown(NodeId peer, long incarnation) {
         var booting = isBooting.getAsBoolean();
         if (booting && !everSeenHealthy.contains(peer)) {
-            LOG.info("SWIM cold-boot suppression (BOOTING phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
+            LOG.info("SWIM cold-boot suppression (COLD_BOOT phase): peer {} never observed HEALTHY — emitting UNKNOWN instead of FAULTY",
                      peer.id());
             emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
             return;
         }
         if (!booting && !everSeenHealthy.contains(peer)) {
-            LOG.warn("SWIM phase=NORMAL: emitting FaultyObserved for never-HEALTHY peer {} (cold-boot suppression bypassed)",
+            LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (cold-boot suppression bypassed)",
                      peer.id());
         }
         emitObservationOnEdge(peer, SwimHealth.FAULTY, () -> new SwimObservation.FaultyObserved(peer, incarnation));

@@ -217,7 +217,7 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                                                NodeLifecycleValue lifecycle,
                                                Map<NodeId, HealthHint> swimHints) {
         var lifecycleHint = switch (lifecycle.state()){
-            case DECOMMISSIONED, SHUTTING_DOWN -> HealthHint.FAULTY;
+            case DECOMMISSIONED, SHUTTING_DOWN, FAILED_DRAIN -> HealthHint.FAULTY;
             case DRAINING -> HealthHint.SUSPECTED;
             case JOINING, ON_DUTY -> HealthHint.HEALTHY;
         };

@@ -70,7 +70,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
 
     private final AtomicBoolean started = new AtomicBoolean(false);
 
-    private final AtomicReference<ClusterPhase> currentPhase = new AtomicReference<>(ClusterPhase.BOOTING);
+    private final AtomicReference<ClusterPhase> currentPhase = new AtomicReference<>(ClusterPhase.COLD_BOOT);
 
     private final AtomicLong stableSinceMs = new AtomicLong(0L);
 
@@ -127,7 +127,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
 
     @Override public Promise<Unit> start() {
         if (!started.compareAndSet(false, true)) {return HealthReconcilerError.General.ALREADY_STARTED.promise();}
-        currentPhase.set(phaseReader.get().or(ClusterPhase.BOOTING));
+        currentPhase.set(phaseReader.get().or(ClusterPhase.COLD_BOOT));
         log.info("HealthReconciler started for {} (expectedClusterSize={}, initialPhase={})",
                  self,
                  expectedClusterSize,
@@ -269,8 +269,13 @@ final class HealthReconcilerImpl implements HealthReconciler {
         proposeLifecycleWrite(target, edge.newState(), nowMs);
     }
 
+    /// Lifecycle-write suppression (D.3): suppresses DECOMMISSIONED / SHUTTING_DOWN /
+    /// DRAINING writes during `COLD_BOOT` only. `RECOVERING` does NOT suppress — the
+    /// whole point of the phase split is that real failures during re-establishment
+    /// must produce real lifecycle transitions so the NODE_FAILED downstream event
+    /// fires and tests do not time out waiting on it.
     private boolean suppressedByPhase(ObservationAggregator.StateChanged edge) {
-        if (currentPhase.get() != ClusterPhase.BOOTING) {return false;}
+        if (currentPhase.get() != ClusterPhase.COLD_BOOT) {return false;}
         return edge.newState() == NodeLifecycleState.DECOMMISSIONED || edge.newState() == NodeLifecycleState.SHUTTING_DOWN || edge.newState() == NodeLifecycleState.DRAINING;
     }
 
@@ -337,6 +342,11 @@ final class HealthReconcilerImpl implements HealthReconciler {
         return forceLifecycleWrite(target, NodeLifecycleState.ON_DUTY);
     }
 
+    @Override public Promise<Unit> requestFailedDrain(NodeId target) {
+        if (!started.get()) {return HealthReconcilerError.General.NOT_STARTED.promise();}
+        return forceLifecycleWrite(target, NodeLifecycleState.FAILED_DRAIN);
+    }
+
     private Promise<Unit> forceLifecycleWrite(NodeId target, NodeLifecycleState newState) {
         var nowMs = System.currentTimeMillis();
         var prior = lifecycleReader.apply(target);
@@ -373,26 +383,33 @@ final class HealthReconcilerImpl implements HealthReconciler {
     private ClusterPhase computeTargetPhase(ClusterPhase current, long nowMs) {
         var onDuty = onDutyCountSupplier.get();
         var leaderPresent = leaderReader.get().isPresent();
-        var quorum = expectedClusterSize / 2 + 1;
+        var quorum = quorumThreshold();
         return switch (current){
-            case BOOTING -> bootingTarget(onDuty, leaderPresent, nowMs);
+            case COLD_BOOT -> coldBootTarget(onDuty, leaderPresent, quorum, nowMs);
             case NORMAL -> onDuty <quorum
                           ? ClusterPhase.RECOVERING
                           : resetStableMarker(ClusterPhase.NORMAL, nowMs);
-            case RECOVERING -> recoveringTarget(onDuty, nowMs);
+            case RECOVERING -> recoveringTarget(onDuty, quorum, nowMs);
         };
     }
 
-    private ClusterPhase bootingTarget(int onDuty, boolean leaderPresent, long nowMs) {
-        if (!leaderPresent || onDuty <expectedClusterSize) {
-            stableSinceMs.set(0L);
-            return ClusterPhase.BOOTING;
-        }
-        return promoteAfterStable(ClusterPhase.NORMAL, ClusterPhase.BOOTING, nowMs, config.stableWindowMs());
+    /// Quorum threshold ⌈(N+1)/2⌉ derived from `expectedClusterSize`. Mirrors the spec
+    /// (D.3) so both COLD_BOOT → NORMAL and RECOVERING → NORMAL trigger on quorum, not
+    /// on full cluster membership. Floored at 1 for the single-node case.
+    private int quorumThreshold() {
+        return Math.max(1, expectedClusterSize / 2 + 1);
     }
 
-    private ClusterPhase recoveringTarget(int onDuty, long nowMs) {
-        if (onDuty <expectedClusterSize) {
+    private ClusterPhase coldBootTarget(int onDuty, boolean leaderPresent, int quorum, long nowMs) {
+        if (!leaderPresent || onDuty <quorum) {
+            stableSinceMs.set(0L);
+            return ClusterPhase.COLD_BOOT;
+        }
+        return promoteAfterStable(ClusterPhase.NORMAL, ClusterPhase.COLD_BOOT, nowMs, config.stableWindowMs());
+    }
+
+    private ClusterPhase recoveringTarget(int onDuty, int quorum, long nowMs) {
+        if (onDuty <quorum) {
             stableSinceMs.set(0L);
             return ClusterPhase.RECOVERING;
         }

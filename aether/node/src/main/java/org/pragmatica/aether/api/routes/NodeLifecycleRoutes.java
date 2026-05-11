@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -19,6 +20,8 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
@@ -47,6 +50,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     record TransitionResult(boolean success, String nodeId, String state, String message){}
 
+    record InFlightResponse(int count){}
+
     @Override public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<List<LifecycleEntry>>route(ManagementRoute.NODE_LIFECYCLE_LIST)
                                          .toJson(this::getAllLifecycleStates),
@@ -65,7 +70,13 @@ public final class NodeLifecycleRoutes implements RouteSource {
                          ManagementRoutes.<TransitionResult>route(ManagementRoute.NODE_SHUTDOWN)
                                          .withPath(aString())
                                          .to(this::shutdownNode)
-                                         .asJson());
+                                         .asJson(),
+                         ManagementRoutes.<InFlightResponse>route(ManagementRoute.NODE_INFLIGHT)
+                                         .toJson(this::getInFlightCount));
+    }
+
+    private InFlightResponse getInFlightCount() {
+        return new InFlightResponse(nodeSupplier.get().inFlightRequestTracker().count());
     }
 
     private List<LifecycleEntry> getAllLifecycleStates() {
@@ -104,22 +115,63 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                                                                                      .name(),
                                                                                                         "Cannot drain from " + current.state() + " (must be ON_DUTY)"));}
         return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(this::routeDrainThroughHealthReconciler)
-                            .map(_ -> drainSuccessResult(nodeIdStr));
+                            .flatMap(this::runDrainProtocol);
     }
 
-    private Promise<org.pragmatica.lang.Unit> routeDrainThroughHealthReconciler(NodeId nodeId) {
-        return nodeSupplier.get().lifecycleWriter()
-                               .requestDrain(nodeId);
+    /// Drain protocol per RC1 spec §D.5:
+    ///   1. prepareDrain → write DRAINING via consensus
+    ///   2. awaitDrainAck → wait for inflight=0 + lifecycle convergence within budget
+    ///   3a. on success → markDrainComplete (writes DECOMMISSIONED) → 200
+    ///   3b. on timeout → requestFailedDrain (writes FAILED_DRAIN) → 503
+    private Promise<TransitionResult> runDrainProtocol(NodeId nodeId) {
+        var coordinator = nodeSupplier.get().drainCoordinator();
+        return coordinator.prepareDrain(nodeId, DrainReason.OPERATOR_DRAIN)
+                          .onSuccess(_ -> auditAndEmitLifecycleTransition(drainInitiatedResult(nodeId.id()),
+                                                                            NodeLifecycleState.DRAINING))
+                          .flatMap(_ -> coordinator.awaitDrainAck(nodeId, drainTimeout()))
+                          .flatMap(_ -> completeDrain(nodeId))
+                          .recover(cause -> handleDrainFailure(nodeId, cause));
     }
 
-    private TransitionResult drainSuccessResult(String nodeIdStr) {
+    private TimeSpan drainTimeout() {
+        return TimeSpan.timeSpan(60).seconds();
+    }
+
+    private Promise<TransitionResult> completeDrain(NodeId nodeId) {
+        var coordinator = nodeSupplier.get().drainCoordinator();
+        coordinator.markDrainComplete(nodeId);
         var result = new TransitionResult(true,
-                                          nodeIdStr,
-                                          NodeLifecycleState.DRAINING.name(),
-                                          "Transition to " + NodeLifecycleState.DRAINING + " initiated");
-        auditAndEmitLifecycleTransition(result, NodeLifecycleState.DRAINING);
+                                          nodeId.id(),
+                                          NodeLifecycleState.DECOMMISSIONED.name(),
+                                          "Drain protocol complete; node is DECOMMISSIONED");
+        auditAndEmitLifecycleTransition(result, NodeLifecycleState.DECOMMISSIONED);
+        return Promise.success(result);
+    }
+
+    private TransitionResult handleDrainFailure(NodeId nodeId, Cause cause) {
+        recordFailedDrainAtom(nodeId);
+        var result = new TransitionResult(false,
+                                          nodeId.id(),
+                                          NodeLifecycleState.FAILED_DRAIN.name(),
+                                          "Drain budget exceeded: " + cause.message());
+        auditAndEmitLifecycleTransition(result, NodeLifecycleState.FAILED_DRAIN);
         return result;
+    }
+
+    @SuppressWarnings("JBCT-RET-01") private void recordFailedDrainAtom(NodeId nodeId) {
+        nodeSupplier.get().lifecycleWriter()
+                          .requestFailedDrain(nodeId)
+                          .onFailure(writerCause -> AuditLog.nodeLifecycleTransition(nodeId.id(),
+                                                                                       NodeLifecycleState.FAILED_DRAIN.name(),
+                                                                                       false,
+                                                                                       writerCause.message()));
+    }
+
+    private TransitionResult drainInitiatedResult(String nodeIdStr) {
+        return new TransitionResult(true,
+                                    nodeIdStr,
+                                    NodeLifecycleState.DRAINING.name(),
+                                    "Transition to " + NodeLifecycleState.DRAINING + " initiated");
     }
 
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
@@ -167,7 +219,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                             .map(_ -> activateSuccessResult(nodeIdStr));
     }
 
-    private Promise<org.pragmatica.lang.Unit> routeActivateThroughHealthReconciler(NodeId nodeId) {
+    private Promise<Unit> routeActivateThroughHealthReconciler(NodeId nodeId) {
         return nodeSupplier.get().lifecycleWriter()
                                .requestActivate(nodeId);
     }
@@ -187,7 +239,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                             .map(_ -> shutdownSuccessResult(nodeIdStr));
     }
 
-    private Promise<org.pragmatica.lang.Unit> routeDecommissionThroughHealthReconciler(NodeId nodeId) {
+    private Promise<Unit> routeDecommissionThroughHealthReconciler(NodeId nodeId) {
         return nodeSupplier.get().lifecycleWriter()
                                .requestDecommission(nodeId);
     }

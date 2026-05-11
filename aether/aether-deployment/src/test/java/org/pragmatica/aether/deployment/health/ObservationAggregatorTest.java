@@ -174,7 +174,7 @@ class ObservationAggregatorTest {
         // Contract: aggregator does not gate on prior HEALTHY history.
         // Cold-boot suppression lives upstream (`SwimProtocol.emitFaultyOrUnknown`
         // gates by phase; `HealthReconcilerImpl.suppressedByPhase` gates the
-        // write while BOOTING). Once majority is reached, the aggregator emits.
+        // write while COLD_BOOT). Once majority is reached, the aggregator emits.
         var aggregator = ObservationAggregator.observationAggregator();
         aggregator.onObservation(SELF, unknown(TARGET), 5, 0L);
         assertThat(aggregator.everSeenHealthy(TARGET))

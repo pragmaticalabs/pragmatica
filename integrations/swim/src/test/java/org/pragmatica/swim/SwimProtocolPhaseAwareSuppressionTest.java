@@ -39,11 +39,19 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.swim.SwimConfig.swimConfig;
 
-/// Audit Step 6 (2026-05-07) — phase-aware SWIM cold-boot suppression.
+/// Phase-aware SWIM cold-boot suppression — D.3 three-phase model (2026-05-11).
 ///
 /// Verifies that the per-peer `everSeenHealthy` cold-boot gate is preserved while
-/// the cluster is in `BOOTING` and bypassed once `NORMAL` is reached, fixing the
-/// "container killed before first Ping ack" silent-detection regression.
+/// the cluster is in `COLD_BOOT` and bypassed in `NORMAL` and `RECOVERING`.
+///
+/// Phase contract (controlled via `BooleanSupplier isBooting`):
+///   - `true`  → COLD_BOOT semantics: never-Healthy peer → `UnknownObserved` on
+///               SUSPECT/FAULTY edges.
+///   - `false` → NORMAL or RECOVERING semantics: FAULTY edge ALWAYS emits
+///               `FaultyObserved` regardless of `everSeenHealthy`. RECOVERING is
+///               the critical compose-restart fix: peers were Healthy in the
+///               prior NORMAL period, the post-restart kill must produce a
+///               real cluster-visible observation.
 class SwimProtocolPhaseAwareSuppressionTest {
     private static final NodeId SELF_ID = new NodeId("node-self");
     private static final NodeId NODE_A = new NodeId("node-a");
@@ -65,10 +73,10 @@ class SwimProtocolPhaseAwareSuppressionTest {
     }
 
     @Nested
-    class BootingPhase {
+    class ColdBootPhase {
         @Test
-        void booting_neverHealthyPeer_suspectThenFaulty_emitsUnknownObserved() {
-            // BOOTING phase: legacy per-peer `everSeenHealthy` cold-boot suppression
+        void coldBoot_neverHealthyPeer_suspectThenFaulty_emitsUnknownObserved() {
+            // COLD_BOOT phase: legacy per-peer `everSeenHealthy` cold-boot suppression
             // is preserved. A never-HEALTHY peer transitioning SUSPECT -> FAULTY
             // emits `UnknownObserved`, NOT `FaultyObserved`.
             var transport = new RecordingTransport();
@@ -94,14 +102,156 @@ class SwimProtocolPhaseAwareSuppressionTest {
                                     || !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
 
                 assertThat(observations.byType(SwimObservation.FaultyObserved.class))
-                    .as("BOOTING phase: never-HEALTHY peer must NOT emit FaultyObserved")
+                    .as("COLD_BOOT phase: never-HEALTHY peer must NOT emit FaultyObserved")
                     .isEmpty();
                 assertThat(observations.byType(SwimObservation.UnknownObserved.class))
-                    .as("BOOTING phase: cold-boot suppression emits UnknownObserved instead")
+                    .as("COLD_BOOT phase: cold-boot suppression emits UnknownObserved instead")
                     .hasSize(1);
                 assertThat(observations.byType(SwimObservation.UnknownObserved.class)
                                        .getFirst()
                                        .peer()).isEqualTo(NODE_A);
+            } finally {
+                protocol.stop();
+            }
+        }
+    }
+
+    @Nested
+    class RecoveringPhase {
+        @Test
+        void recovering_neverHealthyPeer_faulty_emitsFaultyObserved() {
+            // RECOVERING phase has same wire behaviour as NORMAL — the phase supplier
+            // returns `false`. SWIM does NOT consult the phase name; it consults only
+            // the boolean. The supplier maps `phase != COLD_BOOT` → false. Verify that
+            // an `isBooting=false` SwimProtocol emits FaultyObserved even for peers
+            // never observed Healthy (the never-Healthy case is the strictest test;
+            // peers in `everSeenHealthy` would always emit FaultyObserved regardless).
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(tightConfig(),
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false) // RECOVERING (or NORMAL — both flip the gate off)
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(3))
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty()
+                                    || !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
+
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("RECOVERING phase: SWIM gate is OFF — FaultyObserved must emit even for never-Healthy peer")
+                    .hasSize(1);
+                assertThat(observations.byType(SwimObservation.UnknownObserved.class))
+                    .as("RECOVERING phase: must NOT emit UnknownObserved")
+                    .isEmpty();
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class)
+                                       .getFirst()
+                                       .peer()).isEqualTo(NODE_A);
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        @Test
+        void recovering_previouslyHealthyPeer_faulty_emitsFaultyObserved() {
+            // Compose-restart scenario: a peer was Healthy in the prior NORMAL period
+            // (was in `everSeenHealthy`), now reappears as FAULTY after the cluster
+            // re-establishes connectivity. Even if the gate were ON (e.g., transient
+            // misconfiguration), `everSeenHealthy.contains(peer)` would still allow
+            // the emission — but here the gate is also off because phase is RECOVERING.
+            // Both conditions point to the same outcome: emit FaultyObserved.
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(tightConfig(),
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     () -> false) // RECOVERING
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            protocol.start();
+            try {
+                // Step 1: receive ALIVE gossip for NODE_A so it enters `everSeenHealthy`.
+                var aliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+                protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
+                await().atMost(Duration.ofSeconds(2))
+                       .until(() -> !observations.byType(SwimObservation.HealthyObserved.class).isEmpty());
+
+                // Step 2: inject FAULTY for the now-known-Healthy peer.
+                var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A);
+                protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
+
+                await().atMost(Duration.ofSeconds(2))
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
+
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("RECOVERING phase: previously-Healthy peer must emit FaultyObserved")
+                    .hasSize(1);
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class)
+                                       .getFirst()
+                                       .peer()).isEqualTo(NODE_A);
+            } finally {
+                protocol.stop();
+            }
+        }
+
+        @Test
+        void phaseSwitchesColdBootToRecovering_subsequentFaultyEmits() {
+            // Production wiring (D.3): phase starts COLD_BOOT (gate=true), reaches
+            // NORMAL on first quorum, then drops to RECOVERING on quorum loss
+            // (gate=false). Verify the SAME protocol instance honors the transition —
+            // a SUSPECT injected during COLD_BOOT produces Unknown, then a fresh
+            // FAULTY after the phase flip produces FaultyObserved.
+            var phase = new AtomicBoolean(true); // COLD_BOOT
+            var transport = new RecordingTransport();
+            var listener = new RecordingListener();
+            var observations = new RecordingObservationSink();
+            var protocol = SwimProtocol.swimProtocol(tightConfig(),
+                                                     transport,
+                                                     listener,
+                                                     SELF_ID,
+                                                     SELF_ADDR,
+                                                     phase::get)
+                                       .unwrap();
+            protocol.addObservationListener(observations);
+
+            // Step 1: COLD_BOOT — never-HEALTHY NODE_A goes SUSPECT, emits Unknown.
+            var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(3))
+                       .until(() -> !observations.byType(SwimObservation.UnknownObserved.class).isEmpty());
+                assertThat(observations.byType(SwimObservation.UnknownObserved.class)).hasSize(1);
+
+                // Step 2: phase flips to RECOVERING. New FAULTY for NODE_B must emit
+                // FaultyObserved even though NODE_B was never observed Healthy by this
+                // SwimProtocol instance.
+                phase.set(false);
+                var faultyB = new MembershipUpdate(NODE_B, MemberState.FAULTY, 0, ADDR_B);
+                protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(faultyB)));
+
+                await().atMost(Duration.ofSeconds(2))
+                       .until(() -> !observations.byType(SwimObservation.FaultyObserved.class).isEmpty());
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class))
+                    .as("RECOVERING phase: FAULTY direct gossip must emit FaultyObserved")
+                    .hasSize(1);
+                assertThat(observations.byType(SwimObservation.FaultyObserved.class)
+                                       .getFirst()
+                                       .peer()).isEqualTo(NODE_B);
             } finally {
                 protocol.stop();
             }
@@ -153,10 +303,10 @@ class SwimProtocolPhaseAwareSuppressionTest {
 
         @Test
         void normal_phaseSwitchesMidLife_subsequentFaultyEmits() {
-            // Simulate the production wiring: phase starts BOOTING, flips NORMAL once
+            // Simulate the production wiring: phase starts COLD_BOOT, flips NORMAL once
             // HealthReconciler projects the cluster as steady. Verify the SAME protocol
             // instance honors both phases on subsequent FAULTY edges.
-            var phase = new AtomicBoolean(true); // BOOTING
+            var phase = new AtomicBoolean(true); // COLD_BOOT
             var transport = new RecordingTransport();
             var listener = new RecordingListener();
             var observations = new RecordingObservationSink();
@@ -169,7 +319,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                                        .unwrap();
             protocol.addObservationListener(observations);
 
-            // Step 1: BOOTING — never-HEALTHY NODE_A goes SUSPECT.
+            // Step 1: COLD_BOOT — never-HEALTHY NODE_A goes SUSPECT.
             var suspectA = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectA)));
 

@@ -593,18 +593,33 @@ import static org.pragmatica.lang.Option.none;
         ON_DUTY,
         DRAINING,
         DECOMMISSIONED,
-        SHUTTING_DOWN
+        SHUTTING_DOWN,
+        FAILED_DRAIN
     }
 
+    /// Three-phase model (D.3, 2026-05-11):
+    /// - `COLD_BOOT` — cluster never had quorum. SWIM suppresses `FaultyObserved` for
+    ///   never-healthy peers (preserves the cold-boot-during-formation invariant).
+    ///   HealthReconciler suppresses DECOMMISSIONED/SHUTTING_DOWN/DRAINING writes.
+    ///   CTM auto-heal is suspended. Transition out: first time the cluster reaches a
+    ///   quorum of ON_DUTY peers AND a leader is elected, sustained for `stableWindowMs`.
+    /// - `NORMAL` — full failure semantics. No suppression anywhere.
+    /// - `RECOVERING` — cluster previously reached NORMAL but lost quorum (e.g.,
+    ///   compose-restart, network partition, sustained chaos). SWIM emits FaultyObserved
+    ///   with NORMAL semantics — `everSeenHealthy` gate is bypassed because the peer was
+    ///   visible-and-healthy in the prior NORMAL period. HealthReconciler writes lifecycle
+    ///   transitions normally. CTM auto-heal stays suspended (operator-free recovery is
+    ///   the goal; provisioning resumes only after stability). Transition back to NORMAL:
+    ///   quorum-stable for `recoveryStableWindowMs`.
     @Codec enum ClusterPhase {
-        BOOTING,
+        COLD_BOOT,
         NORMAL,
         RECOVERING
     }
 
     record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
         public ClusterPhaseValue {
-            if (phase == null) {phase = ClusterPhase.BOOTING;}
+            if (phase == null) {phase = ClusterPhase.COLD_BOOT;}
         }
 
         public static ClusterPhaseValue clusterPhaseValue(ClusterPhase phase) {

@@ -488,6 +488,8 @@ public interface AetherNode extends ManageableNode {
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
                           HealthSignalSink healthSignalSink,
                           LifecycleWriter lifecycleWriter,
+                          org.pragmatica.aether.deployment.drain.InFlightRequestTracker inFlightRequestTracker,
+                          org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
                           NodeLifecycle nodeLifecycle,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
@@ -853,7 +855,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                            .map(v -> (AetherValue.NodeLifecycleValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
         var leaderAwareSnapshotSource = generationSnapshotSource;
-        var drainCoordinator = new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator();
+        // Drain infrastructure: tracker is shared with NodeLifecycleRoutes (/api/node/inflight).
+        // ConsensusDrainCoordinator is constructed below once ctmLifecycleWriter exists.
+        var inFlightTrackerForDrain = org.pragmatica.aether.deployment.drain.InFlightRequestTracker.inFlightRequestTracker();
         java.util.function.Supplier<java.util.Map<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>> slotReader = () -> {
             var collected = new java.util.LinkedHashMap<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>();
             kvStore.forEach(AetherKey.ProvisioningSlotKey.class, AetherValue.ProvisioningSlotValue.class, collected::put);
@@ -903,9 +907,19 @@ public interface AetherNode extends ManageableNode {
             @Override public Promise<Unit> requestActivate(NodeId target) {
                 return healthReconciler.requestActivate(target);
             }
+
+            @Override public Promise<Unit> requestFailedDrain(NodeId target) {
+                return healthReconciler.requestFailedDrain(target);
+            }
         };
+        org.pragmatica.lang.Functions.Fn1<Promise<Integer>, NodeId> inFlightProbe = targetNodeId ->
+                targetNodeId.equals(config.self().id())
+                        ? Promise.success(inFlightTrackerForDrain.count())
+                        : Promise.success(0);
+        var drainCoordinator = org.pragmatica.aether.deployment.drain.ConsensusDrainCoordinator
+                .consensusDrainCoordinator(ctmLifecycleWriter, lifecycleReader::apply, inFlightProbe);
         Supplier<AetherValue.ClusterPhase> ctmPhaseSupplier = () -> clusterPhaseReader.get()
-                                                                                          .or(AetherValue.ClusterPhase.BOOTING);
+                                                                                          .or(AetherValue.ClusterPhase.COLD_BOOT);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -1161,15 +1175,16 @@ public interface AetherNode extends ManageableNode {
         var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
                                                  swimTimeouts.probeTimeout(),
                                                  swimTimeouts.suspectTimeout());
-        // Audit Step 6 (2026-05-07): phase-aware SWIM cold-boot suppression. SWIM
-        // suppresses FAULTY-for-never-HEALTHY peers ONLY while the cluster is in
-        // BOOTING; once `HealthReconciler` projects NORMAL, FAULTY edges always
-        // emit so a peer killed before its first successful Ping still produces a
-        // cluster-visible observation, drives the `DECOMMISSIONED` write, and the
-        // downstream `NODE_LEFT` event. Lambda captures `healthReconciler` by ref;
-        // the reconciler is `start()`-ed at line 884 above so the supplier is safe
-        // to consult by the time SWIM probes any peer.
-        BooleanSupplier swimIsBootingSupplier = () -> healthReconciler.phase() == AetherValue.ClusterPhase.BOOTING;
+        // Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). SWIM suppresses
+        // FAULTY-for-never-HEALTHY peers ONLY while the cluster is in `COLD_BOOT`
+        // (initial formation, never reached quorum). In `NORMAL` and `RECOVERING`,
+        // FAULTY edges always emit — the `RECOVERING` branch is the critical fix
+        // for compose-restart: peers were Healthy in the prior NORMAL period and a
+        // post-restart kill must produce `FaultyObserved` (drives DECOMMISSIONED
+        // write + NODE_LEFT / NODE_FAILED downstream event). Lambda captures
+        // `healthReconciler` by ref; the reconciler is `start()`-ed above so the
+        // supplier is safe to consult by the time SWIM probes any peer.
+        BooleanSupplier swimIsBootingSupplier = () -> healthReconciler.phase() == AetherValue.ClusterPhase.COLD_BOOT;
         // Leader-faulty evictor (2026-05-09): bridges SWIM-FAULTY → QUIC disconnect when
         // the FAULTY peer IS the current cluster leader. Breaks the consensus.apply
         // broadcast stall on cloud Container kill-leader (post-Step-3 architecture
@@ -1483,6 +1498,8 @@ public interface AetherNode extends ManageableNode {
                                   certRenewalScheduler,
                                   stableHealthSink,
                                   ctmLifecycleWriter,
+                                  inFlightTrackerForDrain,
+                                  drainCoordinator,
                                   nodeLifecycle,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
@@ -1577,6 +1594,8 @@ public interface AetherNode extends ManageableNode {
                                                                               certRenewalScheduler,
                                                                               stableHealthSink,
                                                                               ctmLifecycleWriter,
+                                                                              inFlightTrackerForDrain,
+                                                                              drainCoordinator,
                                                                               nodeLifecycle,
                                                                               startTimeMs);
                                                     }
