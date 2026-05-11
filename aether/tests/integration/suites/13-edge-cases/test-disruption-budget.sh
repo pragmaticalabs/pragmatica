@@ -18,8 +18,26 @@ test_cluster_ready() {
         log_fail "Need at least 3 nodes for disruption budget test, got ${count}"
         return 1
     fi
-    log_pass "Initial: ${count} nodes (>= 3 quorum)"
+    # Disable CTM auto-heal for the duration of this suite. Without this, each drain
+    # is silently compensated by a replacement provision, ON_DUTY is restored, the
+    # budget is never threatened, and test_drain_beyond_budget_rejected below can
+    # never deterministically assert the 409 rejection. Re-enabled by trap at script
+    # exit (see EXIT trap below).
+    if ! disable_auto_heal; then
+        log_fail "Cluster ready: disable_auto_heal failed — disruption budget cannot be deterministically tested under active auto-heal racing"
+        return 1
+    fi
+    log_pass "Initial: ${count} nodes (>= 3 quorum); CTM auto-heal disabled for duration of suite"
 }
+
+# Re-enable CTM auto-heal on any exit path (test pass, test fail, set -e abort).
+# Without this trap the cluster is left in a permanently-disabled state, breaking
+# every downstream cluster B suite that relies on CTM provisioning replacements
+# after kill_node.
+_reactivate_auto_heal_trap() {
+    enable_auto_heal || log_warn "EXIT trap: enable_auto_heal returned non-zero — operator must manually re-enable via 'aether topology auto-heal enable' or cluster will not self-heal"
+}
+trap _reactivate_auto_heal_trap EXIT
 
 test_drain_first_node_allowed() {
     # node-5 is the docker-style fixture id; on cloud it maps to ${CLOUD_SOURCE_NAME}-core-4.
@@ -68,24 +86,25 @@ test_drain_beyond_budget_rejected() {
     local node3
     node3=$(to_node_id "node-3")
     log_info "Attempting to drain third node: ${node3}"
+    # Capture status AND body so a non-409 surface includes a debuggable payload —
+    # http_status_with_body warns and prints the body to the log when the response
+    # is non-2xx (note 409 is non-2xx → its body will be surfaced too, which is what
+    # we want here).
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
+    status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/node/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
     log_info "Third drain response: ${status}"
 
-    # TODO: this test cannot prove disruption-budget enforcement on a fixture with
-    # CTM auto-heal active. With auto-heal, earlier-drained nodes are replaced
-    # before the third drain lands, ON_DUTY is restored, and the budget is *not*
-    # threatened — so 200 is "correct" here. With auto-heal disabled, this drain
-    # would deterministically return 409 (budget tripped). Accepting both outcomes
-    # (current state) means the test passes for *every* possible response, which
-    # makes it incapable of catching a budget regression.
-    #
-    # Required capability: a fixture toggle to disable CTM auto-heal for this
-    # suite (e.g., FIXTURE=no-auto-heal in 13-edge-cases/suite.conf), then assert
-    # exact status=409 with a problem+json body whose `type` identifies the
-    # disruption-budget rejection. Until that toggle exists, the test is broken
-    # by design and must FAIL so the gap stays visible.
-    log_fail "TODO: test cannot prove budget rejection without disabling CTM auto-heal in fixture (status was ${status}). Required: fixture toggle + assert_eq status 409 + problem+json type check."
+    # Auto-heal is disabled (see test_cluster_ready). With two nodes already DRAINING
+    # and no replacement provisioning, ON_DUTY is at 3-of-5 — draining a third would
+    # drop operational capacity to 2 < quorum. The disruption-budget guard MUST
+    # reject this with HTTP 409. Any other status indicates either (a) the budget
+    # enforcement is broken (200 returned despite live ON_DUTY below threshold) or
+    # (b) the drain endpoint mis-routed (5xx). Either is a real product regression.
+    if [ "$status" -eq 409 ] 2>/dev/null; then
+        log_pass "Third drain rejected with 409 — disruption budget enforced against live ON_DUTY"
+        return 0
+    fi
+    log_fail "Third drain returned ${status} — expected 409 (budget exhausted). With CTM auto-heal disabled and 2 prior drains in DRAINING, a third drain MUST be refused."
     return 1
 }
 

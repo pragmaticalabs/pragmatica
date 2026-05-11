@@ -1224,6 +1224,45 @@ Example output:
 {"status": "reset", "priorFailureCount": 3}
 ```
 
+### `aether topology auto-heal status`
+
+Show whether CTM auto-heal (deficit-driven replacement provisioning) is currently enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker.
+
+```bash
+aether topology auto-heal status
+```
+
+Example output:
+```json
+{"enabled": true}
+```
+
+### `aether topology auto-heal disable`
+
+Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion.
+
+```bash
+aether topology auto-heal disable
+```
+
+Example output:
+```json
+{"enabled": false, "previousState": true}
+```
+
+### `aether topology auto-heal enable`
+
+Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately.
+
+```bash
+aether topology auto-heal enable
+```
+
+Example output:
+```json
+{"enabled": true, "previousState": false}
+```
+
 ### `aether cluster generation`
 
 Show the current cluster generation snapshot as observed by the queried node. The snapshot summarises the leader-projected epoch, core members, communities, and DHT partition ownership. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.

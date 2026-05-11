@@ -1897,7 +1897,7 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "topology", description = "Cluster topology operations", subcommands = {TopologyStatusCommand.CircuitBreakerCommand.class}) static class TopologyStatusCommand implements Callable<Integer> {
+    @Command(name = "topology", description = "Cluster topology operations", subcommands = {TopologyStatusCommand.CircuitBreakerCommand.class, TopologyStatusCommand.AutoHealCommand.class}) static class TopologyStatusCommand implements Callable<Integer> {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
@@ -1927,6 +1927,41 @@ import static org.pragmatica.lang.Option.some;
                 @Override public Integer call() {
                     var response = cbParent.topologyParent.parent.post(CLUSTER_CIRCUIT_BREAKER_RESET, "{}");
                     return OutputFormatter.printAction(response, cbParent.topologyParent.parent.outputOptions(), "Circuit breaker reset");
+                }
+            }
+        }
+
+        @Command(name = "auto-heal", description = "CTM auto-heal (deficit-driven replacement provisioning) toggle", subcommands = {AutoHealCommand.StatusCommand.class, AutoHealCommand.EnableCommand.class, AutoHealCommand.DisableCommand.class}) static class AutoHealCommand implements Runnable {
+            @CommandLine.ParentCommand private TopologyStatusCommand topologyParent;
+
+            @Contract@Override public void run() {
+                CommandLine.usage(this, System.out);
+            }
+
+            @Command(name = "status", description = "Show whether CTM auto-heal is enabled") static class StatusCommand implements Callable<Integer> {
+                @CommandLine.ParentCommand private AutoHealCommand ahParent;
+
+                @Override public Integer call() {
+                    var response = ahParent.topologyParent.parent.fetch(CLUSTER_AUTO_HEAL_STATUS);
+                    return OutputFormatter.printQuery(response, ahParent.topologyParent.parent.outputOptions());
+                }
+            }
+
+            @Command(name = "enable", description = "Enable CTM auto-heal (resume deficit-driven replacement provisioning)") static class EnableCommand implements Callable<Integer> {
+                @CommandLine.ParentCommand private AutoHealCommand ahParent;
+
+                @Override public Integer call() {
+                    var response = ahParent.topologyParent.parent.post(CLUSTER_AUTO_HEAL_ENABLE, "{}");
+                    return OutputFormatter.printAction(response, ahParent.topologyParent.parent.outputOptions(), "Auto-heal enabled");
+                }
+            }
+
+            @Command(name = "disable", description = "Disable CTM auto-heal (halt deficit-driven replacement provisioning until re-enabled)") static class DisableCommand implements Callable<Integer> {
+                @CommandLine.ParentCommand private AutoHealCommand ahParent;
+
+                @Override public Integer call() {
+                    var response = ahParent.topologyParent.parent.post(CLUSTER_AUTO_HEAL_DISABLE, "{}");
+                    return OutputFormatter.printAction(response, ahParent.topologyParent.parent.outputOptions(), "Auto-heal disabled");
                 }
             }
         }

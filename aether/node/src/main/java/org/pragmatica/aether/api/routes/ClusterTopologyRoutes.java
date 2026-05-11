@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.ManagementApiResponses.AutoHealStatusResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.AutoHealToggleResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
@@ -59,7 +61,13 @@ public final class ClusterTopologyRoutes implements RouteSource {
                          ManagementRoutes.<CircuitBreakerStatusResponse>route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS)
                                          .toJson(_ -> buildCircuitBreakerStatus()),
                          ManagementRoutes.<CircuitBreakerResetResponse>route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET)
-                                         .toJson(_ -> resetCircuitBreaker()));
+                                         .toJson(_ -> resetCircuitBreaker()),
+                         ManagementRoutes.<AutoHealStatusResponse>route(ManagementRoute.CLUSTER_AUTO_HEAL_STATUS)
+                                         .toJson(_ -> buildAutoHealStatus()),
+                         ManagementRoutes.<AutoHealToggleResponse>route(ManagementRoute.CLUSTER_AUTO_HEAL_ENABLE)
+                                         .toJson(_ -> setAutoHeal(true)),
+                         ManagementRoutes.<AutoHealToggleResponse>route(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE)
+                                         .toJson(_ -> setAutoHeal(false)));
     }
 
     private Promise<CircuitBreakerStatusResponse> buildCircuitBreakerStatus() {
@@ -77,6 +85,17 @@ public final class ClusterTopologyRoutes implements RouteSource {
             var prior = ctm.resetCircuitBreaker("/api/cluster/topology/circuit-breaker/reset");
             return new CircuitBreakerResetResponse("reset", prior);
         }).async(CTM_UNAVAILABLE);
+    }
+
+    private Promise<AutoHealStatusResponse> buildAutoHealStatus() {
+        return ctmOpt().map(ctm -> new AutoHealStatusResponse(ctm.isAutoHealEnabled()))
+                              .async(CTM_UNAVAILABLE);
+    }
+
+    private Promise<AutoHealToggleResponse> setAutoHeal(boolean enabled) {
+        var reason = "/api/cluster/topology/auto-heal/" + (enabled ? "enable" : "disable");
+        return ctmOpt().map(ctm -> new AutoHealToggleResponse(enabled, ctm.setAutoHealEnabled(enabled, reason)))
+                              .async(CTM_UNAVAILABLE);
     }
 
     private Option<ClusterTopologyManager> ctmOpt() {

@@ -377,6 +377,16 @@ public sealed interface ManagementApiResponses {
     /// `priorFailureCount` is the number of consecutive failures cleared.
     record CircuitBreakerResetResponse(String status, int priorFailureCount){}
 
+    /// Snapshot of CTM auto-heal toggle state. `enabled=false` means
+    /// `handleDeficit` is a no-op — deficit-driven replacement provisioning is
+    /// halted until re-enabled. Operator-controlled gate distinct from the
+    /// failure-driven circuit breaker.
+    record AutoHealStatusResponse(boolean enabled){}
+
+    /// Result of POST `/api/cluster/topology/auto-heal/{enable,disable}`.
+    /// `previousState` is the prior `enabled` value (audit log).
+    record AutoHealToggleResponse(boolean enabled, boolean previousState){}
+
     record ClusterConfigResponse(String tomlContent,
                                  String clusterName,
                                  String version,

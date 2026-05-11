@@ -94,6 +94,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicInteger consecutiveProvisioningFailures,
                                     AtomicLong nextProvisioningAllowedMs,
                                     AtomicLong lastProvisioningFailureMs,
+                                    AtomicBoolean autoHealEnabled,
                                     LongSupplier clock) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
 
@@ -160,6 +161,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicInteger(0),
                                                 new AtomicLong(0L),
                                                 new AtomicLong(0L),
+                                                new AtomicBoolean(true),
                                                 clock);
     }
 
@@ -405,6 +407,28 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // the underlying issue, please retry now". Without this, deficit handling
         // doesn't run until the next state-change event arrives.
         if (active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {
+            reconcile();
+        }
+        return prev;
+    }
+
+    @Override public boolean isAutoHealEnabled() {
+        return autoHealEnabled.get();
+    }
+
+    @Override public boolean setAutoHealEnabled(boolean enabled, String reason) {
+        var prev = autoHealEnabled.getAndSet(enabled);
+        if (prev == enabled) {
+            log.info("CTM: auto-heal already {} (reason: {}) — no-op", enabled ? "enabled" : "disabled", reason);
+            return prev;
+        }
+        log.warn("CTM: auto-heal {} (operator: {}) — prior state was {}",
+                 enabled ? "ENABLED" : "DISABLED",
+                 reason,
+                 prev ? "enabled" : "disabled");
+        // Re-enabling: nudge a reconcile so any pending deficit is picked up
+        // immediately rather than waiting for the next state-change event.
+        if (enabled && active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {
             reconcile();
         }
         return prev;
@@ -733,6 +757,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Contract private void handleDeficit(int actual, int desired) {
+        if (!autoHealEnabled.get()) {
+            log.debug("CTM: auto-heal disabled — skipping replacement provision (actual={}, desired={})",
+                      actual,
+                      desired);
+            return;
+        }
         var nowMs = nowMs();
         if (!stabilityElapsed(nowMs)) {
             var elapsed = nowMs - realActualStableSinceMs.get();

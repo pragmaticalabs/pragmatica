@@ -1236,6 +1236,67 @@ reset_provisioning_circuit() {
     return 0
 }
 
+# Operator-controlled toggle of CTM auto-heal (deficit-driven replacement
+# provisioning). Distinct from the failure-driven circuit breaker — operators
+# disable auto-heal during disruption-budget testing, planned maintenance
+# windows, or any scenario where the cluster should not automatically rebuild
+# after node loss. All three helpers below hit the leader-routed
+# /api/cluster/topology/auto-heal{,/enable,/disable} endpoints. Curl is used
+# for parity with reset_provisioning_circuit (same shape, same 15s timeout) —
+# the integration test harness does not wire the `aether` CLI binary into the
+# cluster.sh helper layer.
+
+# Disable CTM auto-heal. Returns 0 on success, 1 on transport failure.
+disable_auto_heal() {
+    local result rc
+    result=$(curl -sk -m 15 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+                  -d '{}' "${CLUSTER_ENDPOINT}/api/cluster/topology/auto-heal/disable" 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_warn "disable_auto_heal: POST failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
+        return 1
+    fi
+    log_info "disable_auto_heal: ${result}"
+    return 0
+}
+
+# Enable CTM auto-heal. Returns 0 on success, 1 on transport failure.
+enable_auto_heal() {
+    local result rc
+    result=$(curl -sk -m 15 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+                  -d '{}' "${CLUSTER_ENDPOINT}/api/cluster/topology/auto-heal/enable" 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_warn "enable_auto_heal: POST failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
+        return 1
+    fi
+    log_info "enable_auto_heal: ${result}"
+    return 0
+}
+
+# Print the current auto-heal enabled state ("true"/"false") on stdout.
+# Returns 0 if the endpoint responded with a parseable boolean, 1 otherwise.
+# Designed for use in test predicates like:
+#   if [ "$(auto_heal_enabled)" = "false" ]; then ...
+auto_heal_enabled() {
+    local result rc value
+    result=$(curl -sk -m 15 -H "X-API-Key: ${API_KEY}" \
+                  "${CLUSTER_ENDPOINT}/api/cluster/topology/auto-heal" 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_warn "auto_heal_enabled: GET failed rc=${rc}: $(printf '%s' "$result" | head -c 200)" >&2
+        return 1
+    fi
+    # Parse "enabled":true|false from the JSON body.
+    value=$(printf '%s' "$result" | grep -oE '"enabled"[[:space:]]*:[[:space:]]*(true|false)' | grep -oE '(true|false)' | head -1)
+    if [ -z "$value" ]; then
+        log_warn "auto_heal_enabled: could not parse enabled field from response: $(printf '%s' "$result" | head -c 200)" >&2
+        return 1
+    fi
+    printf '%s' "$value"
+    return 0
+}
+
 scale_cluster() {
     local target="$1"
     local leader

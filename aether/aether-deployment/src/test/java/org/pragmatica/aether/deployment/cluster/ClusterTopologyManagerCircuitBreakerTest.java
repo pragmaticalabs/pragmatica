@@ -292,6 +292,91 @@ class ClusterTopologyManagerCircuitBreakerTest {
             .isEqualTo(afterFirstExpire);
     }
 
+    /// Default-state invariant: auto-heal is enabled out of the box, and the toggle
+    /// reports its prior value on transition (audit log).
+    @Test
+    void autoHeal_isEnabledByDefault_andToggleReturnsPriorState() {
+        var ctm = createCtm(timeSpan(100L).millis());
+        assertThat(ctm.isAutoHealEnabled()).as("auto-heal must be enabled by default").isTrue();
+        assertThat(ctm.setAutoHealEnabled(false, "test-disable")).as("disable returns prior=true").isTrue();
+        assertThat(ctm.isAutoHealEnabled()).as("after disable, status is false").isFalse();
+        assertThat(ctm.setAutoHealEnabled(true, "test-enable")).as("enable returns prior=false").isFalse();
+        assertThat(ctm.isAutoHealEnabled()).as("after enable, status is true").isTrue();
+    }
+
+    /// When auto-heal is disabled, deficit-driven reconciles MUST NOT dispatch
+    /// any provisioning calls — independent of the circuit breaker state, the
+    /// stability window, or the backoff timer. This is the operator-controlled
+    /// kill switch used by `13-edge-cases/test-disruption-budget` to prevent
+    /// CTM from racing the budget check while the test drains nodes.
+    @Test
+    void autoHeal_disabled_haltsDeficitProvisioning() {
+        var slotTimeoutMs = 100L;
+        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            5),
+                               1L);
+        ctm.activate();
+
+        // Disable auto-heal BEFORE the deficit appears.
+        ctm.setAutoHealEnabled(false, "test setup");
+
+        // Create a deficit — drop two peers. desired=5, healthyOnDuty=3.
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B),
+                                            3,
+                                            5),
+                               2L);
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+
+        // Even after multiple reconcile triggers and clock advances, no provisioning fired.
+        for (var attempt = 0;attempt <5;attempt++) {
+            clockMs.addAndGet(slotTimeoutMs + 1_000L);
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+        }
+        assertThat(lifecycleManager.provisionCount.get())
+            .as("auto-heal disabled — no provisioning calls regardless of deficit/reconcile/clock-advance")
+            .isEqualTo(0);
+    }
+
+    /// Re-enabling auto-heal after a deficit was suppressed lets the next
+    /// reconcile pick up the pending work. Verifies the operator can pause +
+    /// resume mid-flight (e.g., disable for a maintenance window, re-enable
+    /// when the window closes).
+    @Test
+    void autoHeal_reEnable_resumesProvisioning() {
+        var slotTimeoutMs = 100L;
+        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            5),
+                               1L);
+        ctm.activate();
+        ctm.setAutoHealEnabled(false, "test pause");
+
+        // Create a deficit while disabled — no provisioning.
+        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B),
+                                            3,
+                                            5),
+                               2L);
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
+        assertThat(lifecycleManager.provisionCount.get()).as("no provisioning while disabled").isEqualTo(0);
+
+        // Re-enable. With a Reconciling state in place, setAutoHealEnabled(true) nudges
+        // a reconcile. If we are still in Converged state, the next membership event
+        // will drive handleDeficit, which now permits the call.
+        ctm.setAutoHealEnabled(true, "test resume");
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+        assertThat(lifecycleManager.provisionCount.get())
+            .as("after re-enable, deficit reconcile dispatches provisioning")
+            .isGreaterThanOrEqualTo(1);
+    }
+
     /// Auto-reset backstop: when the breaker has been tripped but no provisioning
     /// failure has occurred for the auto-reset quiescence window (1h), the breaker
     /// self-clears on the next reconcile so an unattended cluster eventually retries

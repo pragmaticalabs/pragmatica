@@ -1808,6 +1808,47 @@ Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixi
 }
 ```
 
+### GET /api/cluster/topology/auto-heal
+
+Snapshot of the CTM auto-heal toggle. When `enabled=false`, `handleDeficit` is a no-op — deficit-driven replacement provisioning is halted until re-enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker. Use during disruption-budget testing, planned maintenance windows, or any scenario where the cluster should not automatically rebuild after node loss.
+
+**RBAC:** ADMIN · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "enabled": true
+}
+```
+
+### POST /api/cluster/topology/auto-heal/enable
+
+Re-enable CTM auto-heal. If a deficit exists at the time of the call, the next reconcile picks it up immediately (no scheduled poll wait). Returns the prior `enabled` state for the audit log.
+
+**RBAC:** ADMIN · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "enabled": true,
+  "previousState": false
+}
+```
+
+### POST /api/cluster/topology/auto-heal/disable
+
+Disable CTM auto-heal. The change applies immediately to the next `handleDeficit` invocation — already-in-flight provisioning attempts continue to completion. Returns the prior `enabled` state for the audit log.
+
+**RBAC:** ADMIN · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "enabled": false,
+  "previousState": true
+}
+```
+
 ### POST /api/cluster/upgrade
 
 Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store config. Full rolling upgrade orchestration uses existing RollingUpdateManager infrastructure.

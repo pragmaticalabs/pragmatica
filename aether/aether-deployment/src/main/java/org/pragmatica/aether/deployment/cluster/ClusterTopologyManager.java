@@ -60,6 +60,20 @@ import java.util.function.Supplier;
     /// operation pending). Returns the prior failure count for the audit log.
     int resetCircuitBreaker(String reason);
 
+    /// Whether CTM auto-heal (deficit-driven replacement provisioning) is
+    /// currently enabled. Default `true`. When `false`, `handleDeficit` is a
+    /// no-op — operators can use this gate during disruption-budget testing,
+    /// planned maintenance windows, or any scenario where the cluster should
+    /// not automatically rebuild after node loss.
+    boolean isAutoHealEnabled();
+
+    /// Operator-triggered toggle of CTM auto-heal. Returns the prior enabled
+    /// state for the audit log. The change applies immediately to the next
+    /// `handleDeficit` invocation — already-in-flight provisioning attempts
+    /// continue to completion (they have separate cancel paths via
+    /// `cancelInFlightProvisions`).
+    boolean setAutoHealEnabled(boolean enabled, String reason);
+
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
