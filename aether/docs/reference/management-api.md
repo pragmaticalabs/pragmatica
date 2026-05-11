@@ -971,6 +971,36 @@ Clear all active alerts.
 }
 ```
 
+### POST /api/alerts/inject
+
+Insert a synthetic alert entry directly, bypassing threshold evaluation. The entry is visible via `GET /api/alerts` (active list) immediately after this call returns and is also written to alert history with status `INJECTED`. Used by integration tests and operator tooling when no threshold-driven path can produce the alert under test.
+
+**RBAC:** OPERATOR · **Routing:** ANY (node-local; alerts are not consensus-replicated)
+
+**Request:**
+```json
+{
+  "name": "test-alert",
+  "severity": "WARNING",
+  "message": "synthetic alert from operator",
+  "metric": "test.integration.counter",
+  "value": 42.0
+}
+```
+
+`name`, `severity` (one of `INFO`, `WARNING`, `CRITICAL`), and `message` are required. `metric` and `value` are optional context fields.
+
+**Response:**
+```json
+{
+  "alertId": "injected-1715431200000-1",
+  "name": "test-alert",
+  "severity": "WARNING",
+  "message": "synthetic alert from operator",
+  "timestamp": 1715431200000
+}
+```
+
 ---
 
 ## Threshold Configuration

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.AlertManager;
+import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertsClearedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ThresholdRemovedResponse;
@@ -13,6 +14,7 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
@@ -34,6 +36,8 @@ public final class AlertRoutes implements RouteSource {
 
     record ThresholdRequest(String metric, Double warning, Double critical){}
 
+    record InjectRequest(String name, String severity, String message, String metric, Double value){}
+
     @Override public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<Object>route(ManagementRoute.THRESHOLDS_LIST)
                                          .toJson(alertManager::thresholdsAsJson),
@@ -48,10 +52,21 @@ public final class AlertRoutes implements RouteSource {
                                          .toJson(this::handleSetThreshold),
                          ManagementRoutes.<AlertsClearedResponse>route(ManagementRoute.ALERTS_CLEAR)
                                          .toJson(this::handleClearAlerts),
+                         ManagementRoutes.<AlertInjectResponse>route(ManagementRoute.ALERTS_INJECT)
+                                         .withBody(InjectRequest.class)
+                                         .toJson(this::handleInjectAlert),
                          ManagementRoutes.<ThresholdRemovedResponse>route(ManagementRoute.THRESHOLD_DELETE)
                                          .withPath(aString())
                                          .to(this::handleDeleteThreshold)
                                          .asJson());
+    }
+
+    private Promise<AlertInjectResponse> handleInjectAlert(InjectRequest req) {
+        return alertManager.inject(req.name(),
+                                   req.severity(),
+                                   req.message(),
+                                   Option.option(req.metric()),
+                                   Option.option(req.value()));
     }
 
     private Promise<ThresholdSetResponse> handleSetThreshold(ThresholdRequest req) {

@@ -8,6 +8,11 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 ALERT_NAME="integration-test-alert-$$"
 ALERT_METRIC="test.integration.counter"
+ALERT_SEVERITY="WARNING"
+ALERT_MESSAGE="synthetic alert from integration test pid=$$"
+# Captured by test_trigger_alert_condition; read by the downstream check_alerts_fired /
+# alerts_have_fields tests so they can correlate the injected entry by id.
+INJECTED_ALERT_ID=""
 
 test_cluster_ready() {
     wait_for_cluster 60
@@ -48,31 +53,70 @@ test_set_alert_threshold() {
         "Created threshold for metric '${ALERT_METRIC}' is visible in /api/thresholds"
 }
 
-# Generating load is mechanical — the real assertion is whether an alert is
-# emitted, which lives in test_check_alerts_fired below.
+# Drive the alert path explicitly via POST /api/alerts/inject. The runtime does
+# not publish a test-only metric, so threshold-driven firing on `${ALERT_METRIC}`
+# can't be exercised end-to-end here. The injection endpoint exists for exactly
+# this gap — see aether/docs/reference/management-api.md → POST /api/alerts/inject.
 test_trigger_alert_condition() {
-    for i in $(seq 1 20); do
-        api_get "/api/status" > /dev/null 2>&1 || true
-    done
-    sleep 5
-    log_pass "Generated load to trigger alert"
+    local body
+    body="{\"name\":\"${ALERT_NAME}\",\"severity\":\"${ALERT_SEVERITY}\",\"message\":\"${ALERT_MESSAGE}\",\"metric\":\"${ALERT_METRIC}\",\"value\":42.0}"
+    local response
+    if ! response=$(api_post "/api/alerts/inject" "$body"); then
+        log_fail "POST /api/alerts/inject failed (api_post returned non-zero)"
+        return 1
+    fi
+    # Server returns {alertId, name, severity, message, timestamp}. Grab alertId so
+    # downstream tests can correlate the inject with the read-back entry.
+    INJECTED_ALERT_ID=$(printf '%s' "$response" | grep -oE '"alertId"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' | head -1)
+    if [ -z "$INJECTED_ALERT_ID" ]; then
+        log_fail "Inject response missing alertId field — response was: ${response}"
+        return 1
+    fi
+    log_pass "Injected alert id=${INJECTED_ALERT_ID} name=${ALERT_NAME}"
 }
 
-# UNTESTABLE without product wiring: the test threshold targets a metric
-# (`test.integration.counter`) that the runtime does not actually publish, so
-# no alert can ever fire. Honestly testing "alert fires when condition holds"
-# requires either (a) a synthetic metric we can drive from the test, or
-# (b) an alert-injection management endpoint. Neither exists today.
+# Verify the injected alert is visible via GET /api/alerts (active list). The
+# injection endpoint is local-to-node by design (alerts are node-local state, not
+# KV-replicated), but api_get hits the same endpoint cluster used for the POST
+# via _resolve_live_endpoint — same target node, same in-memory store.
 test_check_alerts_fired() {
-    log_fail "TODO: alert-firing assertion requires synthetic metric injection or a test-controllable threshold target — no product mechanism today"
-    return 1
+    if [ -z "$INJECTED_ALERT_ID" ]; then
+        log_fail "Pre-condition broken: INJECTED_ALERT_ID is empty (test_trigger_alert_condition must have failed)"
+        return 1
+    fi
+    local alerts
+    if ! alerts=$(api_get "/api/alerts"); then
+        log_fail "GET /api/alerts failed (api_get returned non-zero)"
+        return 1
+    fi
+    assert_contains "$alerts" "$INJECTED_ALERT_ID" \
+        "GET /api/alerts must surface the injected alertId=${INJECTED_ALERT_ID}"
 }
 
-# UNTESTABLE for the same reason as above: there are no alerts to inspect, so
-# field-shape assertions cannot run without first being able to produce one.
+# With an injected alert present, assert each contract field carries a sensible
+# value. The injected entry shape is documented in management-api.md → POST
+# /api/alerts/inject (response section). `source` field marks the entry as
+# operator-injected versus threshold-driven.
 test_alerts_have_fields() {
-    log_fail "TODO: alert-entry shape assertion is gated on the same alert-injection capability missing for test_check_alerts_fired"
-    return 1
+    if [ -z "$INJECTED_ALERT_ID" ]; then
+        log_fail "Pre-condition broken: INJECTED_ALERT_ID is empty (test_trigger_alert_condition must have failed)"
+        return 1
+    fi
+    local alerts
+    if ! alerts=$(api_get "/api/alerts"); then
+        log_fail "GET /api/alerts failed (api_get returned non-zero)"
+        return 1
+    fi
+    # All four field-shape assertions run against the same payload — any
+    # missing/empty field fails its own assertion with a named locus.
+    assert_contains "$alerts" "\"name\":\"${ALERT_NAME}\"" \
+        "Injected alert exposes name='${ALERT_NAME}' field"
+    assert_contains "$alerts" "\"severity\":\"${ALERT_SEVERITY}\"" \
+        "Injected alert exposes severity='${ALERT_SEVERITY}' field"
+    assert_contains "$alerts" "\"message\":\"${ALERT_MESSAGE}\"" \
+        "Injected alert exposes message field with expected text"
+    assert_contains "$alerts" "\"source\":\"injected\"" \
+        "Injected alert marked with source='injected' (distinguishes operator-driven from threshold-driven)"
 }
 
 test_cluster_healthy_after_alerts() {

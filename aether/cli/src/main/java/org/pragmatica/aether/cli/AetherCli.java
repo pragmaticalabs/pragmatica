@@ -1393,7 +1393,7 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "alerts", description = "Alert management", subcommands = {AlertsCommand.ListCommand.class, AlertsCommand.ActiveCommand.class, AlertsCommand.HistoryCommand.class, AlertsCommand.ClearCommand.class}) static class AlertsCommand implements Runnable {
+    @Command(name = "alerts", description = "Alert management", subcommands = {AlertsCommand.ListCommand.class, AlertsCommand.ActiveCommand.class, AlertsCommand.HistoryCommand.class, AlertsCommand.ClearCommand.class, AlertsCommand.InjectCommand.class}) static class AlertsCommand implements Runnable {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
@@ -1434,6 +1434,45 @@ import static org.pragmatica.lang.Option.some;
             @Override public Integer call() {
                 var response = alertsParent.parent.post(ALERTS_CLEAR, "{}");
                 return OutputFormatter.printAction(response, alertsParent.parent.outputOptions(), "Alerts cleared");
+            }
+        }
+
+        @Command(name = "inject", description = "Inject a synthetic alert entry (operator-driven; visible via 'aether alerts list')") static class InjectCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private AlertsCommand alertsParent;
+
+            @CommandLine.Option(names = {"-n", "--name"}, description = "Alert name (free-form identifier, required)", required = true) private String name;
+
+            @CommandLine.Option(names = {"-s", "--severity"}, description = "Severity: INFO, WARNING, or CRITICAL (required)", required = true) private String severity;
+
+            @CommandLine.Option(names = {"-m", "--message"}, description = "Human-readable alert message (required)", required = true) private String message;
+
+            @CommandLine.Option(names = {"--metric"}, description = "Optional metric name this alert references") private String metric;
+
+            @CommandLine.Option(names = {"--value"}, description = "Optional metric value at the time of injection") private Double value;
+
+            @Override public Integer call() {
+                var body = buildInjectBody();
+                var response = alertsParent.parent.post(ALERTS_INJECT, body);
+                return OutputFormatter.printQuery(response, alertsParent.parent.outputOptions());
+            }
+
+            private String buildInjectBody() {
+                var sb = new StringBuilder("{\"name\":\"").append(escapeJson(name))
+                                                          .append("\",")
+                                                          .append("\"severity\":\"")
+                                                          .append(escapeJson(severity))
+                                                          .append("\",")
+                                                          .append("\"message\":\"")
+                                                          .append(escapeJson(message))
+                                                          .append("\"");
+                if (metric != null) {sb.append(",\"metric\":\"").append(escapeJson(metric))
+                                              .append("\"");}
+                if (value != null) {sb.append(",\"value\":").append(value);}
+                return sb.append("}").toString();
+            }
+
+            private static String escapeJson(String s) {
+                return s.replace("\\", "\\\\").replace("\"", "\\\"");
             }
         }
     }
@@ -1926,7 +1965,9 @@ import static org.pragmatica.lang.Option.some;
 
                 @Override public Integer call() {
                     var response = cbParent.topologyParent.parent.post(CLUSTER_CIRCUIT_BREAKER_RESET, "{}");
-                    return OutputFormatter.printAction(response, cbParent.topologyParent.parent.outputOptions(), "Circuit breaker reset");
+                    return OutputFormatter.printAction(response,
+                                                       cbParent.topologyParent.parent.outputOptions(),
+                                                       "Circuit breaker reset");
                 }
             }
         }
@@ -1952,7 +1993,9 @@ import static org.pragmatica.lang.Option.some;
 
                 @Override public Integer call() {
                     var response = ahParent.topologyParent.parent.post(CLUSTER_AUTO_HEAL_ENABLE, "{}");
-                    return OutputFormatter.printAction(response, ahParent.topologyParent.parent.outputOptions(), "Auto-heal enabled");
+                    return OutputFormatter.printAction(response,
+                                                       ahParent.topologyParent.parent.outputOptions(),
+                                                       "Auto-heal enabled");
                 }
             }
 
@@ -1961,7 +2004,9 @@ import static org.pragmatica.lang.Option.some;
 
                 @Override public Integer call() {
                     var response = ahParent.topologyParent.parent.post(CLUSTER_AUTO_HEAL_DISABLE, "{}");
-                    return OutputFormatter.printAction(response, ahParent.topologyParent.parent.outputOptions(), "Auto-heal disabled");
+                    return OutputFormatter.printAction(response,
+                                                       ahParent.topologyParent.parent.outputOptions(),
+                                                       "Auto-heal disabled");
                 }
             }
         }

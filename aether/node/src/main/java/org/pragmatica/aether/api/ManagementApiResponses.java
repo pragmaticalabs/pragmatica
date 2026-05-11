@@ -202,6 +202,8 @@ public sealed interface ManagementApiResponses {
 
     record AlertsResponse(Object active, Object history){}
 
+    record AlertInjectResponse(String alertId, String name, String severity, String message, long timestamp){}
+
     record LogLevelSetResponse(String status, String logger, String level){}
 
     record LogLevelResetResponse(String status, String logger){}
@@ -368,23 +370,12 @@ public sealed interface ManagementApiResponses {
 
     record GovernorInfo(String governorId, String community, int memberCount, List<String> members){}
 
-    /// Snapshot of CTM provisioning circuit breaker state. `tripped=true` means
-    /// CTM `handleDeficit` is a no-op until reset; recovery triggers are
-    /// documented in `ClusterTopologyManager.resetCircuitBreaker`.
     record CircuitBreakerStatusResponse(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped){}
 
-    /// Result of POST `/api/cluster/topology/circuit-breaker/reset`.
-    /// `priorFailureCount` is the number of consecutive failures cleared.
     record CircuitBreakerResetResponse(String status, int priorFailureCount){}
 
-    /// Snapshot of CTM auto-heal toggle state. `enabled=false` means
-    /// `handleDeficit` is a no-op — deficit-driven replacement provisioning is
-    /// halted until re-enabled. Operator-controlled gate distinct from the
-    /// failure-driven circuit breaker.
     record AutoHealStatusResponse(boolean enabled){}
 
-    /// Result of POST `/api/cluster/topology/auto-heal/{enable,disable}`.
-    /// `previousState` is the prior `enabled` value (audit log).
     record AutoHealToggleResponse(boolean enabled, boolean previousState){}
 
     record ClusterConfigResponse(String tomlContent,

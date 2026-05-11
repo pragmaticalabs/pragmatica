@@ -154,6 +154,7 @@ public enum ManagementRoute {
     ALERTS_ACTIVE(GET, "/api/alerts/active", List.of(), ANY),
     ALERTS_HISTORY(GET, "/api/alerts/history", List.of(), ANY),
     ALERTS_CLEAR(POST, "/api/alerts/clear", List.of(), ANY),
+    ALERTS_INJECT(POST, "/api/alerts/inject", List.of(), ANY),
     BACKUP_TRIGGER(POST, "/api/backup", List.of(), taskGroup(DEPLOYMENT)),
     BACKUPS_LIST(GET, "/api/backups", List.of(), ANY),
     BACKUP_RESTORE(POST, "/api/backup/restore", List.of(), taskGroup(DEPLOYMENT)),

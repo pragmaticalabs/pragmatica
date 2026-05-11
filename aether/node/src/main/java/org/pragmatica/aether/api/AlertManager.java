@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.MethodName;
@@ -20,6 +21,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -27,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +48,10 @@ import org.slf4j.LoggerFactory;
     private final Map<String, ActiveAlert> activeAlerts = new ConcurrentHashMap<>();
 
     private final LinkedBlockingDeque<AlertHistoryEntry> alertHistory = new LinkedBlockingDeque<>(MAX_ALERT_HISTORY);
+
+    private final Map<String, InjectedAlert> injectedAlerts = new ConcurrentHashMap<>();
+
+    private final AtomicLong injectionSequence = new AtomicLong();
 
     private AlertManager(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
@@ -128,7 +135,66 @@ import org.slf4j.LoggerFactory;
 
     public void clearAlerts() {
         activeAlerts.clear();
+        injectedAlerts.clear();
         log.info("All active alerts cleared");
+    }
+
+    public Promise<AlertInjectResponse> inject(String name,
+                                               String severity,
+                                               String message,
+                                               Option<String> metric,
+                                               Option<Double> value) {
+        return validateInjectionInput(name, severity, message).async()
+                                     .map(_ -> stampAndStoreInjection(name, severity, message, metric, value));
+    }
+
+    private Result<Unit> validateInjectionInput(String name, String severity, String message) {
+        if (name == null || name.isBlank()) {return InjectionError.NAME_REQUIRED.result();}
+        if (message == null || message.isBlank()) {return InjectionError.MESSAGE_REQUIRED.result();}
+        if (!isValidSeverity(severity)) {return InjectionError.INVALID_SEVERITY.result();}
+        return Result.unitResult();
+    }
+
+    private static boolean isValidSeverity(String severity) {
+        return "INFO".equals(severity) || "WARNING".equals(severity) || "CRITICAL".equals(severity);
+    }
+
+    private AlertInjectResponse stampAndStoreInjection(String name,
+                                                       String severity,
+                                                       String message,
+                                                       Option<String> metric,
+                                                       Option<Double> value) {
+        var timestamp = System.currentTimeMillis();
+        var alertId = "injected-" + timestamp + "-" + injectionSequence.incrementAndGet();
+        var alert = new InjectedAlert(alertId, name, severity, message, metric, value, timestamp);
+        injectedAlerts.put(alertId, alert);
+        addInjectedToHistory(alert);
+        log.info("Injected synthetic alert id={} name={} severity={}", alertId, name, severity);
+        return new AlertInjectResponse(alertId, name, severity, message, timestamp);
+    }
+
+    private void addInjectedToHistory(InjectedAlert alert) {
+        var nodeIdMarker = "@operator";
+        var entry = new AlertHistoryEntry(alert.timestamp,
+                                          alert.metric.or(alert.name),
+                                          nodeIdMarker,
+                                          alert.value.or(0.0),
+                                          alert.severity,
+                                          "INJECTED");
+        while (!alertHistory.offerLast(entry)) {alertHistory.pollFirst();}
+    }
+
+    private enum InjectionError implements Cause {
+        NAME_REQUIRED("Injected alert requires a non-blank name"),
+        MESSAGE_REQUIRED("Injected alert requires a non-blank message"),
+        INVALID_SEVERITY("Injected alert severity must be one of INFO, WARNING, CRITICAL");
+        private final String message;
+        InjectionError(String message) {
+            this.message = message;
+        }
+        @Override public String message() {
+            return message;
+        }
     }
 
     public int activeAlertCount() {
@@ -256,6 +322,26 @@ import org.slf4j.LoggerFactory;
             sb.append("\"severity\":\"").append(escapeJson(alert.severity))
                      .append("\",");
             sb.append("\"triggeredAt\":").append(alert.triggeredAt);
+            sb.append("}");
+            first = false;
+        }
+        for (var alert : injectedAlerts.values()) {
+            if (!first) sb.append(",");
+            sb.append("{");
+            sb.append("\"alertId\":\"").append(escapeJson(alert.alertId))
+                     .append("\",");
+            sb.append("\"name\":\"").append(escapeJson(alert.name))
+                     .append("\",");
+            sb.append("\"severity\":\"").append(escapeJson(alert.severity))
+                     .append("\",");
+            sb.append("\"message\":\"").append(escapeJson(alert.message))
+                     .append("\",");
+            sb.append("\"metric\":\"").append(escapeJson(alert.metric.or("")))
+                     .append("\",");
+            sb.append("\"value\":").append(alert.value.or(0.0))
+                     .append(",");
+            sb.append("\"source\":\"injected\",");
+            sb.append("\"timestamp\":").append(alert.timestamp);
             sb.append("}");
             first = false;
         }
@@ -455,4 +541,12 @@ import org.slf4j.LoggerFactory;
                                      double value,
                                      String severity,
                                      String status){}
+
+    private record InjectedAlert(String alertId,
+                                 String name,
+                                 String severity,
+                                 String message,
+                                 Option<String> metric,
+                                 Option<Double> value,
+                                 long timestamp){}
 }

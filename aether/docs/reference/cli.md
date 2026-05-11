@@ -596,7 +596,17 @@ aether alerts history
 
 # Clear all active alerts
 aether alerts clear
+
+# Inject a synthetic alert (operator-driven; visible via 'aether alerts list')
+aether alerts inject \
+    --name test-alert \
+    --severity WARNING \
+    --message "synthetic alert from operator" \
+    [--metric test.integration.counter] \
+    [--value 42.0]
 ```
+
+The `inject` subcommand inserts a synthetic alert entry directly, bypassing threshold evaluation. The entry is visible in `aether alerts list` immediately and is also written to alert history with status `INJECTED`. Used by integration tests and operator tooling when no threshold-driven path can produce the alert under test. `--name`, `--severity` (one of `INFO`, `WARNING`, `CRITICAL`), and `--message` are required; `--metric` and `--value` are optional context fields.
 
 #### thresholds
 
