@@ -33,6 +33,8 @@ import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.health.ClusterPhaseChanged;
 import org.pragmatica.aether.deployment.health.HealthReconciler;
 import org.pragmatica.aether.deployment.health.HealthReconcilerConfig;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
@@ -894,6 +896,8 @@ public interface AetherNode extends ManageableNode {
                                                                  HealthReconcilerConfig.DEFAULT,
                                                                  selfOnDutyAtomFactory);
         healthReconciler.start();
+        var membershipFsm = buildMembershipFsmShadow(config.self(), kvStore);
+        membershipFsm.start();
         LifecycleWriter ctmLifecycleWriter = new LifecycleWriter() {
             @Override public Promise<Unit> requestDrain(NodeId target) {
                 return healthReconciler.requestDrain(target);
@@ -1094,6 +1098,7 @@ public interface AetherNode extends ManageableNode {
                                                 taskGroupAssignmentRegistry,
                                                 consumerGroupCoordinator,
                                                 consumerGroupRegistry,
+                                                membershipFsm,
                                                 managementServerRef);
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
@@ -1211,6 +1216,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
         swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
+        swimHealthDetector.addObservationListener(membershipFsm::onSwimObservation);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
         // ClusterFsmRouter, etc.) reach all `TransportObservation.PeerObservedFaulty` edges.
@@ -1615,6 +1621,23 @@ public interface AetherNode extends ManageableNode {
                                                              NodeLifecycle nodeLifecycle) {
         nodeLifecycle.signalReady();
         healthReconciler.signalSelfReady();
+    }
+
+    /// Build the read-only shadow membership FSM (spec §9, E.3). Activation is gated by the
+    /// `aether.membership.fsm.shadowEnabled` system property; default `false` → no-op
+    /// (zero behaviour change). When `true`, the shadow reads `NodeLifecycleKey` and
+    /// `ProvisioningSlotKey` from `kvStore` on `start()` to reconstruct per-peer state.
+    private static MembershipFsm buildMembershipFsmShadow(NodeId self,
+                                                          KVStore<AetherKey, AetherValue> kvStore) {
+        var shadowEnabled = Boolean.getBoolean("aether.membership.fsm.shadowEnabled");
+        var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig().withShadowEnabled(shadowEnabled);
+        MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
+                                                                                                AetherValue.NodeLifecycleValue.class,
+                                                                                                consumer);
+        MembershipFsm.SlotSnapshotReader slotSnapshot = consumer -> kvStore.forEach(AetherKey.ProvisioningSlotKey.class,
+                                                                                      AetherValue.ProvisioningSlotValue.class,
+                                                                                      consumer);
+        return MembershipFsm.membershipFsm(self, fsmConfig, lifecycleSnapshot, slotSnapshot);
     }
 
     @SuppressWarnings("unchecked") private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
@@ -2074,6 +2097,7 @@ public interface AetherNode extends ManageableNode {
                                                                     TaskGroupAssignmentRegistry taskGroupAssignmentRegistry,
                                                                     ConsumerGroupCoordinator consumerGroupCoordinator,
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
+                                                                    MembershipFsm membershipFsm,
                                                                     java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
@@ -2129,6 +2153,14 @@ public interface AetherNode extends ManageableNode {
                                                          eventAggregator::onNodeLifecyclePut)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          put -> notifyCtmOnDuty(put, clusterTopologyManager))
+                                                  .onPut(AetherKey.NodeLifecycleKey.class,
+                                                         membershipFsm::onNodeLifecyclePut)
+                                                  .onRemove(AetherKey.NodeLifecycleKey.class,
+                                                            membershipFsm::onNodeLifecycleRemove)
+                                                  .onPut(AetherKey.ProvisioningSlotKey.class,
+                                                         membershipFsm::onProvisioningSlotPut)
+                                                  .onRemove(AetherKey.ProvisioningSlotKey.class,
+                                                            membershipFsm::onProvisioningSlotRemove)
                                                   .onPut(AetherKey.ActivationDirectiveKey.class,
                                                          clusterDeploymentManager::onActivationDirectivePut)
                                                   .onRemove(AetherKey.ActivationDirectiveKey.class,
