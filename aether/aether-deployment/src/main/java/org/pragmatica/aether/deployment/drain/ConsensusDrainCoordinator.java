@@ -84,7 +84,7 @@ public final class ConsensusDrainCoordinator implements DrainCoordinator {
     }
 
     /// Step 1: write the DRAINING lifecycle atom via consensus. Idempotent — if the
-    /// route handler already wrote it, the underlying HealthReconciler.requestDrain
+    /// route handler already wrote it, the underlying LifecycleWriter.requestDrain
     /// is a no-op CAS.
     @Override public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
         log.info("Drain: prepareDrain {} (reason={})", nodeId, reason);

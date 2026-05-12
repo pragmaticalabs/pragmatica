@@ -45,7 +45,7 @@ import static org.pragmatica.lang.Option.some;
 ///
 /// The "ever-reached-NORMAL" bit is derived from the optional `priorPhaseReader`. Per
 /// spec §7.2, `ClusterPhaseKey` becomes an optional cache populated by legacy
-/// `HealthReconcilerImpl` writes (when the shadow flag is off) or by a future leader
+/// leader writes via `MembershipFsm` or by a future leader
 /// FSM batch write (when the FSM owns the writes). The view consults the cache to
 /// preserve the `COLD_BOOT` vs `RECOVERING` distinction across leader takeovers but
 /// does NOT write to it — derivation is authoritative, the KV is a hint.

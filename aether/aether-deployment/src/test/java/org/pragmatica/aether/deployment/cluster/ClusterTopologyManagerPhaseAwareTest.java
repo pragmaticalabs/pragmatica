@@ -52,7 +52,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///      RECOVERING is treated as freshly stable, not resumed).
 ///   3. The provision-stability anchor only resets on `healthyOnDutyCount` edge transitions
 ///      (spec §11 Q2 resolution).
-///   4. Drain / decommission writes must route through `LifecycleWriter` (HealthReconciler in
+///   4. Drain / decommission writes must route through `LifecycleWriter` (MembershipFsm in
 ///      production, recording stub here) — CTM no longer performs direct KV writes for
 ///      `NodeLifecycleKey`.
 class ClusterTopologyManagerPhaseAwareTest {

@@ -183,7 +183,7 @@ class ConsensusDrainCoordinatorTest {
         try {Thread.sleep(millis);} catch (InterruptedException e) {Thread.currentThread().interrupt();}
     }
 
-    /// Test-only LifecycleWriter that mirrors the production HealthReconciler atom
+    /// Test-only LifecycleWriter that mirrors the production MembershipFsm atom
     /// transitions into a single AtomicReference for assertions.
     private static final class RecordingLifecycleWriter implements LifecycleWriter {
         final AtomicInteger drainCount = new AtomicInteger();

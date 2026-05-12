@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// Regression for cluster-B leader-stuck-epoch (handover 2026-04-27): under the OLD
-/// HealthReconciler design, the leader's currentSnapshot() could return ambient
+/// post-E.8 FSM design, the leader's currentSnapshot() could return ambient
 /// `(rabiaTerm, 0)` whenever the FSM bounced out of LeadingSteady. The KV-as-truth design
 /// makes this impossible because reads come from local KV not from FSM state.
 ///

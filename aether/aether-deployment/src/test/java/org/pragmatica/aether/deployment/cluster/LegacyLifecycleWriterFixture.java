@@ -22,13 +22,13 @@ import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /// Test-only fixture that synthesises a [`LifecycleWriter`] from a raw command-applier and a
-/// lifecycle-reader. Production code MUST NOT use this — `HealthReconcilerImpl` is the sole
+/// lifecycle-reader. Production code MUST NOT use this — `MembershipFsm` is the sole
 /// production writer of `NodeLifecycleKey` (post-R8 single-writer rule).
 ///
 /// This fixture exists so that legacy [`ClusterTopologyManager`] unit tests can drive the CTM
-/// without spinning up a full HealthReconciler. Each request is translated into a direct
+/// without spinning up a full MembershipFsm. Each request is translated into a direct
 /// `KVCommand.Put<NodeLifecycleKey, NodeLifecycleValue>`, mirroring the behaviour of the
-/// in-production HealthReconciler closely enough for these tests to exercise the CTM's reaction
+/// in-production MembershipFsm closely enough for these tests to exercise the CTM's reaction
 /// to KV transitions.
 final class LegacyLifecycleWriterFixture {
     private LegacyLifecycleWriterFixture() {

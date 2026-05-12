@@ -128,7 +128,7 @@ public final class StatusRoutes implements RouteSource {
     }
 
     /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the
-    /// dashboard observes the derived `ClusterPhaseView` value when the FSM shadow flag
+    /// dashboard observes the derived `ClusterPhaseView` value (post-E.8: always derived)
     /// is on, and the legacy `ClusterPhaseKey` cache when it's off — a single migration
     /// switch covers all consumers.
     private static String readClusterPhase(ManageableNode node) {

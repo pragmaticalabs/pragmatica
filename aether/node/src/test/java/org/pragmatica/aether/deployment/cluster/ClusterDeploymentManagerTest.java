@@ -338,9 +338,9 @@ class ClusterDeploymentManagerTest {
         assertThat(naRemoves.getFirst().key().artifact()).isEqualTo(artifact);
 
         // R4: ClusterDeploymentState no longer removes NodeLifecycleKey directly.
-        // HealthReconciler is the sole writer per spec §4.3 P4. The FSM must NOT
+        // MembershipFsm is the sole writer per spec §4.3 P4. The FSM must NOT
         // emit a Remove for the lifecycle key on node removal — DECOMMISSIONED is
-        // written by HealthReconciler on departure observation, and a future
+        // written by the FSM on departure observation, and a future
         // compaction step will GC stale entries.
         var lifecycleKeyRemoves = clusterNode.appliedCommands.stream()
                                                               .filter(cmd -> cmd instanceof KVCommand.Remove<?>)
@@ -348,7 +348,7 @@ class ClusterDeploymentManagerTest {
                                                               .filter(key -> key instanceof AetherKey.NodeLifecycleKey)
                                                               .toList();
         assertThat(lifecycleKeyRemoves)
-            .as("R4: ClusterDeploymentState no longer removes NodeLifecycleKey — HealthReconciler is sole writer")
+            .as("R4: ClusterDeploymentState no longer removes NodeLifecycleKey — the FSM is sole writer")
             .isEmpty();
     }
 

@@ -149,7 +149,7 @@ class MembershipFsmOperatorWriteTest {
         }
     }
 
-    @Nested @DisplayName("Non-leader / flag-off gates")
+    @Nested @DisplayName("Non-leader gates")
     class GatingTests {
         @Test void operatorEvent_nonLeader_noWrite_logsWarning() {
             seedOnDuty(PEER_A, T0);

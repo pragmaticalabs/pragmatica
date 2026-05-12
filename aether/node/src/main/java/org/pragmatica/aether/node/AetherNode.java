@@ -1214,13 +1214,13 @@ public interface AetherNode extends ManageableNode {
         swimHealthDetector.addTransportObservationEmitter(delegateRouter::route);
         // RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
         // observations directly. NODE_FAILED / NODE_LEFT events are emitted only via
-        // `onNodeLifecyclePut` (the leader's HealthReconciler writing DECOMMISSIONED to
+        // `onNodeLifecyclePut` (the leader FSM writing DECOMMISSIONED to
         // KV-Store with prior-state context). The SWIM-witnessed duplicate emit was
         // amplifying the membership-tracker cascade audit identified.
         // RC1-9 audit Step 3: the SWIM-FAULTY-to-disconnect short-circuit lambda is
         // gone. QUIC eviction now flows from `MembershipDecision.NodeRemoved`
         // (published by `TopologyObserver.publishMembershipDeltas` after the leader's
-        // `HealthReconciler` writes `DECOMMISSIONED` and the snapshot re-projects).
+        // `MembershipFsm` writes `DECOMMISSIONED` and the snapshot re-projects).
         // The membership-delta-driven path is a single canonical edge instead of N+1
         // fan-out across every survivor's local SWIM listener; eviction trades sub-ms
         // local-SWIM latency for a Rabia round-trip + projection (~200-500ms cloud RTT).
@@ -1632,7 +1632,7 @@ public interface AetherNode extends ManageableNode {
 
     /// Post-E.8 phase-change publisher. Polls `phaseSupplier` at `PHASE_WATCH_INTERVAL` and
     /// dispatches `ctm.onClusterPhaseChanged(newPhase)` on every observed transition.
-    /// Replaces the legacy `HealthReconciler.addPhaseListener` wiring.
+    /// Replaces the legacy `AetherNode.schedulePhaseChangeWatcher` wiring.
     @Contract private static void schedulePhaseChangeWatcher(Supplier<AetherValue.ClusterPhase> phaseSupplier,
                                                               ClusterTopologyManager ctm) {
         var lastPhase = new java.util.concurrent.atomic.AtomicReference<>(phaseSupplier.get());

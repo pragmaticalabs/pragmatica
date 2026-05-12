@@ -158,7 +158,7 @@ class MembershipFsmTest {
         }
     }
 
-    @Nested @DisplayName("KV notifications: external writes drive shadow state")
+    @Nested @DisplayName("KV notifications: external writes drive FSM state")
     class KvNotificationTests {
         @Test void onLifecycleKVChange_externalWrite_updatesShadowStateWithoutEmitWrite() {
             var fsm = startedFsm();

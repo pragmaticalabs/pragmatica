@@ -295,7 +295,7 @@ public final class MembershipFsm {
         processOperatorOrFsmEvent(event);
     }
 
-    /// KV-notification handler for `NodeLifecycleKey` puts. Updates the shadow state from the
+    /// KV-notification handler for `NodeLifecycleKey` puts. Updates the FSM state from the
     /// externally-written lifecycle value WITHOUT emitting any reducer effects (the value
     /// already reflects the production write — the FSM derives its state, it doesn't re-act).
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {

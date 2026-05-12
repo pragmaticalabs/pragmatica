@@ -46,7 +46,7 @@ public final class SwimHealthContext {
     /// cluster is in `COLD_BOOT` phase (FAULTY for never-HEALTHY peers should be
     /// suppressed to `UnknownObserved`); `false` in `NORMAL` and `RECOVERING` (always
     /// emit `FaultyObserved` regardless of `everSeenHealthy`). Production wiring
-    /// sources this from `HealthReconciler.phase() == ClusterPhase.COLD_BOOT` — the
+    /// sources this from `ClusterPhaseView.compute() == ClusterPhase.COLD_BOOT` — the
     /// `RECOVERING` branch is the critical compose-restart fix where peers were
     /// previously visible-and-Healthy. Default `() -> true` preserves legacy behavior
     /// for unit tests that don't wire a phase.
@@ -261,7 +261,7 @@ public final class SwimHealthContext {
     /// RC1-9 audit Step 3: the leader-only `routeDisconnect(peer)` and the
     /// follower-for-dead-leader `routeDisconnect(peer)` are both gone. QUIC eviction
     /// now flows via `MembershipDecision.NodeRemoved` after the leader's
-    /// `HealthReconciler` writes `DECOMMISSIONED` and `TopologyObserver` publishes
+    /// `MembershipFsm` writes `DECOMMISSIONED` and `TopologyObserver` publishes
     /// the membership delta. The leader-side aggregation path
     /// (`emitLeaderHint` + `bufferHealthObservation`) is preserved.
     @Contract public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {

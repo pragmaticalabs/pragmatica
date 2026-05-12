@@ -30,7 +30,7 @@ import org.slf4j.LoggerFactory;
 ///     route through `LifecycleWriter` (the FSM owns the operator-route path, but CTM and
 ///     `ConsensusDrainCoordinator` write directly).
 ///
-/// Post-E.8 (spec §9): this interface replaces the legacy `HealthReconciler` surface for
+/// Post-E.8 (spec §9): this interface replaces the legacy lifecycle-reconciler surface for
 /// lifecycle writes. All writes are KV `Put` commands proposed through the supplied
 /// `commandApplier`; metadata (host/port/observedCoreEpoch/transitionedAt/provisioningSource)
 /// is preserved from the prior `NodeLifecycleValue` when available.

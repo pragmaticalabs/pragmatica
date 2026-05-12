@@ -14,7 +14,7 @@ import org.pragmatica.lang.io.TimeSpan;
 /// the join-deadline timer). Wiring-time concerns (drain timeout, scheduler instance) live
 /// on the wiring layer, not here.
 ///
-/// Post-E.8 (spec §9): the `shadowEnabled` feature flag is gone — the FSM is always active.
+/// Post-E.8 (spec §9): The FSM is always active (no feature flag).
 public record MembershipFsmConfig(TimeSpan joinDeadline, TimeSpan drainTimeout) {
     public static final TimeSpan DEFAULT_JOIN_DEADLINE = TimeSpan.timeSpan(60).seconds();
 

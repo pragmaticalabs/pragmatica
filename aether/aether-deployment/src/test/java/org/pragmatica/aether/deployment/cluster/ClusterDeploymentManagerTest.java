@@ -121,7 +121,7 @@ class ClusterDeploymentManagerTest {
         @Test
         void completeDrain_emitsDrainCompletedSignal() throws InterruptedException {
             // Spec §8 single-writer rule: CDM MUST NOT write NodeLifecycleKey directly on drain
-            // completion. Instead it emits a DrainCompleted signal so HealthReconciler — the sole
+            // completion. Instead it emits a DrainCompleted signal so MembershipFsm — the sole
             // membership atom writer — can transition the lifecycle authoritatively.
             cdm.activate().await();
 
