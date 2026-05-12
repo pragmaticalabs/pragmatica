@@ -132,18 +132,20 @@ class MembershipFsmTest {
         }
     }
 
-    @Nested @DisplayName("onSwimObservation: feeds reducer (read-only)")
+    @Nested @DisplayName("onSwimObservation: leader-gated drop on followers (spec §6.1)")
     class SwimObservationTests {
-        @Test void onSwimObservation_healthy_invokesReducer() {
+        @Test void onSwimObservation_onFollower_isDropped_noStateChange() {
+            // E.5 spec §6.1: followers MUST NOT advance FSM state from SWIM observations.
+            // This factory wires `NEVER_LEADER`, so the observation is dropped (TRACE log).
+            // Detailed leader-write behaviour is covered in MembershipFsmSwimWriteTest.
             var fsm = startedFsm();
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
-            // Reducer applied to (UNTRACKED, SwimHealthy) → JOINING; state stored in snapshot.
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Joining.class);
+            assertThat(fsm.get(PEER_A)).isEqualTo(Option.<MembershipFsmState>none());
         }
 
-        @Test void onSwimObservation_doesNotEmitKvWrite() {
-            // The shadow logs but does not propose anything externally; lifecycleSnapshot must
-            // remain untouched by the FSM (the FSM is the consumer, not the writer).
+        @Test void onSwimObservation_doesNotMutateLifecycleSnapshot() {
+            // The shadow never writes to KV (the FSM is the consumer, not the writer); the
+            // lifecycleSnapshot fake is only read by the FSM during replay.
             var fsm = startedFsm();
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
             assertThat(lifecycleSnapshot.entries).isEmpty();
@@ -218,23 +220,32 @@ class MembershipFsmTest {
     @Nested @DisplayName("Operator event entry: enqueueOperatorEvent")
     class OperatorEventTests {
         @Test void enqueueOperatorEvent_slotClaimed_reachesReducer() {
+            // SlotClaimed is NOT a leader-writing event (no consensus write proposed), so it
+            // flows through the shadow path even on the NEVER_LEADER read-only factory.
             var fsm = startedFsm();
             fsm.enqueueOperatorEvent(new SlotClaimed(PEER_A, SLOT_A, T1));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Joining.class);
         }
 
-        @Test void enqueueOperatorEvent_swimHealthyForJoining_promotesToOnDuty() {
+        @Test void enqueueOperatorEvent_swimHealthyForJoining_onFollower_isNoOp() {
+            // E.5: SwimHealthy is now a leader-writing event. On the NEVER_LEADER factory, the
+            // single-writer gate fires — state is NOT mutated. Leader-side behaviour for
+            // SwimHealthy(JOINING) → ON_DUTY is covered in MembershipFsmSwimWriteTest.
             lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.JOINING, T0));
             var fsm = startedFsm();
             fsm.enqueueOperatorEvent(new SwimHealthy(PEER_A, 1L, T1));
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Joining.class);
         }
 
-        @Test void enqueueOperatorEvent_swimFaultyOnDuty_marksDecommissioned() {
+        @Test void enqueueOperatorEvent_swimFaultyOnDuty_onFollower_isNoOp() {
+            // E.5: SwimFaulty is now a leader-writing event. On the NEVER_LEADER factory, the
+            // single-writer gate fires — state is NOT mutated. The leader-side smoking-gun
+            // transition (ON_DUTY, SwimFaulty) → DECOMMISSIONED is covered in
+            // MembershipFsmSwimWriteTest.swimFaulty_onDuty_leader_writesDecommissioned.
             lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.ON_DUTY, T0));
             var fsm = startedFsm();
             fsm.enqueueOperatorEvent(new SwimFaulty(PEER_A, 7L, T1));
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
         }
     }
 

@@ -260,13 +260,41 @@ public final class MembershipFsm {
     }
 
     /// SWIM observation entry point. Translates the observation into a typed FSM event and
-    /// runs the reducer under `fsmLock`. In E.3/E.4 the SWIM path remains read-only — the
-    /// production write path is still `HealthReconciler` (E.5 migrates this).
+    /// routes it through the leader-writing dispatcher (spec §9 E.5).
+    ///
+    /// **Leader gate (spec §6.1).** When the feature flag is on AND `isLeader.getAsBoolean()`
+    /// returns `false`, the observation is dropped (TRACE log) — followers MUST NOT advance
+    /// their FSM state from SWIM observations; they learn state via `NodeLifecycleKey` KV
+    /// notifications only. This closes the F1 follower-state-drift bug from the spec audit:
+    /// each node has its own SWIM view, so allowing followers to write to `fsmStates` from
+    /// SWIM would diverge them from the leader's authoritative view.
+    ///
+    /// **Leader write path.** When flag on AND leader: the translated event flows through
+    /// the same `processOperatorOrShadowEvent` dispatcher that operator commands use. The
+    /// reducer's `(ON_DUTY, SwimFaulty) → DECOMMISSIONED` transition fires here — this is
+    /// the structural fix that closes the smoking-gun bug (previously the threshold gate +
+    /// phase suppression in the legacy path prevented this write from ever firing).
+    ///
+    /// **Coexistence with legacy path.** `HealthReconciler.onSwimObservation → aggregator →
+    /// lifecycle write` continues to run in parallel during E.5. Idempotent `Put(L=X)` writes
+    /// mean duplicate writes are harmless at consensus. The legacy path retires in E.7.
     @Contract public void onSwimObservation(SwimObservation observation) {
         if (!shouldProcess()) {
             return;
         }
-        translate(observation).onPresent(this::processShadowEvent);
+        if (!isLeader.getAsBoolean()) {
+            logSwimDropOnFollower(observation);
+            return;
+        }
+        translate(observation).onPresent(this::processOperatorOrShadowEvent);
+    }
+
+    private void logSwimDropOnFollower(SwimObservation observation) {
+        if (log.isTraceEnabled()) {
+            log.trace("MembershipFsm: SWIM observation {} dropped on follower {} (spec §6.1 — followers learn via KV notifications)",
+                      observation.getClass().getSimpleName(),
+                      self.id());
+        }
     }
 
     /// Event entry point for operator commands and leader-issued protocol feedback. In E.4,
@@ -339,17 +367,35 @@ public final class MembershipFsm {
     }
 
     /// Events that may produce consensus writes via the FSM reducer and therefore require
-    /// the single-writer (leader-only) gate. Operator commands (`OperatorDrain` /
-    /// `OperatorDecommission`) plus the leader-issued feedback events
-    /// (`DrainOutcome` from `DrainCoordinator.awaitDrainAck`, `JoinDeadlineExpired` from the
-    /// JOIN_DEADLINE timer) all qualify — the leader started the protocol, so the leader
-    /// must own its terminal write. SWIM observations stay shadow-only in E.4 (E.5 lifts
-    /// them onto this path).
+    /// the single-writer (leader-only) gate.
+    ///
+    /// **E.4 set (operator + protocol feedback):** `OperatorDrain`, `OperatorDecommission`,
+    /// `DrainOutcome` (from `DrainCoordinator.awaitDrainAck`), `JoinDeadlineExpired` (from the
+    /// JOIN_DEADLINE timer) — the leader started the protocol, so the leader must own its
+    /// terminal write.
+    ///
+    /// **E.5 extension (SWIM observations):** `SwimFaulty`, `SwimDeparted`, `SwimHealthy`.
+    /// Per spec §5 these can produce consensus writes:
+    /// - `(ON_DUTY, SwimFaulty) → DECOMMISSIONED` — the smoking-gun transition.
+    /// - `(ON_DUTY, SwimDeparted) → DECOMMISSIONED` — same semantics as FAULTY per §4.
+    /// - `(JOINING, SwimHealthy) → ON_DUTY` — Q1=A leader-initiated promotion.
+    /// - `(JOINING, SwimDeparted) → DECOMMISSIONED` and `(FAILED_DRAIN, SwimDeparted) →
+    ///   DECOMMISSIONED` also fall under the SWIM-writing classification.
+    /// - `(DRAINING, SwimDeparted) → DECOMMISSIONED` (hard-departed, cancels drain).
+    /// Even SWIM-event cells that are nops (e.g., `(ON_DUTY, SwimHealthy) → nop` for
+    /// re-confirmation) flow through this path; the reducer returns an empty `writes` list
+    /// and `proposeWritesAndApply` short-circuits without proposing anything.
+    ///
+    /// `SlotClaimed` remains a shadow-only event (no consensus write — the slot key was
+    /// already written by another actor; this event drives a derived JOINING transition).
     private static boolean isLeaderWritingEvent(MembershipFsmEvent event) {
         return event instanceof OperatorDrain
                || event instanceof OperatorDecommission
                || event instanceof DrainOutcome
-               || event instanceof JoinDeadlineExpired;
+               || event instanceof JoinDeadlineExpired
+               || event instanceof SwimFaulty
+               || event instanceof SwimDeparted
+               || event instanceof SwimHealthy;
     }
 
     private void applyExternalLifecyclePut(NodeId peer, NodeLifecycleValue value) {
