@@ -21,9 +21,9 @@ class ControllerConfigTest {
             assertThat(config.cpuScaleUpThreshold()).isEqualTo(0.8);
             assertThat(config.cpuScaleDownThreshold()).isEqualTo(0.2);
             assertThat(config.callRateScaleUpThreshold()).isEqualTo(2000.0);
-            assertThat(config.evaluationIntervalMs()).isEqualTo(1000);
-            assertThat(config.warmUpPeriodMs()).isEqualTo(30000);
-            assertThat(config.sliceCooldownMs()).isEqualTo(10000);
+            assertThat(config.evaluationInterval().millis()).isEqualTo(1000);
+            assertThat(config.warmUpPeriod().millis()).isEqualTo(30000);
+            assertThat(config.sliceCooldown().millis()).isEqualTo(10000);
             assertThat(config.scalingConfig()).isNotNull();
         }
     }

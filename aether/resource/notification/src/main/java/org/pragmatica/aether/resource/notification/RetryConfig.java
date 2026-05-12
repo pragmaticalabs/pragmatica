@@ -4,8 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.notification;
 
-public record RetryConfig(int maxAttempts, long initialDelayMs, long maxDelayMs, double backoffMultiplier) {
-    public static final RetryConfig DEFAULT = new RetryConfig(3, 1000, 30_000, 2.0);
+import org.pragmatica.lang.io.TimeSpan;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
+
+public record RetryConfig(int maxAttempts, TimeSpan initialDelay, TimeSpan maxDelay, double backoffMultiplier) {
+    public static final RetryConfig DEFAULT = new RetryConfig(3, timeSpan(1).seconds(), timeSpan(30).seconds(), 2.0);
 
     public static RetryConfig retryConfig() {
         return DEFAULT;
@@ -15,6 +20,6 @@ public record RetryConfig(int maxAttempts, long initialDelayMs, long maxDelayMs,
                                           long initialDelayMs,
                                           long maxDelayMs,
                                           double backoffMultiplier) {
-        return new RetryConfig(maxAttempts, initialDelayMs, maxDelayMs, backoffMultiplier);
+        return new RetryConfig(maxAttempts, timeSpan(initialDelayMs).millis(), timeSpan(maxDelayMs).millis(), backoffMultiplier);
     }
 }

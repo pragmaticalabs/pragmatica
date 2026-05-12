@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.update;
 
+import org.pragmatica.lang.io.TimeSpan;
+
 import java.util.List;
 
 
@@ -14,7 +16,7 @@ public sealed interface StrategyConfig {
         }
     }
 
-    record BlueGreenConfig(long drainTimeoutMs) implements StrategyConfig{}
+    record BlueGreenConfig(TimeSpan drainTimeout) implements StrategyConfig{}
 
     record RollingConfig(boolean requireManualApproval) implements StrategyConfig{}
 }

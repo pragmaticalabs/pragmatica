@@ -46,6 +46,6 @@ class NotificationSenderFactoryTest {
         var config = NotificationConfig.notificationConfig("http").withRetryConfig(retry);
 
         assertThat(config.effectiveRetryConfig().maxAttempts()).isEqualTo(5);
-        assertThat(config.effectiveRetryConfig().initialDelayMs()).isEqualTo(500);
+        assertThat(config.effectiveRetryConfig().initialDelay().millis()).isEqualTo(500);
     }
 }

@@ -31,6 +31,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public final class DeployRoutes implements RouteSource {
@@ -186,7 +187,7 @@ public final class DeployRoutes implements RouteSource {
     private static Result<HealthThresholds> parseThresholds(Map<String, Object> raw) {
         if (raw == null || raw.isEmpty()) {return Result.success(HealthThresholds.DEFAULT);}
         var maxErrorRate = toDouble(raw.get("maxErrorRate"), HealthThresholds.DEFAULT.maxErrorRate());
-        var maxLatencyMs = toLong(raw.get("maxLatencyMs"), HealthThresholds.DEFAULT.maxLatencyMs());
+        var maxLatencyMs = toLong(raw.get("maxLatencyMs"), HealthThresholds.DEFAULT.maxLatency().millis());
         return HealthThresholds.healthThresholds(maxErrorRate, maxLatencyMs, false);
     }
 
@@ -233,7 +234,7 @@ public final class DeployRoutes implements RouteSource {
         var drainTimeoutMs = raw != null
                             ? toLong(raw.get("drainTimeoutMs"), 30_000L)
                             : 30_000L;
-        return Result.success(new BlueGreenConfig(drainTimeoutMs));
+        return Result.success(new BlueGreenConfig(timeSpan(drainTimeoutMs).millis()));
     }
 
     private static Result<StrategyConfig> parseRollingConfig(Map<String, Object> raw) {

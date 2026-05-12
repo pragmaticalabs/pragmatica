@@ -87,7 +87,7 @@ public final class ControllerRoutes implements RouteSource {
                                                  mergeDouble(option(req.callRateScaleUpThreshold()),
                                                              current.callRateScaleUpThreshold()),
                                                  mergeLong(option(req.evaluationIntervalMs()),
-                                                           current.evaluationIntervalMs()));
+                                                           current.evaluationInterval().millis()));
     }
 
     private static double mergeDouble(Option<Double> requested, double current) {
@@ -106,7 +106,7 @@ public final class ControllerRoutes implements RouteSource {
     private ControllerStatusResponse buildControllerStatusResponse() {
         var node = nodeSupplier.get();
         var config = node.controlLoop().configuration();
-        return new ControllerStatusResponse(true, config.evaluationIntervalMs(), config);
+        return new ControllerStatusResponse(true, config.evaluationInterval().millis(), config);
     }
 
     private TtmStatusResponse buildTtmStatusResponse() {

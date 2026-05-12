@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.update.DeploymentError.BlueprintNotFound.blueprintNotFound;
 import static org.pragmatica.aether.update.DeploymentError.DeploymentAlreadyExists.deploymentAlreadyExists;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.aether.update.DeploymentError.DeploymentNotFound.deploymentNotFound;
 import static org.pragmatica.aether.update.DeploymentError.NoCurrentVersion.noCurrentVersion;
 import static org.pragmatica.aether.update.DeploymentError.SameVersionDeployment.sameVersionDeployment;
@@ -379,7 +380,7 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     private String serializeThresholds(HealthThresholds t) {
-        return t.maxErrorRate() + ":" + t.maxLatencyMs() + ":" + t.requireManualApproval();
+        return t.maxErrorRate() + ":" + t.maxLatency().millis() + ":" + t.requireManualApproval();
     }
 
     @SuppressWarnings("JBCT-RET-01") private Result<Unit> applyConsensus(List<KVCommand<AetherKey>> commands) {
@@ -462,7 +463,7 @@ final class DeploymentManagerImpl implements DeploymentManager {
     private StrategyConfig parseStrategyConfig(DeploymentStrategy strategy, String configStr) {
         return switch (strategy){
             case CANARY -> new StrategyConfig.CanaryConfig(CanaryStage.defaultStages(), CanaryAnalysisConfig.DEFAULT);
-            case BLUE_GREEN -> new StrategyConfig.BlueGreenConfig(30_000L);
+            case BLUE_GREEN -> new StrategyConfig.BlueGreenConfig(timeSpan(30).seconds());
             case ROLLING -> new StrategyConfig.RollingConfig(false);
         };
     }

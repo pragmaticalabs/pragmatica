@@ -32,7 +32,7 @@ final class SmtpNotificationSender implements NotificationSender {
 
     private Promise<NotificationResult> sendEmail(Notification.Email email) {
         var message = toSmtpMessage(email);
-        return sendWithRetry(message, 1, retryConfig.initialDelayMs());
+        return sendWithRetry(message, 1, retryConfig.initialDelay().millis());
     }
 
     private Promise<NotificationResult> sendWithRetry(SmtpMessage message, int attempt, long delayMs) {
@@ -47,7 +47,7 @@ final class SmtpNotificationSender implements NotificationSender {
     }
 
     private long nextDelay(long currentDelayMs) {
-        return Math.min((long)(currentDelayMs * retryConfig.backoffMultiplier()), retryConfig.maxDelayMs());
+        return Math.min((long)(currentDelayMs * retryConfig.backoffMultiplier()), retryConfig.maxDelay().millis());
     }
 
     private static Promise<Unit> delayThen(long delayMs) {

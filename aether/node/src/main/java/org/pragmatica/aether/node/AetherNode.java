@@ -186,7 +186,6 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.security.CertificateBundle;
@@ -970,9 +969,8 @@ public interface AetherNode extends ManageableNode {
                                                   Option.some(invocationMetrics),
                                                   clusterNode,
                                                   kvStore,
-                                                  TimeSpan.timeSpan(config.controllerConfig().scalingConfig()
-                                                                                           .evaluationIntervalMs())
-        .millis(),
+                                                  config.controllerConfig().scalingConfig()
+                                                                                           .evaluationInterval(),
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
         var rollbackManager = config.rollback().enabled()

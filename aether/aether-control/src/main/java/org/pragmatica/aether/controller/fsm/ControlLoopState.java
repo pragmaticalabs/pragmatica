@@ -44,11 +44,10 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
 
     record Warmup(ControlLoopContext ctx, long activationTimeMs, ScheduledFuture<?> warmupTimer) implements ControlLoopState {
         static Warmup warmup(ControlLoopContext ctx, long activationTimeMs) {
-            var warmUpMs = ctx.config().warmUpPeriodMs();
             return new Warmup(ctx,
                               activationTimeMs,
                               SharedScheduler.schedule(() -> ctx.dispatch(new ActivationTimeReached()),
-                                                       TimeSpan.timeSpan(warmUpMs).millis()));
+                                                       ctx.config().warmUpPeriod()));
         }
 
         @Override@Contract public void onEntry() {
@@ -56,7 +55,7 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
             ctx.restoreCooldownsFromKvStore();
             log.info("Control loop Warmup: activation={}, warmup-period={}ms",
                      activationTimeMs,
-                     ctx.config().warmUpPeriodMs());
+                     ctx.config().warmUpPeriod().millis());
         }
 
         @Override@Contract public void onExit() {
@@ -172,7 +171,7 @@ public sealed interface ControlLoopState extends FsmState<ControlLoopState, Clus
         }
 
         private static ScheduledFuture<?> scheduleExpiryTick(ControlLoopContext ctx, Runnable task) {
-            var pollIntervalMs = Math.max(ctx.config().sliceCooldownMs() / 4L,
+            var pollIntervalMs = Math.max(ctx.config().sliceCooldown().millis() / 4L,
                                           100L);
             return SharedScheduler.schedule(task,
                                             TimeSpan.timeSpan(pollIntervalMs).millis());

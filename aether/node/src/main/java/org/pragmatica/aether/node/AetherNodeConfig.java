@@ -33,6 +33,7 @@ import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.net.tcp.security.CertificateProvider;
@@ -71,8 +72,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<BackupConfig> backupConfig,
                                StreamingConfig streaming,
                                ClusterFormationConfig clusterFormation) {
-    public record DeploymentDefaults(long canaryEvaluationIntervalMs, List<CanaryStageConfig> defaultCanaryStages) {
-        public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(30_000,
+    public record DeploymentDefaults(TimeSpan canaryEvaluationInterval, List<CanaryStageConfig> defaultCanaryStages) {
+        public static final DeploymentDefaults DEFAULT = new DeploymentDefaults(timeSpan(30).seconds(),
                                                                                 DeploymentConfig.defaultCanaryStages());
     }
 

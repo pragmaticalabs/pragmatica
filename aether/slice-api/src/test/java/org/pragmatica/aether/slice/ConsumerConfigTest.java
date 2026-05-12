@@ -69,7 +69,7 @@ class ConsumerConfigTest {
             assertThat(config.maxBatchSize()).isEqualTo(50);
             assertThat(config.processingMode()).isEqualTo(ProcessingMode.PARALLEL);
             assertThat(config.errorStrategy()).isEqualTo(ErrorStrategy.SKIP);
-            assertThat(config.checkpointIntervalMs()).isEqualTo(1000L);
+            assertThat(config.checkpointInterval().millis()).isEqualTo(1000L);
             assertThat(config.maxRetries()).isEqualTo(3);
             assertThat(config.deadLetterStream()).isEmpty();
             assertThat(config.readPreference()).isEqualTo(ReadPreference.GOVERNOR);

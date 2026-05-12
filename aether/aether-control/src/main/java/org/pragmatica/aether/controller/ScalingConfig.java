@@ -6,14 +6,17 @@ package org.pragmatica.aether.controller;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.EnumMap;
 import java.util.Map;
 
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 public record ScalingConfig(int windowSize,
-                            long evaluationIntervalMs,
+                            TimeSpan evaluationInterval,
                             double scaleUpThreshold,
                             double scaleDownThreshold,
                             Map<ScalingMetric, Double> weights,
@@ -22,7 +25,7 @@ public record ScalingConfig(int windowSize,
 
     private static final int FORGE_WINDOW_SIZE = 5;
 
-    private static final long DEFAULT_EVALUATION_INTERVAL_MS = 5000;
+    private static final TimeSpan DEFAULT_EVALUATION_INTERVAL = timeSpan(5).seconds();
 
     private static final double DEFAULT_SCALE_UP_THRESHOLD = 1.5;
 
@@ -39,7 +42,7 @@ public record ScalingConfig(int windowSize,
         weights.put(ScalingMetric.P95_LATENCY, 0.2);
         weights.put(ScalingMetric.ERROR_RATE, 0.0);
         return new ScalingConfig(DEFAULT_WINDOW_SIZE,
-                                 DEFAULT_EVALUATION_INTERVAL_MS,
+                                 DEFAULT_EVALUATION_INTERVAL,
                                  DEFAULT_SCALE_UP_THRESHOLD,
                                  DEFAULT_SCALE_DOWN_THRESHOLD,
                                  Map.copyOf(weights),
@@ -53,7 +56,7 @@ public record ScalingConfig(int windowSize,
         weights.put(ScalingMetric.P95_LATENCY, 0.4);
         weights.put(ScalingMetric.ERROR_RATE, 0.0);
         return new ScalingConfig(FORGE_WINDOW_SIZE,
-                                 DEFAULT_EVALUATION_INTERVAL_MS,
+                                 DEFAULT_EVALUATION_INTERVAL,
                                  DEFAULT_SCALE_UP_THRESHOLD,
                                  DEFAULT_SCALE_DOWN_THRESHOLD,
                                  Map.copyOf(weights),
@@ -85,7 +88,7 @@ public record ScalingConfig(int windowSize,
                                .flatMap(_ -> validateThresholdOrder(scaleUpThreshold, scaleDownThreshold))
                                .flatMap(_ -> validateWeights(weights))
                                .map(_ -> new ScalingConfig(windowSize,
-                                                           evaluationIntervalMs,
+                                                           timeSpan(evaluationIntervalMs).millis(),
                                                            scaleUpThreshold,
                                                            scaleDownThreshold,
                                                            Map.copyOf(weights),
@@ -126,7 +129,7 @@ public record ScalingConfig(int windowSize,
         newWeights.putAll(weights);
         newWeights.put(metric, newWeight);
         return scalingConfig(windowSize,
-                             evaluationIntervalMs,
+                             evaluationInterval.millis(),
                              scaleUpThreshold,
                              scaleDownThreshold,
                              newWeights,
@@ -135,7 +138,7 @@ public record ScalingConfig(int windowSize,
 
     public Result<ScalingConfig> withWindowSize(int newWindowSize) {
         return scalingConfig(newWindowSize,
-                             evaluationIntervalMs,
+                             evaluationInterval.millis(),
                              scaleUpThreshold,
                              scaleDownThreshold,
                              weights,
@@ -153,7 +156,7 @@ public record ScalingConfig(int windowSize,
 
     public Result<ScalingConfig> withScaleUpThreshold(double newThreshold) {
         return scalingConfig(windowSize,
-                             evaluationIntervalMs,
+                             evaluationInterval.millis(),
                              newThreshold,
                              scaleDownThreshold,
                              weights,
@@ -162,7 +165,7 @@ public record ScalingConfig(int windowSize,
 
     public Result<ScalingConfig> withScaleDownThreshold(double newThreshold) {
         return scalingConfig(windowSize,
-                             evaluationIntervalMs,
+                             evaluationInterval.millis(),
                              scaleUpThreshold,
                              newThreshold,
                              weights,
@@ -171,7 +174,7 @@ public record ScalingConfig(int windowSize,
 
     public Result<ScalingConfig> withErrorRateBlockThreshold(double newThreshold) {
         return scalingConfig(windowSize,
-                             evaluationIntervalMs,
+                             evaluationInterval.millis(),
                              scaleUpThreshold,
                              scaleDownThreshold,
                              weights,

@@ -243,11 +243,11 @@ public final class ControlLoopContext {
     }
 
     @Contract public void cleanupExpiredCooldowns(long now) {
-        sliceActivationTimes.entrySet().removeIf(entry -> (now - entry.getValue()) >= configRef.get().sliceCooldownMs());
+        sliceActivationTimes.entrySet().removeIf(entry -> (now - entry.getValue()) >= configRef.get().sliceCooldown().millis());
     }
 
     public boolean allCooldownsExpired(long now) {
-        var cooldownMs = configRef.get().sliceCooldownMs();
+        var cooldownMs = configRef.get().sliceCooldown().millis();
         return sliceActivationTimes.values().stream()
                                           .noneMatch(ts -> (now - ts) <cooldownMs);
     }
@@ -383,8 +383,8 @@ public final class ControlLoopContext {
         var currentConfig = configRef.get();
         for (var entry : sliceActivationTimes.entrySet()) {
             var elapsed = now - entry.getValue();
-            if (elapsed <currentConfig.sliceCooldownMs()) {
-                var remaining = currentConfig.sliceCooldownMs() - elapsed;
+            if (elapsed <currentConfig.sliceCooldown().millis()) {
+                var remaining = currentConfig.sliceCooldown().millis() - elapsed;
                 return Option.some("Slice " + entry.getKey() + " in cooldown (" + remaining + "ms remaining)");
             }
         }
@@ -503,7 +503,7 @@ public final class ControlLoopContext {
     private boolean isInCommunityCooldown(CommunityScalingRequest request) {
         var artifactKey = request.artifact().asString();
         var lastScaling = communityScalingCooldowns.get(artifactKey);
-        if (lastScaling != null && (nowMs() - lastScaling) <configRef.get().sliceCooldownMs()) {
+        if (lastScaling != null && (nowMs() - lastScaling) <configRef.get().sliceCooldown().millis()) {
             log.debug("Community scaling request for {} in cooldown", artifactKey);
             return true;
         }
@@ -562,7 +562,7 @@ public final class ControlLoopContext {
         var timestamp = parseCooldownTimestamp(value.value());
         if (timestamp <= 0) {return;}
         var now = nowMs();
-        var cooldownMs = configRef.get().sliceCooldownMs();
+        var cooldownMs = configRef.get().sliceCooldown().millis();
         if ((now - timestamp) <cooldownMs) {
             communityScalingCooldowns.put(artifactKey, timestamp);
             log.debug("Restored cooldown for {} ({}ms remaining)", artifactKey, cooldownMs - (now - timestamp));
