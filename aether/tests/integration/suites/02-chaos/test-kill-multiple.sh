@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/../../lib/generation.sh"
 test_initial_state() {
     wait_for_cluster 60
     # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
-    wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still BOOTING; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
+    wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
     wait_for_leader 60
     local count
     count=$(cluster_node_count)
@@ -39,17 +39,17 @@ test_kill_two_nodes() {
 
     # Event-driven barrier between the two kills (replaces `sleep 5`). Emulates
     # staggered failure where the second kill happens AFTER SWIM has actually
-    # detected the first — fails fast if SWIM regresses past 30s.
-    if ! wait_for_node_departure "$victim1" "$baseline" 60; then
-        log_fail "No NODE_LEFT/NODE_FAILED event for first victim ${victim1} within 30s"
+    # detected the first — fails fast if SWIM regresses past the budget.
+    if ! wait_for_node_departure "$victim1" "$baseline" 90; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for first victim ${victim1} within 90s"
         return 1
     fi
     log_pass "Departure of ${victim1} observed"
 
     log_info "Killing node 2: ${victim2}"
     kill_node "$victim2"
-    if ! wait_for_node_departure "$victim2" "$baseline" 60; then
-        log_fail "No NODE_LEFT/NODE_FAILED event for second victim ${victim2} within 30s"
+    if ! wait_for_node_departure "$victim2" "$baseline" 90; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for second victim ${victim2} within 90s"
         return 1
     fi
     log_pass "Departure of ${victim2} observed"

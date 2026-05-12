@@ -16,10 +16,10 @@ DETECTION_TIMEOUT="${SWIM_DETECTION_TIMEOUT:-15}"
 
 test_cluster_ready() {
     wait_for_cluster 60
-    # SWIM cold-boot suppression bypass: kills against a phase=BOOTING cluster
+    # SWIM cold-boot suppression bypass: kills against a phase=COLD_BOOT cluster
     # produce UnknownObserved (not FaultyObserved), so no NODE_FAILED event fires.
     # Soft (log_warn) — docker-remote cluster B cumulative degradation can keep
-    # phase=BOOTING; fail-fast here cascades that infra issue into a 12-network
+    # phase=COLD_BOOT; fail-fast here cascades that infra issue into a 12-network
     # suite failure. Subsequent assertion will fail with a clearer "no event"
     # signal if the precondition really wasn't met.
     wait_for_phase "NORMAL" 180 || \

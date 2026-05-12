@@ -138,8 +138,25 @@ services:
       - "5150:8080"   # MGMT_ENTRY_POINT (was node-1 direct)
     volumes:
       - ./nginx-mgmt-gateway-a.conf:/etc/nginx/nginx.conf:ro
+    # nginx evaluates `upstream { server foo:port }` at config-load and aborts
+    # with `host not found in upstream` if the hostname has no DNS entry yet.
+    # depends_on with service_started waits for each core's container creation
+    # (which is when Docker registers its embedded DNS record), so nginx's
+    # upstream block resolves cleanly. service_started is enough — service_healthy
+    # would deadlock since cores' healthchecks legitimately take ~60s, exceeding
+    # depends_on's default budget.
+    depends_on:
+      aether-a-node-1: { condition: service_started }
+      aether-a-node-2: { condition: service_started }
+      aether-a-node-3: { condition: service_started }
+      aether-a-node-4: { condition: service_started }
+      aether-a-node-5: { condition: service_started }
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/gateway/live"]
+      # 127.0.0.1 (not localhost): busybox wget resolves localhost to [::1] but
+      # nginx `listen 8080` is IPv4-only, so `wget --spider localhost:8080`
+      # always fails with "Connection refused" → container falsely "unhealthy"
+      # even though /gateway/live returns 200 via IPv4.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/gateway/live"]
       interval: 5s
       timeout: 2s
       retries: 5

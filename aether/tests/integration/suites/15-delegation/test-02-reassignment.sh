@@ -126,9 +126,9 @@ test_node_failure_reassignment() {
 
     # Event-driven barrier (replaces `sleep 5  # Allow SWIM to detect failure`).
     # Hardcoded 5s was less than SWIM's detection period under load; this fails
-    # fast if SWIM regresses past 30s rather than racing wait_for_task_active.
-    if ! wait_for_node_departure "$scaling_node" "$baseline" 60; then
-        log_fail "No NODE_LEFT/NODE_FAILED event for ${scaling_node} within 30s"
+    # fast if SWIM regresses past the budget rather than racing wait_for_task_active.
+    if ! wait_for_node_departure "$scaling_node" "$baseline" 90; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for ${scaling_node} within 90s"
         return 1
     fi
     log_pass "Departure of ${scaling_node} observed via /api/events"

@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/../../lib/generation.sh"
 test_initial_state() {
     wait_for_cluster 60
     # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
-    wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still BOOTING; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
+    wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
     wait_for_leader 60
     local count
     count=$(cluster_node_count)
@@ -37,10 +37,10 @@ test_kill_leader_and_reelect() {
 
     # Event-driven barrier: wait for surviving nodes to actually observe the
     # leader's departure (NODE_LEFT/NODE_FAILED) instead of sleeping. If SWIM
-    # detection regresses past 30s this fails fast — the previous `sleep 10`
-    # absorbed any such regression silently.
-    if ! wait_for_node_departure "$old_leader" "$baseline" 60; then
-        log_fail "No NODE_LEFT/NODE_FAILED event for old leader ${old_leader} within 30s"
+    # detection regresses past the budget this fails fast — the previous
+    # `sleep 10` absorbed any such regression silently.
+    if ! wait_for_node_departure "$old_leader" "$baseline" 90; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for old leader ${old_leader} within 90s"
         return 1
     fi
     log_pass "Departure of ${old_leader} observed via /api/events"

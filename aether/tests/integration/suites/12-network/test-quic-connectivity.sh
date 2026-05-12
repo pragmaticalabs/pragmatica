@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/../../lib/topology.sh"
 
 test_cluster_ready() {
     wait_for_cluster 60
-    # SWIM cold-boot suppression bypass: kills against a phase=BOOTING cluster
+    # SWIM cold-boot suppression bypass: kills against a phase=COLD_BOOT cluster
     # produce UnknownObserved (not FaultyObserved), so no NODE_FAILED event fires.
     # Soft (log_warn): cluster B on docker-remote can be slow to reach NORMAL
     # after a destructive predecessor suite, and a fail-fast here cascades the
