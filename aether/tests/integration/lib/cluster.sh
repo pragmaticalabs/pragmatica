@@ -205,7 +205,12 @@ pick_non_leader() {
         # never fired, and the suite "passed" against a stale cluster snapshot. If
         # /api/nodes/lifecycle has no ON_DUTY members, the test premise (a healthy
         # cluster from which we can pick a non-leader) is broken.
-        log_fail "pick_non_leader: /api/nodes/lifecycle returned no ON_DUTY members — cannot select victim"
+        #
+        # log_fail goes to stderr — pick_non_leader is consumed via `$(...)`, so any
+        # stdout output is interpreted by the caller as a node-id. Sending the error
+        # to stderr lets callers see the FAIL banner while `$(...)` captures the empty
+        # string and the caller's `if [ -z ... ]` check fires correctly.
+        log_fail "pick_non_leader: /api/nodes/lifecycle returned no ON_DUTY members — cannot select victim" >&2
         return 1
     fi
 
@@ -221,7 +226,8 @@ pick_non_leader() {
     done <<< "$current_members"
 
     if [ "$found" -lt "$count" ]; then
-        log_fail "pick_non_leader: only ${found}/${count} candidates available (leader=${leader}, pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})"
+        # See note above on stderr redirection — caller consumes stdout.
+        log_fail "pick_non_leader: only ${found}/${count} candidates available (leader=${leader}, pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})" >&2
         return 1
     fi
 }
@@ -897,15 +903,18 @@ _docker_container_name() {
     # (aether-a-node-1, aether-b-node-2, ...). Fall back for older single-cluster
     # environments that just use `aether-<node_id>`.
     #
-    # CTM-provisioned replacement containers carry their own `aether-core-...`
-    # prefix from DockerComputeProvider (see drop_ctm_replacements); their name
-    # IS the node_id. Detect and pass through unchanged — without this the
-    # kill_node target was synthesized as `aether-b-aether-core-node-X-<uuid>`,
-    # which doesn't exist; `docker kill` returned "No such container" and the
-    # test silently believed the kill landed.
+    # CTM-provisioned replacement containers carry their own `aether-*` prefix
+    # from DockerComputeProvider. Two name shapes have shipped:
+    #   - pre-F.3: `aether-core-node-<idx>-<hex>` (single global prefix)
+    #   - post-F.3 (`6fc426b48`): `aether-<cluster>-<pool>-node-<idx>-<hex>`
+    #     — e.g. `aether-default-core-node-0-50e5bb67e` when CTM uses the
+    #     default cluster name. Either way, the node_id IS the container name;
+    #     prepending `aether-<CLUSTER_ID>-` produces `aether-b-aether-...`
+    #     which doesn't exist on the host and `docker kill` returns
+    #     "No such container", silently masking the failed kill.
     local node_id="$1"
     case "$node_id" in
-        aether-core-*) printf '%s' "$node_id"; return ;;
+        aether-*) printf '%s' "$node_id"; return ;;
     esac
     if [ -n "${CLUSTER_ID:-}" ]; then
         printf 'aether-%s-%s' "$CLUSTER_ID" "$node_id"
@@ -914,14 +923,20 @@ _docker_container_name() {
     fi
 }
 
-# Tear down any CTM-provisioned `aether-core-*` replacement containers on the
-# remote host so the cluster settles back to the fixed compose-node set.
-# Called between disruption tests to avoid phantom-sixth-node inflation.
+# Tear down any CTM-provisioned replacement containers on the remote host so the
+# cluster settles back to the fixed compose-node set. Called between disruption
+# tests to avoid phantom-sixth-node inflation.
+#
+# Two naming shapes are matched (see `_docker_container_name`): pre-F.3
+# `aether-core-*` (single global prefix) and post-F.3 `aether-<cluster>-<pool>-...`
+# where `<pool>` defaults to `core` (e.g. `aether-default-core-node-0-<hex>`).
+# The shared `core-node-` infix distinguishes CTM-provisioned containers from
+# compose-fixed ones (`aether-a-node-1`, `aether-b-node-2`).
 drop_ctm_replacements() {
     if [ "$CLOUD_MODE" = "true" ]; then
         return 0
     fi
-    remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-) 2>/dev/null || true" 2>/dev/null
+    remote_exec "docker rm -f \$(docker ps -aq --filter name=core-node-) 2>/dev/null || true" 2>/dev/null
 }
 
 ## DEPRECATED for routine cleanup — prefer `restore_cluster_baseline`. This
@@ -1076,6 +1091,16 @@ restart_all_nodes() {
 
 kill_node() {
     local node_id="$1"
+    # Defensive guard: refuse to operate on an empty node_id. Tests typically call
+    # `kill_node "$(pick_non_leader ...)"` — if `pick_non_leader` failed and
+    # returned empty on stdout (e.g. /api/nodes/lifecycle had no ON_DUTY members),
+    # without this guard `docker kill <prefix>-` would target a non-existent
+    # container, log a confusing "No such container", and quietly proceed as if
+    # the kill landed. Fail loudly so the test surfaces the upstream issue.
+    if [ -z "$node_id" ]; then
+        log_fail "kill_node: empty node_id (caller likely captured a failed pick_non_leader stderr write — check the previous FAIL banner)"
+        return 1
+    fi
     # Defensive guard: if a suite explicitly set MGMT_ENTRY_POINT_NODE (escape
     # hatch for cloud env where the mgmt-gateway sidecar isn't deployed yet),
     # refuse to kill that node -- otherwise the suite's own pinning request
