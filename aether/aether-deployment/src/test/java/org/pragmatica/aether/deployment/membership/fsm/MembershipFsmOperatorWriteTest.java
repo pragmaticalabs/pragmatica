@@ -43,15 +43,18 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -307,6 +310,130 @@ class MembershipFsmOperatorWriteTest {
             assertThat(commandApplier.calls).isEmpty();
             assertThat(fsm.get(SELF).isEmpty()).isTrue();
         }
+    }
+
+    @Nested @DisplayName("F.4: QUIC PeerConnected → SwimHealthy synthesis bridge")
+    class QuicPeerConnectedBridgeTests {
+        // F.4 (2026-05-12): When QUIC handshake completes for a peer that is BOTH (a) in
+        // static topology config AND (b) currently SWIM-alive, MembershipFsm.onPeerConnected
+        // synthesizes a HealthyObserved observation that routes through the same
+        // onSwimObservation leader-write gate. Reducer cell (UNTRACKED, SwimHealthy) → ON_DUTY
+        // fires on the leader (Put(L=ON_DUTY) via consensus). On followers, the leader-write
+        // gate drops the synthesis. Filter conditions and idempotence are also covered.
+
+        @Test void onPeerConnected_realClusterPeer_leader_writesOnDuty() {
+            // Happy path: static-config peer is SWIM-alive AND this node is leader.
+            // Reducer cell (UNTRACKED, SwimHealthy) → ON_DUTY writes Put(L=ON_DUTY).
+            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
+            fsm.start().await();
+            assertThat(fsm.get(PEER_A).isEmpty()).isTrue();
+            fsm.onPeerConnected(PEER_A);
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+        }
+
+        @Test void onPeerConnected_realClusterPeer_alreadyOnDuty_isIdempotent() {
+            // Second invocation for an already-ON_DUTY peer hits the reducer's
+            // (ON_DUTY, SwimHealthy) → nop cell — no second consensus write. Belt-and-
+            // suspenders idempotence between QUIC bridge and SWIM probe-Ack path.
+            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
+            fsm.start().await();
+            fsm.onPeerConnected(PEER_A);
+            assertThat(commandApplier.calls).hasSize(1);
+            fsm.onPeerConnected(PEER_A);
+            assertThat(commandApplier.calls).hasSize(1);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+        }
+
+        @Test void onPeerConnected_unknownPeer_dropsSynthesis() {
+            // Peer NOT in static topology config (auto-provisioned, fresh NodeId) — synthesis
+            // must be filtered out. Such peers legitimately go through SWIM probe-Ack.
+            var fsm = buildFsmWithKnownPeers(Set.of()); // no known static peers → predicate rejects
+            fsm.start().await();
+            fsm.onPeerConnected(PEER_A);
+            assertThat(commandApplier.calls).isEmpty();
+            assertThat(fsm.get(PEER_A).isEmpty()).isTrue();
+        }
+
+        @Test void onPeerConnected_swimNotAlive_dropsSynthesis() {
+            // Peer is in static topology config but SWIM has not yet admitted it (e.g.,
+            // stale or pre-handshake state). Avoid premature ON_DUTY write — wait for the
+            // SWIM-alive sub-check to flip true. Modelled by an "always false" predicate
+            // (the production composite predicate would yield false on the SWIM-alive arm).
+            var fsm = buildFsmWithPredicate(_ -> false);
+            fsm.start().await();
+            fsm.onPeerConnected(PEER_A);
+            assertThat(commandApplier.calls).isEmpty();
+            assertThat(fsm.get(PEER_A).isEmpty()).isTrue();
+        }
+
+        @Test void onPeerConnected_follower_dropsViaLeaderGate() {
+            // Static-config peer + SWIM-alive predicate true, BUT this node is a follower.
+            // The synthesis routes through onSwimObservation, which drops on followers (the
+            // leader-write gate at spec §6.1). Single-writer invariant preserved.
+            leaderFlag.set(false);
+            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
+            fsm.start().await();
+            fsm.onPeerConnected(PEER_A);
+            assertThat(commandApplier.calls).isEmpty();
+        }
+
+        @Test void onPeerConnected_thenSwimHealthy_idempotent() {
+            // Both signals arrive for the same peer (one via QUIC bridge, one via real SWIM
+            // probe Ack). The first writes ON_DUTY; the second hits the reducer's
+            // (ON_DUTY, SwimHealthy) → nop and produces no extra write. Order of arrival is
+            // irrelevant to the invariant — second one is always a no-op.
+            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
+            fsm.start().await();
+            fsm.onPeerConnected(PEER_A);
+            assertThat(commandApplier.calls).hasSize(1);
+            // Now simulate the SWIM probe-Ack path firing for the same peer.
+            fsm.onSwimObservation(new HealthyObserved(PEER_A, 0L));
+            assertThat(commandApplier.calls).hasSize(1);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+        }
+
+        @Test void onPeerConnected_self_dropsViaSelfFilter() {
+            // Self-bootstrap goes through the NodeLifecycle ACTIVE / LeaderChange paths,
+            // not the QUIC bridge. Even if the predicate would admit self, the explicit
+            // self filter in onPeerConnected rejects.
+            var fsm = buildFsmWithPredicate(_ -> true); // would admit anything
+            fsm.start().await();
+            fsm.onPeerConnected(SELF);
+            assertThat(commandApplier.calls).isEmpty();
+            assertThat(fsm.get(SELF).isEmpty()).isTrue();
+        }
+
+        @Test void onPeerConnected_beforeStart_dropsViaStartedGate() {
+            // Pre-start calls must drop — mirrors all other FSM entry points.
+            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
+            // No fsm.start() invoked.
+            fsm.onPeerConnected(PEER_A);
+            assertThat(commandApplier.calls).isEmpty();
+        }
+    }
+
+    /// F.4 helper: build an FSM where the QUIC `onPeerConnected` bridge admits ONLY the
+    /// supplied static-config peers (modelling the composite `topologyConfig ∧ swim-alive`
+    /// predicate as "trust the test to pre-classify"). Uses the 9-arg production factory.
+    private MembershipFsm buildFsmWithKnownPeers(Set<NodeId> knownAlivePeers) {
+        var knownSnapshot = new HashSet<>(knownAlivePeers);
+        return buildFsmWithPredicate(knownSnapshot::contains);
+    }
+
+    private MembershipFsm buildFsmWithPredicate(Predicate<NodeId> predicate) {
+        var config = MembershipFsmConfig.defaultMembershipFsmConfig();
+        BooleanSupplier isLeader = leaderFlag::get;
+        return MembershipFsm.membershipFsm(SELF,
+                                            config,
+                                            lifecycleSnapshot,
+                                            slotSnapshot,
+                                            commandApplier,
+                                            drainCoordinator,
+                                            scheduler,
+                                            isLeader,
+                                            predicate);
     }
 
     @Nested @DisplayName("F7+F8: leader-takeover resumes in-flight protocols")

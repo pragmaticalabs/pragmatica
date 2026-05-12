@@ -56,6 +56,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,6 +112,15 @@ public final class MembershipFsm {
 
     private final BooleanSupplier isLeader;
 
+    /// F.4 (2026-05-12) — Predicate gating the QUIC `PeerConnected` synthesis bridge. Returns
+    /// `true` iff `peer` is BOTH (a) a real cluster peer (present in static topology config —
+    /// i.e. not an auto-provisioned dynamic peer) AND (b) currently in SWIM's alive member
+    /// set. Composed by the wiring layer over `TopologyConfig.coreNodes()` and
+    /// `SwimProtocol.currentHealth()`. Tests inject controllable predicates. Default in
+    /// test-only factories is **reject-all** so that synthetic `onPeerConnected` calls
+    /// require explicit opt-in; this prevents silent test-side races.
+    private final Predicate<NodeId> isKnownAliveClusterPeer;
+
     private final ReentrantLock fsmLock = new ReentrantLock();
 
     private final Map<NodeId, MembershipFsmState> fsmStates = new ConcurrentHashMap<>();
@@ -136,7 +146,8 @@ public final class MembershipFsm {
                           Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                           DrainCoordinator drainCoordinator,
                           TimerScheduler scheduler,
-                          BooleanSupplier isLeader) {
+                          BooleanSupplier isLeader,
+                          Predicate<NodeId> isKnownAliveClusterPeer) {
         this.self = self;
         this.config = config;
         this.reducer = reducer;
@@ -146,6 +157,7 @@ public final class MembershipFsm {
         this.drainCoordinator = drainCoordinator;
         this.scheduler = scheduler;
         this.isLeader = isLeader;
+        this.isKnownAliveClusterPeer = isKnownAliveClusterPeer;
     }
 
     /// Read-only factory (no-op writes). Useful for tests that only exercise the reducer +
@@ -167,6 +179,11 @@ public final class MembershipFsm {
     /// Write-capable factory. When `isLeader.getAsBoolean()` returns `true`, operator events
     /// route through the FSM: proposed via `commandApplier`, drain effects dispatched to
     /// `drainCoordinator`, timers scheduled via `scheduler`.
+    ///
+    /// **F.4 (2026-05-12) overload.** Defaults `isKnownAliveClusterPeer` to **reject-all** so
+    /// that `onPeerConnected` (the QUIC PeerConnected → SwimHealthy synthesis bridge) is
+    /// inert unless callers explicitly opt in via the 9-arg overload below. Production
+    /// wiring (`AetherNode.buildMembershipFsm`) must use the 9-arg form.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -175,6 +192,29 @@ public final class MembershipFsm {
                                               DrainCoordinator drainCoordinator,
                                               TimerScheduler scheduler,
                                               BooleanSupplier isLeader) {
+        return membershipFsm(self,
+                             config,
+                             lifecycleSnapshotReader,
+                             slotSnapshotReader,
+                             commandApplier,
+                             drainCoordinator,
+                             scheduler,
+                             isLeader,
+                             REJECT_ALL_PEERS);
+    }
+
+    /// F.4 (2026-05-12) — full production factory. `isKnownAliveClusterPeer` predicate gates
+    /// the QUIC `PeerConnected` synthesis bridge (`onPeerConnected`). See field doc on
+    /// `isKnownAliveClusterPeer` for semantics.
+    public static MembershipFsm membershipFsm(NodeId self,
+                                              MembershipFsmConfig config,
+                                              LifecycleSnapshotReader lifecycleSnapshotReader,
+                                              SlotSnapshotReader slotSnapshotReader,
+                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                              DrainCoordinator drainCoordinator,
+                                              TimerScheduler scheduler,
+                                              BooleanSupplier isLeader,
+                                              Predicate<NodeId> isKnownAliveClusterPeer) {
         var reducer = ClusterMembershipReducer.clusterMembershipReducer(config);
         return new MembershipFsm(self,
                                  config,
@@ -184,7 +224,8 @@ public final class MembershipFsm {
                                  commandApplier,
                                  drainCoordinator,
                                  scheduler,
-                                 isLeader);
+                                 isLeader,
+                                 isKnownAliveClusterPeer);
     }
 
     /// Custom-reducer factory (test-only — lets callers inject a reducer with deterministic
@@ -202,7 +243,8 @@ public final class MembershipFsm {
                                  NO_OP_COMMAND_APPLIER,
                                  NO_OP_DRAIN_COORDINATOR,
                                  defaultScheduler(),
-                                 NEVER_LEADER);
+                                 NEVER_LEADER,
+                                 REJECT_ALL_PEERS);
     }
 
     public Promise<Unit> start() {
@@ -295,6 +337,63 @@ public final class MembershipFsm {
         log.info("MembershipFsm: onLeaderChange(self={}) — synthesizing SwimHealthy(self) for self-bootstrap (spec §6.2 step 7)",
                  self.id());
         onSwimObservation(new HealthyObserved(self, 0L));
+    }
+
+    /// QUIC PeerConnected → SwimHealthy synthesis bridge (F.4, 2026-05-12; spec §4 +
+    /// §6.2 step 7). The QUIC handshake completes deterministically within ~100ms of cluster
+    /// boot, while SWIM probe Ack landing is jittered (first probe ~8s, then ~1s with random
+    /// target selection) and may miss peers entirely on small clusters within bounded time.
+    /// QUIC `PeerConnected` is a stronger liveness signal than SWIM probe Ack: handshake
+    /// completed implies authenticated + reachable + serving. When the wiring layer routes a
+    /// QUIC PeerConnected event here, we synthesize a `HealthyObserved(peer, 0L)` into the
+    /// local FSM via `onSwimObservation`, which fires `(UNTRACKED, SwimHealthy) → ON_DUTY` on
+    /// the leader (consensus-replicated `Put(L=ON_DUTY)`).
+    ///
+    /// **Precondition filters (in order).**
+    ///
+    /// 1. **Already-started gate.** Mirrors all other entry points — pre-`start()` calls drop.
+    ///
+    /// 2. **Self filter.** Self bootstrap goes through the existing
+    ///    `NodeLifecycle.ACTIVE` and `LeaderChange-to-self` paths (spec §6.2 step 7); the
+    ///    QUIC bridge ignores `peer == self`. (SWIM does not observe self either.)
+    ///
+    /// 3. **Static-config + SWIM-alive gate** (`isKnownAliveClusterPeer.test(peer)`). The
+    ///    bridge fires ONLY for peers that are (a) members of the static topology config
+    ///    (`TopologyConfig.coreNodes()` — i.e., real cluster peers, not auto-provisioned
+    ///    dynamic peers with fresh NodeIds) AND (b) currently in SWIM's alive member set.
+    ///    Dynamic / auto-provisioned peers legitimately need the SWIM probe-Ack path to
+    ///    confirm them. The SWIM-alive sub-check avoids races where QUIC connects to a peer
+    ///    SWIM has not yet admitted (e.g., stale handshake before re-join), preventing
+    ///    premature `ON_DUTY` writes.
+    ///
+    /// **Single-writer preservation.** The synthesized event flows through
+    /// `onSwimObservation` which enforces the leader-write gate (spec §6.1). On followers
+    /// the synthetic observation is silently dropped (TRACE log) — the leader writes the
+    /// follower's own `NodeLifecycleKey` via consensus, and the follower learns via KV
+    /// notification.
+    ///
+    /// **Idempotence.** Multiple PeerConnected events for the same peer (e.g., transient
+    /// reconnect) are harmless: the reducer's `(ON_DUTY, SwimHealthy) → nop` cell short-
+    /// circuits the second write. Belt-and-suspenders convergence between this bridge and
+    /// the SWIM probe-Ack path is similarly safe — whichever signal arrives first wins; the
+    /// second is a no-op.
+    @Contract public void onPeerConnected(NodeId peer) {
+        if (!started.get()) {
+            return;
+        }
+        if (peer.equals(self)) {
+            return;
+        }
+        if (!isKnownAliveClusterPeer.test(peer)) {
+            if (log.isTraceEnabled()) {
+                log.trace("MembershipFsm: onPeerConnected({}) dropped — peer not in static config or not SWIM-alive (F.4 filter)",
+                          peer.id());
+            }
+            return;
+        }
+        log.debug("MembershipFsm: onPeerConnected({}) — synthesizing SwimHealthy via QUIC bridge (F.4)",
+                  peer.id());
+        onSwimObservation(new HealthyObserved(peer, 0L));
     }
 
     private boolean isSelfAlreadyOnDuty() {
@@ -903,4 +1002,9 @@ public final class MembershipFsm {
     };
 
     private static final BooleanSupplier NEVER_LEADER = () -> false;
+
+    /// F.4 default predicate for test-only factories. Returns `false` for every peer so that
+    /// `onPeerConnected` is inert unless callers explicitly opt in via the production
+    /// 9-arg factory. See `isKnownAliveClusterPeer` field doc.
+    private static final Predicate<NodeId> REJECT_ALL_PEERS = _ -> false;
 }
