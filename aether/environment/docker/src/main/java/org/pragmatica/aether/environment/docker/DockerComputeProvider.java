@@ -51,7 +51,30 @@ import static org.pragmatica.lang.Result.success;
         var containerName = buildContainerName(spec, nodeIndex);
         var command = buildRunCommand(spec, containerName, nodeIndex);
         return runner.execute(command).map(containerId -> toProvisionedInfo(containerId, containerName, spec, nodeIndex))
+                             .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause))
                              .mapError(DockerComputeProvider::toProvisionError);
+    }
+
+    /// Rollback hook for partial provisions. When `docker run -d` fails after the container
+    /// shell was created (typical for port-bind collisions: the container is in `Created` state
+    /// but `docker run` exits non-zero), the orphaned shell stays in Docker's container table
+    /// and leaks SWIM gossip into the cluster. Issue `docker rm -f <containerName>` against the
+    /// pre-generated name so any partial leftover is evicted before we surface the original
+    /// failure to the caller. If the container never reached Created (run aborted earlier),
+    /// the rm fails harmlessly and we log a WARN so the gap is explicit, not silent.
+    private void rollbackOnProvisionFailure(String containerName, Cause cause) {
+        log.warn("Provision failed for container {} ({}); attempting rollback via docker rm -f",
+                 containerName,
+                 cause.message());
+        runner.execute(buildForceRemoveCommand(containerName))
+              .onFailure(rollbackCause -> log.warn("Rollback rm -f {} returned non-zero (likely no partial container existed): {}",
+                                                    containerName,
+                                                    rollbackCause.message()))
+              .onSuccess(ignored -> log.info("Rollback removed partial container {}", containerName));
+    }
+
+    private static List<String> buildForceRemoveCommand(String containerName) {
+        return List.of("docker", "rm", "-f", containerName);
     }
 
     @Override public Promise<Unit> terminate(InstanceId instanceId) {
@@ -91,10 +114,21 @@ import static org.pragmatica.lang.Result.success;
                                                      .promise();
     }
 
-    private String buildContainerName(ProvisionSpec spec, int nodeIndex) {
+    /// Build a cluster-scoped, pool-scoped, index-scoped container name.
+    ///
+    /// Format: `aether-<clusterName>-<pool>-node-<index>-<hex>`
+    ///
+    /// The cluster segment disambiguates concurrent clusters (e.g., integration-test
+    /// clusters A and B sharing a Docker host) so orphan sweepers that filter by
+    /// `aether-<clusterName>-` cannot accidentally cross-evict containers from a
+    /// sibling cluster. `clusterName` is sourced from [ProvisionContext#clusterName]
+    /// (set by CTM from `[cluster].name`), defaulting to `"default"` for callers
+    /// that haven't set it explicitly.
+    String buildContainerName(ProvisionSpec spec, int nodeIndex) {
+        var cluster = clusterOrDefault(spec.context());
         var pool = spec.pool();
         var suffix = Long.toHexString(System.nanoTime()).substring(4);
-        return "aether-" + pool + "-node-" + nodeIndex + "-" + suffix;
+        return "aether-" + cluster + "-" + pool + "-node-" + nodeIndex + "-" + suffix;
     }
 
     private List<String> buildRunCommand(ProvisionSpec spec, String containerName, int nodeIndex) {

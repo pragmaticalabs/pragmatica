@@ -37,8 +37,13 @@ provider = "docker"
 [cloud.compute]
 image_name = "aether-node:local"
 network_name = "aether-network"
-management_port_base = "5160"
-app_port_base = "8080"
+# Port bases are env-overridable so multiple clusters sharing a Docker host (e.g.
+# integration-test clusters A and B) can pick distinct host-port ranges without
+# rebuilding the image. Resolved by ConfigLoader.resolveEnvVars(); falls back to
+# the literal placeholder string if unset — DockerEnvironmentIntegrationFactory
+# then applies its own numeric defaults (5150 / 8070).
+management_port_base = "${env:AETHER_MGMT_PORT_BASE}"
+app_port_base = "${env:AETHER_APP_PORT_BASE}"
 api_key = "aether-integration-test-key"
 docker_gid = "${env:DOCKER_GID}"
 cluster_port = "6000"

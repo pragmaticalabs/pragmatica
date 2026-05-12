@@ -482,7 +482,12 @@ deploy_docker() {
     # `aether-core-node-*` containers from prior runs that compose doesn't manage.
     if [ "$host" = "localhost" ]; then
         docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
+        # CTM-provisioned containers now carry cluster scope: aether-<cluster>-<pool>-node-...
+        # Sweep both legacy (aether-core-node-) and current (aether-default-core-node-) plus
+        # any aether-a-core-node-* / aether-test-cluster-core-node-* shapes from test runs.
         docker rm -f $(docker ps -aq --filter "name=aether-core-node-") 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-default-core-node-") 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-a-core-node-") 2>/dev/null || true
         docker volume rm -f aether_pgdata 2>/dev/null || true
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
@@ -493,7 +498,7 @@ deploy_docker() {
         remote_exec "rm -rf ~/nginx-mgmt-gateway-a.conf ~/nginx-mgmt-gateway-b.conf 2>/dev/null || true"
         remote_scp "$COMPOSE_A" "~/docker-compose-a.yml"
         remote_scp "${SCRIPT_DIR}/nginx-mgmt-gateway-a.conf" "~/nginx-mgmt-gateway-a.conf"
-        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true; docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
+        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true; docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
     fi
 
     log_step "Deploying Cluster B (destructive)"
@@ -784,10 +789,20 @@ detect_capabilities "$ENV_TYPE"
 # A clean run must start with the docker-compose-defined nodes ONLY.
 if [ "$SKIP_DEPLOY" = false ] && [ "$ENV_TYPE" != "cloud" ]; then
     log_step "Cleaning up ghost CTM-provisioned containers"
+    # Sweep legacy (aether-core-node-) AND current cluster-scoped (aether-<cluster>-<pool>-node-)
+    # shapes. Listed clusters: default (no bootstrap), a (CLUSTER_A_NAME), b (CLUSTER_B_NAME),
+    # test-cluster (suites using ProvisionContext "test-cluster"). Cluster-scoped sweeping
+    # protects against cross-cluster eviction in mixed environments.
     if [ "$ENV_TYPE" = "docker" ]; then
         docker rm -f $(docker ps -aq --filter "name=aether-core-node-") 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-default-core-node-") 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-a-core-node-") 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-b-core-node-") 2>/dev/null || true
     else
         remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
+        remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
+        remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
+        remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-b-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
     fi
 fi
 

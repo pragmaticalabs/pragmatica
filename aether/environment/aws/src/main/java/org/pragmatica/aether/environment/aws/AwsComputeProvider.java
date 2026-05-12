@@ -97,9 +97,26 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     private Promise<InstanceInfo> tagAndMapFirstInstance(RunInstancesResponse response, Map<String, String> tags) {
         var instance = response.instances().getFirst();
         var instanceId = instance.instanceId();
-        return client.createTags(List.of(instanceId),
-                                 tags)
-        .map(unit -> toInstanceInfo(instance));
+        return client.createTags(List.of(instanceId), tags)
+                     .onFailure(cause -> rollbackPartialInstance(instanceId, cause))
+                     .map(unit -> toInstanceInfo(instance));
+    }
+
+    /// Rollback hook for partial provisions. `runInstances` succeeded (we have an
+    /// instance ID) but the post-create `createTags` call failed. Without rollback
+    /// the EC2 instance lingers untagged, unobserved by sweepers that filter on
+    /// `aether-managed=true`, and continues to accrue cost. Issue an asynchronous
+    /// `terminateInstances` against the orphan; log+swallow any rollback failure
+    /// so the original create-flow Cause is what callers see.
+    private void rollbackPartialInstance(String instanceId, Cause cause) {
+        log.warn("Provision failed for AWS instance {} after runInstances succeeded ({}); attempting rollback via terminateInstances",
+                 instanceId,
+                 cause.message());
+        client.terminateInstances(List.of(instanceId))
+              .onFailure(rollbackCause -> log.warn("Rollback terminateInstances for {} failed: {}",
+                                                    instanceId,
+                                                    rollbackCause.message()))
+              .onSuccess(ignored -> log.info("Rollback terminated partial AWS instance {}", instanceId));
     }
 
     private static Map<String, String> defaultTags() {

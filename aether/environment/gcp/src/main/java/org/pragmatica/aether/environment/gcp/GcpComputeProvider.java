@@ -55,6 +55,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return client.insertInstance(buildInsertRequest(Option.empty(),
                                                         config.userData(),
                                                         defaultLabels())).map(GcpComputeProvider::toInstanceInfo)
+                                    .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
@@ -63,7 +64,21 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         var userData = spec.userData().or(config.userData());
         var labels = labelsFor(spec.context());
         return client.insertInstance(buildInsertRequest(zone, userData, labels)).map(GcpComputeProvider::toInstanceInfo)
+                                    .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
                                     .mapError(GcpComputeProvider::toProvisionError);
+    }
+
+    /// Rollback acknowledgment for GCP provisions. GCP's `insertInstance` is a single
+    /// atomic operation: either it returns success with an Instance, or it returns
+    /// failure with no resource created. There is no separate "partial" state the
+    /// provider can observe here — async post-create polling for `RUNNING` would be
+    /// needed to detect a stuck-PROVISIONING VM, and that polling is owned at a higher
+    /// layer (CTM auto-heal). Surface a WARN so operators can correlate provision-flow
+    /// failures with any orphan that DOES appear; if a future code path adds a tagging
+    /// or post-create step, plumb a real terminateInstance rollback through this hook.
+    private static void logProvisionFailureRollbackGap(Cause cause) {
+        log.warn("GCP provision failed ({}); no instance-side rollback issued because insertInstance is atomic — relying on caller to retry or sweep",
+                 cause.message());
     }
 
     @Override public Promise<Unit> terminate(InstanceId instanceId) {

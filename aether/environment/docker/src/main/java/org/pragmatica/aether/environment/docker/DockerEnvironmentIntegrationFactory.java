@@ -9,6 +9,8 @@ import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.lang.Result;
 
+import java.util.Map;
+
 import static org.pragmatica.aether.environment.docker.DockerConfig.dockerConfig;
 import static org.pragmatica.aether.environment.docker.DockerEnvironmentIntegration.dockerEnvironmentIntegration;
 
@@ -31,13 +33,33 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
                          : compute.getOrDefault("network_name", "aether-network");
         return dockerConfig(compute.getOrDefault("image_name", "aether-node:local"),
                             networkName,
-                            parseIntOrDefault(compute.getOrDefault("management_port_base", ""), 5150),
-                            parseIntOrDefault(compute.getOrDefault("app_port_base", ""), 8070),
+                            resolvePortBase(compute, "management_port_base", "AETHER_MGMT_PORT_BASE", 5150),
+                            resolvePortBase(compute, "app_port_base", "AETHER_APP_PORT_BASE", 8070),
                             parseIntOrDefault(compute.getOrDefault("cluster_port", ""), 6000),
                             compute.getOrDefault("socket_path", "/var/run/docker.sock"),
                             compute.getOrDefault("api_key", ""),
                             compute.getOrDefault("docker_gid", ""),
                             parseBoolOrDefault(compute.getOrDefault("expose_host_ports", ""), false));
+    }
+
+    /// Resolve a port-base setting with the following precedence:
+    /// 1. Direct env var (highest — survives even when the TOML field is absent
+    ///    or contains an unresolved `${env:...}` literal).
+    /// 2. The numeric value in the compute config map.
+    /// 3. Numeric `defaultValue`.
+    ///
+    /// This lets per-cluster docker-compose files set `AETHER_MGMT_PORT_BASE=5150`
+    /// (cluster A) vs. `5160` (cluster B) without baking the value into the image's
+    /// `aether.toml`, and without forcing every caller to rewrite the TOML overlay.
+    private static int resolvePortBase(Map<String, String> compute,
+                                       String tomlKey,
+                                       String envVar,
+                                       int defaultValue) {
+        var envValue = System.getenv(envVar);
+        if (envValue != null && !envValue.isBlank()) {
+            return parseIntOrDefault(envValue, defaultValue);
+        }
+        return parseIntOrDefault(compute.getOrDefault(tomlKey, ""), defaultValue);
     }
 
     private static int parseIntOrDefault(String value, int defaultValue) {

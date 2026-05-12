@@ -50,6 +50,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return client.createServer(buildCreateRequest(config.region(),
                                                       defaultLabels,
                                                       config.userData())).map(HetznerComputeProvider::toInstanceInfo)
+                                  .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
 
@@ -60,7 +61,20 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return client.createServer(buildCreateRequest(location,
                                                       labels,
                                                       userData)).map(HetznerComputeProvider::toInstanceInfo)
+                                  .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
                                   .mapError(HetznerComputeProvider::toProvisionError);
+    }
+
+    /// Rollback acknowledgment for Hetzner provisions. `createServer` is atomic from
+    /// the provider's perspective — failure means no server allocated, success means
+    /// the server exists with labels and userData applied in the same request. There
+    /// is no current post-create step here that can leave an orphan. If a future code
+    /// path adds a second-phase call (e.g. attaching a volume / firewall), plumb a real
+    /// `deleteServer` rollback through this hook. For now surface a WARN so operators
+    /// can correlate provision failures with any orphan that DOES surface.
+    private static void logProvisionFailureRollbackGap(Cause cause) {
+        log.warn("Hetzner provision failed ({}); no server-side rollback issued because createServer is atomic — relying on caller to retry or sweep",
+                 cause.message());
     }
 
     @Override public Promise<Unit> terminate(InstanceId instanceId) {
