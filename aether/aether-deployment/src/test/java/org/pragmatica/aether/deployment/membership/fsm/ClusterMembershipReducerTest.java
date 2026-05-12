@@ -1,0 +1,610 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.deployment.membership.fsm;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
+import org.pragmatica.aether.deployment.membership.fsm.ClusterMembershipReducer.Outcome;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelDrain;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelTimer;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.EmitDomainEvent;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.InvokeDrain;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.MembershipDomainEvent;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.ScheduleTimer;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.TimerKind;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.DrainOutcome;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.JoinDeadlineExpired;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDecommission;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDrain;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SlotClaimed;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimDeparted;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimHealthy;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Draining;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.FailedDrain;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Joining;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.OnDuty;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Provisioning;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Untracked;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class ClusterMembershipReducerTest {
+    private static final NodeId PEER = NodeId.nodeId("peer-1").unwrap();
+
+    private static final NodeId LEADER = NodeId.nodeId("leader").unwrap();
+
+    private static final String SLOT_ID = "slot-1";
+
+    private static final long T0 = 1_000L;
+
+    private static final long T1 = 2_000L;
+
+    private static final long T2 = 3_000L;
+
+    private ClusterMembershipReducer reducer;
+
+    @BeforeEach
+    void setUp() {
+        reducer = ClusterMembershipReducer.clusterMembershipReducer(MembershipFsmConfig.defaultMembershipFsmConfig());
+    }
+
+    // =================================================================================
+    // 56-cell totality: every (state × event) pair has an explicit, expected outcome.
+    // Cells marked `err` in the spec are tested for IllegalStateException.
+    // =================================================================================
+
+    @Nested @DisplayName("Untracked × *")
+    class FromUntracked {
+        private final Untracked state = MembershipFsmState.untracked(PEER);
+
+        @Test void untracked_swimHealthy_entersJoining() {
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+            assertEntersJoining(outcome, Option.none(), T1);
+        }
+
+        @Test void untracked_swimFaulty_isNop_bootstrapSafe() {
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+        }
+
+        @Test void untracked_swimDeparted_isNop() {
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
+        }
+
+        @Test void untracked_slotClaimed_entersJoining() {
+            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1));
+            assertEntersJoining(outcome, Option.some(SLOT_ID), T1);
+        }
+
+        @Test void untracked_operatorDrain_isNop_unknownPeer() {
+            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1)), state);
+        }
+
+        @Test void untracked_operatorDecommissionGraceful_isNop() {
+            assertNop(reducer.apply(state, new OperatorDecommission(PEER, false, T1)), state);
+        }
+
+        @Test void untracked_operatorDecommissionForce_writesDecommissioned() {
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+            assertDecommissioned(outcome, T1, "operator-forced");
+        }
+
+        @Test void untracked_drainOutcome_isErr() {
+            assertIllegal(state, new DrainOutcome(PEER, true, T1));
+        }
+
+        @Test void untracked_joinDeadlineExpired_isNop() {
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+        }
+    }
+
+    @Nested @DisplayName("Provisioning × *")
+    class FromProvisioning {
+        private final Provisioning state = MembershipFsmState.provisioning(PEER, SLOT_ID);
+
+        @Test void provisioning_swimHealthy_isErr() {
+            assertIllegal(state, new SwimHealthy(PEER, 1L, T1));
+        }
+
+        @Test void provisioning_swimFaulty_isErr() {
+            assertIllegal(state, new SwimFaulty(PEER, 1L, T1));
+        }
+
+        @Test void provisioning_swimDeparted_isErr() {
+            assertIllegal(state, new SwimDeparted(PEER, 1L, T1));
+        }
+
+        @Test void provisioning_slotClaimed_entersJoining() {
+            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1));
+            assertEntersJoining(outcome, Option.some(SLOT_ID), T1);
+        }
+
+        @Test void provisioning_operatorDrain_isErr() {
+            assertIllegal(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1));
+        }
+
+        @Test void provisioning_operatorDecommission_isErr() {
+            assertIllegal(state, new OperatorDecommission(PEER, false, T1));
+        }
+
+        @Test void provisioning_drainOutcome_isErr() {
+            assertIllegal(state, new DrainOutcome(PEER, true, T1));
+        }
+
+        @Test void provisioning_joinDeadlineExpired_isNop() {
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+        }
+    }
+
+    @Nested @DisplayName("Joining × *")
+    class FromJoining {
+        private final Joining state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+
+        @Test void joining_swimHealthy_promotesToOnDuty_leaderInitiated() {
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+            assertOnDuty(outcome, T1);
+            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
+            assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
+        }
+
+        @Test void joining_swimHealthy_withoutSlot_writesLifecycleOnly() {
+            var slotless = MembershipFsmState.joining(PEER, T0, Option.none());
+            var outcome = reducer.apply(slotless, new SwimHealthy(PEER, 1L, T1));
+            assertOnDuty(outcome, T1);
+            assertThat(outcome.writes()).hasSize(1);
+            assertThat(outcome.writes()).noneMatch(c -> c instanceof KVCommand.Remove<?>);
+        }
+
+        @Test void joining_swimFaulty_isNop_transientDuringBoot() {
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+        }
+
+        @Test void joining_swimDeparted_writesDecommissioned_andCancelsTimerAndDeletesSlot() {
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            assertDecommissioned(outcome, T1, "swim-departed");
+            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
+        }
+
+        @Test void joining_slotClaimed_isNop_idempotentReDelivery() {
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1)), state);
+        }
+
+        @Test void joining_operatorDrain_entersDraining() {
+            var outcome = reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1));
+            assertDraining(outcome, T1, DrainReason.OPERATOR_DRAIN);
+            assertThat(outcome.effects()).contains(new InvokeDrain(PEER, DrainReason.OPERATOR_DRAIN));
+            assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
+        }
+
+        @Test void joining_operatorDecommissionGraceful_writesDecommissioned() {
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, false, T1));
+            assertDecommissioned(outcome, T1, "operator-decommission");
+            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
+        }
+
+        @Test void joining_operatorDecommissionForce_writesDecommissioned() {
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+            assertDecommissioned(outcome, T1, "operator-forced");
+        }
+
+        @Test void joining_drainOutcome_isErr() {
+            assertIllegal(state, new DrainOutcome(PEER, true, T1));
+        }
+
+        @Test void joining_joinDeadlineExpired_writesDecommissioned_joinTimeout() {
+            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1));
+            assertDecommissioned(outcome, T1, "join-timeout");
+            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
+        }
+    }
+
+    @Nested @DisplayName("OnDuty × *")
+    class FromOnDuty {
+        private final OnDuty state = MembershipFsmState.onDuty(PEER, T0);
+
+        @Test void onDuty_swimHealthy_isNop_reConfirmation() {
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
+        }
+
+        @Test void onDuty_swimFaulty_writesDecommissioned_smokingGun() {
+            var outcome = reducer.apply(state, new SwimFaulty(PEER, 1L, T1));
+            assertDecommissioned(outcome, T1, "swim-faulty");
+            // No threshold gate, no cooldown, no cache — a single SWIM observation suffices.
+            assertThat(outcome.writes()).hasSize(1);
+        }
+
+        @Test void onDuty_swimDeparted_writesDecommissioned() {
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            assertDecommissioned(outcome, T1, "swim-departed");
+        }
+
+        @Test void onDuty_slotClaimed_isErr() {
+            assertIllegal(state, new SlotClaimed(PEER, SLOT_ID, T1));
+        }
+
+        @Test void onDuty_operatorDrain_entersDraining() {
+            var outcome = reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1));
+            assertDraining(outcome, T1, DrainReason.OPERATOR_DRAIN);
+            assertThat(outcome.effects()).contains(new InvokeDrain(PEER, DrainReason.OPERATOR_DRAIN));
+        }
+
+        @Test void onDuty_operatorDecommissionForce_directToDecommissioned_noDrainCoordinator() {
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+            assertDecommissioned(outcome, T1, "operator-forced");
+            // Q2=A: force is a direct transition; no DrainCoordinator effect.
+            assertThat(outcome.effects()).noneMatch(e -> e instanceof InvokeDrain);
+            assertThat(outcome.effects()).noneMatch(e -> e instanceof CancelDrain);
+        }
+
+        @Test void onDuty_operatorDecommissionGraceful_routesThroughDraining() {
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, false, T1));
+            assertDraining(outcome, T1, DrainReason.OPERATOR_DRAIN);
+            assertThat(outcome.effects()).contains(new InvokeDrain(PEER, DrainReason.OPERATOR_DRAIN));
+        }
+
+        @Test void onDuty_drainOutcome_isErr() {
+            assertIllegal(state, new DrainOutcome(PEER, true, T1));
+        }
+
+        @Test void onDuty_joinDeadlineExpired_isNop() {
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+        }
+    }
+
+    @Nested @DisplayName("Draining × *")
+    class FromDraining {
+        private final Draining state = MembershipFsmState.draining(PEER, T0, DrainReason.OPERATOR_DRAIN);
+
+        @Test void draining_swimHealthy_isNop_drainOwnsOutcome() {
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
+        }
+
+        @Test void draining_swimFaulty_isNop_drainOwnsOutcome() {
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+        }
+
+        @Test void draining_swimDeparted_writesDecommissioned_hardOverridesDrain() {
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            assertDecommissioned(outcome, T1, "swim-departed");
+            assertThat(outcome.effects()).contains(new CancelDrain(PEER));
+        }
+
+        @Test void draining_slotClaimed_isErr() {
+            assertIllegal(state, new SlotClaimed(PEER, SLOT_ID, T1));
+        }
+
+        @Test void draining_operatorDrain_isNop_alreadyDraining() {
+            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1)), state);
+        }
+
+        @Test void draining_operatorDecommissionForce_cancelsDrainAndDecommissions() {
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+            assertDecommissioned(outcome, T1, "operator-forced");
+            assertThat(outcome.effects()).contains(new CancelDrain(PEER));
+        }
+
+        @Test void draining_operatorDecommissionGraceful_isNop_alreadyDraining() {
+            assertNop(reducer.apply(state, new OperatorDecommission(PEER, false, T1)), state);
+        }
+
+        @Test void draining_drainOutcomeSuccess_writesDecommissioned_emitsNodeDrained() {
+            var outcome = reducer.apply(state, new DrainOutcome(PEER, true, T1));
+            assertDecommissioned(outcome, T1, null);  // null reason check — see assertion below
+            assertEmitted(outcome, MembershipDomainEvent.NODE_DRAINED);
+        }
+
+        @Test void draining_drainOutcomeFailure_writesFailedDrain_emitsNodeDrainFailed() {
+            var outcome = reducer.apply(state, new DrainOutcome(PEER, false, T1));
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.failedDrain(PEER, T1));
+            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.FAILED_DRAIN, T1));
+            assertEmitted(outcome, MembershipDomainEvent.NODE_DRAIN_FAILED);
+        }
+
+        @Test void draining_joinDeadlineExpired_isNop() {
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+        }
+    }
+
+    @Nested @DisplayName("Decommissioned × *")
+    class FromDecommissioned {
+        private final Decommissioned state = MembershipFsmState.decommissioned(PEER, T0);
+
+        @Test void decommissioned_swimHealthy_isNop_zombie() {
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
+        }
+
+        @Test void decommissioned_swimFaulty_isNop() {
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+        }
+
+        @Test void decommissioned_swimDeparted_isNop() {
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
+        }
+
+        @Test void decommissioned_slotClaimed_isErr() {
+            assertIllegal(state, new SlotClaimed(PEER, SLOT_ID, T1));
+        }
+
+        @Test void decommissioned_operatorDrain_isNop() {
+            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1)), state);
+        }
+
+        @Test void decommissioned_operatorDecommission_isNop_idempotent() {
+            assertNop(reducer.apply(state, new OperatorDecommission(PEER, false, T1)), state);
+            assertNop(reducer.apply(state, new OperatorDecommission(PEER, true, T1)), state);
+        }
+
+        @Test void decommissioned_drainOutcome_isErr() {
+            assertIllegal(state, new DrainOutcome(PEER, true, T1));
+        }
+
+        @Test void decommissioned_joinDeadlineExpired_isNop_waitingForGc() {
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+        }
+    }
+
+    @Nested @DisplayName("FailedDrain × *")
+    class FromFailedDrain {
+        private final FailedDrain state = MembershipFsmState.failedDrain(PEER, T0);
+
+        @Test void failedDrain_swimHealthy_isNop() {
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
+        }
+
+        @Test void failedDrain_swimFaulty_isNop() {
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+        }
+
+        @Test void failedDrain_swimDeparted_writesDecommissioned() {
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            assertDecommissioned(outcome, T1, "swim-departed");
+        }
+
+        @Test void failedDrain_slotClaimed_isErr() {
+            assertIllegal(state, new SlotClaimed(PEER, SLOT_ID, T1));
+        }
+
+        @Test void failedDrain_operatorDrain_isNop_operatorRecoveryRequired() {
+            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1)), state);
+        }
+
+        @Test void failedDrain_operatorDecommission_clearsFailedDrainMarker() {
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, false, T1));
+            assertDecommissioned(outcome, T1, "operator-override");
+        }
+
+        @Test void failedDrain_drainOutcome_isErr() {
+            assertIllegal(state, new DrainOutcome(PEER, true, T1));
+        }
+
+        @Test void failedDrain_joinDeadlineExpired_isNop() {
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+        }
+    }
+
+    // =================================================================================
+    // Reducer purity: pure function of inputs — same (state, event) yields equal Outcome.
+    // =================================================================================
+    @Nested @DisplayName("Purity / idempotence")
+    class Purity {
+        @Test void apply_isPure_sameInputsYieldEqualOutcomes() {
+            var state = MembershipFsmState.onDuty(PEER, T0);
+            var event = new SwimFaulty(PEER, 1L, T1);
+            var first = reducer.apply(state, event);
+            var second = reducer.apply(state, event);
+            assertThat(first).isEqualTo(second);
+        }
+
+        @Test void onDutyToDecommissioned_thenSwimFaulty_isNopFromTerminalState() {
+            var state = MembershipFsmState.onDuty(PEER, T0);
+            var event = new SwimFaulty(PEER, 1L, T1);
+            var first = reducer.apply(state, event);
+            var second = reducer.apply(first.newState(), event);
+            assertThat(second.writes()).isEmpty();
+            assertThat(second.effects()).isEmpty();
+            assertThat(second.newState()).isEqualTo(first.newState());
+        }
+
+        @Test void joiningToOnDuty_thenSwimHealthy_isNopFromOnDuty() {
+            var state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+            var event = new SwimHealthy(PEER, 1L, T1);
+            var first = reducer.apply(state, event);
+            var second = reducer.apply(first.newState(), event);
+            assertThat(second.writes()).isEmpty();
+            assertThat(second.effects()).isEmpty();
+        }
+
+        @Test void drainOutcomeSuccess_thenReapply_isErr_atMostOnceContract() {
+            // DrainOutcome is at-most-once per spec §4.1 row 4 — re-apply on Decommissioned is err.
+            var state = MembershipFsmState.draining(PEER, T0, DrainReason.OPERATOR_DRAIN);
+            var event = new DrainOutcome(PEER, true, T1);
+            var first = reducer.apply(state, event);
+            assertThatThrownBy(() -> reducer.apply(first.newState(), event)).isInstanceOf(IllegalStateException.class);
+        }
+    }
+
+    // =================================================================================
+    // Specific scenarios called out by the spec.
+    // =================================================================================
+
+    @Nested @DisplayName("Smoking-gun replay (spec §1.1)")
+    class SmokingGunReplay {
+        /// Production failure trace: non-leader victim, cluster phase=NORMAL, leader stable,
+        /// `everSeenHealthy[victim]=true`. `docker kill` victim. Single SWIM faulty observation
+        /// on the leader must produce `Put(L=DECOMMISSIONED)` and emit `NODE_FAILED` — no
+        /// stale-cache, no threshold, no cooldown blocking it.
+        @Test void onDutyVictim_singleFaultyObservation_writesDecommissionedAndEmitsNodeFailed() {
+            // Pre-conditions: victim is ON_DUTY on the leader's FSM since t=T0 (some prior healthy observation).
+            var leaderFsmStateForVictim = MembershipFsmState.onDuty(PEER, T0);
+
+            // docker kill → SWIM detects faulty at t=T1.
+            var faulty = new SwimFaulty(PEER, 7L, T1);
+            var outcome = reducer.apply(leaderFsmStateForVictim, faulty);
+
+            // KV write proposed.
+            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DECOMMISSIONED, T1));
+            // NODE_FAILED downstream.
+            assertEmitted(outcome, MembershipDomainEvent.NODE_FAILED);
+            // FSM state advanced to Decommissioned — re-fire of the same SWIM signal is now nop.
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, T1));
+            var reapply = reducer.apply(outcome.newState(), new SwimFaulty(PEER, 7L, T2));
+            assertThat(reapply.writes()).isEmpty();
+            assertThat(reapply.effects()).isEmpty();
+        }
+    }
+
+    @Nested @DisplayName("Force decommission direct path (Q2=A)")
+    class ForceDecommissionDirect {
+        @Test void onDuty_operatorDecommissionForce_singleAtomicWrite_noDrainCoordinator() {
+            var state = MembershipFsmState.onDuty(PEER, T0);
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, T1));
+            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DECOMMISSIONED, T1));
+            // No DrainCoordinator invocation — Q2=A is a direct transition.
+            assertThat(outcome.effects()).noneMatch(e -> e instanceof InvokeDrain);
+            assertThat(outcome.effects()).noneMatch(e -> e instanceof CancelDrain);
+            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_FAILED, "operator-forced");
+        }
+    }
+
+    @Nested @DisplayName("Join deadline one-shot timer (Q3=C)")
+    class JoinDeadlineTimer {
+        @Test void enteringJoining_schedulesJoinDeadlineTimer() {
+            var state = MembershipFsmState.untracked(PEER);
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+
+            var expectedDelay = MembershipFsmConfig.DEFAULT_JOIN_DEADLINE;
+            assertThat(outcome.effects()).contains(new ScheduleTimer(PEER, TimerKind.JOIN_DEADLINE, expectedDelay));
+        }
+
+        @Test void joinDeadlineExpired_inJoining_transitionsToDecommissioned() {
+            var state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1));
+
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, T1));
+            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_FAILED, "join-timeout");
+            assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
+        }
+
+        @Test void joiningExit_emitsCancelTimer_preventingStaleFire() {
+            // Any exit from Joining must cancel the join-deadline timer (spec R4).
+            var state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+            assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
+        }
+
+        @Test void joinDeadlineExpired_outsideJoining_isHarmlessNop() {
+            // Stale-fire after Joining exit must be a no-op against every non-Joining state.
+            var onDuty = MembershipFsmState.onDuty(PEER, T0);
+            assertNop(reducer.apply(onDuty, new JoinDeadlineExpired(PEER, T2)), onDuty);
+
+            var decommissioned = MembershipFsmState.decommissioned(PEER, T0);
+            assertNop(reducer.apply(decommissioned, new JoinDeadlineExpired(PEER, T2)), decommissioned);
+        }
+    }
+
+    @Nested @DisplayName("Leader-initiated promotion (Q1=A)")
+    class LeaderInitiatedPromotion {
+        @Test void joining_swimHealthy_promotesToOnDuty_noSelfWriteEvent() {
+            // No self-write event exists in MembershipFsmEvent vocabulary — verified at compile time
+            // by the sealed hierarchy. This test asserts the leader-observed SwimHealthy fires the promotion.
+            var state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, T1));
+            assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
+            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
+        }
+
+        @Test void joining_swimHealthy_observedByLeader_fromAnyObserverIdentity() {
+            // The reducer does not care who the observer was — it consumes `SwimHealthy` events
+            // produced by the leader's local SWIM. This test documents that semantic.
+            var state = MembershipFsmState.joining(PEER, T0, Option.none());
+            var leaderObservation = new SwimHealthy(PEER, 1L, T1);  // observer identity is implicit
+            assertThat(reducer.apply(state, leaderObservation).newState()).isEqualTo(MembershipFsmState.onDuty(PEER, T1));
+            // A second, different observer (also the leader, different incarnation) is nop on OnDuty.
+            var reapply = reducer.apply(MembershipFsmState.onDuty(PEER, T1), new SwimHealthy(LEADER, 2L, T2));
+            assertThat(reapply.writes()).isEmpty();
+        }
+    }
+
+    // =================================================================================
+    // Assertion helpers.
+    // =================================================================================
+
+    private static void assertNop(Outcome outcome, MembershipFsmState expectedState) {
+        assertThat(outcome.newState()).isEqualTo(expectedState);
+        assertThat(outcome.writes()).isEmpty();
+        assertThat(outcome.effects()).isEmpty();
+    }
+
+    private static void assertEntersJoining(Outcome outcome, Option<String> expectedSlotId, long expectedJoinedAt) {
+        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.joining(PEER, expectedJoinedAt, expectedSlotId));
+        assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.JOINING, expectedJoinedAt));
+        assertEmitted(outcome, MembershipDomainEvent.NODE_JOINING);
+        assertThat(outcome.effects()).anyMatch(e -> e instanceof ScheduleTimer st && st.kind() == TimerKind.JOIN_DEADLINE);
+    }
+
+    private static void assertOnDuty(Outcome outcome, long expectedAt) {
+        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, expectedAt));
+        assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.ON_DUTY, expectedAt));
+    }
+
+    private static void assertDecommissioned(Outcome outcome, long expectedAt, String expectedReasonOrNull) {
+        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, expectedAt));
+        assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.DECOMMISSIONED, expectedAt));
+        if (expectedReasonOrNull != null) {
+            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_FAILED, expectedReasonOrNull);
+        }
+    }
+
+    private static void assertDraining(Outcome outcome, long expectedAt, DrainReason expectedReason) {
+        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.draining(PEER, expectedAt, expectedReason));
+        assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DRAINING, expectedAt));
+    }
+
+    private static void assertEmitted(Outcome outcome, MembershipDomainEvent expected) {
+        assertThat(outcome.effects()).anyMatch(e -> e instanceof EmitDomainEvent emit && emit.event() == expected);
+    }
+
+    private static void assertEmittedWithReason(Outcome outcome, MembershipDomainEvent expected, String reason) {
+        assertThat(outcome.effects()).anyMatch(e -> e instanceof EmitDomainEvent emit
+                                                   && emit.event() == expected
+                                                   && emit.reason().equals(reason));
+    }
+
+    private void assertIllegal(MembershipFsmState state, MembershipFsmEvent event) {
+        assertThatThrownBy(() -> reducer.apply(state, event)).isInstanceOf(IllegalStateException.class);
+    }
+
+    private static KVCommand<AetherKey> putLifecycle(NodeLifecycleState newState, long nowMs) {
+        var key = NodeLifecycleKey.nodeLifecycleKey(PEER);
+        var value = NodeLifecycleValue.nodeLifecycleValue(newState, nowMs);
+        return new KVCommand.Put<>(key, value);
+    }
+
+    private static KVCommand<AetherKey> removeSlot(String slotId) {
+        return new KVCommand.Remove<>(ProvisioningSlotKey.provisioningSlotKey(slotId));
+    }
+}
