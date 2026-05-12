@@ -20,6 +20,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimObservation;
 
 import java.util.List;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -52,6 +53,14 @@ public interface HealthReconciler {
 
     static RetryScheduler defaultRetryScheduler() {
         return (runnable, delay) -> SharedScheduler.schedule(runnable, delay);
+    }
+
+    /// E.6 / spec §7.2: phase-write gate. When the gate returns `true`, this reconciler
+    /// continues to write `ClusterPhaseKey` to KV on phase transitions (legacy behaviour,
+    /// flag off). When the gate returns `false`, phase writes are suppressed because
+    /// `ClusterPhaseView` is now the source of truth (flag on). Default = writes enabled.
+    static BooleanSupplier defaultPhaseWritesEnabled() {
+        return () -> true;
     }
 
     static HealthReconciler healthReconciler(NodeId self,
@@ -104,6 +113,30 @@ public interface HealthReconciler {
                                              HealthReconcilerConfig config,
                                              SelfOnDutyAtomFactory selfOnDutyAtomFactory,
                                              RetryScheduler retryScheduler) {
+        return healthReconciler(self,
+                                expectedClusterSize,
+                                lifecycleReader,
+                                phaseReader,
+                                leaderReader,
+                                onDutyCountSupplier,
+                                commandApplier,
+                                config,
+                                selfOnDutyAtomFactory,
+                                retryScheduler,
+                                defaultPhaseWritesEnabled());
+    }
+
+    static HealthReconciler healthReconciler(NodeId self,
+                                             int expectedClusterSize,
+                                             Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                             Supplier<Option<ClusterPhase>> phaseReader,
+                                             Supplier<Option<NodeId>> leaderReader,
+                                             Supplier<Integer> onDutyCountSupplier,
+                                             Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                             HealthReconcilerConfig config,
+                                             SelfOnDutyAtomFactory selfOnDutyAtomFactory,
+                                             RetryScheduler retryScheduler,
+                                             BooleanSupplier phaseWritesEnabled) {
         return HealthReconcilerImpl.healthReconcilerImpl(self,
                                                          expectedClusterSize,
                                                          lifecycleReader,
@@ -113,6 +146,7 @@ public interface HealthReconciler {
                                                          commandApplier,
                                                          config,
                                                          selfOnDutyAtomFactory,
-                                                         retryScheduler);
+                                                         retryScheduler,
+                                                         phaseWritesEnabled);
     }
 }

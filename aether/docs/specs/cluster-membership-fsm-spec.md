@@ -312,11 +312,18 @@ ClusterPhase computeClusterPhase(long nowMs) {
 
 ### 7.2 Storage
 
-`ClusterPhaseKey.SINGLETON` is **still written** to KV by the leader on transition for two reasons:
-1. **Operator-visible diagnostic** — `/api/cluster/status` reads `ClusterPhaseValue` and returns it directly. Computing the phase from per-peer FSM listing on every status query is wasteful.
-2. **SWIM phase-suppression gate (G1)** — `SwimProtocol.isBootingSupplier` reads `phase == COLD_BOOT`. SWIM runs on every node, leader and followers, and needs a single-atom read, not a per-peer fold.
+**E.6 implementation (KV-as-cache).** `ClusterPhaseKey.SINGLETON` is no longer authoritative. The source of truth is `ClusterPhaseView.compute(nowMs)` — a stateless derivation over per-peer `NodeLifecycleKey` entries (see `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/membership/phase/ClusterPhaseView.java`). The view consults `ClusterPhaseKey` as an **optional cache hint** to track the "ever reached NORMAL" bit across leader takeovers (if the cache holds `NORMAL` or `RECOVERING`, NORMAL was reached at some prior moment; otherwise the cluster is treated as never having reached NORMAL).
 
-But the write is now **derived**: the leader's `MembershipFsm` recomputes `ClusterPhase` on every transition; if the result differs from the currently-committed value, a `Put(ClusterPhaseKey, value)` is queued in the same `commandApplier.apply(List)` batch as the lifecycle write that caused the change. This makes phase transitions **atomic with the lifecycle transition that caused them**, eliminating the race where `phase=RECOVERING` lingers after `onDuty` reached quorum because a periodic re-evaluation hadn't fired yet (the current `phaseEvaluationInterval` workaround).
+Until E.7 the legacy write path is preserved behind the `aether.membership.fsm.shadowEnabled` flag:
+1. **Flag off (default).** `HealthReconcilerImpl.proposeClusterPhase` writes `ClusterPhaseKey` exactly as before; the view's cache lookup observes those writes and the derived path matches legacy behaviour. Zero behaviour change.
+2. **Flag on.** `HealthReconcilerImpl.proposeClusterPhase` short-circuits (no consensus write). `ClusterPhaseView` is queried directly by:
+   - `StatusRoutes.readClusterPhase` (via `ManageableNode.clusterPhaseSupplier()`) — dashboard / CLI.
+   - `ClusterTopologyManagerRecord` auto-heal suspension predicate (`phaseSupplier`).
+   - `SwimProtocol`'s `isBootingSupplier` (cold-boot suppression gate G1).
+
+   With the flag on the KV atom is stale (no writer); the view's prior-phase cache lookup also returns stale data. This is acceptable for E.6 because the only state that survives leader takeovers via the cache is the one-bit "ever reached NORMAL" flag, and a fresh leader reconstructs it conservatively (defaults to "never"). Operators running with the flag on for the first time will see `COLD_BOOT → NORMAL` on the first leader's stable window even if the prior incarnation had already reached NORMAL; this matches §7.3's "conservative choice" and is a soft signal.
+
+E.7 deletes the legacy writer entirely, after which `ClusterPhaseKey` may be removed from the KV schema (or kept as an FSM-derived cache, written atomically with the lifecycle transitions that cause phase changes — TBD by E.7).
 
 ### 7.3 Stability window semantics
 

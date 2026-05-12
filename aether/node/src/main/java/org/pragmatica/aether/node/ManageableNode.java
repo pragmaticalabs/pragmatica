@@ -52,6 +52,7 @@ import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 
 public interface ManageableNode {
@@ -105,5 +106,14 @@ public interface ManageableNode {
     DrainCoordinator drainCoordinator();
     NodeLifecycle nodeLifecycle();
     MembershipFsm membershipFsm();
+
+    /// E.6 (spec §7.2): unified `ClusterPhase` accessor. With the FSM shadow flag
+    /// `aether.membership.fsm.shadowEnabled=true`, returns the value derived by
+    /// `ClusterPhaseView.compute()`. Otherwise, returns the legacy
+    /// `ClusterPhaseKey` KV read (with `COLD_BOOT` as the fallback). Status routes
+    /// and any dashboard consumer should call this rather than reading the KV
+    /// atom directly so the migration cut-over is centralised.
+    Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier();
+
     @SuppressWarnings("JBCT-RET-01") void route(Message message);
 }

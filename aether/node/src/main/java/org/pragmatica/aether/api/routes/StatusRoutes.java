@@ -23,12 +23,9 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterPhaseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhaseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
@@ -130,12 +127,12 @@ public final class StatusRoutes implements RouteSource {
         return new NodeInfo(nodeId.id(), isLeader, lifecycleState);
     }
 
+    /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the
+    /// dashboard observes the derived `ClusterPhaseView` value when the FSM shadow flag
+    /// is on, and the legacy `ClusterPhaseKey` cache when it's off — a single migration
+    /// switch covers all consumers.
     private static String readClusterPhase(ManageableNode node) {
-        return node.kvStore().get(ClusterPhaseKey.SINGLETON)
-                           .filter(ClusterPhaseValue.class::isInstance)
-                           .map(ClusterPhaseValue.class::cast)
-                           .map(v -> v.phase().name())
-                           .or(ClusterPhase.COLD_BOOT.name());
+        return node.clusterPhaseSupplier().get().name();
     }
 
     private static int quorumOf(int n) {

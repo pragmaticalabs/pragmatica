@@ -33,6 +33,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -61,6 +62,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
     private final ObservationAggregator aggregator;
     private final SelfOnDutyAtomFactory selfOnDutyAtomFactory;
     private final RetryScheduler retryScheduler;
+    private final BooleanSupplier phaseWritesEnabled;
 
     private final Object aggregatorLock = new Object();
 
@@ -89,7 +91,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                  Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                  HealthReconcilerConfig config,
                                  SelfOnDutyAtomFactory selfOnDutyAtomFactory,
-                                 RetryScheduler retryScheduler) {
+                                 RetryScheduler retryScheduler,
+                                 BooleanSupplier phaseWritesEnabled) {
         this.self = self;
         this.expectedClusterSize = expectedClusterSize;
         this.lifecycleReader = lifecycleReader;
@@ -100,6 +103,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
         this.config = config;
         this.selfOnDutyAtomFactory = selfOnDutyAtomFactory;
         this.retryScheduler = retryScheduler;
+        this.phaseWritesEnabled = phaseWritesEnabled;
         this.aggregator = ObservationAggregator.observationAggregator(config.aggregationWindow());
     }
 
@@ -122,7 +126,32 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                         commandApplier,
                                         config,
                                         selfOnDutyAtomFactory,
-                                        retryScheduler);
+                                        retryScheduler,
+                                        () -> true);
+    }
+
+    static HealthReconcilerImpl healthReconcilerImpl(NodeId self,
+                                                     int expectedClusterSize,
+                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                     Supplier<Option<ClusterPhase>> phaseReader,
+                                                     Supplier<Option<NodeId>> leaderReader,
+                                                     Supplier<Integer> onDutyCountSupplier,
+                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                     HealthReconcilerConfig config,
+                                                     SelfOnDutyAtomFactory selfOnDutyAtomFactory,
+                                                     RetryScheduler retryScheduler,
+                                                     BooleanSupplier phaseWritesEnabled) {
+        return new HealthReconcilerImpl(self,
+                                        expectedClusterSize,
+                                        lifecycleReader,
+                                        phaseReader,
+                                        leaderReader,
+                                        onDutyCountSupplier,
+                                        commandApplier,
+                                        config,
+                                        selfOnDutyAtomFactory,
+                                        retryScheduler,
+                                        phaseWritesEnabled);
     }
 
     @Override public Promise<Unit> start() {
@@ -459,7 +488,16 @@ final class HealthReconcilerImpl implements HealthReconciler {
         return phase;
     }
 
+    /// E.6 / spec §7.2: when `phaseWritesEnabled` returns `false` (the FSM shadow flag is
+    /// `on`, i.e., `ClusterPhaseView` is authoritative), suppress the KV write entirely.
+    /// The reconciler still tracks `currentPhase` locally for legacy callers (`phase()`
+    /// and `suppressedByPhase`); E.7 will delete those callers and this whole method.
     @Contract private void proposeClusterPhase(ClusterPhase target) {
+        if (!phaseWritesEnabled.getAsBoolean()) {
+            log.debug("HealthReconciler: phase writes disabled (FSM owns ClusterPhase); skipping ClusterPhaseValue={} write",
+                      target);
+            return;
+        }
         var nowMs = System.currentTimeMillis();
         var value = ClusterPhaseValue.clusterPhaseValue(target, nowMs);
         var command = putClusterPhaseAtom(ClusterPhaseKey.SINGLETON, value);
