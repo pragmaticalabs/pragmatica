@@ -30,8 +30,8 @@ x-node-common: &node-common
     # Cluster B uses 5160-5169. Distinct ranges prevent port-bind collisions when
     # CTM auto-provisions a phantom replacement for cluster A using cluster B's
     # baked-in 5160 base. Read by DockerEnvironmentIntegrationFactory.resolvePortBase.
-    AETHER_MGMT_PORT_BASE: "5150"
-    AETHER_APP_PORT_BASE: "8070"
+    AETHER_MGMT_PORT_BASE: "5156"
+    AETHER_APP_PORT_BASE: "8075"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
     interval: 10s
