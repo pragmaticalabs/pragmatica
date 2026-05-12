@@ -417,11 +417,11 @@ public interface NodeDeploymentManager {
         @Contract private void onActiveEntry() {
             var signal = selfReadySignal.get();
             if (signal.isEmpty()) {
-                log.warn("Node {} active-entry without self-ready signal — HealthReconciler must be wired",
+                log.warn("Node {} active-entry without self-ready signal — node-lifecycle hook must be wired",
                          ctx.self().id());
                 return;
             }
-            log.info("Node {} signalling self-ready to HealthReconciler",
+            log.info("Node {} signalling self-ready to node-lifecycle hook",
                      ctx.self().id());
             signal.unwrap().run();
         }
@@ -475,7 +475,7 @@ public interface NodeDeploymentManager {
         @Contract@Override public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
             var key = valueRemove.cause().key();
             if (key.nodeId().equals(ctx.self()) && isActive()) {
-                log.warn("Node {} lifecycle key removed unexpectedly — re-emitting self-ready (HealthReconciler will rewrite ON_DUTY)",
+                log.warn("Node {} lifecycle key removed unexpectedly — re-emitting self-ready (node-lifecycle hook re-runs; FSM owns ON_DUTY rewrites post-E.7)",
                          ctx.self().id());
                 selfReadySignal.get().onPresent(Runnable::run);
             }

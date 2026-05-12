@@ -899,19 +899,12 @@ public interface AetherNode extends ManageableNode {
                                                                   clusterPhaseReader,
                                                                   () -> healthLeaderSupplier.get().isPresent());
         Supplier<AetherValue.ClusterPhase> derivedPhaseSupplier = () -> clusterPhaseView.compute(System.currentTimeMillis());
-        var healthReconcilerSelfAddress = findSelfAddress(config);
-        var healthReconcilerProvisioningSource = detectProvisioningSource();
-        HealthReconciler.SelfOnDutyAtomFactory selfOnDutyAtomFactory = (state, nowMs) -> AetherValue.NodeLifecycleValue.nodeLifecycleValue(state,
-                                                                                                                                           nowMs,
-                                                                                                                                           healthReconcilerSelfAddress.host(),
-                                                                                                                                           healthReconcilerSelfAddress.port(),
-                                                                                                                                           leaderEpochSupplier.get(),
-                                                                                                                                           org.pragmatica.hlc.HlcTimestamp.ZERO,
-                                                                                                                                           healthReconcilerProvisioningSource);
         // E.6 (spec §7.2): `phaseWritesEnabled` gates the legacy KV write path. When the
-        // FSM shadow flag is on, ClusterPhaseView is authoritative; HealthReconciler still
-        // tracks `currentPhase` locally for its own `suppressedByPhase`/`phase()` callers
-        // (E.7 removes those) but no longer proposes ClusterPhaseKey writes to consensus.
+        // FSM shadow flag is on, ClusterPhaseView is authoritative; HealthReconciler no
+        // longer proposes ClusterPhaseKey writes to consensus. E.7 deleted the SWIM-driven
+        // lifecycle path and the self-promotion machinery; SWIM-driven writes now flow
+        // exclusively through `MembershipFsm.onSwimObservation`. Self ON_DUTY is now driven
+        // by the leader-initiated `(JOINING, SwimHealthy) → ON_DUTY` FSM transition (E.5).
         java.util.function.BooleanSupplier phaseWritesEnabled = () -> !membershipFsmShadowEnabled;
         var healthReconciler = HealthReconciler.healthReconciler(config.self(),
                                                                  config.topology().coreNodes()
@@ -922,7 +915,6 @@ public interface AetherNode extends ManageableNode {
                                                                  onDutyCountSupplier,
                                                                  clusterCommandApplier,
                                                                  HealthReconcilerConfig.DEFAULT,
-                                                                 selfOnDutyAtomFactory,
                                                                  HealthReconciler.defaultRetryScheduler(),
                                                                  phaseWritesEnabled);
         healthReconciler.start();
@@ -1558,7 +1550,7 @@ public interface AetherNode extends ManageableNode {
                                   effectivePhaseSupplier,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
-        nodeDeploymentManager.setSelfReadySignal(() -> bridgeSelfReadyToLifecycle(healthReconciler, nodeLifecycle));
+        nodeDeploymentManager.setSelfReadySignal(nodeLifecycle::signalReady);
         nodeLifecycle.subsystemsReady();
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
                                            .map(_ -> {
@@ -1670,11 +1662,6 @@ public interface AetherNode extends ManageableNode {
         ctm.onClusterPhaseChanged(event.current());
     }
 
-    @Contract private static void bridgeSelfReadyToLifecycle(HealthReconciler healthReconciler,
-                                                             NodeLifecycle nodeLifecycle) {
-        nodeLifecycle.signalReady();
-        healthReconciler.signalSelfReady();
-    }
 
     /// Build the membership FSM (spec §9 E.3 shadow + E.4 operator-write). Activation is gated
     /// by the `aether.membership.fsm.shadowEnabled` system property; default `false` → no-op

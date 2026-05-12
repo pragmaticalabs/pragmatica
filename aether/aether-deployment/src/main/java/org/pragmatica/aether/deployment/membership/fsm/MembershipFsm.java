@@ -79,8 +79,9 @@ import static org.pragmatica.lang.Option.some;
 /// path migrated in E.4.
 ///
 /// **Single-writer invariant.** Only the leader's FSM writes. Non-leader instances treat
-/// operator events as no-ops (logged at WARN). The leader-gate matches the same model
-/// `HealthReconciler` already enforces in `handleAggregatedEdge` (D.3).
+/// operator events as no-ops (logged at WARN). Post-E.7 (spec §9) the legacy
+/// `HealthReconciler.handleAggregatedEdge` leader-gate is gone; the leader gate is now
+/// enforced exclusively inside the FSM.
 ///
 /// **Reconstructibility (I1).** Local per-peer state is derived from KV. The FSM only
 /// mutates `fsmStates` AFTER `commandApplier.apply(writes)` succeeds. On consensus

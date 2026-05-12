@@ -13,9 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhaseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -23,12 +21,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimObservation;
 
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -42,14 +37,29 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
+/// Lifecycle/phase reconciler — slimmed by spec §9 E.7.
+///
+/// **E.7 deletions (2026-05-12).** The legacy SWIM-driven lifecycle write path — the entire
+/// gate stack (`ObservationAggregator`, `handleAggregatedEdge`, `suppressedByPhase`,
+/// `cooldownActive`) and the self-promotion machinery (`signalSelfReady`,
+/// `attemptSelfOnDutyWrite`, `SelfOnDutyAtomFactory`, etc.) are gone. The corresponding KV
+/// writes now originate exclusively from `MembershipFsm` (operator events via E.4 and SWIM
+/// observations via E.5) when `aether.membership.fsm.shadowEnabled=true`.
+///
+/// **Degenerate flag-off mode.** With `aether.membership.fsm.shadowEnabled=false`,
+/// `onSwimObservation` no longer drives lifecycle writes — there is no longer any
+/// SWIM-driven path to `DECOMMISSIONED`/`ON_DUTY`. Operator routes still work because they
+/// call `requestDrain`/`requestDecommission`/`requestActivate`/`requestFailedDrain` directly,
+/// which write through `forceLifecycleWrite`. This is the intentional regression documented in
+/// spec §9 E.7: between E.7 and E.8 (flag flip + flag removal) the flag-off mode is degenerate,
+/// and production runs with the flag on. See `aether/docs/specs/cluster-membership-fsm-spec.md` §9 E.7.
+///
+/// **What remains in this class.** Lifecycle (start/stop), operator-write entry points,
+/// and the legacy `ClusterPhase` periodic-evaluation + KV write path (gated by `phaseWritesEnabled`
+/// per E.6 — when the FSM shadow flag is on, `ClusterPhaseView` is authoritative and these writes
+/// are suppressed). E.8 will retire the phase path entirely along with the feature flag.
 final class HealthReconcilerImpl implements HealthReconciler {
     private static final Logger log = LoggerFactory.getLogger(HealthReconcilerImpl.class);
-
-    static final int MAX_SELF_ONDUTY_RETRIES = 8;
-
-    static final long INITIAL_SELF_ONDUTY_RETRY_DELAY_MS = 200L;
-
-    static final long MAX_SELF_ONDUTY_RETRY_DELAY_MS = 2_000L;
 
     private final NodeId self;
     private final int expectedClusterSize;
@@ -59,26 +69,16 @@ final class HealthReconcilerImpl implements HealthReconciler {
     private final Supplier<Integer> onDutyCountSupplier;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier;
     private final HealthReconcilerConfig config;
-    private final ObservationAggregator aggregator;
-    private final SelfOnDutyAtomFactory selfOnDutyAtomFactory;
     private final RetryScheduler retryScheduler;
     private final BooleanSupplier phaseWritesEnabled;
 
-    private final Object aggregatorLock = new Object();
-
     private final Object phaseListenerLock = new Object();
-
-    private final Map<NodeId, Long> lastWriteAt = new ConcurrentHashMap<>();
 
     private final AtomicBoolean started = new AtomicBoolean(false);
 
     private final AtomicReference<ClusterPhase> currentPhase = new AtomicReference<>(ClusterPhase.COLD_BOOT);
 
     private final AtomicLong stableSinceMs = new AtomicLong(0L);
-
-    private final AtomicBoolean selfReady = new AtomicBoolean(false);
-
-    private final AtomicBoolean selfPromoted = new AtomicBoolean(false);
 
     private final List<Consumer<ClusterPhaseChanged>> phaseListeners = new CopyOnWriteArrayList<>();
 
@@ -90,7 +90,6 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                  Supplier<Integer> onDutyCountSupplier,
                                  Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                  HealthReconcilerConfig config,
-                                 SelfOnDutyAtomFactory selfOnDutyAtomFactory,
                                  RetryScheduler retryScheduler,
                                  BooleanSupplier phaseWritesEnabled) {
         this.self = self;
@@ -101,10 +100,8 @@ final class HealthReconcilerImpl implements HealthReconciler {
         this.onDutyCountSupplier = onDutyCountSupplier;
         this.commandApplier = commandApplier;
         this.config = config;
-        this.selfOnDutyAtomFactory = selfOnDutyAtomFactory;
         this.retryScheduler = retryScheduler;
         this.phaseWritesEnabled = phaseWritesEnabled;
-        this.aggregator = ObservationAggregator.observationAggregator(config.aggregationWindow());
     }
 
     static HealthReconcilerImpl healthReconcilerImpl(NodeId self,
@@ -115,30 +112,6 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                                      Supplier<Integer> onDutyCountSupplier,
                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                      HealthReconcilerConfig config,
-                                                     SelfOnDutyAtomFactory selfOnDutyAtomFactory,
-                                                     RetryScheduler retryScheduler) {
-        return new HealthReconcilerImpl(self,
-                                        expectedClusterSize,
-                                        lifecycleReader,
-                                        phaseReader,
-                                        leaderReader,
-                                        onDutyCountSupplier,
-                                        commandApplier,
-                                        config,
-                                        selfOnDutyAtomFactory,
-                                        retryScheduler,
-                                        () -> true);
-    }
-
-    static HealthReconcilerImpl healthReconcilerImpl(NodeId self,
-                                                     int expectedClusterSize,
-                                                     Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
-                                                     Supplier<Option<ClusterPhase>> phaseReader,
-                                                     Supplier<Option<NodeId>> leaderReader,
-                                                     Supplier<Integer> onDutyCountSupplier,
-                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                     HealthReconcilerConfig config,
-                                                     SelfOnDutyAtomFactory selfOnDutyAtomFactory,
                                                      RetryScheduler retryScheduler,
                                                      BooleanSupplier phaseWritesEnabled) {
         return new HealthReconcilerImpl(self,
@@ -149,7 +122,6 @@ final class HealthReconcilerImpl implements HealthReconciler {
                                         onDutyCountSupplier,
                                         commandApplier,
                                         config,
-                                        selfOnDutyAtomFactory,
                                         retryScheduler,
                                         phaseWritesEnabled);
     }
@@ -192,163 +164,15 @@ final class HealthReconcilerImpl implements HealthReconciler {
         return Promise.unitPromise();
     }
 
+    /// SWIM-observation entry point. Post-E.7 this is a phase-evaluation trigger only —
+    /// the legacy aggregator + lifecycle-write path is gone. Lifecycle writes from SWIM
+    /// observations now flow exclusively through `MembershipFsm.onSwimObservation` (E.5).
+    /// The `observation` argument is retained to preserve the interface contract; its content
+    /// is no longer inspected here.
     @Override@Contract public void onSwimObservation(SwimObservation observation) {
+        var _unused = observation;
         if (!started.get()) {return;}
-        var nowMs = System.currentTimeMillis();
-        var edge = aggregateEdge(observation, nowMs);
-        edge.onPresent(stateChanged -> handleAggregatedEdge(stateChanged, nowMs));
-        evaluatePhaseTransition(nowMs);
-        evaluateSelfPromotion(nowMs);
-    }
-
-    @Override@Contract public void signalSelfReady() {
-        if (!started.get()) {return;}
-        if (selfReady.compareAndSet(false, true)) {
-            log.info("HealthReconciler: self-ready signal received for {}", self);
-            evaluateSelfPromotion(System.currentTimeMillis());
-        }
-    }
-
-    private void evaluateSelfPromotion(long nowMs) {
-        if (!selfReady.get()) {return;}
-        if (selfPromoted.get()) {return;}
-        if (selfAlreadyOnDuty()) {
-            selfPromoted.compareAndSet(false, true);
-            return;
-        }
-        promoteSelfToOnDuty(nowMs);
-    }
-
-    private boolean selfAlreadyOnDuty() {
-        return lifecycleReader.apply(self).map(v -> v.state() == NodeLifecycleState.ON_DUTY)
-                                    .or(false);
-    }
-
-    private void promoteSelfToOnDuty(long nowMs) {
-        if (!selfPromoted.compareAndSet(false, true)) {return;}
-        log.info("HealthReconciler: promoting self {} to ON_DUTY (phase={})", self, currentPhase.get());
-        proposeSelfOnDutyWrite(nowMs);
-    }
-
-    @Contract private void proposeSelfOnDutyWrite(long nowMs) {
-        attemptSelfOnDutyWrite(nowMs, 1);
-    }
-
-    @Contract private void attemptSelfOnDutyWrite(long nowMs, int attempt) {
-        if (selfAlreadyOnDuty()) {
-            log.debug("HealthReconciler: self {} already ON_DUTY — retry attempt {} short-circuited", self, attempt);
-            return;
-        }
-        var prior = lifecycleReader.apply(self);
-        var value = prior.isPresent()
-                   ? buildLifecycleValue(prior, NodeLifecycleState.ON_DUTY, nowMs)
-                   : selfOnDutyAtomFactory.build(NodeLifecycleState.ON_DUTY, nowMs);
-        var command = putLifecycleAtom(NodeLifecycleKey.nodeLifecycleKey(self), value);
-        commandApplier.apply(List.of(command)).onFailure(cause -> handleSelfOnDutyFailure(cause, attempt))
-                            .onSuccess(_ -> recordWrite(self, NodeLifecycleState.ON_DUTY, nowMs));
-    }
-
-    private void handleSelfOnDutyFailure(Cause cause, int attempt) {
-        if (!isTransientInactiveRejection(cause)) {
-            log.error("HealthReconciler: self {} ON_DUTY write rejected with non-retriable cause on attempt {}: {}",
-                      self,
-                      attempt,
-                      cause.message());
-            return;
-        }
-        if (attempt >= MAX_SELF_ONDUTY_RETRIES) {
-            log.error("HealthReconciler: self {} ON_DUTY write exhausted {} attempts — giving up; last cause: {}",
-                      self,
-                      MAX_SELF_ONDUTY_RETRIES,
-                      cause.message());
-            return;
-        }
-        var delay = computeBackoffDelay(attempt);
-        log.warn("HealthReconciler: self {} ON_DUTY write rejected (attempt {}/{}); retrying in {}ms — cause: {}",
-                 self,
-                 attempt,
-                 MAX_SELF_ONDUTY_RETRIES,
-                 delay.millis(),
-                 cause.message());
-        retryScheduler.schedule(() -> attemptSelfOnDutyWrite(System.currentTimeMillis(), attempt + 1), delay);
-    }
-
-    private static boolean isTransientInactiveRejection(Cause cause) {
-        return cause instanceof ConsensusError.NodeInactive;
-    }
-
-    private static TimeSpan computeBackoffDelay(int attempt) {
-        var raw = INITIAL_SELF_ONDUTY_RETRY_DELAY_MS<<Math.min(attempt - 1, 30);
-        var clamped = Math.min(raw, MAX_SELF_ONDUTY_RETRY_DELAY_MS);
-        return TimeSpan.timeSpan(clamped).millis();
-    }
-
-    private Option<ObservationAggregator.StateChanged> aggregateEdge(SwimObservation observation, long nowMs) {
-        var onDutyCount = onDutyCountSupplier.get();
-        synchronized (aggregatorLock) {
-            return aggregator.onObservation(self, observation, onDutyCount, nowMs);
-        }
-    }
-
-    private void handleAggregatedEdge(ObservationAggregator.StateChanged edge, long nowMs) {
-        var currentLeader = leaderReader.get();
-        var leaderUnknown = currentLeader.isEmpty();
-        var targetIsLeader = currentLeader.map(l -> l.equals(edge.target())).or(false);
-        if (!isLeader() && !targetIsLeader && !leaderUnknown) {
-            log.trace("HealthReconciler: follower {} skips lifecycle write for {} -> {} (leader-gated)",
-                      self,
-                      edge.target(),
-                      edge.newState());
-            return;
-        }
-        if (targetIsLeader && !isLeader()) {log.info("HealthReconciler: faulty target {} is current leader; non-leader {} attempting eviction write (self-leader-eviction escape hatch)",
-                                                     edge.target(),
-                                                     self);}
-        if (leaderUnknown && !isLeader()) {log.info("HealthReconciler: leader unknown (handoff window); non-leader {} attempting lifecycle write {} -> {} (consensus de-dups)",
-                                                     self,
-                                                     edge.target(),
-                                                     edge.newState());}
-        var target = edge.target();
-        if (cooldownActive(target, nowMs)) {
-            log.debug("HealthReconciler: cooldown active for {} — suppressing aggregated edge {}",
-                      target,
-                      edge.newState());
-            return;
-        }
-        if (suppressedByPhase(edge)) {
-            log.debug("HealthReconciler: phase {} suppresses {} write for {}",
-                      currentPhase.get(),
-                      edge.newState(),
-                      target);
-            return;
-        }
-        proposeLifecycleWrite(target, edge.newState(), nowMs);
-    }
-
-    /// Lifecycle-write suppression (D.3): suppresses DECOMMISSIONED / SHUTTING_DOWN /
-    /// DRAINING writes during `COLD_BOOT` only. `RECOVERING` does NOT suppress — the
-    /// whole point of the phase split is that real failures during re-establishment
-    /// must produce real lifecycle transitions so the NODE_FAILED downstream event
-    /// fires and tests do not time out waiting on it.
-    private boolean suppressedByPhase(ObservationAggregator.StateChanged edge) {
-        if (currentPhase.get() != ClusterPhase.COLD_BOOT) {return false;}
-        return edge.newState() == NodeLifecycleState.DECOMMISSIONED || edge.newState() == NodeLifecycleState.SHUTTING_DOWN || edge.newState() == NodeLifecycleState.DRAINING;
-    }
-
-    private boolean cooldownActive(NodeId target, long nowMs) {
-        return Option.option(lastWriteAt.get(target)).map(lastAt -> nowMs - lastAt <config.cooldown().millis())
-                            .or(false);
-    }
-
-    @Contract private void proposeLifecycleWrite(NodeId target, NodeLifecycleState newState, long nowMs) {
-        var prior = lifecycleReader.apply(target);
-        var value = buildLifecycleValue(prior, newState, nowMs);
-        var command = putLifecycleAtom(NodeLifecycleKey.nodeLifecycleKey(target), value);
-        commandApplier.apply(List.of(command)).onFailure(cause -> log.warn("HealthReconciler: failed to write {} for {}: {}",
-                                                                           newState,
-                                                                           target,
-                                                                           cause.message()))
-                            .onSuccess(_ -> recordWrite(target, newState, nowMs));
+        evaluatePhaseTransition(System.currentTimeMillis());
     }
 
     @SuppressWarnings("unchecked") private static KVCommand<AetherKey> putLifecycleAtom(NodeLifecycleKey key,
@@ -359,14 +183,6 @@ final class HealthReconcilerImpl implements HealthReconciler {
     @SuppressWarnings("unchecked") private static KVCommand<AetherKey> putClusterPhaseAtom(ClusterPhaseKey key,
                                                                                            ClusterPhaseValue value) {
         return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(key, value);
-    }
-
-    private void recordWrite(NodeId target, NodeLifecycleState newState, long nowMs) {
-        lastWriteAt.put(target, nowMs);
-        synchronized (aggregatorLock) {
-            aggregator.resetEdgeState(target, newState);
-        }
-        log.info("HealthReconciler: wrote {} for {}", newState, target);
     }
 
     private static NodeLifecycleValue buildLifecycleValue(Option<NodeLifecycleValue> prior,
@@ -408,7 +224,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
         var prior = lifecycleReader.apply(target);
         var value = buildLifecycleValue(prior, newState, nowMs);
         var command = putLifecycleAtom(NodeLifecycleKey.nodeLifecycleKey(target), value);
-        return commandApplier.apply(List.of(command)).onSuccess(_ -> recordWrite(target, newState, nowMs))
+        return commandApplier.apply(List.of(command)).onSuccess(_ -> log.info("HealthReconciler: wrote {} for {}", newState, target))
                                    .mapError(cause -> new HealthReconcilerError.ProposalRejected(target, cause))
                                    .mapToUnit();
     }
@@ -490,8 +306,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
 
     /// E.6 / spec §7.2: when `phaseWritesEnabled` returns `false` (the FSM shadow flag is
     /// `on`, i.e., `ClusterPhaseView` is authoritative), suppress the KV write entirely.
-    /// The reconciler still tracks `currentPhase` locally for legacy callers (`phase()`
-    /// and `suppressedByPhase`); E.7 will delete those callers and this whole method.
+    /// E.8 will retire this method together with the legacy phase-evaluation path.
     @Contract private void proposeClusterPhase(ClusterPhase target) {
         if (!phaseWritesEnabled.getAsBoolean()) {
             log.debug("HealthReconciler: phase writes disabled (FSM owns ClusterPhase); skipping ClusterPhaseValue={} write",

@@ -6,15 +6,12 @@ package org.pragmatica.aether.deployment.health;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhaseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.swim.SwimObservation;
@@ -35,20 +32,14 @@ import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
+/// Post-E.7 (spec §9). The legacy SWIM-driven gate stack and self-promotion path are gone;
+/// SWIM-driven lifecycle writes now live in `MembershipFsm` (E.5). The surface exercised
+/// here is the slimmed reconciler: operator writes (`requestDrain` / `requestDecommission` /
+/// `requestActivate` / `requestFailedDrain`), the phase-evaluation path (still owned for
+/// flag-off mode until E.8 retires it), and phase-listener wiring.
 class HealthReconcilerTest {
     private static final NodeId SELF = nodeId("self").unwrap();
     private static final NodeId TARGET = nodeId("target").unwrap();
-
-    /// Default config with periodic phase-evaluation tick disabled. Tests that pair
-    /// `HealthReconcilerConfig.DEFAULT` with `immediateRetryScheduler` would otherwise
-    /// recurse: the immediate scheduler synchronously invokes the tick callback, which
-    /// re-schedules itself, which fires immediately again → StackOverflowError.
-    private static final HealthReconcilerConfig DEFAULT_NO_TICK =
-            HealthReconcilerConfig.healthReconcilerConfig(timeSpan(10).seconds(),
-                                                          timeSpan(5).seconds(),
-                                                          timeSpan(5).seconds(),
-                                                          timeSpan(5).seconds(),
-                                                          timeSpan(0).millis());
 
     private RecordingApplier applier;
     private LifecycleStore lifecycleStore;
@@ -80,56 +71,11 @@ class HealthReconcilerTest {
                                                  config);
     }
 
-    private HealthReconciler buildReconcilerWith(int clusterSize,
-                                                 HealthReconcilerConfig config,
-                                                 Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> customApplier,
-                                                 HealthReconciler.RetryScheduler retryScheduler) {
-        Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader = lifecycleStore::get;
-        Supplier<Option<ClusterPhase>> phaseReader = () -> Option.option(phaseRef.get());
-        Supplier<Option<NodeId>> leaderReader = () -> Option.option(leaderRef.get());
-        Supplier<Integer> onDutySupplier = onDutyCount::get;
-        return HealthReconciler.healthReconciler(SELF,
-                                                 clusterSize,
-                                                 lifecycleReader,
-                                                 phaseReader,
-                                                 leaderReader,
-                                                 onDutySupplier,
-                                                 customApplier,
-                                                 config,
-                                                 HealthReconciler.defaultSelfOnDutyAtomFactory(),
-                                                 retryScheduler);
-    }
-
-    private static HealthReconciler.RetryScheduler immediateRetryScheduler() {
-        return (runnable, delay) -> runnable.run();
-    }
-
     private static SwimObservation healthy(NodeId target) {
         return new SwimObservation.HealthyObserved(target, 1L);
     }
 
-    private static SwimObservation faulty(NodeId target) {
-        return new SwimObservation.FaultyObserved(target, 1L);
-    }
-
-    @Nested class HappyPath {
-        @Test
-        void reconciler_writesNodeLifecycleKey_onAggregatedHealthyEdge() {
-            // Cluster of 1 (single-node), k=1. SELF observation alone reaches quorum.
-            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
-                                                                       timeSpan(0).millis(),
-                                                                       timeSpan(5).seconds(),
-                                                                       timeSpan(30).seconds(),
-                                                                       timeSpan(0).millis());
-            var reconciler = buildReconciler(1, config);
-            reconciler.start();
-            onDutyCount.set(1);
-            reconciler.onSwimObservation(healthy(TARGET));
-            // Single observer reaches k=1, ON_DUTY edge emitted, write proposed.
-            assertThat(applier.commands).isNotEmpty();
-            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
-        }
-
+    @Nested class OperatorWrites {
         @Test
         void reconciler_requestDrain_writesDraining() {
             var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
@@ -151,221 +97,37 @@ class HealthReconcilerTest {
             assertThat(applier.commands).hasSize(1);
             assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
         }
-    }
 
-    @Nested class StepFailures {
         @Test
-        void reconciler_cooldown_suppressesRepeatedWritesWithinWindow() {
-            // 30s cooldown → after a SWIM-driven aggregated edge produces a write,
-            // a subsequent same-state SWIM-driven edge within the cooldown window must
-            // be suppressed. Threshold-quorum migration (RC1): onDutyCount=1 floors
-            // threshold to 1 so the leader's single local SWIM observation alone reaches
-            // the aggregator threshold (production cross-node observation propagation is
-            // a follow-up; per-API the public surface still only feeds SELF observations).
-            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
-                                                                       timeSpan(30).seconds(),
-                                                                       timeSpan(5).seconds(),
-                                                                       timeSpan(30).seconds(),
-                                                                       timeSpan(0).millis());
-            var reconciler = buildReconciler(3, config);
+        void reconciler_requestActivate_writesOnDuty() {
+            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
             reconciler.start();
-            onDutyCount.set(1);
-            // First SWIM HEALTHY observation: leader writes ON_DUTY, recordWrite stamps lastWriteAt.
-            // A ClusterPhase RECOVERING write may be interleaved because onDutyCount=1 < quorum;
-            // filter on lifecycle writes specifically.
-            reconciler.onSwimObservation(healthy(TARGET));
-            assertThat(applier.commands.stream().filter(HealthReconcilerTest::isLifecycleWriteFor).count())
-                    .as("Exactly one TARGET lifecycle write recorded")
-                    .isEqualTo(1L);
+            lifecycleStore.put(TARGET,
+                               NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, 0L));
+            reconciler.requestActivate(TARGET);
+            assertThat(applier.commands).hasSize(1);
             assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
-            // Reset edge state in aggregator (recordWrite did this) — to force a fresh edge
-            // emission, the aggregator's lastAggregated must differ from the next observation.
-            // We simulate this by clearing the recorded commands and observing FAULTY: with
-            // a recently-written lastWriteAt, the cooldown gate must suppress the FAULTY write.
-            applier.commands.clear();
-            reconciler.onSwimObservation(faulty(TARGET));
-            // Cooldown still active → no lifecycle write for TARGET (phase writes don't count)
-            assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
-                    .as("Cooldown suppresses repeated TARGET lifecycle writes within window")
-                    .isTrue();
         }
 
-        // Contract change (commit 81e48e234, "drop respectColdBoot suppression"):
-        // The reconciler's cold-boot suppression no longer keys off everSeenHealthy.
-        // The phase gate `suppressedByPhase` only fires when phase == COLD_BOOT. In NORMAL
-        // phase the reconciler now writes DECOMMISSIONED regardless of whether the target
-        // was ever observed HEALTHY (the upstream SwimProtocol.emitFaultyOrUnknown gate
-        // owns that filtering, and tests that feed observations directly to the reconciler
-        // bypass it).
-        // The 2x2 truth table below pins the new contract end-to-end.
         @Test
-        void reconciler_suppressedByPhase_inBooting_evenWhenNeverHealthy() {
-            // COLD_BOOT + never-HEALTHY → suppressedByPhase blocks the DECOMMISSIONED write.
-            // onDutyCount=1 floors threshold to 1 so a single SELF observation drives the
-            // aggregator edge (post threshold-quorum migration the production aggregator
-            // requires majority; this test pins the phase-gate behavior in isolation).
+        void reconciler_requestFailedDrain_writesFailedDrain() {
             var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
             reconciler.start();
-            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.COLD_BOOT));
-            phaseRef.set(ClusterPhase.COLD_BOOT);
-            onDutyCount.set(1);
-            reconciler.onSwimObservation(faulty(TARGET));
-            assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
-                    .as("COLD_BOOT phase suppresses DECOMMISSIONED lifecycle write")
-                    .isTrue();
-        }
-
-        @Test
-        void reconciler_suppressedByPhase_inBooting_evenWhenEverHealthy() {
-            // COLD_BOOT + previously-HEALTHY → suppressedByPhase still blocks. Phase gate
-            // is independent of everSeenHealthy. onDutyCount=1 (see note above).
-            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
-            reconciler.start();
-            // First, in NORMAL, drive an ON_DUTY edge so the aggregator records HEALTHY.
-            phaseRef.set(ClusterPhase.NORMAL);
-            onDutyCount.set(1);
-            reconciler.onSwimObservation(healthy(TARGET));
-            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
-            applier.commands.clear();
-            // Now flip to COLD_BOOT and feed FAULTY: the phase gate suppresses the write.
-            reconciler.onClusterPhasePut(ClusterPhaseValue.clusterPhaseValue(ClusterPhase.COLD_BOOT));
-            phaseRef.set(ClusterPhase.COLD_BOOT);
-            reconciler.onSwimObservation(faulty(TARGET));
-            assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
-                    .as("COLD_BOOT phase suppresses DECOMMISSIONED write regardless of prior HEALTHY")
-                    .isTrue();
-        }
-
-        @Test
-        void reconciler_writesDecommissioned_inNormal_evenWhenNeverHealthy() {
-            // NORMAL + never-HEALTHY → write proceeds. This is the formerly-suppressed
-            // case: the old aggregator's respectColdBoot used to filter this out, which
-            // silently dropped FAULTY edges for the leader on cloud Container post-kill.
-            // Now the reconciler trusts upstream gating and writes DECOMMISSIONED.
-            // onDutyCount=1 floors threshold to 1 (see notes on threshold migration).
-            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
-            reconciler.start();
-            phaseRef.set(ClusterPhase.NORMAL);
-            onDutyCount.set(1);
-            reconciler.onSwimObservation(faulty(TARGET));
-            assertThat(applier.commands.stream().anyMatch(HealthReconcilerTest::isLifecycleWriteFor))
-                    .as("NORMAL phase + never-HEALTHY: leader writes DECOMMISSIONED")
-                    .isTrue();
-            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
-        }
-
-        // The fourth corner of the 2x2 table (NORMAL + everSeenHealthy → writes
-        // DECOMMISSIONED) is intentionally NOT covered by a dedicated test here:
-        // (a) it is the standard healthy-then-faulty happy path already exercised
-        //     end-to-end by integration tests, and
-        // (b) the new contract makes everSeenHealthy irrelevant inside the reconciler
-        //     (cold-boot gating moved upstream per 81e48e234), so the "NORMAL + never"
-        //     and "NORMAL + ever" rows produce the same behavior; one row suffices.
-    }
-
-    @Nested class SelfOnDutyRetry {
-        @Test
-        void signalSelfReady_writeRejectedByInactive_retriesUntilSuccess() {
-            // Applier fails first 3 attempts with NodeInactive, then succeeds on 4th.
-            var flakyApplier = new FlakyInactiveApplier(3);
-            var immediateScheduler = immediateRetryScheduler();
-            var reconciler = buildReconcilerWith(3,
-                                                 DEFAULT_NO_TICK,
-                                                 flakyApplier,
-                                                 immediateScheduler);
-            reconciler.start();
-            reconciler.signalSelfReady();
-            assertThat(flakyApplier.totalAttempts())
-                    .as("Applier called once initially + 3 retries = 4 total")
-                    .isEqualTo(4);
-            assertThat(flakyApplier.commands.stream().anyMatch(HealthReconcilerTest::isSelfOnDutyWrite))
-                    .as("ON_DUTY write proposed at least once")
-                    .isTrue();
-            // Final attempt succeeded, recordWrite executed
-            assertThat(flakyApplier.successfulWrites.get())
-                    .as("Exactly one successful ON_DUTY write after retries")
-                    .isEqualTo(1);
-        }
-
-        @Test
-        void signalSelfReady_writeRejectedRepeatedly_givesUpAfterMaxAttempts() {
-            // Applier always fails with NodeInactive — must give up after MAX_SELF_ONDUTY_RETRIES.
-            var alwaysFailingApplier = new FlakyInactiveApplier(Integer.MAX_VALUE);
-            var immediateScheduler = immediateRetryScheduler();
-            var reconciler = buildReconcilerWith(3,
-                                                 DEFAULT_NO_TICK,
-                                                 alwaysFailingApplier,
-                                                 immediateScheduler);
-            reconciler.start();
-            reconciler.signalSelfReady();
-            assertThat(alwaysFailingApplier.totalAttempts())
-                    .as("Caps at MAX_SELF_ONDUTY_RETRIES (8) attempts")
-                    .isEqualTo(HealthReconcilerImpl.MAX_SELF_ONDUTY_RETRIES);
-            assertThat(alwaysFailingApplier.successfulWrites.get())
-                    .as("No successful ON_DUTY write after exhausting retries")
-                    .isEqualTo(0);
-        }
-
-        @Test
-        void signalSelfReady_writeRejectedByNonRetriableCause_doesNotRetry() {
-            // Non-NodeInactive failure (e.g. arbitrary Cause) must NOT trigger retry.
-            var nonRetriableApplier = new NonRetriableFailingApplier();
-            var immediateScheduler = immediateRetryScheduler();
-            var reconciler = buildReconcilerWith(3,
-                                                 DEFAULT_NO_TICK,
-                                                 nonRetriableApplier,
-                                                 immediateScheduler);
-            reconciler.start();
-            reconciler.signalSelfReady();
-            assertThat(nonRetriableApplier.totalAttempts())
-                    .as("Non-retriable cause: exactly one attempt, no retries")
-                    .isEqualTo(1);
+            lifecycleStore.put(TARGET,
+                               NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, 0L));
+            reconciler.requestFailedDrain(TARGET);
+            assertThat(applier.commands).hasSize(1);
+            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.FAILED_DRAIN);
         }
     }
 
-    @Nested class SelfPromotion {
+    @Nested class SwimObservationAfterE7 {
+        /// Post-E.7: `onSwimObservation` is a phase-evaluation trigger only — it MUST NOT
+        /// drive lifecycle writes. The legacy aggregator + `handleAggregatedEdge` path is
+        /// deleted; SWIM-driven lifecycle writes now flow exclusively through
+        /// `MembershipFsm.onSwimObservation` (E.5).
         @Test
-        void healthReconciler_promotesSelfToOnDuty_onSelfReadySignal() {
-            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
-            reconciler.start();
-            // Self has no prior NodeLifecycleValue; signalSelfReady must trigger an ON_DUTY write.
-            reconciler.signalSelfReady();
-            assertThat(applier.commands.stream().anyMatch(HealthReconcilerTest::isSelfOnDutyWrite))
-                    .as("signalSelfReady writes ON_DUTY for self")
-                    .isTrue();
-        }
-
-        @Test
-        void healthReconciler_signalSelfReady_writesOnce_evenAfterRepeatedCalls() {
-            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
-            reconciler.start();
-            reconciler.signalSelfReady();
-            reconciler.signalSelfReady();
-            reconciler.signalSelfReady();
-            var onDutyWrites = applier.commands.stream().filter(HealthReconcilerTest::isSelfOnDutyWrite).count();
-            assertThat(onDutyWrites)
-                    .as("Idempotent: self ON_DUTY is proposed exactly once")
-                    .isEqualTo(1L);
-        }
-
-        @Test
-        void healthReconciler_signalSelfReady_skipsWrite_whenSelfAlreadyOnDuty() {
-            var reconciler = buildReconciler(3, HealthReconcilerConfig.DEFAULT);
-            reconciler.start();
-            // Pre-seed self as already ON_DUTY
-            lifecycleStore.put(SELF, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, 0L));
-            reconciler.signalSelfReady();
-            assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isSelfOnDutyWrite))
-                    .as("No new ON_DUTY write when self is already ON_DUTY")
-                    .isTrue();
-        }
-    }
-
-    @Nested class LeaderGate {
-        @Test
-        void handleAggregatedEdge_followerObservation_doesNotProposeWrite() {
-            // Follower (leader != self) must NOT propose lifecycle writes from its own
-            // SWIM observations, even when the aggregator emits an edge.
+        void onSwimObservation_doesNotWriteLifecycle_afterE7() {
             var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
                                                                        timeSpan(0).millis(),
                                                                        timeSpan(5).seconds(),
@@ -373,36 +135,11 @@ class HealthReconcilerTest {
                                                                        timeSpan(0).millis());
             var reconciler = buildReconciler(1, config);
             reconciler.start();
-            // Demote self: another node is leader
-            leaderRef.set(nodeId("other-leader").unwrap());
             onDutyCount.set(1);
-            // SWIM observation that would otherwise emit ON_DUTY edge
             reconciler.onSwimObservation(healthy(TARGET));
-            // No lifecycle write proposed for TARGET
             assertThat(applier.commands.stream().noneMatch(HealthReconcilerTest::isLifecycleWriteFor))
-                    .as("Follower must not propose lifecycle writes for SWIM-driven edges")
+                    .as("Post-E.7 SWIM observations do not drive lifecycle writes")
                     .isTrue();
-        }
-
-        @Test
-        void handleAggregatedEdge_leaderObservation_proposesWrite() {
-            // Leader (self == leader) MUST propose lifecycle writes when the aggregator
-            // emits an edge from its own SWIM observation.
-            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
-                                                                       timeSpan(0).millis(),
-                                                                       timeSpan(5).seconds(),
-                                                                       timeSpan(30).seconds(),
-                                                                       timeSpan(0).millis());
-            var reconciler = buildReconciler(1, config);
-            reconciler.start();
-            // Self is leader (default in setUp), but assert explicitly
-            leaderRef.set(SELF);
-            onDutyCount.set(1);
-            reconciler.onSwimObservation(healthy(TARGET));
-            assertThat(applier.commands.stream().anyMatch(HealthReconcilerTest::isLifecycleWriteFor))
-                    .as("Leader proposes lifecycle write on aggregated edge")
-                    .isTrue();
-            assertThat(lastWriteState(applier)).isEqualTo(NodeLifecycleState.ON_DUTY);
         }
     }
 
@@ -513,68 +250,12 @@ class HealthReconcilerTest {
         return lifecycleKey.nodeId().equals(TARGET);
     }
 
-    private static boolean isSelfOnDutyWrite(KVCommand<?> cmd) {
-        if (!(cmd instanceof KVCommand.Put<?, ?> put)) {return false;}
-        if (!(put.key() instanceof NodeLifecycleKey lifecycleKey)) {return false;}
-        if (!lifecycleKey.nodeId().equals(SELF)) {return false;}
-        return put.value() instanceof NodeLifecycleValue v && v.state() == NodeLifecycleState.ON_DUTY;
-    }
-
     private static final class RecordingApplier implements Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> {
         final List<KVCommand<?>> commands = new ArrayList<>();
 
         @Override public Promise<List<Object>> apply(List<KVCommand<AetherKey>> input) {
             commands.addAll(input);
             return Promise.success(List.of());
-        }
-    }
-
-    /// Fails first {@code failuresBeforeSuccess} attempts with `ConsensusError.NodeInactive`,
-    /// succeeds thereafter. Records every command attempted (including failed ones).
-    private static final class FlakyInactiveApplier implements Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> {
-        final List<KVCommand<?>> commands = new ArrayList<>();
-        final AtomicInteger attempts = new AtomicInteger(0);
-        final AtomicInteger successfulWrites = new AtomicInteger(0);
-        private final int failuresBeforeSuccess;
-
-        FlakyInactiveApplier(int failuresBeforeSuccess) {
-            this.failuresBeforeSuccess = failuresBeforeSuccess;
-        }
-
-        int totalAttempts() {
-            return attempts.get();
-        }
-
-        @Override public Promise<List<Object>> apply(List<KVCommand<AetherKey>> input) {
-            commands.addAll(input);
-            var attempt = attempts.incrementAndGet();
-            if (attempt <= failuresBeforeSuccess) {
-                return new ConsensusError.NodeInactive(SELF).promise();
-            }
-            successfulWrites.incrementAndGet();
-            return Promise.success(List.of());
-        }
-    }
-
-    /// Always fails with a non-retriable `Cause` (not `ConsensusError.NodeInactive`).
-    private static final class NonRetriableFailingApplier implements Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> {
-        final AtomicInteger attempts = new AtomicInteger(0);
-
-        int totalAttempts() {
-            return attempts.get();
-        }
-
-        @Override public Promise<List<Object>> apply(List<KVCommand<AetherKey>> input) {
-            attempts.incrementAndGet();
-            return new PermanentReject().promise();
-        }
-    }
-
-    /// Test-only `Cause` distinct from `ConsensusError.NodeInactive` to validate
-    /// non-retriable failure handling.
-    record PermanentReject() implements Cause {
-        @Override public String message() {
-            return "permanent rejection (test fixture)";
         }
     }
 
