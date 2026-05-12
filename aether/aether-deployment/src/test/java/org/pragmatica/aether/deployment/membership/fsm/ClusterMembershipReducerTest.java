@@ -335,10 +335,15 @@ class ClusterMembershipReducerTest {
 
     @Nested @DisplayName("Decommissioned × *")
     class FromDecommissioned {
-        private final Decommissioned state = MembershipFsmState.decommissioned(PEER, T0);
+        // Use a decommissionedAt far enough in the past (T_AGED) to be beyond the 60s
+        // revival TTL — preserves the historical "zombie" semantics for the non-revival cells.
+        private static final long T_AGED = 0L;
+        private static final long T_LATE = 120_000L;
 
-        @Test void decommissioned_swimHealthy_isNop_zombie() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
+        private final Decommissioned state = MembershipFsmState.decommissioned(PEER, T_AGED);
+
+        @Test void decommissioned_swimHealthy_isNop_zombie_pastTtl() {
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T_LATE)), state);
         }
 
         @Test void decommissioned_swimFaulty_isNop() {
@@ -368,6 +373,59 @@ class ClusterMembershipReducerTest {
 
         @Test void decommissioned_joinDeadlineExpired_isNop_waitingForGc() {
             assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+        }
+    }
+
+    @Nested @DisplayName("Decommissioned × SwimHealthy TTL-bounded revival (spec §5.1 note 4)")
+    class DecommissionedRevival {
+        /// Default TTL is 60s (`MembershipFsmConfig.DEFAULT_DECOMMISSIONED_REVIVAL_TTL`).
+        /// Revival rule uses strict inequality `ageMs < ttlMs` — equality is nop (zombie).
+        private static final long NOW = 1_000_000L;
+        private static final long TTL_MS = 60_000L;
+
+        @Test void decommissioned_swimHealthy_withinTtl_revivesToOnDuty() {
+            // Recently-decommissioned peer (30s ago, half the TTL) sends healthy gossip:
+            // typical elastic-test-fixture restart pattern (`docker start`). Admit it back.
+            var decommissionedAt = NOW - 30_000L;
+            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt);
+
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
+
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
+            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.ON_DUTY, NOW));
+            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
+        }
+
+        @Test void decommissioned_swimHealthy_pastTtl_staysZombie() {
+            // Decommissioned 90s ago, well past the 60s TTL. Genuine zombie — nop.
+            var decommissionedAt = NOW - 90_000L;
+            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt);
+
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW)), state);
+        }
+
+        @Test void decommissioned_swimHealthy_exactlyAtTtl_isInclusive_staysZombie() {
+            // Boundary: `ageMs == ttlMs` is NOT less-than, so the strict inequality
+            // `ageMs < ttlMs` rejects revival at the exact boundary. Choice: equality is
+            // treated as past-TTL (zombie). This makes the revival window a strict open
+            // interval [0, ttl) and makes the rule resilient against integer-overflow
+            // edge cases at the exact equality point.
+            var decommissionedAt = NOW - TTL_MS;
+            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt);
+
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW)), state);
+        }
+
+        @Test void decommissioned_swimHealthy_oneMsInsideTtl_revives() {
+            // Companion boundary: ageMs = TTL - 1 is strictly less-than → revival fires.
+            // Closes the revival-rule semantics: [0, ttl) revives, [ttl, ∞) stays zombie.
+            var decommissionedAt = NOW - (TTL_MS - 1L);
+            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt);
+
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
+
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
+            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
         }
     }
 

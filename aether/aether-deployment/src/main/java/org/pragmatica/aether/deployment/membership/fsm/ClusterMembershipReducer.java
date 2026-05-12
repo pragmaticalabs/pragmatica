@@ -154,7 +154,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
 
     private Outcome applyDecommissioned(Decommissioned state, MembershipFsmEvent event) {
         return switch (event){
-            case SwimHealthy _ -> Outcome.nop(state);
+            case SwimHealthy e -> decommissionedSwimHealthy(state, e.nowMs());
             case SwimFaulty _ -> Outcome.nop(state);
             case SwimDeparted _ -> Outcome.nop(state);
             case SlotClaimed _ -> illegal(state, event);
@@ -163,6 +163,27 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
         };
+    }
+
+    /// `(DECOMMISSIONED, SwimHealthy)` TTL-bounded revival (Bootstrap-correction 2026-05-12,
+    /// spec §5.1 note 4).
+    ///
+    /// If the `DECOMMISSIONED` entry is younger than `decommissionedRevivalTtl` (strict
+    /// inequality: `ageMs < ttlMs`), admit the peer back as `ON_DUTY` — this handles the
+    /// elastic-test-fixture restart pattern (`docker start` brings a killed container back
+    /// with the same NodeId) and short transient-decommission scenarios. Otherwise stay
+    /// nop (genuine zombie — operator must explicitly clear).
+    ///
+    /// The single-writer rule (I2) is preserved: the leader remains the sole writer of
+    /// `NodeLifecycleKey`. The temporal-bounded relaxation is a transition rule, not a
+    /// writer-identity change.
+    private Outcome decommissionedSwimHealthy(Decommissioned state, long nowMs) {
+        var ageMs = nowMs - state.decommissionedAtMs();
+        var ttlMs = config.decommissionedRevivalTtl().millis();
+        if (ageMs >= ttlMs) {return Outcome.nop(state);}
+        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.ON_DUTY, nowMs));
+        var effects = List.<MembershipEffect>of(emit(state.peer(), MembershipDomainEvent.NODE_ON_DUTY, REASON_REVIVAL));
+        return Outcome.outcome(MembershipFsmState.onDuty(state.peer(), nowMs), writes, effects);
     }
 
     private Outcome applyFailedDrain(FailedDrain state, MembershipFsmEvent event) {
@@ -352,4 +373,6 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     private static final String REASON_OPERATOR_OVERRIDE = "operator-override";
 
     private static final String REASON_DRAIN_HARD_DEADLINE = "drain-hard-deadline";
+
+    private static final String REASON_REVIVAL = "revival";
 }

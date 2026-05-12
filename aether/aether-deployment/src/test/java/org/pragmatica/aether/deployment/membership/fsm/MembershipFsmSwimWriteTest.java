@@ -205,6 +205,45 @@ class MembershipFsmSwimWriteTest {
         }
     }
 
+    @Nested @DisplayName("Decommissioned revival within TTL (spec §5.1 note 4)")
+    class DecommissionedRevivalTests {
+        @Test void swimHealthy_recentlyDecommissioned_leader_revivesToOnDuty() {
+            // End-to-end: leader observes SwimHealthy for a peer in DECOMMISSIONED whose
+            // entry is recent (well within the 60s revival TTL). FSM must write
+            // Put(L=ON_DUTY) and transition to OnDuty — handles the elastic-test-fixture
+            // `docker start` restart pattern where killed containers come back with the
+            // same NodeId.
+            var recentDecommissionedAt = System.currentTimeMillis() - 5_000L;
+            lifecycleSnapshot.put(PEER_A,
+                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                                                        recentDecommissionedAt));
+            var fsm = startedFsm();
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+
+            fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
+
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+        }
+
+        @Test void swimHealthy_staleDecommissioned_leader_staysZombie() {
+            // Counter-case: DECOMMISSIONED entry is past the TTL window. Genuine zombie —
+            // FSM must NOT revive. Preserves the zombie-protection invariant.
+            var staleDecommissionedAt = System.currentTimeMillis() - 600_000L;  // 10 min ago
+            lifecycleSnapshot.put(PEER_A,
+                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                                                        staleDecommissionedAt));
+            var fsm = startedFsm();
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+
+            fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
+
+            assertThat(commandApplier.calls).isEmpty();
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+        }
+    }
+
     @Nested @DisplayName("Bootstrap safety: UNTRACKED + SwimFaulty/Departed = nop (I5)")
     class UnknownPeerTests {
         @Test void swimFaulty_unknownPeer_noWrite() {
