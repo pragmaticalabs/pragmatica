@@ -85,7 +85,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
 
     private Outcome applyUntracked(Untracked state, MembershipFsmEvent event) {
         return switch (event){
-            case SwimHealthy e -> enterJoining(state.peer(), Option.none(), e.nowMs());
+            case SwimHealthy e -> untrackedDirectToOnDuty(state.peer(), e.nowMs());
             case SwimFaulty _ -> Outcome.nop(state);
             case SwimDeparted _ -> Outcome.nop(state);
             case SlotClaimed e -> enterJoining(state.peer(),
@@ -176,6 +176,22 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
         };
+    }
+
+    /// `(UNTRACKED, SwimHealthy) → ON_DUTY` direct (Bootstrap-correction 2026-05-12).
+    ///
+    /// SWIM only emits an observation when a peer's state CHANGES — it does NOT periodically
+    /// re-emit `Healthy`. Routing UNTRACKED through JOINING would strand the peer in JOINING
+    /// until `JoinDeadlineExpired` fires (60s default), since the second `SwimHealthy` that
+    /// would have driven `JOINING → ON_DUTY` will never arrive. Collapsing the intermediate
+    /// JOINING state makes the SWIM-discovered transition self-sufficient.
+    ///
+    /// JOINING remains reachable via `(UNTRACKED|PROVISIONING, SlotClaimed)` — that path
+    /// genuinely needs the JOINING state to await SWIM confirmation of a CTM-spawned slot.
+    private Outcome untrackedDirectToOnDuty(NodeId peer, long nowMs) {
+        var writes = singleWrite(putLifecycle(peer, NodeLifecycleState.ON_DUTY, nowMs));
+        var effects = List.<MembershipEffect>of(emit(peer, MembershipDomainEvent.NODE_ON_DUTY, REASON_NONE));
+        return Outcome.outcome(MembershipFsmState.onDuty(peer, nowMs), writes, effects);
     }
 
     private Outcome enterJoining(NodeId peer, Option<String> slotId, long nowMs) {

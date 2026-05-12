@@ -73,9 +73,18 @@ class ClusterMembershipReducerTest {
     class FromUntracked {
         private final Untracked state = MembershipFsmState.untracked(PEER);
 
-        @Test void untracked_swimHealthy_entersJoining() {
+        @Test void untracked_swimHealthy_directlyTransitionsToOnDuty_bootstrapCorrection() {
+            // Bootstrap-correction 2026-05-12: SWIM only emits one Healthy observation per
+            // peer-state-change. Routing UNTRACKED through JOINING would strand the peer in
+            // JOINING until the 60s JoinDeadline fires. Collapsing the intermediate JOINING
+            // makes the SWIM-discovered transition self-sufficient.
             var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
-            assertEntersJoining(outcome, Option.none(), T1);
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, T1));
+            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
+            assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
+            // No JOIN_DEADLINE timer scheduled — there is no JOINING state to deadline.
+            assertThat(outcome.effects()).noneMatch(e -> e instanceof ScheduleTimer st
+                                                            && st.kind() == TimerKind.JOIN_DEADLINE);
         }
 
         @Test void untracked_swimFaulty_isNop_bootstrapSafe() {
@@ -490,8 +499,10 @@ class ClusterMembershipReducerTest {
     @Nested @DisplayName("Join deadline one-shot timer (Q3=C)")
     class JoinDeadlineTimer {
         @Test void enteringJoining_schedulesJoinDeadlineTimer() {
+            // Post-bootstrap-correction 2026-05-12: JOINING is only reachable via SlotClaimed
+            // (the slot-provisioning path), not via SwimHealthy from UNTRACKED.
             var state = MembershipFsmState.untracked(PEER);
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1));
 
             var expectedDelay = MembershipFsmConfig.DEFAULT_JOIN_DEADLINE;
             assertThat(outcome.effects()).contains(new ScheduleTimer(PEER, TimerKind.JOIN_DEADLINE, expectedDelay));

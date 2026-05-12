@@ -17,6 +17,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.DrainO
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.JoinDeadlineExpired;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDecommission;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDrain;
+import org.pragmatica.swim.SwimObservation.HealthyObserved;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Draining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.FailedDrain;
@@ -232,6 +233,32 @@ class MembershipFsmOperatorWriteTest {
             var fsm = startedFsm();
             commandApplier.calls.clear();
             fsm.enqueueOperatorEvent(new JoinDeadlineExpired(PEER_A, T0 + 60_000L));
+            assertThat(commandApplier.calls).isEmpty();
+        }
+    }
+
+    @Nested @DisplayName("Self-bootstrap on NodeLifecycle ACTIVE (Bootstrap-correction 2026-05-12)")
+    class SelfBootstrapTests {
+        @Test void nodeLifecycleActive_enqueuesSwimHealthySelf_writesOwnOnDuty() {
+            // Bootstrap-correction 2026-05-12 (spec §6 step 7): SWIM does not observe self, so
+            // the leader's FSM never receives `SwimHealthy(self)` via gossip. The wiring layer
+            // (AetherNode listener on `NodeLifecycle.ACTIVE`) synthesizes a `HealthyObserved`
+            // for self, which routes through the same SWIM entry point. On the leader, the
+            // reducer cell `(UNTRACKED, SwimHealthy) → ON_DUTY` writes Put(L=ON_DUTY) for self.
+            var fsm = startedFsm();
+            // Simulate the synthetic observation injected by the NodeLifecycle ACTIVE listener.
+            fsm.onSwimObservation(new HealthyObserved(SELF, 0L));
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), SELF, NodeLifecycleState.ON_DUTY);
+            assertThat(fsm.get(SELF).unwrap()).isInstanceOf(OnDuty.class);
+        }
+
+        @Test void nodeLifecycleActive_onFollower_isDroppedBySingleWriterGate() {
+            // On followers the SWIM leader-gate drops the synthetic observation. The leader
+            // writes the follower's own ON_DUTY entry (just like for any peer).
+            leaderFlag.set(false);
+            var fsm = startedFsm();
+            fsm.onSwimObservation(new HealthyObserved(SELF, 0L));
             assertThat(commandApplier.calls).isEmpty();
         }
     }

@@ -161,6 +161,19 @@ class MembershipFsmSwimWriteTest {
 
     @Nested @DisplayName("SwimHealthy → leader-initiated JOINING promotion (Q1=A)")
     class SwimHealthyPromotionTests {
+        @Test void swimHealthy_untracked_leader_writesOnDutyDirectly() {
+            // Bootstrap-correction 2026-05-12: SWIM emits one observation per peer-state-change.
+            // For an UNTRACKED peer, the leader's SwimHealthy must write Put(L=ON_DUTY) directly
+            // (no intermediate JOINING) — otherwise the peer would be stranded in JOINING until
+            // the 60s JoinDeadline timer expires.
+            var fsm = startedFsm();
+            assertThat(fsm.get(PEER_A)).isEqualTo(org.pragmatica.lang.Option.<MembershipFsmState>none());
+            fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+        }
+
         @Test void swimHealthy_joining_leader_writesOnDuty() {
             // Q1=A: leader-initiated transition from JOINING → ON_DUTY when SWIM confirms peer
             // is healthy. Reducer cell `(JOINING, SwimHealthy) → ON_DUTY` writes Put(L=ON_DUTY).

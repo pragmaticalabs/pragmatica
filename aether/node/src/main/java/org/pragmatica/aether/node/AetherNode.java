@@ -27,6 +27,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
+import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.node.lifecycle.NodeStateChanged;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
@@ -194,6 +195,7 @@ import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
 import org.pragmatica.swim.SwimConfig;
+import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.TransportObservation;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
@@ -1498,6 +1500,14 @@ public interface AetherNode extends ManageableNode {
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(nodeLifecycle::signalReady);
+        // Self-bootstrap (Bootstrap-correction 2026-05-12): SWIM does not observe self, so the
+        // leader's FSM never receives `SwimHealthy(self)` via the normal gossip path. When this
+        // node's local lifecycle reaches ACTIVE, synthesize that observation into our own FSM.
+        // The leader-write gate ensures only the leader's enqueue produces a Put(L=ON_DUTY) for
+        // self; followers drop the synthetic observation harmlessly. Spec §6 step 7.
+        nodeLifecycle.addStateListener(change -> bootstrapSelfOnDutyOnActive(change,
+                                                                              membershipFsm,
+                                                                              config.self()));
         nodeLifecycle.subsystemsReady();
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
                                            .map(_ -> {
@@ -1626,6 +1636,23 @@ public interface AetherNode extends ManageableNode {
                                             drainCoordinator,
                                             scheduler,
                                             isLeaderSupplier);
+    }
+
+    /// Self-bootstrap (Bootstrap-correction 2026-05-12; spec §6 step 7). SWIM does not observe
+    /// self, so the leader's FSM never receives `SwimHealthy(self)` via the normal gossip path.
+    /// When this node's `NodeLifecycle` transitions to ACTIVE, we synthesize a `HealthyObserved`
+    /// for self into the local `MembershipFsm`. The reducer cell `(UNTRACKED, SwimHealthy) →
+    /// ON_DUTY` (Change 1 of this correction) then drives the leader to write the self
+    /// `Put(L=ON_DUTY)`. On followers the leader-write gate inside `MembershipFsm` drops the
+    /// synthetic observation (single-writer invariant) — which is correct, because the leader
+    /// writes the lifecycle atom for every peer including itself.
+    @Contract private static void bootstrapSelfOnDutyOnActive(NodeStateChanged change,
+                                                                MembershipFsm membershipFsm,
+                                                                NodeId self) {
+        if (change.current() != NodeState.ACTIVE) {
+            return;
+        }
+        membershipFsm.onSwimObservation(new SwimObservation.HealthyObserved(self, 0L));
     }
 
     org.pragmatica.lang.io.TimeSpan PHASE_WATCH_INTERVAL = org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds();
