@@ -6,6 +6,9 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDecommission;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDrain;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -119,18 +122,36 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// Drain protocol per RC1 spec §D.5:
-    ///   1. prepareDrain → write DRAINING via consensus
+    ///   1. initiate DRAINING via consensus — either the legacy `coordinator.prepareDrain`
+    ///      (flag OFF) or the new `MembershipFsm.enqueueOperatorEvent(OperatorDrain)` path
+    ///      (flag ON, spec §9 E.4). The FSM also fires `InvokeDrain` so the coordinator's
+    ///      drain protocol keeps running unchanged.
     ///   2. awaitDrainAck → wait for inflight=0 + lifecycle convergence within budget
     ///   3a. on success → markDrainComplete (writes DECOMMISSIONED) → 200
     ///   3b. on timeout → requestFailedDrain (writes FAILED_DRAIN) → 503
     private Promise<TransitionResult> runDrainProtocol(NodeId nodeId) {
         var coordinator = nodeSupplier.get().drainCoordinator();
-        return coordinator.prepareDrain(nodeId, DrainReason.OPERATOR_DRAIN)
-                          .onSuccess(_ -> auditAndEmitLifecycleTransition(drainInitiatedResult(nodeId.id()),
-                                                                            NodeLifecycleState.DRAINING))
-                          .flatMap(_ -> coordinator.awaitDrainAck(nodeId, drainTimeout()))
-                          .flatMap(_ -> completeDrain(nodeId))
-                          .recover(cause -> handleDrainFailure(nodeId, cause));
+        return initiateDrain(nodeId).onSuccess(_ -> auditAndEmitLifecycleTransition(drainInitiatedResult(nodeId.id()),
+                                                                                     NodeLifecycleState.DRAINING))
+                                     .flatMap(_ -> coordinator.awaitDrainAck(nodeId, drainTimeout()))
+                                     .flatMap(_ -> completeDrain(nodeId))
+                                     .recover(cause -> handleDrainFailure(nodeId, cause));
+    }
+
+    /// Step 1 of drain: write DRAINING via consensus. Routes through `MembershipFsm` when
+    /// `aether.membership.fsm.shadowEnabled=true` (spec §9 E.4); otherwise falls back to the
+    /// legacy `DrainCoordinator.prepareDrain` path (which internally calls
+    /// `HealthReconciler.requestDrain`).
+    private Promise<Unit> initiateDrain(NodeId nodeId) {
+        var fsm = nodeSupplier.get().membershipFsm();
+        if (fsm.shadowEnabled()) {
+            fsm.enqueueOperatorEvent(new OperatorDrain(nodeId,
+                                                         DrainReason.OPERATOR_DRAIN,
+                                                         System.currentTimeMillis()));
+            return Promise.unitPromise();
+        }
+        return nodeSupplier.get().drainCoordinator()
+                                .prepareDrain(nodeId, DrainReason.OPERATOR_DRAIN);
     }
 
     private TimeSpan drainTimeout() {
@@ -235,13 +256,22 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
         return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(this::routeDecommissionThroughHealthReconciler)
+                            .flatMap(this::initiateDecommission)
                             .map(_ -> shutdownSuccessResult(nodeIdStr));
     }
 
-    private Promise<Unit> routeDecommissionThroughHealthReconciler(NodeId nodeId) {
+    /// Decommission entry point. Routes through `MembershipFsm` with `OperatorDecommission(force=true)`
+    /// when the E.4 feature flag is on (spec §9). The `force` flag is `true` because the
+    /// `/api/node/shutdown` route bypasses the drain protocol — this matches the legacy
+    /// `LifecycleWriter.requestDecommission` semantics (direct DECOMMISSIONED write).
+    private Promise<Unit> initiateDecommission(NodeId nodeId) {
+        var fsm = nodeSupplier.get().membershipFsm();
+        if (fsm.shadowEnabled()) {
+            fsm.enqueueOperatorEvent(new OperatorDecommission(nodeId, true, System.currentTimeMillis()));
+            return Promise.unitPromise();
+        }
         return nodeSupplier.get().lifecycleWriter()
-                               .requestDecommission(nodeId);
+                                .requestDecommission(nodeId);
     }
 
     private TransitionResult shutdownSuccessResult(String nodeIdStr) {

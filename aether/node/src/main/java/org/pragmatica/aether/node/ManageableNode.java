@@ -13,6 +13,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
 import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
@@ -103,5 +104,6 @@ public interface ManageableNode {
     InFlightRequestTracker inFlightRequestTracker();
     DrainCoordinator drainCoordinator();
     NodeLifecycle nodeLifecycle();
+    MembershipFsm membershipFsm();
     @SuppressWarnings("JBCT-RET-01") void route(Message message);
 }

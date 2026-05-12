@@ -19,24 +19,41 @@ import org.pragmatica.lang.io.TimeSpan;
 /// zero behaviour change. When `true`, the shadow starts on node boot, reconstructs per-peer
 /// state from KV, observes events, and logs the writes/effects it would have proposed. The
 /// shadow never writes KV in E.3; that path lands in E.4.
-public record MembershipFsmConfig(TimeSpan joinDeadline, boolean shadowEnabled) {
+public record MembershipFsmConfig(TimeSpan joinDeadline, TimeSpan drainTimeout, boolean shadowEnabled) {
     public static final TimeSpan DEFAULT_JOIN_DEADLINE = TimeSpan.timeSpan(60).seconds();
+
+    /// Drain hard-deadline (spec §8). The leader's FSM calls
+    /// `DrainCoordinator.awaitDrainAck(peer, drainTimeout)` after entering DRAINING; if the
+    /// coordinator does not resolve in this window, the FSM feeds back
+    /// `DrainOutcome(peer, success=false)` which drives the `(DRAINING, DrainOutcome(false))
+    /// → FAILED_DRAIN` transition.
+    public static final TimeSpan DEFAULT_DRAIN_TIMEOUT = TimeSpan.timeSpan(60).seconds();
 
     public static final boolean DEFAULT_SHADOW_ENABLED = false;
 
+    public static MembershipFsmConfig membershipFsmConfig(TimeSpan joinDeadline,
+                                                          TimeSpan drainTimeout,
+                                                          boolean shadowEnabled) {
+        return new MembershipFsmConfig(joinDeadline, drainTimeout, shadowEnabled);
+    }
+
     public static MembershipFsmConfig membershipFsmConfig(TimeSpan joinDeadline, boolean shadowEnabled) {
-        return new MembershipFsmConfig(joinDeadline, shadowEnabled);
+        return new MembershipFsmConfig(joinDeadline, DEFAULT_DRAIN_TIMEOUT, shadowEnabled);
     }
 
     public static MembershipFsmConfig membershipFsmConfig(TimeSpan joinDeadline) {
-        return new MembershipFsmConfig(joinDeadline, DEFAULT_SHADOW_ENABLED);
+        return new MembershipFsmConfig(joinDeadline, DEFAULT_DRAIN_TIMEOUT, DEFAULT_SHADOW_ENABLED);
     }
 
     public static MembershipFsmConfig defaultMembershipFsmConfig() {
-        return new MembershipFsmConfig(DEFAULT_JOIN_DEADLINE, DEFAULT_SHADOW_ENABLED);
+        return new MembershipFsmConfig(DEFAULT_JOIN_DEADLINE, DEFAULT_DRAIN_TIMEOUT, DEFAULT_SHADOW_ENABLED);
     }
 
     public MembershipFsmConfig withShadowEnabled(boolean shadowEnabled) {
-        return new MembershipFsmConfig(joinDeadline, shadowEnabled);
+        return new MembershipFsmConfig(joinDeadline, drainTimeout, shadowEnabled);
+    }
+
+    public MembershipFsmConfig withDrainTimeout(TimeSpan drainTimeout) {
+        return new MembershipFsmConfig(joinDeadline, drainTimeout, shadowEnabled);
     }
 }

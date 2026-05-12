@@ -4,24 +4,41 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.fsm;
 
+import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.ClusterMembershipReducer.Outcome;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelDrain;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelTimer;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.EmitDomainEvent;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.InvokeDrain;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.ScheduleTimer;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.TimerKind;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.DrainOutcome;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.JoinDeadlineExpired;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDecommission;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDrain;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SlotClaimed;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimDeparted;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimHealthy;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimObservation.DepartedObserved;
 import org.pragmatica.swim.SwimObservation.FaultyObserved;
@@ -29,11 +46,15 @@ import org.pragmatica.swim.SwimObservation.HealthyObserved;
 import org.pragmatica.swim.SwimObservation.SuspectObserved;
 import org.pragmatica.swim.SwimObservation.UnknownObserved;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,31 +64,44 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Read-only shadow of the per-peer cluster-membership FSM (spec §9, E.3 deliverable).
+/// Per-peer cluster-membership FSM (spec §9 migration plan).
 ///
-/// On every node (leader and follower), the shadow:
-/// - reconstructs per-peer state from `NodeLifecycleKey` + `ProvisioningSlotKey` on `start()`
-///   (spec §6.2 steps 1-3, invariant I1: KV-reconstructible);
-/// - subscribes to KV notifications on those two key classes so state stays in sync with
-///   external writes (e.g., the production `HealthReconciler` continues to write while the
-///   shadow runs alongside it);
-/// - accepts SWIM observations and operator events through `onSwimObservation` /
-///   `enqueueOperatorEvent`; each event is fed into `ClusterMembershipReducer` and the
-///   resulting `Outcome` is **logged** but never applied (no KV writes, no timer scheduling,
-///   no `DrainCoordinator` invocation — those land in E.4-E.7).
+/// **E.3 mode (shadow-only)** — when `MembershipFsmConfig.shadowEnabled` is `false`, the FSM
+/// does nothing on `start()`. When `true` and no write dependencies are provided, the FSM
+/// runs read-only: it reconstructs per-peer state from KV, observes SWIM/KV events, logs
+/// reducer outcomes, but proposes no writes (legacy `HealthReconciler` keeps writing).
 ///
-/// **Behaviour gate.** Activation is gated by `MembershipFsmConfig.shadowEnabled` (default
-/// `false`). With the flag `false`, `start()` returns immediately without subscribing to any
-/// KV notifications and without exposing the shadow state map — i.e., zero behaviour change.
-/// With the flag `true`, the shadow runs alongside `HealthReconciler` and logs comparisons.
+/// **E.4 mode (operator-driven writes)** — when `shadowEnabled` is `true` AND the FSM is
+/// constructed with a `commandApplier`, `drainCoordinator`, `scheduler`, and `isLeader`
+/// supplier, the FSM becomes the writer for `OperatorDrain` / `OperatorDecommission`
+/// (spec §9 E.4). SWIM-driven transitions still flow through `HealthReconciler` (E.5
+/// supersedes that). The narrow scope here is deliberate: operator commands are the only
+/// path migrated in E.4.
 ///
-/// **Concurrency model.** A single `ReentrantLock` (`fsmLock`) serializes all FSM event
-/// delivery. SWIM observations, KV notifications, and operator events all enter through
-/// methods that acquire this lock. Rationale: the shadow is observe-only and not perf-critical;
-/// a single lock matches the spec §10.2 "strictly single-threaded for transitions" model
-/// without introducing a queue/worker pair (those land in E.4 when the shadow becomes the
-/// production writer). State is held in a `ConcurrentHashMap` to allow lock-free reads from
-/// the public `snapshot()` / `get()` accessors (spec §9 E.3: read API exposed to callers).
+/// **Single-writer invariant.** Only the leader's FSM writes. Non-leader instances treat
+/// operator events as no-ops (logged at WARN). The leader-gate matches the same model
+/// `HealthReconciler` already enforces in `handleAggregatedEdge` (D.3).
+///
+/// **Reconstructibility (I1).** Local per-peer state is derived from KV. The FSM only
+/// mutates `fsmStates` AFTER `commandApplier.apply(writes)` succeeds. On consensus
+/// rejection, local state is left untouched — the next KV notification (or replay on
+/// node restart) will reconcile it.
+///
+/// **Leader-takeover protocol resume (spec §6.2 steps 4–5).** On `start()`, after the KV
+/// replay, the new leader resumes in-flight protocols for every peer in DRAINING or JOINING:
+/// — `DRAINING` → `drainCoordinator.awaitDrainAck(peer, remainingDrainTimeout)` is called and
+///   the resulting `Promise` is chained back as a `DrainOutcome(peer, success, nowMs)` event.
+///   If the deadline has already elapsed on entry, `DrainOutcome(peer, false, nowMs)` is
+///   enqueued immediately to drive `(DRAINING, DrainOutcome(false)) → FAILED_DRAIN`.
+/// — `JOINING` → a fresh one-shot `JOIN_DEADLINE` timer is scheduled with the remaining
+///   budget; if elapsed, `JoinDeadlineExpired(peer, nowMs)` is enqueued immediately.
+/// Both are leader-gated: followers MUST NOT resume in-flight protocols (single-writer
+/// invariant). The legacy `HealthReconciler` path continues to ignore this overlap because
+/// `enqueueOperatorEvent` itself is a no-op when the feature flag is off.
+///
+/// **Concurrency.** A single `ReentrantLock` (`fsmLock`) serializes all FSM event
+/// delivery — SWIM observations, KV notifications, operator events. Public read-only
+/// accessors (`snapshot()`, `get()`) use the lock-free `ConcurrentHashMap`.
 public final class MembershipFsm {
     private static final Logger log = LoggerFactory.getLogger(MembershipFsm.class);
 
@@ -81,11 +115,28 @@ public final class MembershipFsm {
 
     private final SlotSnapshotReader slotSnapshotReader;
 
+    private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier;
+
+    private final DrainCoordinator drainCoordinator;
+
+    private final TimerScheduler scheduler;
+
+    private final BooleanSupplier isLeader;
+
     private final ReentrantLock fsmLock = new ReentrantLock();
 
     private final Map<NodeId, MembershipFsmState> fsmStates = new ConcurrentHashMap<>();
 
+    /// Per-peer last-seen `NodeLifecycleValue` (KV-write or KV-notification). Used to
+    /// preserve host/port/observedCoreEpoch/transitionedAt/provisioningSource when the
+    /// reducer emits a state-only `Put` (spec F18 — non-state fields must survive
+    /// transitions). The reducer is pure and emits minimal values; the wiring layer
+    /// rewrites the value before consensus apply.
+    private final Map<NodeId, NodeLifecycleValue> priorLifecycle = new ConcurrentHashMap<>();
+
     private final Map<String, NodeId> slotIdToPeer = new ConcurrentHashMap<>();
+
+    private final Map<TimerHandle, ScheduledFuture<?>> pendingTimers = new ConcurrentHashMap<>();
 
     private final AtomicBoolean started = new AtomicBoolean();
 
@@ -93,28 +144,77 @@ public final class MembershipFsm {
                           MembershipFsmConfig config,
                           ClusterMembershipReducer reducer,
                           LifecycleSnapshotReader lifecycleSnapshotReader,
-                          SlotSnapshotReader slotSnapshotReader) {
+                          SlotSnapshotReader slotSnapshotReader,
+                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                          DrainCoordinator drainCoordinator,
+                          TimerScheduler scheduler,
+                          BooleanSupplier isLeader) {
         this.self = self;
         this.config = config;
         this.reducer = reducer;
         this.lifecycleSnapshotReader = lifecycleSnapshotReader;
         this.slotSnapshotReader = slotSnapshotReader;
+        this.commandApplier = commandApplier;
+        this.drainCoordinator = drainCoordinator;
+        this.scheduler = scheduler;
+        this.isLeader = isLeader;
     }
 
+    /// E.3 read-only factory. Operator writes are not enabled (`enqueueOperatorEvent` runs
+    /// the reducer and logs only — preserves shadow-only behaviour).
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
                                               SlotSnapshotReader slotSnapshotReader) {
-        var reducer = ClusterMembershipReducer.clusterMembershipReducer(config);
-        return new MembershipFsm(self, config, reducer, lifecycleSnapshotReader, slotSnapshotReader);
+        return membershipFsm(self,
+                             config,
+                             lifecycleSnapshotReader,
+                             slotSnapshotReader,
+                             NO_OP_COMMAND_APPLIER,
+                             NO_OP_DRAIN_COORDINATOR,
+                             defaultScheduler(),
+                             NEVER_LEADER);
     }
 
+    /// E.4 write-capable factory. When the feature flag is on AND `isLeader.getAsBoolean()`
+    /// returns `true`, operator events route through the FSM: proposed via `commandApplier`,
+    /// drain effects dispatched to `drainCoordinator`, timers scheduled via `scheduler`.
+    public static MembershipFsm membershipFsm(NodeId self,
+                                              MembershipFsmConfig config,
+                                              LifecycleSnapshotReader lifecycleSnapshotReader,
+                                              SlotSnapshotReader slotSnapshotReader,
+                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                              DrainCoordinator drainCoordinator,
+                                              TimerScheduler scheduler,
+                                              BooleanSupplier isLeader) {
+        var reducer = ClusterMembershipReducer.clusterMembershipReducer(config);
+        return new MembershipFsm(self,
+                                 config,
+                                 reducer,
+                                 lifecycleSnapshotReader,
+                                 slotSnapshotReader,
+                                 commandApplier,
+                                 drainCoordinator,
+                                 scheduler,
+                                 isLeader);
+    }
+
+    /// Custom-reducer factory (test-only — lets callers inject a reducer with deterministic
+    /// thresholds). Defaults the write dependencies to no-ops.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               ClusterMembershipReducer reducer,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
                                               SlotSnapshotReader slotSnapshotReader) {
-        return new MembershipFsm(self, config, reducer, lifecycleSnapshotReader, slotSnapshotReader);
+        return new MembershipFsm(self,
+                                 config,
+                                 reducer,
+                                 lifecycleSnapshotReader,
+                                 slotSnapshotReader,
+                                 NO_OP_COMMAND_APPLIER,
+                                 NO_OP_DRAIN_COORDINATOR,
+                                 defaultScheduler(),
+                                 NEVER_LEADER);
     }
 
     public boolean shadowEnabled() {
@@ -131,6 +231,7 @@ public final class MembershipFsm {
             return Promise.unitPromise();
         }
         replayFromKv();
+        resumeInFlightProtocolsIfLeader();
         log.info("MembershipFsm shadow started for {} (peers reconstructed: {})",
                  self.id(),
                  fsmStates.size());
@@ -141,6 +242,7 @@ public final class MembershipFsm {
         if (!started.compareAndSet(true, false)) {
             return Promise.unitPromise();
         }
+        cancelAllTimers();
         clearState();
         log.info("MembershipFsm shadow stopped for {}", self.id());
         return Promise.unitPromise();
@@ -158,7 +260,8 @@ public final class MembershipFsm {
     }
 
     /// SWIM observation entry point. Translates the observation into a typed FSM event and
-    /// runs the reducer under `fsmLock`. Reducer outcome is logged but not applied (E.3).
+    /// runs the reducer under `fsmLock`. In E.3/E.4 the SWIM path remains read-only — the
+    /// production write path is still `HealthReconciler` (E.5 migrates this).
     @Contract public void onSwimObservation(SwimObservation observation) {
         if (!shouldProcess()) {
             return;
@@ -166,14 +269,29 @@ public final class MembershipFsm {
         translate(observation).onPresent(this::processShadowEvent);
     }
 
-    /// Operator event entry point — used by E.4 to feed `OperatorDrain`/`OperatorDecommission`
-    /// from REST handlers. Public so the E.4 wiring layer can plug it in without further
-    /// changes to this file.
+    /// Event entry point for operator commands and leader-issued protocol feedback. In E.4,
+    /// when the FSM is leader-gated and write-capable, `OperatorDrain` /
+    /// `OperatorDecommission` / `DrainOutcome` / `JoinDeadlineExpired` events are applied
+    /// (writes proposed via `commandApplier`, drain coordinator invoked, timers scheduled).
+    /// When the flag is off, this is a logged no-op — the legacy `HealthReconciler.requestDrain`
+    /// / `requestDecommission` callers remain authoritative.
     @Contract public void enqueueOperatorEvent(MembershipFsmEvent event) {
         if (!shouldProcess()) {
+            log.debug("MembershipFsm: operator event {} for {} ignored (shadow disabled — legacy path active)",
+                      event.getClass().getSimpleName(),
+                      event.peer().id());
             return;
         }
-        processShadowEvent(event);
+        if (isLeaderWritingEvent(event) && !isLeader.getAsBoolean()) {
+            log.warn(
+                    "MembershipFsm: operator event {} for {} received on non-leader {} — no-op (single-writer invariant). "
+                    + "Possible leader-handoff race; caller should retry against the new leader.",
+                    event.getClass().getSimpleName(),
+                    event.peer().id(),
+                    self.id());
+            return;
+        }
+        processOperatorOrShadowEvent(event);
     }
 
     /// KV-notification handler for `NodeLifecycleKey` puts. Updates the shadow state from the
@@ -220,9 +338,24 @@ public final class MembershipFsm {
         return started.get() && config.shadowEnabled();
     }
 
+    /// Events that may produce consensus writes via the FSM reducer and therefore require
+    /// the single-writer (leader-only) gate. Operator commands (`OperatorDrain` /
+    /// `OperatorDecommission`) plus the leader-issued feedback events
+    /// (`DrainOutcome` from `DrainCoordinator.awaitDrainAck`, `JoinDeadlineExpired` from the
+    /// JOIN_DEADLINE timer) all qualify — the leader started the protocol, so the leader
+    /// must own its terminal write. SWIM observations stay shadow-only in E.4 (E.5 lifts
+    /// them onto this path).
+    private static boolean isLeaderWritingEvent(MembershipFsmEvent event) {
+        return event instanceof OperatorDrain
+               || event instanceof OperatorDecommission
+               || event instanceof DrainOutcome
+               || event instanceof JoinDeadlineExpired;
+    }
+
     private void applyExternalLifecyclePut(NodeId peer, NodeLifecycleValue value) {
         fsmLock.lock();
         try {
+            priorLifecycle.put(peer, value);
             var newState = deriveStateFromLifecycle(peer, value, slotIdForPeer(peer));
             var previous = fsmStates.put(peer, newState);
             logExternalLifecycleChange(peer, previous, newState, value.state());
@@ -234,6 +367,7 @@ public final class MembershipFsm {
     private void applyExternalLifecycleRemove(NodeId peer) {
         fsmLock.lock();
         try {
+            priorLifecycle.remove(peer);
             var slotIdOpt = slotIdForPeer(peer);
             slotIdOpt.apply(() -> applyLifecycleRemoveWithoutSlot(peer),
                             slotId -> applyLifecycleRemoveWithSlot(peer, slotId));
@@ -308,6 +442,195 @@ public final class MembershipFsm {
         logShadowOutcome(event, current, outcome);
     }
 
+    /// Operator-event dispatcher. Splits writing-event handling from shadow-only SWIM
+    /// observations so the writing path can short-circuit to a write-and-mutate flow while
+    /// SWIM events stay shadow-only in E.4.
+    private void processOperatorOrShadowEvent(MembershipFsmEvent event) {
+        if (!isLeaderWritingEvent(event)) {
+            processShadowEvent(event);
+            return;
+        }
+        fsmLock.lock();
+        try {
+            processOperatorEventLocked(event);
+        } finally {
+            fsmLock.unlock();
+        }
+    }
+
+    private void processOperatorEventLocked(MembershipFsmEvent event) {
+        var peer = event.peer();
+        var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
+        var outcome = reducer.apply(current, event);
+        if (outcome.writes().isEmpty()) {
+            applyEffectsLocked(outcome.effects());
+            logOperatorOutcome(event, current, outcome, true);
+            return;
+        }
+        proposeWritesAndApply(event, current, outcome);
+    }
+
+    @Contract private void proposeWritesAndApply(MembershipFsmEvent event,
+                                                  MembershipFsmState prior,
+                                                  Outcome outcome) {
+        var peer = event.peer();
+        var resolvedWrites = resolveLifecycleWrites(outcome.writes());
+        log.info("MembershipFsm: operator event {} for {} → proposing {} write(s) via consensus",
+                 event.getClass().getSimpleName(),
+                 peer.id(),
+                 resolvedWrites.size());
+        commandApplier.apply(resolvedWrites)
+                       .onSuccess(_ -> handleOperatorWriteSuccess(event, prior, outcome, resolvedWrites))
+                       .onFailure(cause -> log.warn(
+                               "MembershipFsm: operator event {} for {} consensus rejected: {} — local state NOT mutated (I1)",
+                               event.getClass().getSimpleName(),
+                               peer.id(),
+                               cause.message()));
+    }
+
+    @Contract private void handleOperatorWriteSuccess(MembershipFsmEvent event,
+                                                       MembershipFsmState prior,
+                                                       Outcome outcome,
+                                                       List<KVCommand<AetherKey>> resolvedWrites) {
+        fsmLock.lock();
+        try {
+            fsmStates.put(outcome.newState().peer(), outcome.newState());
+            recordResolvedLifecycleWrites(resolvedWrites);
+            applyEffectsLocked(outcome.effects());
+            logOperatorOutcome(event, prior, outcome, true);
+        } finally {
+            fsmLock.unlock();
+        }
+    }
+
+    /// F18 resolution. Rewrites each `Put<NodeLifecycleKey, NodeLifecycleValue>` in `writes`
+    /// to preserve host/port/observedCoreEpoch/transitionedAt/provisioningSource from the
+    /// last-seen `NodeLifecycleValue` (via `priorLifecycle`). The reducer emits minimal
+    /// 2-arg values for purity; consensus must receive complete values. Non-lifecycle writes
+    /// (e.g., `Remove<ProvisioningSlotKey>`) pass through untouched.
+    private List<KVCommand<AetherKey>> resolveLifecycleWrites(List<KVCommand<AetherKey>> writes) {
+        return writes.stream().map(this::resolveSingleWrite).toList();
+    }
+
+    private KVCommand<AetherKey> resolveSingleWrite(KVCommand<AetherKey> command) {
+        if (command instanceof Put<AetherKey, ?> put
+            && put.key() instanceof NodeLifecycleKey lifecycleKey
+            && put.value() instanceof NodeLifecycleValue minimal) {
+            return new Put<>(lifecycleKey, mergeWithPrior(lifecycleKey.nodeId(), minimal));
+        }
+        return command;
+    }
+
+    private NodeLifecycleValue mergeWithPrior(NodeId peer, NodeLifecycleValue minimal) {
+        var prior = priorLifecycle.get(peer);
+        if (prior == null) {
+            return minimal;
+        }
+        return new NodeLifecycleValue(minimal.state(),
+                                       minimal.updatedAt(),
+                                       prior.host(),
+                                       prior.port(),
+                                       prior.observedCoreEpoch(),
+                                       prior.transitionedAt(),
+                                       prior.provisioningSource());
+    }
+
+    private void recordResolvedLifecycleWrites(List<KVCommand<AetherKey>> resolvedWrites) {
+        resolvedWrites.forEach(this::recordSingleResolvedWrite);
+    }
+
+    private void recordSingleResolvedWrite(KVCommand<AetherKey> command) {
+        if (command instanceof Put<AetherKey, ?> put
+            && put.key() instanceof NodeLifecycleKey lifecycleKey
+            && put.value() instanceof NodeLifecycleValue value) {
+            priorLifecycle.put(lifecycleKey.nodeId(), value);
+        }
+    }
+
+    private void applyEffectsLocked(List<MembershipEffect> effects) {
+        effects.forEach(this::applyEffect);
+    }
+
+    private void applyEffect(MembershipEffect effect) {
+        switch (effect) {
+            case ScheduleTimer s -> scheduleTimer(s);
+            case CancelTimer c -> cancelTimer(c.peer(), c.kind());
+            case InvokeDrain d -> invokeDrain(d.peer(), d.reason());
+            case CancelDrain c -> log.info(
+                    "MembershipFsm: CancelDrain for {} — best-effort log only (E.7 wires coordinator cancel)",
+                    c.peer().id());
+            case EmitDomainEvent e -> log.info("MembershipFsm: domain event {} for {} (reason={})",
+                                                  e.event(),
+                                                  e.peer().id(),
+                                                  e.reason());
+        }
+    }
+
+    private void scheduleTimer(ScheduleTimer timer) {
+        var handle = new TimerHandle(timer.peer(), timer.kind());
+        cancelTimer(timer.peer(), timer.kind());
+        var future = scheduler.schedule(() -> onTimerFired(handle), timer.delay());
+        pendingTimers.put(handle, future);
+        log.debug("MembershipFsm: scheduled timer {} for {} in {}ms",
+                  timer.kind(),
+                  timer.peer().id(),
+                  timer.delay().millis());
+    }
+
+    private void cancelTimer(NodeId peer, TimerKind kind) {
+        var handle = new TimerHandle(peer, kind);
+        var future = pendingTimers.remove(handle);
+        if (future != null) {
+            future.cancel(false);
+            log.debug("MembershipFsm: cancelled timer {} for {}", kind, peer.id());
+        }
+    }
+
+    private void cancelAllTimers() {
+        pendingTimers.values().forEach(future -> future.cancel(false));
+        pendingTimers.clear();
+    }
+
+    @Contract private void onTimerFired(TimerHandle handle) {
+        pendingTimers.remove(handle);
+        log.debug("MembershipFsm: timer {} fired for {}", handle.kind(), handle.peer().id());
+        if (handle.kind() == TimerKind.JOIN_DEADLINE) {
+            enqueueOperatorEvent(new JoinDeadlineExpired(handle.peer(), System.currentTimeMillis()));
+        }
+    }
+
+    @Contract private void invokeDrain(NodeId peer, DrainReason reason) {
+        log.info("MembershipFsm: invoking DrainCoordinator.prepareDrain({}, {})", peer.id(), reason);
+        drainCoordinator.prepareDrain(peer, reason)
+                         .onFailure(cause -> onPrepareDrainFailure(peer, cause))
+                         .onSuccess(_ -> awaitDrainAndFeedback(peer, config.drainTimeout()));
+    }
+
+    private void onPrepareDrainFailure(NodeId peer, Cause cause) {
+        log.warn("MembershipFsm: prepareDrain failed for {}: {} — feeding DrainOutcome(false)",
+                 peer.id(),
+                 cause.message());
+        enqueueOperatorEvent(new DrainOutcome(peer, false, System.currentTimeMillis()));
+    }
+
+    /// Chains `DrainCoordinator.awaitDrainAck(peer, timeout)` and translates its resolution
+    /// back into a `DrainOutcome` event (spec §8.2, F4). Success → `DrainOutcome(true)` →
+    /// `(DRAINING, DrainOutcome(true)) → DECOMMISSIONED`. Failure (or hard-deadline) →
+    /// `DrainOutcome(false)` → `(DRAINING, DrainOutcome(false)) → FAILED_DRAIN`.
+    @Contract private void awaitDrainAndFeedback(NodeId peer, TimeSpan timeout) {
+        log.debug("MembershipFsm: awaiting drain ack for {} (timeout={}ms)", peer.id(), timeout.millis());
+        drainCoordinator.awaitDrainAck(peer, timeout)
+                         .onSuccess(_ -> enqueueOperatorEvent(new DrainOutcome(peer, true, System.currentTimeMillis())))
+                         .onFailure(cause -> onAwaitDrainAckFailure(peer, cause));
+    }
+
+    private void onAwaitDrainAckFailure(NodeId peer, Cause cause) {
+        log.warn("MembershipFsm: awaitDrainAck failed for {}: {} — feeding DrainOutcome(false)",
+                 peer.id(),
+                 cause.message());
+        enqueueOperatorEvent(new DrainOutcome(peer, false, System.currentTimeMillis()));
+    }
+
     private void replayFromKv() {
         fsmLock.lock();
         try {
@@ -329,6 +652,7 @@ public final class MembershipFsm {
 
     private void reconstructPeerFromLifecycle(NodeLifecycleKey lifecycleKey, NodeLifecycleValue value) {
         var peer = lifecycleKey.nodeId();
+        priorLifecycle.put(peer, value);
         var derived = deriveStateFromLifecycle(peer, value, slotIdForPeer(peer));
         fsmStates.put(peer, derived);
     }
@@ -340,6 +664,59 @@ public final class MembershipFsm {
     private void clearState() {
         fsmStates.clear();
         slotIdToPeer.clear();
+        priorLifecycle.clear();
+    }
+
+    /// Leader-takeover step 4+5 (spec §6.2, F7/F8). After KV replay, the new leader resumes
+    /// in-flight protocols: re-attaches `awaitDrainAck` to every peer in DRAINING, and
+    /// reschedules JOIN_DEADLINE timers for every peer in JOINING. Both leader-gated —
+    /// followers MUST NOT take over running protocols.
+    private void resumeInFlightProtocolsIfLeader() {
+        if (!isLeader.getAsBoolean()) {
+            log.debug("MembershipFsm: resumeInFlightProtocols skipped on {} — not leader", self.id());
+            return;
+        }
+        var nowMs = System.currentTimeMillis();
+        priorLifecycle.forEach((peer, value) -> resumePerPeer(peer, value, nowMs));
+    }
+
+    private void resumePerPeer(NodeId peer, NodeLifecycleValue value, long nowMs) {
+        switch (value.state()) {
+            case DRAINING, SHUTTING_DOWN -> resumeDrain(peer, value, nowMs);
+            case JOINING -> resumeJoinDeadline(peer, value, nowMs);
+            default -> { /* no-op for ON_DUTY/DECOMMISSIONED/FAILED_DRAIN — nothing to resume */ }
+        }
+    }
+
+    @Contract private void resumeDrain(NodeId peer, NodeLifecycleValue value, long nowMs) {
+        var elapsed = Math.max(0L, nowMs - value.updatedAt());
+        var remainingMs = config.drainTimeout().millis() - elapsed;
+        if (remainingMs <= 0L) {
+            log.info("MembershipFsm: resumeDrain peer={} hard-deadline elapsed (drainStarted={}, elapsed={}ms) → DrainOutcome(false) immediate",
+                     peer.id(), value.updatedAt(), elapsed);
+            enqueueOperatorEvent(new DrainOutcome(peer, false, nowMs));
+            return;
+        }
+        log.info("MembershipFsm: resumeDrain peer={} remaining={}ms — re-attaching awaitDrainAck",
+                 peer.id(), remainingMs);
+        awaitDrainAndFeedback(peer, TimeSpan.timeSpan(remainingMs).millis());
+    }
+
+    @Contract private void resumeJoinDeadline(NodeId peer, NodeLifecycleValue value, long nowMs) {
+        var elapsed = Math.max(0L, nowMs - value.updatedAt());
+        var remainingMs = config.joinDeadline().millis() - elapsed;
+        if (remainingMs <= 0L) {
+            log.info("MembershipFsm: resumeJoinDeadline peer={} deadline elapsed (joinedAt={}, elapsed={}ms) → JoinDeadlineExpired immediate",
+                     peer.id(), value.updatedAt(), elapsed);
+            enqueueOperatorEvent(new JoinDeadlineExpired(peer, nowMs));
+            return;
+        }
+        log.info("MembershipFsm: resumeJoinDeadline peer={} remaining={}ms — scheduling timer",
+                 peer.id(), remainingMs);
+        var handle = new TimerHandle(peer, TimerKind.JOIN_DEADLINE);
+        cancelTimer(peer, TimerKind.JOIN_DEADLINE);
+        var future = scheduler.schedule(() -> onTimerFired(handle), TimeSpan.timeSpan(remainingMs).millis());
+        pendingTimers.put(handle, future);
     }
 
     private Option<String> slotIdForPeer(NodeId peer) {
@@ -387,6 +764,20 @@ public final class MembershipFsm {
                  outcome.effects());
     }
 
+    private void logOperatorOutcome(MembershipFsmEvent event,
+                                    MembershipFsmState priorState,
+                                    Outcome outcome,
+                                    boolean writesApplied) {
+        log.info("MembershipFsm: event={} peer={} priorState={} → newState={} writes={} effects={} applied={}",
+                 event.getClass().getSimpleName(),
+                 event.peer().id(),
+                 describe(priorState),
+                 describe(outcome.newState()),
+                 outcome.writes().size(),
+                 outcome.effects().size(),
+                 writesApplied);
+    }
+
     private void logExternalLifecycleChange(NodeId peer,
                                             MembershipFsmState previous,
                                             MembershipFsmState newState,
@@ -405,6 +796,8 @@ public final class MembershipFsm {
         return state.getClass().getSimpleName();
     }
 
+    private record TimerHandle(NodeId peer, TimerKind kind) {}
+
     /// Snapshot reader for `NodeLifecycleKey → NodeLifecycleValue` entries. Implemented by
     /// the wiring layer over `KVStore.forEach(...)`. Kept as a `@FunctionalInterface` so the
     /// shadow has no compile-time dependency on `KVStore` and remains testable with a
@@ -419,4 +812,42 @@ public final class MembershipFsm {
     public interface SlotSnapshotReader {
         @Contract void forEachSlot(BiConsumer<ProvisioningSlotKey, ProvisioningSlotValue> consumer);
     }
+
+    /// One-shot timer scheduler. Returns a `ScheduledFuture` so the FSM can cancel pending
+    /// timers when the reducer emits a `CancelTimer` effect (spec §10.2). The default
+    /// implementation delegates to `SharedScheduler`; tests inject a fake scheduler.
+    @FunctionalInterface
+    public interface TimerScheduler {
+        ScheduledFuture<?> schedule(Runnable runnable, TimeSpan delay);
+    }
+
+    private static TimerScheduler defaultScheduler() {
+        return SharedScheduler::schedule;
+    }
+
+    private static final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> NO_OP_COMMAND_APPLIER =
+            MembershipFsm::noOpCommandApply;
+
+    private static Promise<List<Object>> noOpCommandApply(List<KVCommand<AetherKey>> commands) {
+        log.debug("MembershipFsm: no-op command applier (E.3 read-only mode) — {} write(s) discarded",
+                  commands.size());
+        return Promise.success(List.of());
+    }
+
+    private static final DrainCoordinator NO_OP_DRAIN_COORDINATOR = new DrainCoordinator() {
+        @Override public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
+            log.debug("MembershipFsm: no-op DrainCoordinator.prepareDrain({}, {})", nodeId.id(), reason);
+            return Promise.unitPromise();
+        }
+
+        @Override public Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout) {
+            return Promise.unitPromise();
+        }
+
+        @Override @Contract public void markDrainComplete(NodeId nodeId) {
+            log.debug("MembershipFsm: no-op DrainCoordinator.markDrainComplete({})", nodeId.id());
+        }
+    };
+
+    private static final BooleanSupplier NEVER_LEADER = () -> false;
 }

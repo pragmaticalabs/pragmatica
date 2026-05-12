@@ -492,6 +492,7 @@ public interface AetherNode extends ManageableNode {
                           org.pragmatica.aether.deployment.drain.InFlightRequestTracker inFlightRequestTracker,
                           org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
                           NodeLifecycle nodeLifecycle,
+                          MembershipFsm membershipFsm,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -896,8 +897,6 @@ public interface AetherNode extends ManageableNode {
                                                                  HealthReconcilerConfig.DEFAULT,
                                                                  selfOnDutyAtomFactory);
         healthReconciler.start();
-        var membershipFsm = buildMembershipFsmShadow(config.self(), kvStore);
-        membershipFsm.start();
         LifecycleWriter ctmLifecycleWriter = new LifecycleWriter() {
             @Override public Promise<Unit> requestDrain(NodeId target) {
                 return healthReconciler.requestDrain(target);
@@ -921,6 +920,14 @@ public interface AetherNode extends ManageableNode {
                         : Promise.success(0);
         var drainCoordinator = org.pragmatica.aether.deployment.drain.ConsensusDrainCoordinator
                 .consensusDrainCoordinator(ctmLifecycleWriter, lifecycleReader::apply, inFlightProbe);
+        // MembershipFsm wiring (spec §9 E.3 shadow + E.4 operator-write). Constructed AFTER
+        // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
+        var membershipFsm = buildMembershipFsm(config.self(),
+                                                kvStore,
+                                                clusterCommandApplier,
+                                                drainCoordinator,
+                                                isLeaderSupplier);
+        membershipFsm.start();
         Supplier<AetherValue.ClusterPhase> ctmPhaseSupplier = () -> clusterPhaseReader.get()
                                                                                           .or(AetherValue.ClusterPhase.COLD_BOOT);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
@@ -1505,6 +1512,7 @@ public interface AetherNode extends ManageableNode {
                                   inFlightTrackerForDrain,
                                   drainCoordinator,
                                   nodeLifecycle,
+                                  membershipFsm,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(() -> bridgeSelfReadyToLifecycle(healthReconciler, nodeLifecycle));
@@ -1601,6 +1609,7 @@ public interface AetherNode extends ManageableNode {
                                                                               inFlightTrackerForDrain,
                                                                               drainCoordinator,
                                                                               nodeLifecycle,
+                                                                              membershipFsm,
                                                                               startTimeMs);
                                                     }
                                                     return node;
@@ -1623,12 +1632,19 @@ public interface AetherNode extends ManageableNode {
         healthReconciler.signalSelfReady();
     }
 
-    /// Build the read-only shadow membership FSM (spec §9, E.3). Activation is gated by the
-    /// `aether.membership.fsm.shadowEnabled` system property; default `false` → no-op
-    /// (zero behaviour change). When `true`, the shadow reads `NodeLifecycleKey` and
-    /// `ProvisioningSlotKey` from `kvStore` on `start()` to reconstruct per-peer state.
-    private static MembershipFsm buildMembershipFsmShadow(NodeId self,
-                                                          KVStore<AetherKey, AetherValue> kvStore) {
+    /// Build the membership FSM (spec §9 E.3 shadow + E.4 operator-write). Activation is gated
+    /// by the `aether.membership.fsm.shadowEnabled` system property; default `false` → no-op
+    /// (zero behaviour change). When `true`:
+    /// - the shadow reads `NodeLifecycleKey` + `ProvisioningSlotKey` on `start()` to
+    ///   reconstruct per-peer state (E.3);
+    /// - operator-initiated drain/decommission events route through the FSM, propose KV
+    ///   writes via the consensus `commandApplier`, and invoke `drainCoordinator` for the
+    ///   drain protocol (E.4). Writes are leader-gated via `isLeaderSupplier`.
+    private static MembershipFsm buildMembershipFsm(NodeId self,
+                                                     KVStore<AetherKey, AetherValue> kvStore,
+                                                     java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                     org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
+                                                     BooleanSupplier isLeaderSupplier) {
         var shadowEnabled = Boolean.getBoolean("aether.membership.fsm.shadowEnabled");
         var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig().withShadowEnabled(shadowEnabled);
         MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
@@ -1637,7 +1653,15 @@ public interface AetherNode extends ManageableNode {
         MembershipFsm.SlotSnapshotReader slotSnapshot = consumer -> kvStore.forEach(AetherKey.ProvisioningSlotKey.class,
                                                                                       AetherValue.ProvisioningSlotValue.class,
                                                                                       consumer);
-        return MembershipFsm.membershipFsm(self, fsmConfig, lifecycleSnapshot, slotSnapshot);
+        MembershipFsm.TimerScheduler scheduler = org.pragmatica.lang.utils.SharedScheduler::schedule;
+        return MembershipFsm.membershipFsm(self,
+                                            fsmConfig,
+                                            lifecycleSnapshot,
+                                            slotSnapshot,
+                                            commandApplier,
+                                            drainCoordinator,
+                                            scheduler,
+                                            isLeaderSupplier);
     }
 
     @SuppressWarnings("unchecked") private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
