@@ -28,7 +28,11 @@ public sealed interface MembershipFsmState {
 
     record Draining(NodeId peer, long drainStartedAtMs, DrainReason reason) implements MembershipFsmState{}
 
-    record Decommissioned(NodeId peer, long decommissionedAtMs) implements MembershipFsmState{}
+    /// `swimDriven` distinguishes SWIM-detected failure (`SwimFaulty`/`SwimDeparted`) from
+    /// operator/drain-driven decommission. Only `swimDriven=true` triggers the SWIM-Healthy
+    /// revival refractory in `ClusterMembershipReducer.decommissionedSwimHealthy` — operator-
+    /// initiated decommissions remain eligible for fast-restart revival within the TTL.
+    record Decommissioned(NodeId peer, long decommissionedAtMs, boolean swimDriven) implements MembershipFsmState{}
 
     record FailedDrain(NodeId peer, long failedAtMs) implements MembershipFsmState{}
 
@@ -53,7 +57,11 @@ public sealed interface MembershipFsmState {
     }
 
     static Decommissioned decommissioned(NodeId peer, long decommissionedAtMs) {
-        return new Decommissioned(peer, decommissionedAtMs);
+        return new Decommissioned(peer, decommissionedAtMs, false);
+    }
+
+    static Decommissioned decommissioned(NodeId peer, long decommissionedAtMs, boolean swimDriven) {
+        return new Decommissioned(peer, decommissionedAtMs, swimDriven);
     }
 
     static FailedDrain failedDrain(NodeId peer, long failedAtMs) {

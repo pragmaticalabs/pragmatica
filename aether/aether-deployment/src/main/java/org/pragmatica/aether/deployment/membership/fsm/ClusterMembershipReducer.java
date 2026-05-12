@@ -165,20 +165,30 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         };
     }
 
-    /// `(DECOMMISSIONED, SwimHealthy)` TTL-bounded revival (Bootstrap-correction 2026-05-12,
+    /// `(DECOMMISSIONED, SwimHealthy)` revival, bounded by TTL and (for SWIM-driven decommissions)
+    /// a refractory window (Bootstrap-correction 2026-05-12 + chaos-revival-storm fix 2026-05-12b,
     /// spec §5.1 note 4).
     ///
-    /// If the `DECOMMISSIONED` entry is younger than `decommissionedRevivalTtl` (strict
-    /// inequality: `ageMs < ttlMs`), admit the peer back as `ON_DUTY` — this handles the
-    /// elastic-test-fixture restart pattern (`docker start` brings a killed container back
-    /// with the same NodeId) and short transient-decommission scenarios. Otherwise stay
-    /// nop (genuine zombie — operator must explicitly clear).
+    /// Two windows apply:
+    /// - **Refractory** (only when `state.swimDriven()`): block revival for the first
+    ///   `decommissionedSwimRefractory` ms after decommission. Stale SWIM gossip / QUIC
+    ///   reconnect for a just-killed peer can otherwise drive `(DECOMMISSIONED, SwimHealthy)`
+    ///   while SWIM hasn't fully purged the dead peer from its caches — re-fires would loop
+    ///   with the next `SwimFaulty`, racking up phantom revivals during chaos. Operator-driven
+    ///   decommissions (`swimDriven=false`) skip this gate and remain eligible for fast-restart
+    ///   revival.
+    /// - **TTL**: regardless of trigger, revival is allowed only while
+    ///   `ageMs < decommissionedRevivalTtl`. Past TTL the entry is a zombie — operator must
+    ///   explicitly clear.
     ///
     /// The single-writer rule (I2) is preserved: the leader remains the sole writer of
-    /// `NodeLifecycleKey`. The temporal-bounded relaxation is a transition rule, not a
-    /// writer-identity change.
+    /// `NodeLifecycleKey`. Both windows are transition-rule relaxations, not writer-identity
+    /// changes.
     private Outcome decommissionedSwimHealthy(Decommissioned state, long nowMs) {
         var ageMs = nowMs - state.decommissionedAtMs();
+        if (state.swimDriven() && ageMs < config.decommissionedSwimRefractory().millis()) {
+            return Outcome.nop(state);
+        }
         var ttlMs = config.decommissionedRevivalTtl().millis();
         if (ageMs >= ttlMs) {return Outcome.nop(state);}
         var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.ON_DUTY, nowMs));
@@ -242,7 +252,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         var effects = new ArrayList<MembershipEffect>();
         effects.add(new CancelTimer(state.peer(), TimerKind.JOIN_DEADLINE));
         effects.add(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), nowMs),
+        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), nowMs, isSwimReason(reason)),
                                writes,
                                effects);
     }
@@ -258,7 +268,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     private Outcome onDutyToDecommissioned(OnDuty state, long nowMs, String reason) {
         var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, nowMs));
         var effects = List.<MembershipEffect>of(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), nowMs),
+        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), nowMs, isSwimReason(reason)),
                                writes,
                                effects);
     }
@@ -274,7 +284,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         var effects = List.<MembershipEffect>of(emit(state.peer(),
                                                      MembershipDomainEvent.NODE_FAILED,
                                                      REASON_OPERATOR_FORCED));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), event.nowMs()),
+        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), event.nowMs(), false),
                                writes,
                                effects);
     }
@@ -292,7 +302,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         var effects = new ArrayList<MembershipEffect>();
         effects.add(new CancelDrain(state.peer()));
         effects.add(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, REASON_SWIM_DEPARTED));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), nowMs),
+        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), nowMs, true),
                                writes,
                                effects);
     }
@@ -303,7 +313,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         var effects = new ArrayList<MembershipEffect>();
         effects.add(new CancelDrain(state.peer()));
         effects.add(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, REASON_OPERATOR_FORCED));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), event.nowMs()),
+        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), event.nowMs(), false),
                                writes,
                                effects);
     }
@@ -312,7 +322,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         if (event.success()) {
             var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, event.nowMs()));
             var effects = List.<MembershipEffect>of(emit(state.peer(), MembershipDomainEvent.NODE_DRAINED, REASON_NONE));
-            return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), event.nowMs()),
+            return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), event.nowMs(), false),
                                    writes,
                                    effects);
         }
@@ -328,7 +338,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     private Outcome failedDrainToDecommissioned(FailedDrain state, long nowMs, String reason) {
         var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, nowMs));
         var effects = List.<MembershipEffect>of(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), nowMs),
+        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), nowMs, isSwimReason(reason)),
                                writes,
                                effects);
     }
@@ -349,6 +359,13 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
 
     private static EmitDomainEvent emit(NodeId peer, MembershipDomainEvent event, String reason) {
         return new EmitDomainEvent(peer, event, reason);
+    }
+
+    /// SWIM-driven decommission reasons that activate the `decommissionedSwimRefractory`
+    /// gate in `decommissionedSwimHealthy` — see field doc on
+    /// `MembershipFsmConfig.decommissionedSwimRefractory`.
+    private static boolean isSwimReason(String reason) {
+        return REASON_SWIM_FAULTY.equals(reason) || REASON_SWIM_DEPARTED.equals(reason);
     }
 
     @SuppressWarnings("JBCT-EX-01") private static Outcome illegal(MembershipFsmState state, MembershipFsmEvent event) {

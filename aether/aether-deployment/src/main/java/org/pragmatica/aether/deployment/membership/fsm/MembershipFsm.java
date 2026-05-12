@@ -134,6 +134,27 @@ public final class MembershipFsm {
 
     private final Map<String, NodeId> slotIdToPeer = new ConcurrentHashMap<>();
 
+    /// SWIM-driven-decommission tombstone (chaos-revival-storm fix 2026-05-12b, second
+    /// layer). Records the most recent SWIM-driven `DECOMMISSIONED` write per peer so that
+    /// the `(UNTRACKED, SwimHealthy) → ON_DUTY` direct cell cannot resurrect a peer the
+    /// `DecommissionedAtomGc` (or any future lifecycle-remove path) has just stripped from
+    /// KV. The reducer's refractory only covers `(DECOMMISSIONED, SwimHealthy)`; once the
+    /// atom is GC'd, the FSM state collapses to `UNTRACKED` and the refractory window is
+    /// effectively bypassed. The tombstone restores the same temporal guard at the wiring
+    /// layer:
+    /// - **Set** on every external lifecycle-put `state=DECOMMISSIONED` AND on every local
+    ///   operator-write success whose `newState` is `Decommissioned` with `swimDriven=true`.
+    /// - **Cleared** when an external lifecycle-put rolls the peer back to `ON_DUTY` (the
+    ///   peer is legitimately back; refractory no longer applies).
+    /// - **Lazily expired** in `isWithinSwimDecommissionTombstone(peer, nowMs)` — entries
+    ///   older than `decommissionedSwimRefractory` are removed in-place.
+    /// - **Filter** runs in the SWIM observation path before reducer dispatch: if the local
+    ///   FSM state is `UNTRACKED` AND the peer has a live tombstone, the synthesized
+    ///   `SwimHealthy` is dropped (TRACE log). All other states fall through to the reducer
+    ///   normally — `(DECOMMISSIONED, SwimHealthy)` is still handled by the reducer's own
+    ///   refractory.
+    private final Map<NodeId, Long> swimDecommissionTombstones = new ConcurrentHashMap<>();
+
     private final Map<TimerHandle, ScheduledFuture<?>> pendingTimers = new ConcurrentHashMap<>();
 
     private final AtomicBoolean started = new AtomicBoolean();
@@ -303,7 +324,56 @@ public final class MembershipFsm {
             logSwimDropOnFollower(observation);
             return;
         }
-        translate(observation).onPresent(this::processOperatorOrFsmEvent);
+        translate(observation).onPresent(this::dispatchSwimEvent);
+    }
+
+    /// Pre-reducer filter: drop synthetic `SwimHealthy` events for peers in `UNTRACKED`
+    /// that fall inside the SWIM-driven decommission tombstone window. Without this guard,
+    /// `(UNTRACKED, SwimHealthy) → ON_DUTY` resurrects peers whose `DECOMMISSIONED` atom
+    /// the GC just removed — bypassing the reducer's `Decommissioned` refractory. See
+    /// `swimDecommissionTombstones` field doc.
+    private void dispatchSwimEvent(MembershipFsmEvent event) {
+        if (event instanceof SwimHealthy healthy && shouldSuppressSwimHealthyByTombstone(healthy)) {
+            return;
+        }
+        processOperatorOrFsmEvent(event);
+    }
+
+    private boolean shouldSuppressSwimHealthyByTombstone(SwimHealthy event) {
+        var peer = event.peer();
+        var current = fsmStates.get(peer);
+        if (current != null && !(current instanceof MembershipFsmState.Untracked)) {
+            return false;
+        }
+        if (!isWithinSwimDecommissionTombstone(peer, event.nowMs())) {
+            return false;
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("MembershipFsm: SwimHealthy({}) dropped — peer in tombstone window after recent SWIM-driven DECOMMISSIONED (post-GC UNTRACKED)",
+                      peer.id());
+        }
+        return true;
+    }
+
+    private boolean isWithinSwimDecommissionTombstone(NodeId peer, long nowMs) {
+        var decommissionedAtMs = swimDecommissionTombstones.get(peer);
+        if (decommissionedAtMs == null) {
+            return false;
+        }
+        var refractoryMs = config.decommissionedSwimRefractory().millis();
+        if (nowMs - decommissionedAtMs >= refractoryMs) {
+            swimDecommissionTombstones.remove(peer);
+            return false;
+        }
+        return true;
+    }
+
+    private void rememberSwimDecommissionTombstone(NodeId peer, long decommissionedAtMs) {
+        swimDecommissionTombstones.put(peer, decommissionedAtMs);
+    }
+
+    private void clearSwimDecommissionTombstone(NodeId peer) {
+        swimDecommissionTombstones.remove(peer);
     }
 
     /// Leader-change entry point (spec §6.2 step 7 — Bootstrap-correction 2026-05-12, second
@@ -511,9 +581,23 @@ public final class MembershipFsm {
             priorLifecycle.put(peer, value);
             var newState = deriveStateFromLifecycle(peer, value, slotIdForPeer(peer));
             var previous = fsmStates.put(peer, newState);
+            updateTombstoneForExternalPut(peer, value);
             logExternalLifecycleChange(peer, previous, newState, value.state());
         } finally {
             fsmLock.unlock();
+        }
+    }
+
+    /// Maintains `swimDecommissionTombstones` from external KV notifications. KV-derived
+    /// `DECOMMISSIONED` is treated conservatively as SWIM-driven (see
+    /// `deriveStateFromLifecycle`); record the tombstone keyed by the lifecycle write
+    /// timestamp so it survives any later lifecycle-remove sweep. `ON_DUTY` writes clear
+    /// the tombstone (peer is back legitimately). Other states are no-ops here.
+    private void updateTombstoneForExternalPut(NodeId peer, NodeLifecycleValue value) {
+        switch (value.state()) {
+            case DECOMMISSIONED -> rememberSwimDecommissionTombstone(peer, value.updatedAt());
+            case ON_DUTY -> clearSwimDecommissionTombstone(peer);
+            default -> { /* JOINING/DRAINING/FAILED_DRAIN/SHUTTING_DOWN — leave tombstone untouched */ }
         }
     }
 
@@ -649,10 +733,25 @@ public final class MembershipFsm {
         try {
             fsmStates.put(outcome.newState().peer(), outcome.newState());
             recordResolvedLifecycleWrites(resolvedWrites);
+            updateTombstoneForLocalWrite(outcome.newState());
             applyEffectsLocked(outcome.effects());
             logOperatorOutcome(event, prior, outcome, true);
         } finally {
             fsmLock.unlock();
+        }
+    }
+
+    /// Mirrors `updateTombstoneForExternalPut` for local-leader writes. Set the tombstone
+    /// only when the reducer's `Decommissioned` carries `swimDriven=true` (operator-driven
+    /// decommissions remain eligible for fast-restart revival); clear it when entering
+    /// `OnDuty`.
+    private void updateTombstoneForLocalWrite(MembershipFsmState newState) {
+        if (newState instanceof MembershipFsmState.Decommissioned d && d.swimDriven()) {
+            rememberSwimDecommissionTombstone(d.peer(), d.decommissionedAtMs());
+            return;
+        }
+        if (newState instanceof MembershipFsmState.OnDuty onDuty) {
+            clearSwimDecommissionTombstone(onDuty.peer());
         }
     }
 
@@ -808,6 +907,9 @@ public final class MembershipFsm {
         priorLifecycle.put(peer, value);
         var derived = deriveStateFromLifecycle(peer, value, slotIdForPeer(peer));
         fsmStates.put(peer, derived);
+        if (value.state() == NodeLifecycleState.DECOMMISSIONED) {
+            rememberSwimDecommissionTombstone(peer, value.updatedAt());
+        }
     }
 
     private void ensureSlotPeerCovered(ProvisioningSlotKey slotKey, ProvisioningSlotValue slotValue) {
@@ -818,6 +920,7 @@ public final class MembershipFsm {
         fsmStates.clear();
         slotIdToPeer.clear();
         priorLifecycle.clear();
+        swimDecommissionTombstones.clear();
     }
 
     /// Leader-takeover step 4+5 (spec §6.2, F7/F8). After KV replay, the new leader resumes
@@ -888,7 +991,7 @@ public final class MembershipFsm {
             case JOINING -> MembershipFsmState.joining(peer, value.updatedAt(), slotId);
             case ON_DUTY -> MembershipFsmState.onDuty(peer, value.updatedAt());
             case DRAINING -> MembershipFsmState.draining(peer, value.updatedAt(), DrainReason.OPERATOR_DRAIN);
-            case DECOMMISSIONED -> MembershipFsmState.decommissioned(peer, value.updatedAt());
+            case DECOMMISSIONED -> MembershipFsmState.decommissioned(peer, value.updatedAt(), true);
             case FAILED_DRAIN -> MembershipFsmState.failedDrain(peer, value.updatedAt());
             case SHUTTING_DOWN -> MembershipFsmState.draining(peer, value.updatedAt(), DrainReason.OPERATOR_DRAIN);
         };

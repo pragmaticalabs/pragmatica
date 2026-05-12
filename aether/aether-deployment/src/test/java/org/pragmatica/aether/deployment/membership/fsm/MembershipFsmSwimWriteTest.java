@@ -207,16 +207,19 @@ class MembershipFsmSwimWriteTest {
 
     @Nested @DisplayName("Decommissioned revival within TTL (spec §5.1 note 4)")
     class DecommissionedRevivalTests {
-        @Test void swimHealthy_recentlyDecommissioned_leader_revivesToOnDuty() {
+        @Test void swimHealthy_decommissionedPastRefractoryWithinTtl_leader_revivesToOnDuty() {
             // End-to-end: leader observes SwimHealthy for a peer in DECOMMISSIONED whose
-            // entry is recent (well within the 60s revival TTL). FSM must write
-            // Put(L=ON_DUTY) and transition to OnDuty — handles the elastic-test-fixture
-            // `docker start` restart pattern where killed containers come back with the
-            // same NodeId.
-            var recentDecommissionedAt = System.currentTimeMillis() - 5_000L;
+            // entry is past the SWIM refractory window (default 30s) but within the 60s
+            // revival TTL. FSM must write Put(L=ON_DUTY) — the legitimate
+            // elastic-test-fixture restart pattern (`docker start` brings a killed container
+            // back with the same NodeId, after the chaos-revival refractory has passed).
+            //
+            // KV-derived state defaults to `swimDriven=true` (conservative — `deriveStateFromLifecycle`
+            // cannot know the original trigger), so the refractory gate is armed.
+            var pastRefractoryDecommissionedAt = System.currentTimeMillis() - 40_000L;
             lifecycleSnapshot.put(PEER_A,
                                   NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
-                                                                        recentDecommissionedAt));
+                                                                        pastRefractoryDecommissionedAt));
             var fsm = startedFsm();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
 
@@ -225,6 +228,25 @@ class MembershipFsmSwimWriteTest {
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+        }
+
+        @Test void swimHealthy_decommissionedWithinRefractory_leader_staysDecommissioned() {
+            // Chaos-revival-storm fix (2026-05-12b): leader observes SwimHealthy for a peer
+            // decommissioned 5s ago — well inside the 30s SWIM refractory window. KV replay
+            // marks the state `swimDriven=true` so refractory blocks revival. FSM must NOT
+            // write Put(L=ON_DUTY); stale SWIM gossip / QUIC reconnect for a just-killed
+            // peer cannot resurrect it.
+            var withinRefractoryDecommissionedAt = System.currentTimeMillis() - 5_000L;
+            lifecycleSnapshot.put(PEER_A,
+                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                                                        withinRefractoryDecommissionedAt));
+            var fsm = startedFsm();
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+
+            fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
+
+            assertThat(commandApplier.calls).isEmpty();
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
         }
 
         @Test void swimHealthy_staleDecommissioned_leader_staysZombie() {

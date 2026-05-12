@@ -429,6 +429,61 @@ class ClusterMembershipReducerTest {
         }
     }
 
+    @Nested
+    @DisplayName("Decommissioned × SwimHealthy SWIM-driven refractory (chaos-revival-storm fix 2026-05-12b)")
+    class DecommissionedSwimRefractory {
+        /// Default refractory is 30s (`MembershipFsmConfig.DEFAULT_DECOMMISSIONED_SWIM_REFRACTORY`)
+        /// and applies only when `Decommissioned.swimDriven == true`. The chaos suite revealed
+        /// that without this gate, stale SWIM gossip / QUIC reconnect for a just-killed peer
+        /// drove `(DECOMMISSIONED, SwimHealthy) → revival` within seconds of the SWIM-faulty
+        /// write, looping the FSM through revival storms. Operator-driven decommissions
+        /// (`swimDriven=false`) remain eligible for fast-restart revival within the TTL.
+        private static final long NOW = 1_000_000L;
+        private static final long REFRACTORY_MS = 30_000L;
+
+        @Test void swimDriven_swimHealthy_insideRefractory_isNop() {
+            var decommissionedAt = NOW - (REFRACTORY_MS / 2);  // 15s ago — well inside refractory
+            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt, true);
+
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW)), state);
+        }
+
+        @Test void swimDriven_swimHealthy_atRefractoryBoundary_isNop() {
+            // Boundary: ageMs == refractoryMs is treated as still inside (the rule is
+            // `ageMs < refractoryMs` ⟹ block). Equality stays nop — matches the TTL rule's
+            // inclusive-zombie semantics.
+            var decommissionedAt = NOW - REFRACTORY_MS;
+            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt, true);
+
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
+            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
+        }
+
+        @Test void swimDriven_swimHealthy_pastRefractoryWithinTtl_revives() {
+            // 45s ago: past 30s refractory, still inside 60s TTL → revival admitted.
+            var decommissionedAt = NOW - 45_000L;
+            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt, true);
+
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
+
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
+            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
+        }
+
+        @Test void operatorDriven_swimHealthy_insideRefractoryWindow_revives() {
+            // Operator force-decommission 15s ago: swimDriven=false → refractory does NOT
+            // apply → revival admitted within TTL (preserves 15-delegation fast-restart).
+            var decommissionedAt = NOW - 15_000L;
+            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt, false);
+
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
+
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
+            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
+        }
+    }
+
     @Nested @DisplayName("FailedDrain × *")
     class FromFailedDrain {
         private final FailedDrain state = MembershipFsmState.failedDrain(PEER, T0);
@@ -531,8 +586,9 @@ class ClusterMembershipReducerTest {
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DECOMMISSIONED, T1));
             // NODE_FAILED downstream.
             assertEmitted(outcome, MembershipDomainEvent.NODE_FAILED);
-            // FSM state advanced to Decommissioned — re-fire of the same SWIM signal is now nop.
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, T1));
+            // FSM state advanced to Decommissioned (swimDriven=true → SWIM-Healthy refractory armed)
+            // — re-fire of the same SWIM signal is now nop.
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, T1, true));
             var reapply = reducer.apply(outcome.newState(), new SwimFaulty(PEER, 7L, T2));
             assertThat(reapply.writes()).isEmpty();
             assertThat(reapply.effects()).isEmpty();
@@ -641,7 +697,10 @@ class ClusterMembershipReducerTest {
     }
 
     private static void assertDecommissioned(Outcome outcome, long expectedAt, String expectedReasonOrNull) {
-        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, expectedAt));
+        var expectedSwimDriven = expectedReasonOrNull != null
+                                  && ("swim-faulty".equals(expectedReasonOrNull)
+                                      || "swim-departed".equals(expectedReasonOrNull));
+        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, expectedAt, expectedSwimDriven));
         assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.DECOMMISSIONED, expectedAt));
         if (expectedReasonOrNull != null) {
             assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_FAILED, expectedReasonOrNull);
