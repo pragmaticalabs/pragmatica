@@ -88,7 +88,7 @@ For every `(state, event)` pair, applying the event N times yields the same `(st
 
 ### I4. Totality
 
-The transition table (§5) has **7 states × 6 events = 42 cells**, every one explicitly populated. The implementation has a `default` branch on `(state, event)` that throws `IllegalStateException`. The FSM cannot enter a state where an event is ambiguous.
+The transition table (§5) has **7 states × 8 events = 56 cells**, every one explicitly populated. The implementation has a `default` branch on `(state, event)` that throws `IllegalStateException`. The FSM cannot enter a state where an event is ambiguous.
 
 ### I5. Bootstrap-safe (subsumes cold-boot suppression at FSM level)
 
@@ -126,7 +126,7 @@ The existing enum has six values: `JOINING, ON_DUTY, DRAINING, DECOMMISSIONED, S
 
 ## 4. Events
 
-Six event types. Single sealed interface following the `NodeDeploymentEvents` precedent.
+Eight event types. Single sealed interface following the `NodeDeploymentEvents` precedent.
 
 ```java
 // aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/membership/fsm/
@@ -178,7 +178,7 @@ public sealed interface MembershipFsmEvent {
 
 ## 5. Transition table (exhaustive)
 
-7 states × 6 events = 42 cells. Each cell records `(new state, KV writes, side-effects)`. Cells marked **N/A** are unreachable by construction (e.g., `SlotClaimed` for a peer already in `ON_DUTY` cannot happen because the slot is deleted on claim) — these are still total: implementation throws `IllegalStateException` to surface the bug rather than silently swallow.
+7 states × 8 events = 56 cells. Each cell records `(new state, KV writes, side-effects)`. Cells marked **N/A** are unreachable by construction (e.g., `SlotClaimed` for a peer already in `ON_DUTY` cannot happen because the slot is deleted on claim) — these are still total: implementation throws `IllegalStateException` to surface the bug rather than silently swallow.
 
 Notation:
 - `Put(L=X)` = `KVCommand.Put(NodeLifecycleKey(peer), NodeLifecycleValue.copy(...).withState(X))`
@@ -370,7 +370,7 @@ Ordered layers. Each layer is one PR / commit, has its own regression tests, and
 
 **Adds.**
 - `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/membership/fsm/MembershipFsmState.java` (sealed interface, 7 records).
-- `MembershipFsmEvent.java` (sealed interface, 6 events).
+- `MembershipFsmEvent.java` (sealed interface, 8 events).
 - `MembershipFsm.java` (skeleton: empty event queue, `transition()` returns input state, no KV writes).
 - Unit tests for transition table totality (every cell exercises a single transition).
 
@@ -477,7 +477,7 @@ E.9 is **out of scope for RC1.** Capturing it here so the design is forward-comp
 | I1 (KV-reconstructible) | `MembershipFsm.onLeaderElected` is the only way state appears; no setter on `fsmStates` outside the event queue | `LeaderTakeoverReplayTest`: write 50 random KV snapshots, force leader-election, assert FSM state matches `deriveState` for every peer |
 | I2 (single-writer) | `transition()` is `private`; followers' FSM is a `ReadOnlyMembershipFsm` subclass that throws on `enqueue()` | `FollowerWriteRejectedTest`: assert NPE/IllegalState when a non-leader's FSM is asked to fire a transition |
 | I3 (idempotent) | `commandApplier.apply` deduplicates `Put(K, V)` where current value already equals V | `IdempotentTransitionTest`: feed same event 100 times, assert exactly one KV write commits |
-| I4 (totality) | The `switch` over `(State, Event)` is `default → throw new IllegalStateException(...)` | `TransitionTableTotalityTest`: parametric over all 42 cells, exercises every cell with a randomized prior-state setup |
+| I4 (totality) | The `switch` over `(State, Event)` is `default → throw new IllegalStateException(...)` | `TransitionTableTotalityTest`: parametric over all 56 cells, exercises every cell with a randomized prior-state setup |
 | I5 (bootstrap-safe) | `(UNTRACKED, SwimFaulty) → nop` is explicit in the transition table | `ColdBootIgnoreFaultyTest`: bootstrap a cluster with `expectedClusterSize=5`, fire `SwimFaulty(peer-2)` before any `SwimHealthy`, assert no KV write |
 | I6 (event-driven) | All deadlines route through one-shot timers that enqueue discrete events; no periodic schedulers in the FSM module | `OneShotTimerIsolationTest`: instantiate FSM with a `ManualScheduler` test double; assert that no transitions fire until either an external event is enqueued or a scheduled one-shot timer is advanced to its fire time |
 | I7 (effects = KV) | `MembershipFsmEvent` has no `Consumer` callback field; effects are returned as `List<KVCommand>` | `NoSideChannelTest`: build FSM with `commandApplier` that throws on every call; assert no observable behaviour change in downstream subsystems (they observe nothing because nothing was written) |
