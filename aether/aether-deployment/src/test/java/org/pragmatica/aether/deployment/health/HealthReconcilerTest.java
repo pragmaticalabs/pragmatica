@@ -32,11 +32,23 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 class HealthReconcilerTest {
     private static final NodeId SELF = nodeId("self").unwrap();
     private static final NodeId TARGET = nodeId("target").unwrap();
+
+    /// Default config with periodic phase-evaluation tick disabled. Tests that pair
+    /// `HealthReconcilerConfig.DEFAULT` with `immediateRetryScheduler` would otherwise
+    /// recurse: the immediate scheduler synchronously invokes the tick callback, which
+    /// re-schedules itself, which fires immediately again → StackOverflowError.
+    private static final HealthReconcilerConfig DEFAULT_NO_TICK =
+            HealthReconcilerConfig.healthReconcilerConfig(timeSpan(10).seconds(),
+                                                          timeSpan(5).seconds(),
+                                                          timeSpan(5).seconds(),
+                                                          timeSpan(5).seconds(),
+                                                          timeSpan(0).millis());
 
     private RecordingApplier applier;
     private LifecycleStore lifecycleStore;
@@ -104,7 +116,11 @@ class HealthReconcilerTest {
         @Test
         void reconciler_writesNodeLifecycleKey_onAggregatedHealthyEdge() {
             // Cluster of 1 (single-node), k=1. SELF observation alone reaches quorum.
-            var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 0L, 5_000L, 30_000L);
+            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
+                                                                       timeSpan(0).millis(),
+                                                                       timeSpan(5).seconds(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(0).millis());
             var reconciler = buildReconciler(1, config);
             reconciler.start();
             onDutyCount.set(1);
@@ -146,7 +162,11 @@ class HealthReconcilerTest {
             // threshold to 1 so the leader's single local SWIM observation alone reaches
             // the aggregator threshold (production cross-node observation propagation is
             // a follow-up; per-API the public surface still only feeds SELF observations).
-            var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 30_000L, 5_000L, 30_000L);
+            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(5).seconds(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(0).millis());
             var reconciler = buildReconciler(3, config);
             reconciler.start();
             onDutyCount.set(1);
@@ -250,7 +270,7 @@ class HealthReconcilerTest {
             var flakyApplier = new FlakyInactiveApplier(3);
             var immediateScheduler = immediateRetryScheduler();
             var reconciler = buildReconcilerWith(3,
-                                                 HealthReconcilerConfig.DEFAULT,
+                                                 DEFAULT_NO_TICK,
                                                  flakyApplier,
                                                  immediateScheduler);
             reconciler.start();
@@ -273,7 +293,7 @@ class HealthReconcilerTest {
             var alwaysFailingApplier = new FlakyInactiveApplier(Integer.MAX_VALUE);
             var immediateScheduler = immediateRetryScheduler();
             var reconciler = buildReconcilerWith(3,
-                                                 HealthReconcilerConfig.DEFAULT,
+                                                 DEFAULT_NO_TICK,
                                                  alwaysFailingApplier,
                                                  immediateScheduler);
             reconciler.start();
@@ -292,7 +312,7 @@ class HealthReconcilerTest {
             var nonRetriableApplier = new NonRetriableFailingApplier();
             var immediateScheduler = immediateRetryScheduler();
             var reconciler = buildReconcilerWith(3,
-                                                 HealthReconcilerConfig.DEFAULT,
+                                                 DEFAULT_NO_TICK,
                                                  nonRetriableApplier,
                                                  immediateScheduler);
             reconciler.start();
@@ -346,7 +366,11 @@ class HealthReconcilerTest {
         void handleAggregatedEdge_followerObservation_doesNotProposeWrite() {
             // Follower (leader != self) must NOT propose lifecycle writes from its own
             // SWIM observations, even when the aggregator emits an edge.
-            var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 0L, 5_000L, 30_000L);
+            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
+                                                                       timeSpan(0).millis(),
+                                                                       timeSpan(5).seconds(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(0).millis());
             var reconciler = buildReconciler(1, config);
             reconciler.start();
             // Demote self: another node is leader
@@ -364,7 +388,11 @@ class HealthReconcilerTest {
         void handleAggregatedEdge_leaderObservation_proposesWrite() {
             // Leader (self == leader) MUST propose lifecycle writes when the aggregator
             // emits an edge from its own SWIM observation.
-            var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 0L, 5_000L, 30_000L);
+            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
+                                                                       timeSpan(0).millis(),
+                                                                       timeSpan(5).seconds(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(0).millis());
             var reconciler = buildReconciler(1, config);
             reconciler.start();
             // Self is leader (default in setUp), but assert explicitly
@@ -382,7 +410,11 @@ class HealthReconcilerTest {
         @Test
         void reconciler_phaseTransitionsColdBootToNormal_onStableLeaderAndOnDuty() {
             // Use a tiny stable window so the test completes quickly
-            var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 30_000L, 1L, 30_000L);
+            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(1).millis(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(0).millis());
             var reconciler = buildReconciler(3, config);
             reconciler.start();
             // Reset to COLD_BOOT (start() reads from phaseReader which returns NORMAL by default)
@@ -401,7 +433,11 @@ class HealthReconcilerTest {
 
         @Test
         void reconciler_phaseTransitionsNormalToRecovering_onQuorumLoss() {
-            var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 30_000L, 1L, 30_000L);
+            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(1).millis(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(0).millis());
             var reconciler = buildReconciler(5, config);
             reconciler.start();
             phaseRef.set(ClusterPhase.NORMAL);
@@ -414,7 +450,11 @@ class HealthReconcilerTest {
 
         @Test
         void reconciler_phaseTransitionsRecoveringToNormal_onQuorumRestoredWithStability() throws InterruptedException {
-            var config = HealthReconcilerConfig.healthReconcilerConfig(60_000L, 30_000L, 1L, 1L);
+            var config = HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
+                                                                       timeSpan(30).seconds(),
+                                                                       timeSpan(1).millis(),
+                                                                       timeSpan(1).millis(),
+                                                                       timeSpan(0).millis());
             var reconciler = buildReconciler(5, config);
             reconciler.start();
             phaseRef.set(ClusterPhase.RECOVERING);

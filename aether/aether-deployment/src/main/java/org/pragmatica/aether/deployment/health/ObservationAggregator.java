@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.swim.SwimObservation;
 
 import java.util.Deque;
@@ -21,6 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Cross-node SWIM observation aggregator.
@@ -28,20 +30,25 @@ import static org.pragmatica.lang.Option.some;
 /// Each observation (from `observer` about `target`) is appended to a per-target
 /// sliding window. Once `target` accumulates at least `quorumThreshold(onDutyCount)`
 /// distinct observers agreeing on the same observed lifecycle state within the
-/// `aggregationWindowMs` window, a single `StateChanged` edge is emitted. Below
+/// `aggregationWindow` window, a single `StateChanged` edge is emitted. Below
 /// the threshold the observation is kept pending — subsequent observations
 /// re-evaluate the tally.
 ///
-/// **Threshold semantics (RC1 single-witness → majority migration).** Previously
-/// `quorumThreshold` returned `1`, so the leader's local SWIM observation alone
-/// could advance `NodeLifecycleKey` to `DECOMMISSIONED`. That caused divergence
-/// between consensus state and the SWIM membership view when a kill was observed
-/// inconsistently across peers (the dominant root cause of `No NODE_LEFT/NODE_FAILED
-/// event within 60s` failures in 02-chaos and 12-network). The threshold is now a
-/// classic majority quorum `(onDutyCount / 2) + 1`, derived from the on-duty count
-/// **at observation time** so concurrent scale events do not race the threshold.
+/// **Threshold semantics (RC1, post-revision 2026-05-12).** Quorum threshold
+/// `(onDutyCount / 2) + 1` applies to `ON_DUTY` (peer re-confirmation, usually a
+/// no-op since bootstrap goes through `attemptSelfOnDutyWrite`). `DECOMMISSIONED`
+/// uses **threshold=1** because the aggregator currently receives observations
+/// only from the local SWIM detector (`aggregateEdge` always tags the observer as
+/// `self`); cross-node observation propagation is not yet wired, so demanding a
+/// majority of *distinct observers* would make `DECOMMISSIONED` unreachable —
+/// dead nodes cannot self-promote and the aggregator is the only write path.
+/// Cluster-wide agreement is still guaranteed because the leader's
+/// `DECOMMISSIONED` write is consensus-replicated; the local-SWIM-vs-KV
+/// divergence that motivated the majority migration is resolved at the
+/// consensus boundary, not in the aggregator. True majority quorum returns when
+/// cross-node observation gossip lands (`ClusterFormationConfig` follow-up).
 ///
-/// **Window.** `aggregationWindowMs` bounds how long an unfulfilled observation is
+/// **Window.** `aggregationWindow` bounds how long an unfulfilled observation is
 /// retained as pending — observations older than the window are evicted on the next
 /// `onObservation` call and no longer count toward the tally. The window is sized
 /// to match SWIM `suspectTimeout` (default 10s) so WAN jitter cannot defeat the
@@ -53,7 +60,7 @@ import static org.pragmatica.lang.Option.some;
 /// the lifecycle write when the aggregated edge target IS the current leader; this
 /// is independent of the threshold logic here.
 public final class ObservationAggregator {
-    public static final long DEFAULT_AGGREGATION_WINDOW_MS = 10_000L;
+    public static final TimeSpan DEFAULT_AGGREGATION_WINDOW = timeSpan(10).seconds();
 
     public record StateChanged(NodeId target, NodeLifecycleState newState){}
 
@@ -67,16 +74,16 @@ public final class ObservationAggregator {
 
     private final Set<NodeId> everSeenHealthy = ConcurrentHashMap.newKeySet();
 
-    private ObservationAggregator(long aggregationWindowMs) {
-        this.aggregationWindowMs = Math.max(1L, aggregationWindowMs);
+    private ObservationAggregator(TimeSpan aggregationWindow) {
+        this.aggregationWindowMs = Math.max(1L, aggregationWindow.millis());
     }
 
     public static ObservationAggregator observationAggregator() {
-        return new ObservationAggregator(DEFAULT_AGGREGATION_WINDOW_MS);
+        return new ObservationAggregator(DEFAULT_AGGREGATION_WINDOW);
     }
 
-    public static ObservationAggregator observationAggregator(long aggregationWindowMs) {
-        return new ObservationAggregator(aggregationWindowMs);
+    public static ObservationAggregator observationAggregator(TimeSpan aggregationWindow) {
+        return new ObservationAggregator(aggregationWindow);
     }
 
     public Option<StateChanged> onObservation(NodeId observerNodeId,
@@ -158,11 +165,20 @@ public final class ObservationAggregator {
         var counts = new HashMap<NodeLifecycleState, Set<NodeId>>();
         for (var entry : window) {counts.computeIfAbsent(entry.observed(), _ -> new HashSet<>()).add(entry.observer());}
         return counts.entrySet().stream()
-                              .filter(e -> e.getValue().size() >= threshold)
+                              .filter(e -> e.getValue().size() >= effectiveThreshold(e.getKey(), threshold))
                               .map(Map.Entry::getKey)
                               .findFirst()
                               .map(Option::some)
                               .orElseGet(Option::none);
+    }
+
+    /// Failure-detection writes (`DECOMMISSIONED`) bypass the majority quorum because
+    /// the aggregator only sees local-SWIM observations (one observer per node — see
+    /// class-level "Threshold semantics" docstring). Requiring a majority of distinct
+    /// observers would make `DECOMMISSIONED` unreachable; the leader's
+    /// consensus-replicated write provides cluster-wide agreement instead.
+    private static int effectiveThreshold(NodeLifecycleState state, int configuredThreshold) {
+        return state == NodeLifecycleState.DECOMMISSIONED ? 1 : configuredThreshold;
     }
 
     private Option<StateChanged> emitIfChanged(NodeId target, NodeLifecycleState newState) {

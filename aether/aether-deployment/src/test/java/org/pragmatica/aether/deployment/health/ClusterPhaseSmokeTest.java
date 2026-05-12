@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Smoke-level integration check for the cluster-phase contract — full multi-node cluster
@@ -57,10 +58,11 @@ class ClusterPhaseSmokeTest {
                                                                captured.addAll(cmds);
                                                                return Promise.success(List.<Object>of());
                                                            },
-                                                           HealthReconcilerConfig.healthReconcilerConfig(60_000L,
-                                                                                                         30_000L,
-                                                                                                         1L,
-                                                                                                         30_000L));
+                                                           HealthReconcilerConfig.healthReconcilerConfig(timeSpan(60).seconds(),
+                                                                                                         timeSpan(30).seconds(),
+                                                                                                         timeSpan(1).millis(),
+                                                                                                         timeSpan(30).seconds(),
+                                                                                                         timeSpan(0).millis()));
         reconciler.start();
         // Give the reconciler an observation to trigger the phase tick. Use a target that
         // never reaches HEALTHY quorum so no NodeLifecycleKey is written, only the

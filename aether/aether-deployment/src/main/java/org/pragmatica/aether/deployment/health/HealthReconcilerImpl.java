@@ -100,7 +100,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
         this.config = config;
         this.selfOnDutyAtomFactory = selfOnDutyAtomFactory;
         this.retryScheduler = retryScheduler;
-        this.aggregator = ObservationAggregator.observationAggregator(config.aggregationWindowMs());
+        this.aggregator = ObservationAggregator.observationAggregator(config.aggregationWindow());
     }
 
     static HealthReconcilerImpl healthReconcilerImpl(NodeId self,
@@ -132,7 +132,29 @@ final class HealthReconcilerImpl implements HealthReconciler {
                  self,
                  expectedClusterSize,
                  currentPhase.get());
+        schedulePhaseEvaluationTick();
         return Promise.unitPromise();
+    }
+
+    /// Periodic phase re-evaluation. `evaluatePhaseTransition` is driven event-style
+    /// by `onSwimObservation`, but SWIM only emits on state changes. Once the cluster
+    /// settles to all-Healthy steady state, no observations arrive and the COLD_BOOT →
+    /// NORMAL (or RECOVERING → NORMAL) transition never fires even though lifecycle KV
+    /// already holds quorum ON_DUTY entries. The periodic tick makes the transition
+    /// deterministic: ~`stableWindow + tickInterval` after quorum is reached. Set
+    /// `phaseEvaluationInterval` to 0ms (`timeSpan(0).millis()`) to disable
+    /// (test wiring with `immediateRetryScheduler`).
+    @Contract private void schedulePhaseEvaluationTick() {
+        if (!started.get()) {return;}
+        var interval = config.phaseEvaluationInterval();
+        if (interval.nanos() <= 0L) {return;}
+        retryScheduler.schedule(this::onPhaseEvaluationTick, interval);
+    }
+
+    @Contract private void onPhaseEvaluationTick() {
+        if (!started.get()) {return;}
+        evaluatePhaseTransition(System.currentTimeMillis());
+        schedulePhaseEvaluationTick();
     }
 
     @Override public Promise<Unit> stop() {
@@ -241,8 +263,9 @@ final class HealthReconcilerImpl implements HealthReconciler {
 
     private void handleAggregatedEdge(ObservationAggregator.StateChanged edge, long nowMs) {
         var currentLeader = leaderReader.get();
+        var leaderUnknown = currentLeader.isEmpty();
         var targetIsLeader = currentLeader.map(l -> l.equals(edge.target())).or(false);
-        if (!isLeader() && !targetIsLeader) {
+        if (!isLeader() && !targetIsLeader && !leaderUnknown) {
             log.trace("HealthReconciler: follower {} skips lifecycle write for {} -> {} (leader-gated)",
                       self,
                       edge.target(),
@@ -252,6 +275,10 @@ final class HealthReconcilerImpl implements HealthReconciler {
         if (targetIsLeader && !isLeader()) {log.info("HealthReconciler: faulty target {} is current leader; non-leader {} attempting eviction write (self-leader-eviction escape hatch)",
                                                      edge.target(),
                                                      self);}
+        if (leaderUnknown && !isLeader()) {log.info("HealthReconciler: leader unknown (handoff window); non-leader {} attempting lifecycle write {} -> {} (consensus de-dups)",
+                                                     self,
+                                                     edge.target(),
+                                                     edge.newState());}
         var target = edge.target();
         if (cooldownActive(target, nowMs)) {
             log.debug("HealthReconciler: cooldown active for {} — suppressing aggregated edge {}",
@@ -280,7 +307,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
     }
 
     private boolean cooldownActive(NodeId target, long nowMs) {
-        return Option.option(lastWriteAt.get(target)).map(lastAt -> nowMs - lastAt <config.cooldownMs())
+        return Option.option(lastWriteAt.get(target)).map(lastAt -> nowMs - lastAt <config.cooldown().millis())
                             .or(false);
     }
 
@@ -405,7 +432,7 @@ final class HealthReconcilerImpl implements HealthReconciler {
             stableSinceMs.set(0L);
             return ClusterPhase.COLD_BOOT;
         }
-        return promoteAfterStable(ClusterPhase.NORMAL, ClusterPhase.COLD_BOOT, nowMs, config.stableWindowMs());
+        return promoteAfterStable(ClusterPhase.NORMAL, ClusterPhase.COLD_BOOT, nowMs, config.stableWindow());
     }
 
     private ClusterPhase recoveringTarget(int onDuty, int quorum, long nowMs) {
@@ -413,16 +440,16 @@ final class HealthReconcilerImpl implements HealthReconciler {
             stableSinceMs.set(0L);
             return ClusterPhase.RECOVERING;
         }
-        return promoteAfterStable(ClusterPhase.NORMAL, ClusterPhase.RECOVERING, nowMs, config.recoveryStableWindowMs());
+        return promoteAfterStable(ClusterPhase.NORMAL, ClusterPhase.RECOVERING, nowMs, config.recoveryStableWindow());
     }
 
-    private ClusterPhase promoteAfterStable(ClusterPhase promoted, ClusterPhase fallback, long nowMs, long windowMs) {
+    private ClusterPhase promoteAfterStable(ClusterPhase promoted, ClusterPhase fallback, long nowMs, TimeSpan window) {
         var since = stableSinceMs.get();
         if (since == 0L) {
             stableSinceMs.set(nowMs);
             return fallback;
         }
-        return nowMs - since >= windowMs
+        return nowMs - since >= window.millis()
               ? promoted
               : fallback;
     }
