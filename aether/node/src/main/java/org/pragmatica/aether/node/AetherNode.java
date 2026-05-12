@@ -2270,6 +2270,14 @@ public interface AetherNode extends ManageableNode {
                                                                                                         .map(NodeId::id))));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               scheduledTaskManager::onLeaderChange));
+        // Self-bootstrap second trigger (Bootstrap-correction 2026-05-12; spec §6.2 step 7).
+        // The NodeLifecycle.ACTIVE listener (see bootstrapSelfOnDutyOnActive) covers the race
+        // where subsystem readiness completes AFTER leader election. This LeaderChange route
+        // covers the inverse race — leader election completes AFTER subsystem readiness — by
+        // re-injecting the synthetic SwimHealthy(self) once this node becomes leader. The
+        // reducer's (ON_DUTY, SwimHealthy) → nop rule keeps both triggers idempotent.
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              membershipFsm::onLeaderChange));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,

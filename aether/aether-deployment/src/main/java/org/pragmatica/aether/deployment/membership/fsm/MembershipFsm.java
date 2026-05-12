@@ -32,6 +32,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -261,6 +262,44 @@ public final class MembershipFsm {
             return;
         }
         translate(observation).onPresent(this::processOperatorOrFsmEvent);
+    }
+
+    /// Leader-change entry point (spec §6.2 step 7 — Bootstrap-correction 2026-05-12, second
+    /// trigger). The original NodeLifecycle.ACTIVE listener fires when local subsystems are
+    /// ready, but that can race leader election: if signalReady fires BEFORE this node is
+    /// elected leader, the synthetic `SwimHealthy(self)` is dropped by the leader-write gate
+    /// inside `onSwimObservation`, and no retry path existed. Hooking self-bootstrap into
+    /// `LeaderChange` closes the race in the opposite direction — when leader election
+    /// completes AFTER subsystem readiness, this entry re-injects the synthetic observation.
+    ///
+    /// **Idempotence.** Both triggers (NodeLifecycle ACTIVE and LeaderChange-to-self) route
+    /// through the same `onSwimObservation` path. The reducer cell `(ON_DUTY, SwimHealthy) →
+    /// nop` guarantees the second invocation is a no-op once self is already ON_DUTY — even
+    /// if both triggers fire, the FSM writes self exactly once.
+    ///
+    /// **Non-leader transitions.** When `localNodeIsLeader() == false` (becoming follower, or
+    /// follower-to-follower leader update), nothing is enqueued. The new leader writes self's
+    /// ON_DUTY entry on its side; this node learns it via the `NodeLifecycleKey` KV
+    /// notification path.
+    @Contract public void onLeaderChange(LeaderChange leaderChange) {
+        if (!started.get()) {
+            return;
+        }
+        if (!leaderChange.localNodeIsLeader()) {
+            return;
+        }
+        if (isSelfAlreadyOnDuty()) {
+            log.debug("MembershipFsm: onLeaderChange(self={}) — already ON_DUTY, no synthetic SwimHealthy needed", self.id());
+            return;
+        }
+        log.info("MembershipFsm: onLeaderChange(self={}) — synthesizing SwimHealthy(self) for self-bootstrap (spec §6.2 step 7)",
+                 self.id());
+        onSwimObservation(new HealthyObserved(self, 0L));
+    }
+
+    private boolean isSelfAlreadyOnDuty() {
+        var current = fsmStates.get(self);
+        return current instanceof MembershipFsmState.OnDuty;
     }
 
     private void logSwimDropOnFollower(SwimObservation observation) {

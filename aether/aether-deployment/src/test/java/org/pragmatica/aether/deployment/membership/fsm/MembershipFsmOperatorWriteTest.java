@@ -33,6 +33,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -260,6 +261,51 @@ class MembershipFsmOperatorWriteTest {
             var fsm = startedFsm();
             fsm.onSwimObservation(new HealthyObserved(SELF, 0L));
             assertThat(commandApplier.calls).isEmpty();
+        }
+    }
+
+    @Nested @DisplayName("Self-bootstrap on LeaderChange (Bootstrap-correction 2026-05-12 retry trigger)")
+    class LeaderChangeBootstrapTests {
+        @Test void onLeaderChange_becomesLeader_enqueuesSwimHealthySelf_writesOwnOnDuty() {
+            // Race scenario: subsystem readiness fired BEFORE leader election, so the
+            // NodeLifecycle.ACTIVE listener's synthetic SwimHealthy(self) was dropped by the
+            // leader-write gate. Once leader election fires, MembershipFsm.onLeaderChange
+            // re-injects the synthetic observation; reducer cell (UNTRACKED, SwimHealthy) →
+            // ON_DUTY writes Put(L=ON_DUTY) for self.
+            var fsm = startedFsm();
+            assertThat(fsm.get(SELF).isEmpty()).isTrue();
+            fsm.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), SELF, NodeLifecycleState.ON_DUTY);
+            assertThat(fsm.get(SELF).unwrap()).isInstanceOf(OnDuty.class);
+        }
+
+        @Test void onLeaderChange_becomesLeader_alreadyOnDuty_isIdempotent() {
+            // Belt-and-suspenders: if the NodeLifecycle.ACTIVE listener already wrote self's
+            // ON_DUTY before LeaderChange fires, the second trigger MUST NOT re-write. The
+            // reducer's (ON_DUTY, SwimHealthy) → nop rule provides this, but we additionally
+            // short-circuit in onLeaderChange so no synthetic observation is emitted.
+            var fsm = startedFsm();
+            // Simulate the ACTIVE-trigger path having already written self's ON_DUTY.
+            fsm.onSwimObservation(new HealthyObserved(SELF, 0L));
+            assertThat(commandApplier.calls).hasSize(1);
+            // Now fire the LeaderChange-to-self trigger; no second write must occur.
+            fsm.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+            assertThat(commandApplier.calls).hasSize(1);
+            assertThat(fsm.get(SELF).unwrap()).isInstanceOf(OnDuty.class);
+        }
+
+        @Test void onLeaderChange_followerToFollower_doesNotEnqueue() {
+            // LeaderChange with localNodeIsLeader=false (e.g., leader handoff between two
+            // peers while this node remains a follower) MUST NOT enqueue a synthetic
+            // SwimHealthy(self) — the new leader is responsible for writing this node's
+            // ON_DUTY entry. Non-leader trigger gate is enforced inside onLeaderChange itself
+            // (not via the SWIM leader-write gate), so we set leaderFlag=true to prove the
+            // gate is independent.
+            var fsm = startedFsm();
+            fsm.onLeaderChange(new LeaderChange(Option.some(PEER_A), false));
+            assertThat(commandApplier.calls).isEmpty();
+            assertThat(fsm.get(SELF).isEmpty()).isTrue();
         }
     }
 

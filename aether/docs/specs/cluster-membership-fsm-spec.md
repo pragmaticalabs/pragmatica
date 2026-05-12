@@ -259,15 +259,31 @@ void onLeaderElected(NodeId self) {
 
     // 6. (Reserved — see §6.4 quorum-loss handling.)
 
-    // 7. Self-bootstrap (Bootstrap-correction 2026-05-12). If the new leader has no
-    //    NodeLifecycleKey(self) entry in KV, the leader must write its own ON_DUTY. SWIM
-    //    cannot observe self, so the wiring layer (AetherNode) registers a NodeLifecycle
-    //    state-change listener that, on transition to NodeState.ACTIVE, calls:
-    //        membershipFsm.onSwimObservation(new SwimObservation.HealthyObserved(self, 0L))
-    //    The synthetic observation routes through the same SWIM entry point. On the leader,
-    //    the reducer cell (UNTRACKED, SwimHealthy) → ON_DUTY writes Put(L=ON_DUTY) for self.
-    //    On followers, the leader-write gate inside MembershipFsm drops the synthetic
-    //    observation (single-writer invariant) — the leader writes the follower's own entry.
+    // 7. Self-bootstrap (Bootstrap-correction 2026-05-12; amended 2026-05-12b for the
+    //    leader-election timing race). If the new leader has no NodeLifecycleKey(self)
+    //    entry in KV, the leader must write its own ON_DUTY. SWIM cannot observe self, so
+    //    the wiring layer synthesizes a `SwimHealthy(self)` observation. To make this
+    //    robust against the race between leader election and local subsystem readiness,
+    //    self-bootstrap fires on TWO triggers, both routing through the same
+    //    `onSwimObservation` path:
+    //
+    //    (a) NodeLifecycle.ACTIVE listener — covers the case where leader election
+    //        completed BEFORE local subsystems became ready. AetherNode registers a
+    //        state-change listener:
+    //            membershipFsm.onSwimObservation(new SwimObservation.HealthyObserved(self, 0L))
+    //
+    //    (b) LeaderChange-to-self router entry — covers the inverse race where
+    //        subsystem readiness fired BEFORE this node was elected leader (the original
+    //        ACTIVE-time synthetic SwimHealthy was dropped by the leader-write gate, and
+    //        no retry existed). AetherNode also routes LeaderNotification.LeaderChange to
+    //        `membershipFsm.onLeaderChange(...)`, which (when localNodeIsLeader=true AND
+    //        self is not already ON_DUTY) re-injects the synthetic observation.
+    //
+    //    Idempotence is guaranteed by the reducer cell `(ON_DUTY, SwimHealthy) → nop`:
+    //    regardless of which trigger fires first (or whether both fire), self is written
+    //    exactly once. On followers, the leader-write gate inside MembershipFsm drops the
+    //    synthetic observation (single-writer invariant) — the leader writes the
+    //    follower's own entry.
 }
 
 private MembershipFsmState deriveState(NodeId peer, NodeLifecycleValue v) {
