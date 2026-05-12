@@ -41,10 +41,13 @@ echo ""
 echo "Step 1/5: Bootstrap annotation processors and Maven plugins..."
 mvn_quiet install -DskipTests -Djbct.skip=true -pl jbct,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
-# Step 2: Format and lint all non-jbct modules
+# Step 2: Lint all non-jbct modules
+# Note (2026-05-12): jbct-maven-plugin:format goal is DISABLED — strips `///` markdown
+# javadoc and selected `//` block comments; mangles lambda indentation. See
+# docs/contributors/jbct-formatter-disabled.md. Re-enable conditions are listed there.
 echo ""
-echo "Step 2/5: Format and lint..."
-mvn_lint org.pragmatica-lite:jbct-maven-plugin:format org.pragmatica-lite:jbct-maven-plugin:lint -pl '!jbct'
+echo "Step 2/5: Lint..."
+mvn_lint org.pragmatica-lite:jbct-maven-plugin:lint -pl '!jbct'
 
 # Step 3: Install all main modules (includes examples)
 echo ""
