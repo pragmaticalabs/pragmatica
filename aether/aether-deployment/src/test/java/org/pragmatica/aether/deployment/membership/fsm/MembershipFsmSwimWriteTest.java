@@ -78,8 +78,8 @@ class MembershipFsmSwimWriteTest {
         leaderFlag = new AtomicBoolean(true);
     }
 
-    private MembershipFsm buildFsm(boolean shadowEnabled) {
-        var config = MembershipFsmConfig.defaultMembershipFsmConfig().withShadowEnabled(shadowEnabled);
+    private MembershipFsm buildFsm() {
+        var config = MembershipFsmConfig.defaultMembershipFsmConfig();
         BooleanSupplier isLeader = leaderFlag::get;
         return MembershipFsm.membershipFsm(SELF,
                                             config,
@@ -91,8 +91,8 @@ class MembershipFsmSwimWriteTest {
                                             isLeader);
     }
 
-    private MembershipFsm startedFsm(boolean shadowEnabled) {
-        var fsm = buildFsm(shadowEnabled);
+    private MembershipFsm startedFsm() {
+        var fsm = buildFsm();
         fsm.start().await();
         return fsm;
     }
@@ -105,7 +105,7 @@ class MembershipFsmSwimWriteTest {
             // DECOMMISSIONED). Previously the legacy aggregator + threshold gate + phase
             // suppression caused this transition to never fire — the bug E.5 closes.
             seedOnDuty(PEER_A, T0);
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).hasSize(1);
@@ -121,7 +121,7 @@ class MembershipFsmSwimWriteTest {
             // view — followers learn via KV notifications). Drop is silent (TRACE log).
             seedOnDuty(PEER_A, T0);
             leaderFlag.set(false);
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             var priorState = fsm.get(PEER_A).unwrap();
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).isEmpty();
@@ -131,7 +131,7 @@ class MembershipFsmSwimWriteTest {
         @Test void swimHealthy_joining_nonLeader_noWrite() {
             seedJoining(PEER_A, T0);
             leaderFlag.set(false);
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             var priorState = fsm.get(PEER_A).unwrap();
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
             assertThat(commandApplier.calls).isEmpty();
@@ -141,7 +141,7 @@ class MembershipFsmSwimWriteTest {
         @Test void swimDeparted_onDuty_nonLeader_noWrite() {
             seedOnDuty(PEER_A, T0);
             leaderFlag.set(false);
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             fsm.onSwimObservation(new DepartedObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).isEmpty();
         }
@@ -151,7 +151,7 @@ class MembershipFsmSwimWriteTest {
     class SwimDepartedTests {
         @Test void swimDeparted_onDuty_leader_writesDecommissioned() {
             seedOnDuty(PEER_A, T0);
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             fsm.onSwimObservation(new DepartedObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
@@ -170,7 +170,7 @@ class MembershipFsmSwimWriteTest {
             // exercise the SwimHealthy path.
             var joinedAt = System.currentTimeMillis() - 1_000L;
             seedJoining(PEER_A, joinedAt);
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Joining.class);
             // Clear writes produced during start() (the JOINING peer triggers a JOIN_DEADLINE
             // timer schedule effect but no write) — be defensive in case the future evolves.
@@ -185,7 +185,7 @@ class MembershipFsmSwimWriteTest {
             // Re-confirmation is a nop per spec §5 row OnDuty col SwimHealthy. Event still flows
             // through the leader path (reducer runs, returns empty writes) — no consensus call.
             seedOnDuty(PEER_A, T0);
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
             assertThat(commandApplier.calls).isEmpty();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
@@ -196,13 +196,13 @@ class MembershipFsmSwimWriteTest {
     class UnknownPeerTests {
         @Test void swimFaulty_unknownPeer_noWrite() {
             // I5: SwimFaulty for an UNTRACKED peer is a nop (bootstrap-safe). No KV write.
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).isEmpty();
         }
 
         @Test void swimDeparted_unknownPeer_noWrite() {
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             fsm.onSwimObservation(new DepartedObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).isEmpty();
         }
@@ -214,24 +214,10 @@ class MembershipFsmSwimWriteTest {
             // SuspectObserved is a SWIM-internal transient (§4) — no MembershipFsmEvent emitted,
             // therefore no reducer invocation, therefore no consensus write.
             seedOnDuty(PEER_A, T0);
-            var fsm = startedFsm(true);
+            var fsm = startedFsm();
             fsm.onSwimObservation(new SuspectObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).isEmpty();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
-        }
-    }
-
-    @Nested @DisplayName("Feature flag gating: flag off → legacy path stays authoritative")
-    class FeatureFlagTests {
-        @Test void swimFaulty_flagOff_legacyPathExpected() {
-            // Flag off: shouldProcess() returns false, no replay, no leader check, no reducer
-            // invocation — legacy HealthReconciler.onSwimObservation handles everything.
-            seedOnDuty(PEER_A, T0);
-            var fsm = startedFsm(false);
-            fsm.onSwimObservation(new FaultyObserved(PEER_A, 7L));
-            assertThat(commandApplier.calls).isEmpty();
-            // shadowEnabled=false → no replay, no tracking; snapshot is empty.
-            assertThat(fsm.snapshot()).isEmpty();
         }
     }
 

@@ -121,11 +121,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
                             .flatMap(this::runDrainProtocol);
     }
 
-    /// Drain protocol per RC1 spec §D.5:
-    ///   1. initiate DRAINING via consensus — either the legacy `coordinator.prepareDrain`
-    ///      (flag OFF) or the new `MembershipFsm.enqueueOperatorEvent(OperatorDrain)` path
-    ///      (flag ON, spec §9 E.4). The FSM also fires `InvokeDrain` so the coordinator's
-    ///      drain protocol keeps running unchanged.
+    /// Drain protocol per RC1 spec §D.5 (post-E.8):
+    ///   1. enqueue `OperatorDrain` into `MembershipFsm` — the FSM writes DRAINING via
+    ///      consensus and fires `InvokeDrain` so the coordinator's drain protocol runs.
     ///   2. awaitDrainAck → wait for inflight=0 + lifecycle convergence within budget
     ///   3a. on success → markDrainComplete (writes DECOMMISSIONED) → 200
     ///   3b. on timeout → requestFailedDrain (writes FAILED_DRAIN) → 503
@@ -138,20 +136,14 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                      .recover(cause -> handleDrainFailure(nodeId, cause));
     }
 
-    /// Step 1 of drain: write DRAINING via consensus. Routes through `MembershipFsm` when
-    /// `aether.membership.fsm.shadowEnabled=true` (spec §9 E.4); otherwise falls back to the
-    /// legacy `DrainCoordinator.prepareDrain` path (which internally calls
-    /// `HealthReconciler.requestDrain`).
+    /// Step 1 of drain: write DRAINING via consensus through `MembershipFsm` (spec §9 E.4).
+    /// The FSM emits `InvokeDrain` so the coordinator's drain protocol runs.
     private Promise<Unit> initiateDrain(NodeId nodeId) {
-        var fsm = nodeSupplier.get().membershipFsm();
-        if (fsm.shadowEnabled()) {
-            fsm.enqueueOperatorEvent(new OperatorDrain(nodeId,
-                                                         DrainReason.OPERATOR_DRAIN,
-                                                         System.currentTimeMillis()));
-            return Promise.unitPromise();
-        }
-        return nodeSupplier.get().drainCoordinator()
-                                .prepareDrain(nodeId, DrainReason.OPERATOR_DRAIN);
+        nodeSupplier.get().membershipFsm()
+                          .enqueueOperatorEvent(new OperatorDrain(nodeId,
+                                                                    DrainReason.OPERATOR_DRAIN,
+                                                                    System.currentTimeMillis()));
+        return Promise.unitPromise();
     }
 
     private TimeSpan drainTimeout() {
@@ -236,11 +228,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                                                                                                                                               .name(),
                                                                                                                                                                  "Cannot activate from " + current.state() + " (must be DRAINING or DECOMMISSIONED)"));}
         return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(this::routeActivateThroughHealthReconciler)
+                            .flatMap(this::routeActivateThroughLifecycleWriter)
                             .map(_ -> activateSuccessResult(nodeIdStr));
     }
 
-    private Promise<Unit> routeActivateThroughHealthReconciler(NodeId nodeId) {
+    private Promise<Unit> routeActivateThroughLifecycleWriter(NodeId nodeId) {
         return nodeSupplier.get().lifecycleWriter()
                                .requestActivate(nodeId);
     }
@@ -261,17 +253,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// Decommission entry point. Routes through `MembershipFsm` with `OperatorDecommission(force=true)`
-    /// when the E.4 feature flag is on (spec §9). The `force` flag is `true` because the
-    /// `/api/node/shutdown` route bypasses the drain protocol — this matches the legacy
-    /// `LifecycleWriter.requestDecommission` semantics (direct DECOMMISSIONED write).
+    /// (spec §9 E.4). The `force` flag is `true` because the `/api/node/shutdown` route bypasses
+    /// the drain protocol — this matches direct-DECOMMISSIONED-write semantics.
     private Promise<Unit> initiateDecommission(NodeId nodeId) {
-        var fsm = nodeSupplier.get().membershipFsm();
-        if (fsm.shadowEnabled()) {
-            fsm.enqueueOperatorEvent(new OperatorDecommission(nodeId, true, System.currentTimeMillis()));
-            return Promise.unitPromise();
-        }
-        return nodeSupplier.get().lifecycleWriter()
-                                .requestDecommission(nodeId);
+        nodeSupplier.get().membershipFsm()
+                          .enqueueOperatorEvent(new OperatorDecommission(nodeId, true, System.currentTimeMillis()));
+        return Promise.unitPromise();
     }
 
     private TransitionResult shutdownSuccessResult(String nodeIdStr) {

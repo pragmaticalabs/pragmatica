@@ -167,7 +167,7 @@ import java.util.function.IntSupplier;
                                                     "transition",
                                                     transition,
                                                     "requestedBy",
-                                                    "HealthReconciler")));
+                                                    "MembershipFsm")));
     }
 
     public void onLeaderChange(LeaderNotification.LeaderChange event) {

@@ -64,24 +64,11 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-/// Per-peer cluster-membership FSM (spec §9 migration plan).
-///
-/// **E.3 mode (shadow-only)** — when `MembershipFsmConfig.shadowEnabled` is `false`, the FSM
-/// does nothing on `start()`. When `true` and no write dependencies are provided, the FSM
-/// runs read-only: it reconstructs per-peer state from KV, observes SWIM/KV events, logs
-/// reducer outcomes, but proposes no writes (legacy `HealthReconciler` keeps writing).
-///
-/// **E.4 mode (operator-driven writes)** — when `shadowEnabled` is `true` AND the FSM is
-/// constructed with a `commandApplier`, `drainCoordinator`, `scheduler`, and `isLeader`
-/// supplier, the FSM becomes the writer for `OperatorDrain` / `OperatorDecommission`
-/// (spec §9 E.4). SWIM-driven transitions still flow through `HealthReconciler` (E.5
-/// supersedes that). The narrow scope here is deliberate: operator commands are the only
-/// path migrated in E.4.
+/// Per-peer cluster-membership FSM (spec §9 migration plan; post-E.8 always-active mode).
 ///
 /// **Single-writer invariant.** Only the leader's FSM writes. Non-leader instances treat
-/// operator events as no-ops (logged at WARN). Post-E.7 (spec §9) the legacy
-/// `HealthReconciler.handleAggregatedEdge` leader-gate is gone; the leader gate is now
-/// enforced exclusively inside the FSM.
+/// operator events as no-ops (logged at WARN). The leader gate is enforced exclusively
+/// inside the FSM.
 ///
 /// **Reconstructibility (I1).** Local per-peer state is derived from KV. The FSM only
 /// mutates `fsmStates` AFTER `commandApplier.apply(writes)` succeeds. On consensus
@@ -97,8 +84,7 @@ import static org.pragmatica.lang.Option.some;
 /// — `JOINING` → a fresh one-shot `JOIN_DEADLINE` timer is scheduled with the remaining
 ///   budget; if elapsed, `JoinDeadlineExpired(peer, nowMs)` is enqueued immediately.
 /// Both are leader-gated: followers MUST NOT resume in-flight protocols (single-writer
-/// invariant). The legacy `HealthReconciler` path continues to ignore this overlap because
-/// `enqueueOperatorEvent` itself is a no-op when the feature flag is off.
+/// invariant).
 ///
 /// **Concurrency.** A single `ReentrantLock` (`fsmLock`) serializes all FSM event
 /// delivery — SWIM observations, KV notifications, operator events. Public read-only
@@ -161,8 +147,8 @@ public final class MembershipFsm {
         this.isLeader = isLeader;
     }
 
-    /// E.3 read-only factory. Operator writes are not enabled (`enqueueOperatorEvent` runs
-    /// the reducer and logs only — preserves shadow-only behaviour).
+    /// Read-only factory (no-op writes). Useful for tests that only exercise the reducer +
+    /// snapshot derivation without consensus dependencies.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -177,9 +163,9 @@ public final class MembershipFsm {
                              NEVER_LEADER);
     }
 
-    /// E.4 write-capable factory. When the feature flag is on AND `isLeader.getAsBoolean()`
-    /// returns `true`, operator events route through the FSM: proposed via `commandApplier`,
-    /// drain effects dispatched to `drainCoordinator`, timers scheduled via `scheduler`.
+    /// Write-capable factory. When `isLeader.getAsBoolean()` returns `true`, operator events
+    /// route through the FSM: proposed via `commandApplier`, drain effects dispatched to
+    /// `drainCoordinator`, timers scheduled via `scheduler`.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -218,22 +204,13 @@ public final class MembershipFsm {
                                  NEVER_LEADER);
     }
 
-    public boolean shadowEnabled() {
-        return config.shadowEnabled();
-    }
-
     public Promise<Unit> start() {
         if (!started.compareAndSet(false, true)) {
             return Promise.unitPromise();
         }
-        if (!config.shadowEnabled()) {
-            log.debug("MembershipFsm shadow disabled for {} — no KV replay, no notifications wired",
-                      self.id());
-            return Promise.unitPromise();
-        }
         replayFromKv();
         resumeInFlightProtocolsIfLeader();
-        log.info("MembershipFsm shadow started for {} (peers reconstructed: {})",
+        log.info("MembershipFsm started for {} (peers reconstructed: {})",
                  self.id(),
                  fsmStates.size());
         return Promise.unitPromise();
@@ -245,7 +222,7 @@ public final class MembershipFsm {
         }
         cancelAllTimers();
         clearState();
-        log.info("MembershipFsm shadow stopped for {}", self.id());
+        log.info("MembershipFsm stopped for {}", self.id());
         return Promise.unitPromise();
     }
 
@@ -263,31 +240,27 @@ public final class MembershipFsm {
     /// SWIM observation entry point. Translates the observation into a typed FSM event and
     /// routes it through the leader-writing dispatcher (spec §9 E.5).
     ///
-    /// **Leader gate (spec §6.1).** When the feature flag is on AND `isLeader.getAsBoolean()`
-    /// returns `false`, the observation is dropped (TRACE log) — followers MUST NOT advance
-    /// their FSM state from SWIM observations; they learn state via `NodeLifecycleKey` KV
-    /// notifications only. This closes the F1 follower-state-drift bug from the spec audit:
-    /// each node has its own SWIM view, so allowing followers to write to `fsmStates` from
-    /// SWIM would diverge them from the leader's authoritative view.
+    /// **Leader gate (spec §6.1).** When `isLeader.getAsBoolean()` returns `false`, the
+    /// observation is dropped (TRACE log) — followers MUST NOT advance their FSM state from
+    /// SWIM observations; they learn state via `NodeLifecycleKey` KV notifications only.
+    /// This closes the F1 follower-state-drift bug from the spec audit: each node has its own
+    /// SWIM view, so allowing followers to write to `fsmStates` from SWIM would diverge them
+    /// from the leader's authoritative view.
     ///
-    /// **Leader write path.** When flag on AND leader: the translated event flows through
-    /// the same `processOperatorOrShadowEvent` dispatcher that operator commands use. The
-    /// reducer's `(ON_DUTY, SwimFaulty) → DECOMMISSIONED` transition fires here — this is
-    /// the structural fix that closes the smoking-gun bug (previously the threshold gate +
-    /// phase suppression in the legacy path prevented this write from ever firing).
-    ///
-    /// **Coexistence with legacy path.** `HealthReconciler.onSwimObservation → aggregator →
-    /// lifecycle write` continues to run in parallel during E.5. Idempotent `Put(L=X)` writes
-    /// mean duplicate writes are harmless at consensus. The legacy path retires in E.7.
+    /// **Leader write path.** When leader: the translated event flows through the same
+    /// `processOperatorOrFsmEvent` dispatcher that operator commands use. The reducer's
+    /// `(ON_DUTY, SwimFaulty) → DECOMMISSIONED` transition fires here — this is the structural
+    /// fix that closes the smoking-gun bug (previously the threshold gate + phase suppression
+    /// in the legacy path prevented this write from ever firing).
     @Contract public void onSwimObservation(SwimObservation observation) {
-        if (!shouldProcess()) {
+        if (!started.get()) {
             return;
         }
         if (!isLeader.getAsBoolean()) {
             logSwimDropOnFollower(observation);
             return;
         }
-        translate(observation).onPresent(this::processOperatorOrShadowEvent);
+        translate(observation).onPresent(this::processOperatorOrFsmEvent);
     }
 
     private void logSwimDropOnFollower(SwimObservation observation) {
@@ -298,15 +271,14 @@ public final class MembershipFsm {
         }
     }
 
-    /// Event entry point for operator commands and leader-issued protocol feedback. In E.4,
-    /// when the FSM is leader-gated and write-capable, `OperatorDrain` /
-    /// `OperatorDecommission` / `DrainOutcome` / `JoinDeadlineExpired` events are applied
-    /// (writes proposed via `commandApplier`, drain coordinator invoked, timers scheduled).
-    /// When the flag is off, this is a logged no-op — the legacy `HealthReconciler.requestDrain`
-    /// / `requestDecommission` callers remain authoritative.
+    /// Event entry point for operator commands and leader-issued protocol feedback.
+    /// `OperatorDrain` / `OperatorDecommission` / `DrainOutcome` / `JoinDeadlineExpired`
+    /// events are applied on the leader (writes proposed via `commandApplier`, drain
+    /// coordinator invoked, timers scheduled). On followers, leader-writing events are
+    /// dropped with a WARN log (single-writer invariant).
     @Contract public void enqueueOperatorEvent(MembershipFsmEvent event) {
-        if (!shouldProcess()) {
-            log.debug("MembershipFsm: operator event {} for {} ignored (shadow disabled — legacy path active)",
+        if (!started.get()) {
+            log.debug("MembershipFsm: operator event {} for {} ignored (not started)",
                       event.getClass().getSimpleName(),
                       event.peer().id());
             return;
@@ -320,14 +292,14 @@ public final class MembershipFsm {
                     self.id());
             return;
         }
-        processOperatorOrShadowEvent(event);
+        processOperatorOrFsmEvent(event);
     }
 
     /// KV-notification handler for `NodeLifecycleKey` puts. Updates the shadow state from the
     /// externally-written lifecycle value WITHOUT emitting any reducer effects (the value
     /// already reflects the production write — the FSM derives its state, it doesn't re-act).
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
-        if (!shouldProcess()) {
+        if (!started.get()) {
             return;
         }
         applyExternalLifecyclePut(put.cause().key().nodeId(), put.cause().value());
@@ -337,7 +309,7 @@ public final class MembershipFsm {
     /// (this fires when `DecommissionedAtomGc` cleans up a fully-decommissioned atom). If the
     /// peer still has a provisioning slot, the shadow falls back to `PROVISIONING` instead.
     @Contract public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> remove) {
-        if (!shouldProcess()) {
+        if (!started.get()) {
             return;
         }
         applyExternalLifecycleRemove(remove.cause().key().nodeId());
@@ -347,7 +319,7 @@ public final class MembershipFsm {
     /// when the slot is newly claimed (`assignedNodeId.isPresent()`), feeds a `SlotClaimed`
     /// event into the reducer.
     @Contract public void onProvisioningSlotPut(ValuePut<ProvisioningSlotKey, ProvisioningSlotValue> put) {
-        if (!shouldProcess()) {
+        if (!started.get()) {
             return;
         }
         applySlotPut(put.cause().key().slotId(), put.cause().value());
@@ -357,14 +329,10 @@ public final class MembershipFsm {
     /// mapping. Does not feed the reducer (the lifecycle transition `JOINING → ON_DUTY` /
     /// `JOINING → DECOMMISSIONED` already removed the slot association).
     @Contract public void onProvisioningSlotRemove(ValueRemove<ProvisioningSlotKey, ProvisioningSlotValue> remove) {
-        if (!shouldProcess()) {
+        if (!started.get()) {
             return;
         }
         applySlotRemove(remove.cause().key().slotId());
-    }
-
-    private boolean shouldProcess() {
-        return started.get() && config.shadowEnabled();
     }
 
     /// Events that may produce consensus writes via the FSM reducer and therefore require
@@ -425,7 +393,7 @@ public final class MembershipFsm {
 
     private void applyLifecycleRemoveWithoutSlot(NodeId peer) {
         var previous = fsmStates.remove(peer);
-        log.info("Shadow FSM: lifecycle-removed peer={} previous={} → UNTRACKED",
+        log.info("MembershipFsm: lifecycle-removed peer={} previous={} → UNTRACKED",
                  peer.id(),
                  describe(previous));
     }
@@ -433,7 +401,7 @@ public final class MembershipFsm {
     private void applyLifecycleRemoveWithSlot(NodeId peer, String slotId) {
         var derived = MembershipFsmState.provisioning(peer, slotId);
         var previous = fsmStates.put(peer, derived);
-        log.info("Shadow FSM: lifecycle-removed peer={} retained slot={}, prior={} → PROVISIONING",
+        log.info("MembershipFsm: lifecycle-removed peer={} retained slot={}, prior={} → PROVISIONING",
                  peer.id(),
                  slotId,
                  describe(previous));
@@ -446,7 +414,7 @@ public final class MembershipFsm {
 
     private void applySlotPutUnassigned(String slotId) {
         slotIdToPeer.remove(slotId);
-        log.debug("Shadow FSM: slot-put slotId={} unassigned (PROVISIONING placeholder; spec §4.2)",
+        log.debug("MembershipFsm: slot-put slotId={} unassigned (PROVISIONING placeholder; spec §4.2)",
                   slotId);
     }
 
@@ -455,7 +423,7 @@ public final class MembershipFsm {
         fsmLock.lock();
         try {
             ensureProvisioningTracked(peer, slotId);
-            processShadowEventLocked(new SlotClaimed(peer, slotId, value.spawnedAtMs()));
+            processFsmEventLocked(new SlotClaimed(peer, slotId, value.spawnedAtMs()));
         } finally {
             fsmLock.unlock();
         }
@@ -467,34 +435,34 @@ public final class MembershipFsm {
 
     private void applySlotRemove(String slotId) {
         var removedPeer = slotIdToPeer.remove(slotId);
-        log.debug("Shadow FSM: slot-removed slotId={} peer={}",
+        log.debug("MembershipFsm: slot-removed slotId={} peer={}",
                   slotId,
                   removedPeer == null ? "<unassigned>" : removedPeer.id());
     }
 
-    private void processShadowEvent(MembershipFsmEvent event) {
+    private void processFsmEvent(MembershipFsmEvent event) {
         fsmLock.lock();
         try {
-            processShadowEventLocked(event);
+            processFsmEventLocked(event);
         } finally {
             fsmLock.unlock();
         }
     }
 
-    private void processShadowEventLocked(MembershipFsmEvent event) {
+    private void processFsmEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
         var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
         var outcome = reducer.apply(current, event);
         fsmStates.put(peer, outcome.newState());
-        logShadowOutcome(event, current, outcome);
+        logFsmOutcome(event, current, outcome);
     }
 
     /// Operator-event dispatcher. Splits writing-event handling from shadow-only SWIM
     /// observations so the writing path can short-circuit to a write-and-mutate flow while
     /// SWIM events stay shadow-only in E.4.
-    private void processOperatorOrShadowEvent(MembershipFsmEvent event) {
+    private void processOperatorOrFsmEvent(MembershipFsmEvent event) {
         if (!isLeaderWritingEvent(event)) {
-            processShadowEvent(event);
+            processFsmEvent(event);
             return;
         }
         fsmLock.lock();
@@ -685,7 +653,7 @@ public final class MembershipFsm {
             slotSnapshotReader.forEachSlot(this::indexSlotForReplay);
             lifecycleSnapshotReader.forEachLifecycle(this::reconstructPeerFromLifecycle);
             slotSnapshotReader.forEachSlot(this::ensureSlotPeerCovered);
-            log.info("Shadow FSM replay: lifecycle peers={}, slot peers={}",
+            log.info("MembershipFsm replay: lifecycle peers={}, slot peers={}",
                      fsmStates.size(),
                      slotIdToPeer.size());
         } finally {
@@ -799,10 +767,10 @@ public final class MembershipFsm {
         };
     }
 
-    private void logShadowOutcome(MembershipFsmEvent event,
+    private void logFsmOutcome(MembershipFsmEvent event,
                                   MembershipFsmState priorState,
                                   Outcome outcome) {
-        log.info("Shadow FSM: event={} peer={} priorState={} → newState={} would-write={} would-effect={}",
+        log.info("MembershipFsm: event={} peer={} priorState={} → newState={} would-write={} would-effect={}",
                  event.getClass().getSimpleName(),
                  event.peer().id(),
                  describe(priorState),
@@ -829,7 +797,7 @@ public final class MembershipFsm {
                                             MembershipFsmState previous,
                                             MembershipFsmState newState,
                                             NodeLifecycleState lifecycleState) {
-        log.info("Shadow FSM: external KV write peer={} priorState={} newState={} lifecycle={}",
+        log.info("MembershipFsm: external KV write peer={} priorState={} newState={} lifecycle={}",
                  peer.id(),
                  describe(previous),
                  describe(newState),
@@ -876,8 +844,7 @@ public final class MembershipFsm {
             MembershipFsm::noOpCommandApply;
 
     private static Promise<List<Object>> noOpCommandApply(List<KVCommand<AetherKey>> commands) {
-        log.debug("MembershipFsm: no-op command applier (E.3 read-only mode) — {} write(s) discarded",
-                  commands.size());
+        log.debug("MembershipFsm: no-op command applier — {} write(s) discarded", commands.size());
         return Promise.success(List.of());
     }
 

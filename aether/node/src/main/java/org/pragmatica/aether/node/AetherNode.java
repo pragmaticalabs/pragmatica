@@ -30,9 +30,6 @@ import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.node.lifecycle.NodeStateChanged;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
-import org.pragmatica.aether.deployment.health.ClusterPhaseChanged;
-import org.pragmatica.aether.deployment.health.HealthReconciler;
-import org.pragmatica.aether.deployment.health.HealthReconcilerConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
@@ -879,12 +876,9 @@ public interface AetherNode extends ManageableNode {
             return counter.get();
         };
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager().leader();
-        // E.6 (spec §7): ClusterPhase derived view. When `aether.membership.fsm.shadowEnabled=true`
-        // this view becomes the source of truth for cluster phase, replacing the legacy
-        // `ClusterPhaseKey` KV atom (still written by HealthReconciler with the flag off; the
-        // KV value is consulted as a cache hint to track the ever-reached-NORMAL bit across
-        // leader takeovers — see ClusterPhaseView javadoc).
-        var membershipFsmShadowEnabled = Boolean.getBoolean("aether.membership.fsm.shadowEnabled");
+        // E.6 / E.8 (spec §7): ClusterPhase derived view is the single source of truth for
+        // cluster phase. The KV value is consulted as a cache hint to track the
+        // ever-reached-NORMAL bit across leader takeovers — see ClusterPhaseView javadoc.
         ClusterPhaseView.LifecycleSnapshotReader phaseLifecycleSnapshot = () -> {
             var collected = new java.util.LinkedHashMap<NodeId, AetherValue.NodeLifecycleValue>();
             kvStore.forEach(AetherKey.NodeLifecycleKey.class,
@@ -893,72 +887,30 @@ public interface AetherNode extends ManageableNode {
             return collected;
         };
         var clusterPhaseView = ClusterPhaseView.clusterPhaseView(config.topology().coreNodes().size(),
-                                                                  HealthReconcilerConfig.DEFAULT.stableWindow(),
-                                                                  HealthReconcilerConfig.DEFAULT.recoveryStableWindow(),
+                                                                  org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
+                                                                  org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
                                                                   phaseLifecycleSnapshot,
                                                                   clusterPhaseReader,
                                                                   () -> healthLeaderSupplier.get().isPresent());
-        Supplier<AetherValue.ClusterPhase> derivedPhaseSupplier = () -> clusterPhaseView.compute(System.currentTimeMillis());
-        // E.6 (spec §7.2): `phaseWritesEnabled` gates the legacy KV write path. When the
-        // FSM shadow flag is on, ClusterPhaseView is authoritative; HealthReconciler no
-        // longer proposes ClusterPhaseKey writes to consensus. E.7 deleted the SWIM-driven
-        // lifecycle path and the self-promotion machinery; SWIM-driven writes now flow
-        // exclusively through `MembershipFsm.onSwimObservation`. Self ON_DUTY is now driven
-        // by the leader-initiated `(JOINING, SwimHealthy) → ON_DUTY` FSM transition (E.5).
-        java.util.function.BooleanSupplier phaseWritesEnabled = () -> !membershipFsmShadowEnabled;
-        var healthReconciler = HealthReconciler.healthReconciler(config.self(),
-                                                                 config.topology().coreNodes()
-                                                                                .size(),
-                                                                 lifecycleReader,
-                                                                 clusterPhaseReader,
-                                                                 healthLeaderSupplier,
-                                                                 onDutyCountSupplier,
-                                                                 clusterCommandApplier,
-                                                                 HealthReconcilerConfig.DEFAULT,
-                                                                 HealthReconciler.defaultRetryScheduler(),
-                                                                 phaseWritesEnabled);
-        healthReconciler.start();
-        LifecycleWriter ctmLifecycleWriter = new LifecycleWriter() {
-            @Override public Promise<Unit> requestDrain(NodeId target) {
-                return healthReconciler.requestDrain(target);
-            }
-
-            @Override public Promise<Unit> requestDecommission(NodeId target) {
-                return healthReconciler.requestDecommission(target);
-            }
-
-            @Override public Promise<Unit> requestActivate(NodeId target) {
-                return healthReconciler.requestActivate(target);
-            }
-
-            @Override public Promise<Unit> requestFailedDrain(NodeId target) {
-                return healthReconciler.requestFailedDrain(target);
-            }
-        };
+        Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = () -> clusterPhaseView.compute(System.currentTimeMillis());
+        // Direct lifecycle writes for transitions not owned by the FSM operator-event path
+        // (requestActivate, requestFailedDrain) and for CTM-initiated drain/decommission
+        // (which the FSM does not yet own — those still bypass FSM-driven InvokeDrain).
+        var ctmLifecycleWriter = LifecycleWriter.directLifecycleWriter(lifecycleReader::apply, clusterCommandApplier);
         org.pragmatica.lang.Functions.Fn1<Promise<Integer>, NodeId> inFlightProbe = targetNodeId ->
                 targetNodeId.equals(config.self().id())
                         ? Promise.success(inFlightTrackerForDrain.count())
                         : Promise.success(0);
         var drainCoordinator = org.pragmatica.aether.deployment.drain.ConsensusDrainCoordinator
                 .consensusDrainCoordinator(ctmLifecycleWriter, lifecycleReader::apply, inFlightProbe);
-        // MembershipFsm wiring (spec §9 E.3 shadow + E.4 operator-write). Constructed AFTER
+        // MembershipFsm wiring (spec §9 — post-E.8 always active). Constructed AFTER
         // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
         var membershipFsm = buildMembershipFsm(config.self(),
                                                 kvStore,
                                                 clusterCommandApplier,
                                                 drainCoordinator,
-                                                isLeaderSupplier,
-                                                membershipFsmShadowEnabled);
+                                                isLeaderSupplier);
         membershipFsm.start();
-        // E.6 (spec §7.2): unified phase supplier. When shadow is enabled the derived
-        // view is authoritative; otherwise read the KV cache directly. The fall-back path
-        // is unchanged from before E.6 (zero behaviour change with the flag off). This is
-        // the single supplier exposed via `ManageableNode.clusterPhaseSupplier()` so all
-        // dashboard/CLI consumers and the CTM auto-heal gate see the same value.
-        Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = membershipFsmShadowEnabled
-                                                                    ? derivedPhaseSupplier
-                                                                    : () -> clusterPhaseReader.get().or(AetherValue.ClusterPhase.COLD_BOOT);
-        Supplier<AetherValue.ClusterPhase> ctmPhaseSupplier = effectivePhaseSupplier;
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -970,8 +922,12 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterCommandApplier,
                                                                                    drainCoordinator,
                                                                                    ctmLifecycleWriter,
-                                                                                   ctmPhaseSupplier);
-        healthReconciler.addPhaseListener(event -> dispatchPhaseChangeToCtm(clusterTopologyManager, event));
+                                                                                   effectivePhaseSupplier);
+        // Post-E.8 phase-change publisher. ClusterPhaseView computes the phase on each call;
+        // CTM needs the edge-triggered `onClusterPhaseChanged` callback to reset the
+        // provisioning circuit + stability marker on COLD_BOOT → NORMAL. Poll the derived
+        // view periodically and dispatch on change.
+        schedulePhaseChangeWatcher(effectivePhaseSupplier, clusterTopologyManager);
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
@@ -1220,15 +1176,10 @@ public interface AetherNode extends ManageableNode {
         // FAULTY edges always emit — the `RECOVERING` branch is the critical fix
         // for compose-restart: peers were Healthy in the prior NORMAL period and a
         // post-restart kill must produce `FaultyObserved` (drives DECOMMISSIONED
-        // write + NODE_LEFT / NODE_FAILED downstream event). Lambda captures
-        // `healthReconciler` by ref; the reconciler is `start()`-ed above so the
-        // supplier is safe to consult by the time SWIM probes any peer.
-        // E.6 (spec §7.2): SWIM phase-suppression gate. With the FSM shadow flag on, route
-        // through `ClusterPhaseView` so the gate observes the same derivation the rest of
-        // the system uses; otherwise keep the legacy `healthReconciler.phase()` read.
-        BooleanSupplier swimIsBootingSupplier = membershipFsmShadowEnabled
-                                                ? () -> effectivePhaseSupplier.get() == AetherValue.ClusterPhase.COLD_BOOT
-                                                : () -> healthReconciler.phase() == AetherValue.ClusterPhase.COLD_BOOT;
+        // write + NODE_LEFT / NODE_FAILED downstream event).
+        // E.6 / E.8 (spec §7.2): SWIM phase-suppression gate routes through `ClusterPhaseView`
+        // (the single source of truth post-E.8).
+        BooleanSupplier swimIsBootingSupplier = () -> effectivePhaseSupplier.get() == AetherValue.ClusterPhase.COLD_BOOT;
         // Leader-faulty evictor (2026-05-09): bridges SWIM-FAULTY → QUIC disconnect when
         // the FAULTY peer IS the current cluster leader. Breaks the consensus.apply
         // broadcast stall on cloud Container kill-leader (post-Step-3 architecture
@@ -1256,7 +1207,6 @@ public interface AetherNode extends ManageableNode {
                                                                                    swimHealthDetector,
                                                                                    clusterNode.network(),
                                                                                    rotatingEncryptor)));
-        swimHealthDetector.addObservationListener(healthReconciler::onSwimObservation);
         swimHealthDetector.addObservationListener(membershipFsm::onSwimObservation);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
@@ -1398,9 +1348,6 @@ public interface AetherNode extends ManageableNode {
                                                         _ -> generationSnapshotPublisher.markDirty())
                                                  .onRemove(AetherKey.DhtPartitionOwnershipKey.class,
                                                            _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.ClusterPhaseKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterPhaseKey, AetherValue.ClusterPhaseValue> notification) -> notifyHealthReconcilerOfPhase(notification,
-                                                                                                                                                                                               healthReconciler))
                                                  .build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
         Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = snapshotSupplier;
@@ -1652,32 +1599,18 @@ public interface AetherNode extends ManageableNode {
                                                 });
     }
 
-    @Contract private static void notifyHealthReconcilerOfPhase(KVStoreNotification.ValuePut<AetherKey.ClusterPhaseKey, AetherValue.ClusterPhaseValue> notification,
-                                                                HealthReconciler reconciler) {
-        if (notification.cause().value() instanceof AetherValue.ClusterPhaseValue value) {reconciler.onClusterPhasePut(value);}
-    }
-
-    @Contract private static void dispatchPhaseChangeToCtm(ClusterTopologyManager ctm, ClusterPhaseChanged event) {
-        if (event.previous() == event.current()) {return;}
-        ctm.onClusterPhaseChanged(event.current());
-    }
-
-
-    /// Build the membership FSM (spec §9 E.3 shadow + E.4 operator-write). Activation is gated
-    /// by the `aether.membership.fsm.shadowEnabled` system property; default `false` → no-op
-    /// (zero behaviour change). When `true`:
-    /// - the shadow reads `NodeLifecycleKey` + `ProvisioningSlotKey` on `start()` to
-    ///   reconstruct per-peer state (E.3);
-    /// - operator-initiated drain/decommission events route through the FSM, propose KV
-    ///   writes via the consensus `commandApplier`, and invoke `drainCoordinator` for the
-    ///   drain protocol (E.4). Writes are leader-gated via `isLeaderSupplier`.
+    /// Build the membership FSM (spec §9 — post-E.8 always active). The FSM:
+    /// - reads `NodeLifecycleKey` + `ProvisioningSlotKey` on `start()` to reconstruct
+    ///   per-peer state from KV;
+    /// - routes operator-initiated drain/decommission events to consensus via
+    ///   `commandApplier` and invokes `drainCoordinator` for the drain protocol;
+    /// - routes SWIM observations through the leader-gated reducer (`isLeaderSupplier`).
     private static MembershipFsm buildMembershipFsm(NodeId self,
                                                      KVStore<AetherKey, AetherValue> kvStore,
                                                      java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                      org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
-                                                     BooleanSupplier isLeaderSupplier,
-                                                     boolean shadowEnabled) {
-        var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig().withShadowEnabled(shadowEnabled);
+                                                     BooleanSupplier isLeaderSupplier) {
+        var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
         MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                                                                                 AetherValue.NodeLifecycleValue.class,
                                                                                                 consumer);
@@ -1693,6 +1626,29 @@ public interface AetherNode extends ManageableNode {
                                             drainCoordinator,
                                             scheduler,
                                             isLeaderSupplier);
+    }
+
+    org.pragmatica.lang.io.TimeSpan PHASE_WATCH_INTERVAL = org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds();
+
+    /// Post-E.8 phase-change publisher. Polls `phaseSupplier` at `PHASE_WATCH_INTERVAL` and
+    /// dispatches `ctm.onClusterPhaseChanged(newPhase)` on every observed transition.
+    /// Replaces the legacy `HealthReconciler.addPhaseListener` wiring.
+    @Contract private static void schedulePhaseChangeWatcher(Supplier<AetherValue.ClusterPhase> phaseSupplier,
+                                                              ClusterTopologyManager ctm) {
+        var lastPhase = new java.util.concurrent.atomic.AtomicReference<>(phaseSupplier.get());
+        org.pragmatica.lang.utils.SharedScheduler.scheduleAtFixedRate(() -> publishPhaseChange(phaseSupplier, ctm, lastPhase),
+                                                                       PHASE_WATCH_INTERVAL,
+                                                                       PHASE_WATCH_INTERVAL);
+    }
+
+    @Contract private static void publishPhaseChange(Supplier<AetherValue.ClusterPhase> phaseSupplier,
+                                                      ClusterTopologyManager ctm,
+                                                      java.util.concurrent.atomic.AtomicReference<AetherValue.ClusterPhase> lastPhase) {
+        var current = phaseSupplier.get();
+        var previous = lastPhase.getAndSet(current);
+        if (previous != current) {
+            ctm.onClusterPhaseChanged(current);
+        }
     }
 
     @SuppressWarnings("unchecked") private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,

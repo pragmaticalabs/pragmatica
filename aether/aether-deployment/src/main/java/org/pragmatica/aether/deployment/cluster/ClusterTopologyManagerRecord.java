@@ -989,7 +989,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         lifecycleWriter.requestDrain(nodeId).onFailure(cause -> log.warn("CTM: failed to request DRAINING for {}: {}",
                                                                          nodeId,
                                                                          cause.message()))
-                                    .onSuccess(_ -> log.info("CTM: requested DRAINING for {} via HealthReconciler",
+                                    .onSuccess(_ -> log.info("CTM: requested DRAINING for {} via LifecycleWriter",
                                                              nodeId));
     }
 
@@ -1003,7 +1003,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         lifecycleWriter.requestDecommission(nodeId).onFailure(cause -> log.warn("CTM: failed to request DECOMMISSIONED for {}: {}",
                                                                                 nodeId,
                                                                                 cause.message()))
-                                           .onSuccess(_ -> log.info("CTM: requested DECOMMISSIONED for {} via HealthReconciler",
+                                           .onSuccess(_ -> log.info("CTM: requested DECOMMISSIONED for {} via LifecycleWriter",
                                                                     nodeId));
     }
 

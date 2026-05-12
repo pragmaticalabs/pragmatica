@@ -65,13 +65,13 @@ class MembershipFsmTest {
         slotSnapshot = new FakeSlotSnapshot();
     }
 
-    private MembershipFsm buildFsm(boolean shadowEnabled) {
-        var config = MembershipFsmConfig.defaultMembershipFsmConfig().withShadowEnabled(shadowEnabled);
+    private MembershipFsm buildFsm() {
+        var config = MembershipFsmConfig.defaultMembershipFsmConfig();
         return MembershipFsm.membershipFsm(SELF, config, lifecycleSnapshot, slotSnapshot);
     }
 
     private MembershipFsm startedFsm() {
-        var fsm = buildFsm(true);
+        var fsm = buildFsm();
         fsm.start().await();
         return fsm;
     }
@@ -246,42 +246,6 @@ class MembershipFsmTest {
             var fsm = startedFsm();
             fsm.enqueueOperatorEvent(new SwimFaulty(PEER_A, 7L, T1));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
-        }
-    }
-
-    @Nested @DisplayName("Feature flag gating")
-    class FeatureFlagTests {
-        @Test void shadowDisabled_doesNothing() {
-            lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.ON_DUTY, T0));
-            var fsm = buildFsm(false);
-            fsm.start().await();
-            // Disabled: replay must not run, snapshot must be empty.
-            assertThat(fsm.snapshot()).isEmpty();
-            assertThat(fsm.shadowEnabled()).isFalse();
-        }
-
-        @Test void shadowDisabled_swimObservationIgnored() {
-            var fsm = buildFsm(false);
-            fsm.start().await();
-            fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
-            assertThat(fsm.get(PEER_A)).isEqualTo(Option.<MembershipFsmState>none());
-        }
-
-        @Test void shadowDisabled_kvNotificationIgnored() {
-            var fsm = buildFsm(false);
-            fsm.start().await();
-            var put = new ValuePut<NodeLifecycleKey, NodeLifecycleValue>(new KVCommand.Put<>(NodeLifecycleKey.nodeLifecycleKey(PEER_A),
-                                                                                              lifecycleValue(NodeLifecycleState.ON_DUTY, T1)),
-                                                                          Option.none());
-            fsm.onNodeLifecyclePut(put);
-            assertThat(fsm.snapshot()).isEmpty();
-        }
-
-        @Test void shadowDisabled_stopIsSafe() {
-            var fsm = buildFsm(false);
-            fsm.start().await();
-            fsm.stop().await();
-            assertThat(fsm.snapshot()).isEmpty();
         }
     }
 

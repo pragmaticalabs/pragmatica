@@ -107,12 +107,9 @@ public interface ManageableNode {
     NodeLifecycle nodeLifecycle();
     MembershipFsm membershipFsm();
 
-    /// E.6 (spec §7.2): unified `ClusterPhase` accessor. With the FSM shadow flag
-    /// `aether.membership.fsm.shadowEnabled=true`, returns the value derived by
-    /// `ClusterPhaseView.compute()`. Otherwise, returns the legacy
-    /// `ClusterPhaseKey` KV read (with `COLD_BOOT` as the fallback). Status routes
-    /// and any dashboard consumer should call this rather than reading the KV
-    /// atom directly so the migration cut-over is centralised.
+    /// Post-E.8 (spec §7.2): unified `ClusterPhase` accessor that returns the value
+    /// derived by `ClusterPhaseView.compute()`. Status routes and any dashboard consumer
+    /// should call this rather than reading the KV atom directly.
     Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier();
 
     @SuppressWarnings("JBCT-RET-01") void route(Message message);

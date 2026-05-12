@@ -814,7 +814,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private void completeDrain(NodeId drainingNode) {
-            log.info("Drain complete for node {}, emitting DrainCompleted signal to HealthReconciler", drainingNode);
+            log.info("Drain complete for node {}, emitting DrainCompleted signal to LifecycleWriter", drainingNode);
             ctx.healthSignalSink().emit(new HealthSignal.DrainCompleted(drainingNode, Epoch.ZERO));
         }
 
