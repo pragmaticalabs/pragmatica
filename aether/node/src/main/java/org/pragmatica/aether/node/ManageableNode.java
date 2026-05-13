@@ -107,6 +107,13 @@ public interface ManageableNode {
     NodeLifecycle nodeLifecycle();
     MembershipFsm membershipFsm();
 
+    /// H.1 (spec §H): derived cluster-membership view. Computed from the local SWIM
+    /// `HealthSnapshot` plus `NodeLifecycleKey` KV overrides — SWIM is authoritative for
+    /// "alive", KV stores operator-declared transitions only. Reader-side replacement for
+    /// `membershipFsm().snapshot()` and direct `kvStore.forEach(NodeLifecycleKey, ...)`
+    /// iteration. Cheap to call repeatedly — recomputes on each query.
+    org.pragmatica.aether.deployment.membership.view.MembershipView membershipView();
+
     /// Post-E.8 (spec §7.2): unified `ClusterPhase` accessor that returns the value
     /// derived by `ClusterPhaseView.compute()`. Status routes and any dashboard consumer
     /// should call this rather than reading the KV atom directly.

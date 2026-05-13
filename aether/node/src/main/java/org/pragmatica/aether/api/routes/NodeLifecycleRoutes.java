@@ -9,6 +9,7 @@ import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDecommission;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDrain;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -82,13 +83,32 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return new InFlightResponse(nodeSupplier.get().inFlightRequestTracker().count());
     }
 
+    /// H.2 (spec §H): derived from `MembershipView` (SWIM ∪ KV override) instead of raw
+    /// `NodeLifecycleKey` KV iteration. This is the central reader switchover: integration
+    /// tests polling `/api/nodes/lifecycle` now see the **effective** membership — a peer
+    /// SWIM has admitted but the FSM hasn't yet written ON_DUTY for is visible here as
+    /// ON_DUTY; conversely, a stale ON_DUTY KV entry for a SWIM-faulty peer is filtered
+    /// out (`MembershipView.MemberStatus.UNTRACKED`). UNTRACKED entries are not emitted —
+    /// the response surface remains the same JSON shape the test client expects.
+    ///
+    /// `updatedAt` is taken from the KV entry when present (operator-declared transitions
+    /// retain their consensus timestamp). For SWIM-only entries (peers with no KV record),
+    /// `updatedAt` is 0 — they are derived from the live SWIM view and have no consensus-
+    /// audit anchor yet.
     private List<LifecycleEntry> getAllLifecycleStates() {
         var entries = new ArrayList<LifecycleEntry>();
-        nodeSupplier.get().kvStore()
-                        .forEach(NodeLifecycleKey.class,
-                                 NodeLifecycleValue.class,
-                                 (key, value) -> entries.add(toLifecycleEntry(key, value)));
+        nodeSupplier.get().membershipView().snapshot().forEach((peer, member) -> appendIfTracked(entries, peer, member));
         return entries;
+    }
+
+    private static void appendIfTracked(List<LifecycleEntry> entries,
+                                          NodeId peer,
+                                          MembershipView.MemberView member) {
+        if (member.status() == MembershipView.MemberStatus.UNTRACKED) {
+            return;
+        }
+        var updatedAt = member.lifecycle().map(NodeLifecycleValue::updatedAt).or(0L);
+        entries.add(new LifecycleEntry(peer.id(), member.status().name(), updatedAt));
     }
 
     private static LifecycleEntry toLifecycleEntry(NodeLifecycleKey key, NodeLifecycleValue value) {

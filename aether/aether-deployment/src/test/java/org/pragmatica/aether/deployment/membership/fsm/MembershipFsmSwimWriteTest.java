@@ -97,20 +97,17 @@ class MembershipFsmSwimWriteTest {
         return fsm;
     }
 
-    @Nested @DisplayName("Smoking gun: (ON_DUTY, SwimFaulty) on leader → DECOMMISSIONED write")
+    @Nested @DisplayName("Smoking gun (H.3: SWIM-driven cells nop)")
     class SmokingGunTests {
-        @Test void swimFaulty_onDuty_leader_writesDecommissioned() {
-            // THE TEST that proves the structural fix works. Pre-state: peer is ON_DUTY.
-            // Event: FaultyObserved. Expected: single consensus write Put(NodeLifecycleKey,
-            // DECOMMISSIONED). Previously the legacy aggregator + threshold gate + phase
-            // suppression caused this transition to never fire — the bug E.5 closes.
+        @Test void swimFaulty_onDuty_leader_isNop_hSeriesSwimIsDerivedOnly() {
+            // H.3 (spec §H): the smoking-gun cell is replaced by `MembershipView` derivation
+            // (SWIM is authoritative for "alive", stale ON_DUTY KV entries resolve to
+            // UNTRACKED in the view). NODE_FAILED still fires from `ClusterEventAggregator`
+            // via the SWIM observation listener. The FSM must NOT produce a write here.
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 7L));
-            assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(commandApplier.calls).isEmpty();
         }
     }
 
@@ -147,31 +144,24 @@ class MembershipFsmSwimWriteTest {
         }
     }
 
-    @Nested @DisplayName("SwimDeparted == SwimFaulty semantics on leader (spec §4)")
+    @Nested @DisplayName("SwimDeparted (H.3: SWIM-driven cells nop)")
     class SwimDepartedTests {
-        @Test void swimDeparted_onDuty_leader_writesDecommissioned() {
+        @Test void swimDeparted_onDuty_leader_isNop_hSeriesSwimIsDerivedOnly() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
             fsm.onSwimObservation(new DepartedObserved(PEER_A, 7L));
-            assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(commandApplier.calls).isEmpty();
         }
     }
 
-    @Nested @DisplayName("SwimHealthy → leader-initiated JOINING promotion (Q1=A)")
+    @Nested @DisplayName("SwimHealthy (H.3: SWIM-driven cells nop, JOINING is operator-only)")
     class SwimHealthyPromotionTests {
-        @Test void swimHealthy_untracked_leader_writesOnDutyDirectly() {
-            // Bootstrap-correction 2026-05-12: SWIM emits one observation per peer-state-change.
-            // For an UNTRACKED peer, the leader's SwimHealthy must write Put(L=ON_DUTY) directly
-            // (no intermediate JOINING) — otherwise the peer would be stranded in JOINING until
-            // the 60s JoinDeadline timer expires.
+        @Test void swimHealthy_untracked_leader_isNop_hSeriesSwimIsDerivedOnly() {
+            // H.3 (spec §H): SWIM presence alone is sufficient for `MembershipView` to report
+            // `ON_DUTY` — no KV write is needed for SWIM-discovered peers.
             var fsm = startedFsm();
-            assertThat(fsm.get(PEER_A)).isEqualTo(org.pragmatica.lang.Option.<MembershipFsmState>none());
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
-            assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+            assertThat(commandApplier.calls).isEmpty();
         }
 
         @Test void swimHealthy_joining_leader_writesOnDuty() {
@@ -207,27 +197,19 @@ class MembershipFsmSwimWriteTest {
 
     @Nested @DisplayName("Decommissioned revival within TTL (spec §5.1 note 4)")
     class DecommissionedRevivalTests {
-        @Test void swimHealthy_decommissionedPastRefractoryWithinTtl_leader_revivesToOnDuty() {
-            // End-to-end: leader observes SwimHealthy for a peer in DECOMMISSIONED whose
-            // entry is past the SWIM refractory window (default 30s) but within the 60s
-            // revival TTL. FSM must write Put(L=ON_DUTY) — the legitimate
-            // elastic-test-fixture restart pattern (`docker start` brings a killed container
-            // back with the same NodeId, after the chaos-revival refractory has passed).
-            //
-            // KV-derived state defaults to `swimDriven=true` (conservative — `deriveStateFromLifecycle`
-            // cannot know the original trigger), so the refractory gate is armed.
-            var pastRefractoryDecommissionedAt = System.currentTimeMillis() - 40_000L;
+        @Test void swimHealthy_decommissioned_leader_isNop_hSeriesNoRevival() {
+            // H.3 (spec §H): the revival path is eliminated. A peer in KV DECOMMISSIONED
+            // stays operator-decommissioned regardless of SWIM gossip. To rejoin, an
+            // operator must clear the KV entry (or `DecommissionedAtomGc` ages it out, after
+            // which the SWIM-derived view promotes the peer back to ON_DUTY without any
+            // KV write).
+            var decommissionedAt = System.currentTimeMillis() - 40_000L;
             lifecycleSnapshot.put(PEER_A,
                                   NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
-                                                                        pastRefractoryDecommissionedAt));
+                                                                        decommissionedAt));
             var fsm = startedFsm();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
-
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
-
-            assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+            assertThat(commandApplier.calls).isEmpty();
         }
 
         @Test void swimHealthy_decommissionedWithinRefractory_leader_staysDecommissioned() {

@@ -17,6 +17,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.NodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -92,8 +93,16 @@ public final class StatusRoutes implements RouteSource {
         var uptimeSeconds = node.uptimeSeconds();
         var leader = node.leader();
         var leaderId = leader.map(NodeId::id).or("none");
+        // H.2d (spec §H): cluster.nodes derives from MembershipView (SWIM ∪ KV override) ∪
+        // consensus topology. SWIM admits a peer ⇒ it appears here as ON_DUTY without
+        // requiring the FSM to have written `Put(L=ON_DUTY)` to KV — the cause of the
+        // pre-H "peer alive in SWIM, UNKNOWN in /api/status" stranding bug.
+        var view = node.membershipView();
         var topologyNodes = node.topologyManager().topology();
-        var nodeInfos = topologyNodes.stream().map(nodeId -> toNodeInfo(node, nodeId, leader))
+        var allNodeIds = new LinkedHashSet<NodeId>();
+        topologyNodes.forEach(allNodeIds::add);
+        view.snapshot().keySet().forEach(allNodeIds::add);
+        var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view, nodeId, leader))
                                             .toList();
         var quorate = leader.isPresent() && nodeInfos.size() >= quorumOf(nodeInfos.size());
         var cluster = new ClusterInfo(nodeInfos.size(), leaderId, quorate, nodeInfos);
@@ -117,13 +126,10 @@ public final class StatusRoutes implements RouteSource {
                                   BuildInfo.buildInfo().buildVersion());
     }
 
-    private static NodeInfo toNodeInfo(ManageableNode node, NodeId nodeId, Option<NodeId> leader) {
+    private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader) {
         var isLeader = leader.map(l -> l.equals(nodeId)).or(false);
-        var lifecycleState = node.kvStore().get(NodeLifecycleKey.nodeLifecycleKey(nodeId))
-                                         .filter(NodeLifecycleValue.class::isInstance)
-                                         .map(NodeLifecycleValue.class::cast)
-                                         .map(v -> v.state().name())
-                                         .or("UNKNOWN");
+        var status = view.statusOf(nodeId);
+        var lifecycleState = status == MembershipView.MemberStatus.UNTRACKED ? "UNKNOWN" : status.name();
         return new NodeInfo(nodeId.id(), isLeader, lifecycleState);
     }
 

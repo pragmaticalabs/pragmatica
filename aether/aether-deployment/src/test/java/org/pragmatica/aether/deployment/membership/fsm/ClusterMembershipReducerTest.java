@@ -73,18 +73,10 @@ class ClusterMembershipReducerTest {
     class FromUntracked {
         private final Untracked state = MembershipFsmState.untracked(PEER);
 
-        @Test void untracked_swimHealthy_directlyTransitionsToOnDuty_bootstrapCorrection() {
-            // Bootstrap-correction 2026-05-12: SWIM only emits one Healthy observation per
-            // peer-state-change. Routing UNTRACKED through JOINING would strand the peer in
-            // JOINING until the 60s JoinDeadline fires. Collapsing the intermediate JOINING
-            // makes the SWIM-discovered transition self-sufficient.
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, T1));
-            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
-            assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
-            // No JOIN_DEADLINE timer scheduled — there is no JOINING state to deadline.
-            assertThat(outcome.effects()).noneMatch(e -> e instanceof ScheduleTimer st
-                                                            && st.kind() == TimerKind.JOIN_DEADLINE);
+        @Test void untracked_swimHealthy_isNop_hSeriesSwimIsDerivedOnly() {
+            // H.3 (spec §H): SWIM-driven cells are nop at the reducer. `MembershipView` derives
+            // ON_DUTY from a HEALTHY SWIM observation alone — no KV write is needed.
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
         }
 
         @Test void untracked_swimFaulty_isNop_bootstrapSafe() {
@@ -184,11 +176,10 @@ class ClusterMembershipReducerTest {
             assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
         }
 
-        @Test void joining_swimDeparted_writesDecommissioned_andCancelsTimerAndDeletesSlot() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
-            assertDecommissioned(outcome, T1, "swim-departed");
-            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
-            assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
+        @Test void joining_swimDeparted_isNop_hSeriesSwimIsDerivedOnly() {
+            // H.3: SWIM-driven cells nop. JoinDeadlineExpired timer still cleans up if the
+            // peer never confirms via SWIM-HEALTHY within the join window.
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
         }
 
         @Test void joining_slotClaimed_isNop_idempotentReDelivery() {
@@ -234,16 +225,17 @@ class ClusterMembershipReducerTest {
             assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
         }
 
-        @Test void onDuty_swimFaulty_writesDecommissioned_smokingGun() {
-            var outcome = reducer.apply(state, new SwimFaulty(PEER, 1L, T1));
-            assertDecommissioned(outcome, T1, "swim-faulty");
-            // No threshold gate, no cooldown, no cache — a single SWIM observation suffices.
-            assertThat(outcome.writes()).hasSize(1);
+        @Test void onDuty_swimFaulty_isNop_hSeriesSwimIsDerivedOnly() {
+            // H.3 (spec §H): SWIM is authoritative for "alive". The pre-H smoking-gun cell
+            // (`(ON_DUTY, SwimFaulty) → Put(L=DECOMMISSIONED)`) is replaced by
+            // `MembershipView` filtering — a SWIM-FAULTY peer with a stale ON_DUTY KV entry
+            // resolves to `UNTRACKED` in the view automatically. NODE_FAILED events continue
+            // to fire from `ClusterEventAggregator.onSwimObservation`.
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
         }
 
-        @Test void onDuty_swimDeparted_writesDecommissioned() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
-            assertDecommissioned(outcome, T1, "swim-departed");
+        @Test void onDuty_swimDeparted_isNop_hSeriesSwimIsDerivedOnly() {
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
         }
 
         @Test void onDuty_slotClaimed_isErr() {
@@ -376,111 +368,24 @@ class ClusterMembershipReducerTest {
         }
     }
 
-    @Nested @DisplayName("Decommissioned × SwimHealthy TTL-bounded revival (spec §5.1 note 4)")
+    /// H.3 (spec §H): the revival path is eliminated entirely. `MembershipView` is now
+    /// authoritative for "alive" — a peer in KV `DECOMMISSIONED` stays operator-decommissioned
+    /// regardless of SWIM gossip. The pre-H ELT-fixture fast-restart pattern (docker kill →
+    /// docker start with same NodeId) now requires either an explicit operator-clear of the
+    /// KV entry or waiting for `DecommissionedAtomGc` retention. Test class kept as a
+    /// regression assertion: SwimHealthy on Decommissioned must NOT produce a write.
+    @Nested @DisplayName("Decommissioned × SwimHealthy (H.3: no revival)")
     class DecommissionedRevival {
-        /// Default TTL is 60s (`MembershipFsmConfig.DEFAULT_DECOMMISSIONED_REVIVAL_TTL`).
-        /// Revival rule uses strict inequality `ageMs < ttlMs` — equality is nop (zombie).
         private static final long NOW = 1_000_000L;
-        private static final long TTL_MS = 60_000L;
 
-        @Test void decommissioned_swimHealthy_withinTtl_revivesToOnDuty() {
-            // Recently-decommissioned peer (30s ago, half the TTL) sends healthy gossip:
-            // typical elastic-test-fixture restart pattern (`docker start`). Admit it back.
-            var decommissionedAt = NOW - 30_000L;
-            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt);
-
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
-
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
-            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.ON_DUTY, NOW));
-            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
-        }
-
-        @Test void decommissioned_swimHealthy_pastTtl_staysZombie() {
-            // Decommissioned 90s ago, well past the 60s TTL. Genuine zombie — nop.
-            var decommissionedAt = NOW - 90_000L;
-            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt);
-
+        @Test void decommissioned_swimHealthy_isNop_hSeriesNoRevival() {
+            var state = MembershipFsmState.decommissioned(PEER, NOW - 30_000L);
             assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW)), state);
         }
 
-        @Test void decommissioned_swimHealthy_exactlyAtTtl_isInclusive_staysZombie() {
-            // Boundary: `ageMs == ttlMs` is NOT less-than, so the strict inequality
-            // `ageMs < ttlMs` rejects revival at the exact boundary. Choice: equality is
-            // treated as past-TTL (zombie). This makes the revival window a strict open
-            // interval [0, ttl) and makes the rule resilient against integer-overflow
-            // edge cases at the exact equality point.
-            var decommissionedAt = NOW - TTL_MS;
-            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt);
-
+        @Test void decommissioned_swimHealthy_pastRetention_isNop_hSeriesNoRevival() {
+            var state = MembershipFsmState.decommissioned(PEER, NOW - 600_000L);
             assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW)), state);
-        }
-
-        @Test void decommissioned_swimHealthy_oneMsInsideTtl_revives() {
-            // Companion boundary: ageMs = TTL - 1 is strictly less-than → revival fires.
-            // Closes the revival-rule semantics: [0, ttl) revives, [ttl, ∞) stays zombie.
-            var decommissionedAt = NOW - (TTL_MS - 1L);
-            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt);
-
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
-
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
-            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
-        }
-    }
-
-    @Nested
-    @DisplayName("Decommissioned × SwimHealthy SWIM-driven refractory (chaos-revival-storm fix 2026-05-12b)")
-    class DecommissionedSwimRefractory {
-        /// Default refractory is 30s (`MembershipFsmConfig.DEFAULT_DECOMMISSIONED_SWIM_REFRACTORY`)
-        /// and applies only when `Decommissioned.swimDriven == true`. The chaos suite revealed
-        /// that without this gate, stale SWIM gossip / QUIC reconnect for a just-killed peer
-        /// drove `(DECOMMISSIONED, SwimHealthy) → revival` within seconds of the SWIM-faulty
-        /// write, looping the FSM through revival storms. Operator-driven decommissions
-        /// (`swimDriven=false`) remain eligible for fast-restart revival within the TTL.
-        private static final long NOW = 1_000_000L;
-        private static final long REFRACTORY_MS = 30_000L;
-
-        @Test void swimDriven_swimHealthy_insideRefractory_isNop() {
-            var decommissionedAt = NOW - (REFRACTORY_MS / 2);  // 15s ago — well inside refractory
-            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt, true);
-
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW)), state);
-        }
-
-        @Test void swimDriven_swimHealthy_atRefractoryBoundary_isNop() {
-            // Boundary: ageMs == refractoryMs is treated as still inside (the rule is
-            // `ageMs < refractoryMs` ⟹ block). Equality stays nop — matches the TTL rule's
-            // inclusive-zombie semantics.
-            var decommissionedAt = NOW - REFRACTORY_MS;
-            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt, true);
-
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
-            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
-        }
-
-        @Test void swimDriven_swimHealthy_pastRefractoryWithinTtl_revives() {
-            // 45s ago: past 30s refractory, still inside 60s TTL → revival admitted.
-            var decommissionedAt = NOW - 45_000L;
-            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt, true);
-
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
-
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
-            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
-        }
-
-        @Test void operatorDriven_swimHealthy_insideRefractoryWindow_revives() {
-            // Operator force-decommission 15s ago: swimDriven=false → refractory does NOT
-            // apply → revival admitted within TTL (preserves 15-delegation fast-restart).
-            var decommissionedAt = NOW - 15_000L;
-            var state = MembershipFsmState.decommissioned(PEER, decommissionedAt, false);
-
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, NOW));
-
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, NOW));
-            assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_ON_DUTY, "revival");
         }
     }
 
@@ -568,30 +473,18 @@ class ClusterMembershipReducerTest {
     // Specific scenarios called out by the spec.
     // =================================================================================
 
-    @Nested @DisplayName("Smoking-gun replay (spec §1.1)")
+    /// H.3 (spec §H): the smoking-gun cell `(OnDuty, SwimFaulty) → Decommissioned` is replaced
+    /// by `MembershipView` derivation — a SWIM-FAULTY peer with stale ON_DUTY KV resolves to
+    /// `UNTRACKED` in the view. NODE_FAILED still fires from `ClusterEventAggregator.
+    /// onSwimObservation`. Test kept as a regression assertion: the reducer must NOT produce
+    /// a write on SwimFaulty (the pre-H smoking-gun was the WRITE that produced the revival
+    /// storm; eliminating the write is the cure).
+    @Nested @DisplayName("Smoking-gun replay (H.3: SWIM-driven cells nop)")
     class SmokingGunReplay {
-        /// Production failure trace: non-leader victim, cluster phase=NORMAL, leader stable,
-        /// `everSeenHealthy[victim]=true`. `docker kill` victim. Single SWIM faulty observation
-        /// on the leader must produce `Put(L=DECOMMISSIONED)` and emit `NODE_FAILED` — no
-        /// stale-cache, no threshold, no cooldown blocking it.
-        @Test void onDutyVictim_singleFaultyObservation_writesDecommissionedAndEmitsNodeFailed() {
-            // Pre-conditions: victim is ON_DUTY on the leader's FSM since t=T0 (some prior healthy observation).
+        @Test void onDutyVictim_singleFaultyObservation_isNop_hSeriesSwimIsDerivedOnly() {
             var leaderFsmStateForVictim = MembershipFsmState.onDuty(PEER, T0);
-
-            // docker kill → SWIM detects faulty at t=T1.
-            var faulty = new SwimFaulty(PEER, 7L, T1);
-            var outcome = reducer.apply(leaderFsmStateForVictim, faulty);
-
-            // KV write proposed.
-            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DECOMMISSIONED, T1));
-            // NODE_FAILED downstream.
-            assertEmitted(outcome, MembershipDomainEvent.NODE_FAILED);
-            // FSM state advanced to Decommissioned (swimDriven=true → SWIM-Healthy refractory armed)
-            // — re-fire of the same SWIM signal is now nop.
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, T1, true));
-            var reapply = reducer.apply(outcome.newState(), new SwimFaulty(PEER, 7L, T2));
-            assertThat(reapply.writes()).isEmpty();
-            assertThat(reapply.effects()).isEmpty();
+            assertNop(reducer.apply(leaderFsmStateForVictim, new SwimFaulty(PEER, 7L, T1)),
+                       leaderFsmStateForVictim);
         }
     }
 

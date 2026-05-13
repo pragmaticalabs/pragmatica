@@ -34,6 +34,7 @@ import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
@@ -739,6 +740,15 @@ public interface AetherNode extends ManageableNode {
             @Override public void route(Message message) {
                 router.route(message);
             }
+
+            @Override
+            public org.pragmatica.aether.deployment.membership.view.MembershipView membershipView() {
+                return org.pragmatica.aether.deployment.membership.view.MembershipView.membershipView(
+                        swimHealthDetector::currentHealth,
+                        consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
+                                                     AetherValue.NodeLifecycleValue.class,
+                                                     consumer));
+            }
         }
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode);
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
@@ -881,17 +891,21 @@ public interface AetherNode extends ManageableNode {
         // E.6 / E.8 (spec §7): ClusterPhase derived view is the single source of truth for
         // cluster phase. The KV value is consulted as a cache hint to track the
         // ever-reached-NORMAL bit across leader takeovers — see ClusterPhaseView javadoc.
-        ClusterPhaseView.LifecycleSnapshotReader phaseLifecycleSnapshot = () -> {
-            var collected = new java.util.LinkedHashMap<NodeId, AetherValue.NodeLifecycleValue>();
-            kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                            AetherValue.NodeLifecycleValue.class,
-                            (key, value) -> collected.put(key.nodeId(), value));
-            return collected;
-        };
+        // H.2b (spec §H): ClusterPhaseView reads through MembershipView so SWIM-derived
+        // ON_DUTY peers (no KV entry) count toward quorum. The SWIM detector is constructed
+        // downstream of this declaration — use a forward AtomicReference and lazy-resolve at
+        // each compute() call. Until the detector lands the view falls back to KV-only.
+        var swimDetectorRefForPhase = new AtomicReference<CoreSwimHealthDetector>();
+        ClusterPhaseView.MembershipViewReader phaseMembershipReader = () -> MembershipView.membershipView(
+                () -> Option.option(swimDetectorRefForPhase.get())
+                            .flatMap(CoreSwimHealthDetector::currentHealth),
+                consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
+                                             AetherValue.NodeLifecycleValue.class,
+                                             consumer));
         var clusterPhaseView = ClusterPhaseView.clusterPhaseView(config.topology().coreNodes().size(),
                                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
                                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
-                                                                  phaseLifecycleSnapshot,
+                                                                  phaseMembershipReader,
                                                                   clusterPhaseReader,
                                                                   () -> healthLeaderSupplier.get().isPresent());
         Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = () -> clusterPhaseView.compute(System.currentTimeMillis());
@@ -1217,6 +1231,7 @@ public interface AetherNode extends ManageableNode {
         // check inside `onPeerConnected`. Must be set BEFORE attachQuicPeerStateListener
         // below since that's the listener that invokes the bridge.
         swimDetectorRef.set(swimHealthDetector);
+        swimDetectorRefForPhase.set(swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
