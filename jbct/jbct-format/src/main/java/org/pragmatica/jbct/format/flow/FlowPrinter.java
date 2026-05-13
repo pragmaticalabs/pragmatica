@@ -789,16 +789,25 @@ final class FlowPrinter {
                 }
                 int lineBefore = currentLine;
                 printNodeContent(postOp);
-                // Track if this was a multi-line bare invocation (not a dot-method call)
-                if (!isMethodCall && currentLine - lineBefore > 0) {
-                    previousWasMultiLineBareInvoke = true;
-                }
+                boolean spannedLines = currentLine != lineBefore;
+                // After a multi-line PostOp from BROKEN ARGS (no lambda inside), the
+                // next dot-method aligns to body-indent — the prior closing `)` sits on
+                // a different visual line than the chain start. When the multi-line span
+                // comes from a LAMBDA BODY inside the PostOp, the next dot-method should
+                // still align to the chain column (Lambdas.java fixture pattern).
+                previousWasMultiLineBareInvoke = spannedLines && !containsLambda(postOp);
                 if (isMethodCall) {
                     firstMethodCall = false;
-                    previousWasMultiLineBareInvoke = false;
                 }
             }
         }
+    }
+
+    /// True if the post-op carries a lambda anywhere inside it. Used to distinguish
+    /// "multi-line because of broken args" (next method goes to body indent) from
+    /// "multi-line because of a lambda body" (next method stays at chain column).
+    private static boolean containsLambda(Cursor postOp) {
+        return findFirst(postOp, RuleKind.LAMBDA).isPresent();
     }
 
     /// Count chain links visible within this Postfix when chains are encoded as nested
