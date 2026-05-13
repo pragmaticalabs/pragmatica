@@ -17,6 +17,7 @@ public final class AlignmentContext {
     private boolean inBreakingChain = false;
     private int ternaryColumn = - 1;
     private int inlineExpressionDepth = 0;
+    private int tailContextDepth = 0;
 
     /// Enter an "inline expression" context — inside an inline-rendered args list, nested
     /// chains do NOT break vertically but render inline. Stacks so nested args restore
@@ -32,6 +33,22 @@ public final class AlignmentContext {
 
     public final class InlineExprScope implements AutoCloseable {
         @Override public void close() { inlineExpressionDepth--; }
+    }
+
+    /// Enter a "tail expression" context — the expression we're about to print is the
+    /// value of a `return`/`throw` statement or the body of an arrow lambda. Used to
+    /// gate chain breaking — chains break vertically only in tail contexts.
+    public TailScope enterTailContext() {
+        tailContextDepth++;
+        return new TailScope();
+    }
+
+    public boolean isInTailContext() {
+        return tailContextDepth > 0;
+    }
+
+    public final class TailScope implements AutoCloseable {
+        @Override public void close() { tailContextDepth--; }
     }
 
     /// Enter a breaking method chain context.

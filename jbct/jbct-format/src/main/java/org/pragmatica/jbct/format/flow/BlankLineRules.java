@@ -17,25 +17,40 @@ final class BlankLineRules {
     /// Determine if a blank line is needed between two consecutive members.
     static boolean needsBlankLineBetween(Cursor current, Option<Cursor> previous) {
         return previous
-            .filter(prev -> !areBothSimpleNoInitDeclarations(current, prev))
+            .filter(prev -> !canPackTogether(current, prev))
             .isPresent();
     }
 
-    private static boolean areBothSimpleNoInitDeclarations(Cursor current, Cursor previous) {
-        return isSimpleNoInitDeclaration(current)
-            && isSimpleNoInitDeclaration(previous);
+    /// Two members pack tightly together (no blank line) iff:
+    /// - Both are simple declarations (no body, no annotation), AND
+    /// - Both share the same `static` modifier status.
+    private static boolean canPackTogether(Cursor current, Cursor previous) {
+        if (!isSimpleNoBodyDeclaration(current) || !isSimpleNoBodyDeclaration(previous)) {
+            return false;
+        }
+        return isStaticField(current) == isStaticField(previous);
     }
 
     /// A simple declaration: ends with semicolon, no block body, AND no annotation.
-    /// Field declarations with or without initializers count as simple — consecutive fields
-    /// pack tightly without blank-line separators. Annotations promote a declaration to
-    /// "full"; a blank line separates it from neighbours regardless of body shape.
-    private static boolean isSimpleNoInitDeclaration(Cursor member) {
+    private static boolean isSimpleNoBodyDeclaration(Cursor member) {
         if (hasAnnotationChild(member)) {
             return false;
         }
         var trimmed = text(member).trim();
         return trimmed.endsWith(";") && !trimmed.contains("{");
+    }
+
+    /// True if the member contains a `static` modifier token.
+    private static boolean isStaticField(Cursor member) {
+        if (!(member instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            if ("static".equals(tokens.textAt(t).toString())) return true;
+        }
+        return false;
     }
 
     private static boolean hasAnnotationChild(Cursor member) {

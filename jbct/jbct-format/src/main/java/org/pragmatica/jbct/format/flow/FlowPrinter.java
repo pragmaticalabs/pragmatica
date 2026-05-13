@@ -543,6 +543,10 @@ final class FlowPrinter {
         var kids = stmt.children().toList();
         if (kids.size() == 1 && kids.get(0).kindIs(RuleKind.BLOCK) && kids.get(0) instanceof Cursor.Branch block) {
             printBlock(block);
+        } else if (isReturnOrThrowStmt(stmt)) {
+            try (var scope = alignment.enterTailContext()) {
+                walkTokens(stmt);
+            }
         } else {
             walkTokens(stmt);
         }
@@ -584,12 +588,23 @@ final class FlowPrinter {
                 printAlignedTo(chainAlignCol);
             } else {
                 indentLevel++;
+                // Lambda body blocks pack tight — no blank lines inserted between stmts.
+                boolean isLambdaBody = isInsideLambda(block);
                 for (int i = 0; i < stmts.size(); i++) {
                     var stmt = stmts.get(i);
-                    // Blank line before a final return/throw when the block has 2+ prior
-                    // statements — a single prior stmt (typical small methods like
-                    // `var x = ...; return x;`) packs tightly without separation.
-                    if (i >= 2 && i == stmts.size() - 1 && isReturnOrThrowStmt(stmt) && !hasLeadingComment(stmt)) {
+                    // Blank line before a final return/throw when the block has at least
+                    // one simple (non-block) prior statement. A method body of only an
+                    // `if`/`try`/`while` + `return` packs tight; assignments/var-decls +
+                    // return get separated.
+                    if (!isLambdaBody && i >= 1 && i == stmts.size() - 1 && isReturnOrThrowStmt(stmt) && !hasLeadingComment(stmt)
+                        && hasSimplePriorStmt(stmts, i)) {
+                        newline();
+                    }
+                    // Blank line BETWEEN a block-shaped stmt (if/try/while/...) and a
+                    // following non-block stmt, marking section boundaries.
+                    else if (!isLambdaBody && i >= 1 && !hasLeadingComment(stmt)
+                             && isBlockShapedStmt(stmts.get(i - 1))
+                             && !isBlockShapedStmt(stmt)) {
                         newline();
                     }
                     if (!hasLeadingComment(stmt)) {
@@ -608,6 +623,51 @@ final class FlowPrinter {
 
     private boolean hasLeadingComment(Cursor node) {
         return node.leadingTrivia().anyMatch(t -> t.isLineComment() || t.isBlockComment());
+    }
+
+    /// True if `block` is the body of a lambda — i.e. it has a LAMBDA ancestor whose
+    /// closest enclosing BLOCK is this one. Walks parents up; stops at any BLOCK/METHOD_DECL
+    /// boundary except this block itself.
+    private static boolean isInsideLambda(Cursor.Branch block) {
+        var parent = block.parent().orElse(null);
+        while (parent != null) {
+            if (parent.kindIs(RuleKind.LAMBDA)) {
+                return true;
+            }
+            if (parent.kindIs(RuleKind.METHOD_DECL) || parent.kindIs(RuleKind.MEMBER)) {
+                return false;
+            }
+            parent = parent.parent().orElse(null);
+        }
+        return false;
+    }
+
+    /// True if any of the statements at index < returnIdx is a "simple" statement
+    /// (not a block-stmt — i.e. not `if`/`try`/`while`/`for`/`do`/`switch`/`synchronized`/`{ ... }`).
+    private static boolean hasSimplePriorStmt(List<Cursor> stmts, int returnIdx) {
+        for (int i = 0; i < returnIdx; i++) {
+            if (!isBlockShapedStmt(stmts.get(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// True if a stmt is one of the block-shaped control-flow constructs.
+    private static boolean isBlockShapedStmt(Cursor stmt) {
+        if (!(stmt instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            var txt = tokens.textAt(t).toString();
+            return switch (txt) {
+                case "if", "try", "while", "for", "do", "switch", "synchronized", "{" -> true;
+                default -> false;
+            };
+        }
+        return false;
     }
 
     /// True if `stmt` is a return or throw statement (used to decide whether to insert a
@@ -743,10 +803,7 @@ final class FlowPrinter {
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
         int chainLinkCount = Math.max(allDotMethodCount,
                                       dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
-        // Sequencer-as-steps: any chain with 2+ method calls breaks vertically UNLESS we
-        // are inside an inline expression context (e.g. inline args of a parent call),
-        // where chains stay horizontal so the parent's args layout is preserved.
-        boolean shouldBreakChain = chainLinkCount >= 2 && !alignment.isInInlineExpression();
+        boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount);
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
@@ -761,6 +818,34 @@ final class FlowPrinter {
                 }
             }
         }
+    }
+
+    /// Sequencer-as-steps: chain (2+ method calls) breaks vertically only in TAIL contexts
+    /// (return/throw expression, lambda body). Exception: when the receiver is a static
+    /// factory call (e.g. `Class.method(...)`) and there are exactly 2 chain links, the
+    /// chain stays inline if it fits — that matches the idiom
+    /// `Result.all(args).map(Tuple3::new)` which reads naturally on a single line.
+    /// In non-tail contexts (assignment RHS, argument, ternary branch), chains stay inline.
+    private boolean shouldBreakChain(Cursor primary, int chainLinkCount) {
+        if (chainLinkCount < 2 || alignment.isInInlineExpression()) {
+            return false;
+        }
+        if (!alignment.isInTailContext()) {
+            return false;
+        }
+        if (chainLinkCount == 2 && primary != null && isStaticFactoryReceiver(primary)) {
+            return false;
+        }
+        return true;
+    }
+
+    /// True if `primary` is a class-like receiver — its first token is an identifier
+    /// starting with an uppercase letter (heuristic for a class type such as `Result` in
+    /// `Result.all(...)` or `Result.success(...)`). Used to identify the "static factory"
+    /// chain receiver, which inlines a 2-link chain.
+    private boolean isStaticFactoryReceiver(Cursor primary) {
+        var t = text(primary).trim();
+        return !t.isEmpty() && Character.isUpperCase(t.charAt(0));
     }
 
     private boolean fitsOnLineUnary(Cursor primary, List<Cursor> postOps) {
@@ -801,10 +886,7 @@ final class FlowPrinter {
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
         int chainLinkCount = Math.max(allDotMethodCount,
                                       dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
-        // Sequencer-as-steps: any chain with 2+ method calls breaks vertically UNLESS we
-        // are inside an inline expression context (e.g. inline args of a parent call),
-        // where chains stay horizontal so the parent's args layout is preserved.
-        boolean shouldBreakChain = chainLinkCount >= 2 && !alignment.isInInlineExpression();
+        boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount);
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
@@ -1110,7 +1192,11 @@ final class FlowPrinter {
             @Override
             public void onChild(Cursor child) {
                 if (afterArrow) {
-                    printNodeContent(child);
+                    // Lambda body is a tail-context expression: chains inside it break
+                    // vertically as if it were a `return` body.
+                    try (var scope = alignment.enterTailContext()) {
+                        printNodeContent(child);
+                    }
                     afterArrow = false;
                 } else {
                     printNode(child);
