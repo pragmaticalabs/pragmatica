@@ -1190,12 +1190,27 @@ final class FlowPrinter {
                 if (containsMethodCall(exprText) || exprText.contains("-> {")) {
                     return true;
                 }
+                if (containsTopLevelTernary(expr)) {
+                    return true;
+                }
                 if (alignment.isInBreakingChain() && exprText.contains("(")) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    /// True if `expr` contains a TERNARY node at its first-level descent (i.e. the
+    /// expression IS a ternary, possibly wrapped in trivial precedence nodes). Used to
+    /// detect when an argument will break vertically due to a `?:` operator, dragging
+    /// the surrounding arg list into broken layout.
+    private boolean containsTopLevelTernary(Cursor expr) {
+        if (!(expr instanceof Cursor.Branch br)) return false;
+        return br.descendants()
+            .anyMatch(c -> c.kindIs(RuleKind.TERNARY)
+                && text(c).contains("?")
+                && text(c).contains(":"));
     }
 
     private boolean containsMethodCall(String text) {
@@ -1906,18 +1921,20 @@ final class FlowPrinter {
     }
 
     /// True iff the previously emitted `-`/`+` is in a unary-operator position where the
-    /// goldens render with NO trailing space. Per the live goldens this applies only to
-    /// keyword-prefixed contexts (`return -x`, `throw -1`) and parenthesised/comma contexts
-    /// (`f(-x)`, `f(a, -b)`). Note: `x = -1` is rendered with a space in goldens
-    /// (`x = - 1`), so this method must return false there.
+    /// goldens render with NO trailing space. Applies only to keyword-prefixed contexts
+    /// (`return -x`, `throw -1`) and parenthesised/comma contexts (`f(-x)`, `f(a, -b)`).
+    /// `x = -1` is rendered WITH a space in goldens (`x = - 1`), so this method must
+    /// return false there. Likewise, after a string-literal operand (`"[" + s`), the
+    /// operator is binary — return false.
     private boolean isUnaryPosition() {
         if (measuringMode || output.length() < 2) {
             return false;
         }
-        int beforeIdx = output.length() - 2;
-        if (beforeIdx >= 0 && output.charAt(beforeIdx) == ' ') {
-            beforeIdx--;
-        }
+        // The operator sits at output[length-1]. Skip a single space to find the char
+        // preceding it.
+        int spaceIdx = output.length() - 2;
+        boolean sawSpace = spaceIdx >= 0 && output.charAt(spaceIdx) == ' ';
+        int beforeIdx = sawSpace ? spaceIdx - 1 : spaceIdx;
         if (beforeIdx < 0) {
             return true;
         }
@@ -1925,10 +1942,20 @@ final class FlowPrinter {
         if (before == '(' || before == ',') {
             return true;
         }
-        // If the preceding token is a unary-context keyword (return/throw/case/...),
-        // SPACE_AFTER_KEYWORDS would have triggered the space — lastWord is still that
-        // keyword (operator tokens don't reset lastWord).
-        return SPACE_AFTER_KEYWORDS.contains(lastWord);
+        // Keyword-prefixed: only when the operator immediately follows a space which
+        // immediately follows the keyword (no intervening operand). The keyword ends
+        // with a letter, so verify `before` is a letter AND `lastWord` is in the
+        // unary-context keyword set.
+        if (sawSpace && Character.isLetter(before) && SPACE_AFTER_KEYWORDS.contains(lastWord)) {
+            // Confirm the letter run ending at `before` actually equals `lastWord` —
+            // i.e. nothing was emitted between the keyword and this operator.
+            int len = lastWord.length();
+            if (beforeIdx + 1 - len >= 0
+                && output.substring(beforeIdx + 1 - len, beforeIdx + 1).equals(lastWord)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean checkSpaceRules(String text, char firstChar) {
