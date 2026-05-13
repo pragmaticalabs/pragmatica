@@ -3,9 +3,9 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -14,46 +14,46 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstValidatedNamingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NAM-02";
 
+    private static final Pattern CLASS_NAME_PATTERN = Pattern.compile("\\bclass\\s+(\\w+)");
+    private static final Pattern RECORD_NAME_PATTERN = Pattern.compile("\\brecord\\s+(\\w+)");
+
     @Override
     public String ruleId() {
         return RULE_ID;
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Check classes and records for Validated prefix
         var classDiagnostics = findAllClasses(root).stream()
-                                      .filter(cls -> hasValidatedName(cls, source))
-                                      .map(cls -> createDiagnostic(cls, source, ctx));
+                                      .map(cls -> new NamedNode(cls, extractName(cls, CLASS_NAME_PATTERN)))
+                                      .filter(nn -> nn.name().startsWith("Validated"))
+                                      .map(nn -> createDiagnostic(nn, ctx));
         var recordDiagnostics = findAllRecords(root).stream()
-                                       .filter(rec -> hasValidatedName(rec, source))
-                                       .map(rec -> createDiagnostic(rec, source, ctx));
+                                       .map(rec -> new NamedNode(rec, extractName(rec, RECORD_NAME_PATTERN)))
+                                       .filter(nn -> nn.name().startsWith("Validated"))
+                                       .map(nn -> createDiagnostic(nn, ctx));
         return Stream.concat(classDiagnostics, recordDiagnostics);
     }
 
-    private boolean hasValidatedName(CstNode node, String source) {
-        return childByRule(node, RuleId.Identifier.class).map(id -> text(id, source))
-                          .filter(name -> name.startsWith("Validated"))
-                          .isPresent();
+    private String extractName(Cursor node, Pattern pattern) {
+        var matcher = pattern.matcher(text(node));
+        return matcher.find() ? matcher.group(1) : "";
     }
 
-    private Diagnostic createDiagnostic(CstNode node, String source, LintContext ctx) {
-        var name = childByRule(node, RuleId.Identifier.class).map(id -> text(id, source))
-                              .or("Validated...");
-        var suggestedName = name.replaceFirst("Validated", "Valid");
+    private Diagnostic createDiagnostic(NamedNode nn, LintContext ctx) {
+        var suggestedName = nn.name().replaceFirst("Validated", "Valid");
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
-                                     startLine(node),
-                                     startColumn(node),
-                                     "Type '" + name + "' should be named '" + suggestedName + "'",
+                                     startLine(nn.node()),
+                                     startColumn(nn.node()),
+                                     "Type '" + nn.name() + "' should be named '" + suggestedName + "'",
                                      "JBCT uses 'Valid' prefix, not 'Validated'.");
     }
+
+    private record NamedNode(Cursor node, String name) {}
 }

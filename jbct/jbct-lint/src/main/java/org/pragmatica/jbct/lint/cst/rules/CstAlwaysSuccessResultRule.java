@@ -3,9 +3,10 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -13,6 +14,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// JBCT-RET-05: Avoid methods that always return Result.success().
 public class CstAlwaysSuccessResultRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-05";
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -20,28 +22,24 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         return findAllMethods(root).stream()
-                      .filter(method -> returnsResult(method, source))
-                      .filter(method -> alwaysReturnsSuccess(method, source))
-                      .map(method -> createDiagnostic(method, source, ctx));
+                      .filter(this::returnsResult)
+                      .filter(this::alwaysReturnsSuccess)
+                      .map(method -> createDiagnostic(method, ctx));
     }
 
-    private boolean returnsResult(CstNode method, String source) {
-        return childByRule(method, RuleId.Type.class).map(type -> text(type, source))
+    private boolean returnsResult(Cursor method) {
+        return childByRule(method, RuleKind.TYPE).map(type -> text(type))
                           .filter(typeText -> typeText.startsWith("Result<"))
                           .isPresent();
     }
 
-    private boolean alwaysReturnsSuccess(CstNode method, String source) {
-        var methodText = text(method, source);
+    private boolean alwaysReturnsSuccess(Cursor method) {
+        var methodText = text(method);
         // Check if only uses Result.success() and never failure
         boolean hasSuccess = methodText.contains("Result.success(");
         boolean hasFailure = methodText.contains("Result.failure(") ||
@@ -50,9 +48,8 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
         return hasSuccess && !hasFailure;
     }
 
-    private Diagnostic createDiagnostic(CstNode method, String source, LintContext ctx) {
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("(unknown)");
+    private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
+        var methodName = extractMethodName(text(method));
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -71,5 +68,11 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
                 return new Config(name);
             }
             """);
+    }
+
+    private static String extractMethodName(String memberText) {
+        // v6: Identifier is a token, not a CST rule. Extract method name via regex.
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

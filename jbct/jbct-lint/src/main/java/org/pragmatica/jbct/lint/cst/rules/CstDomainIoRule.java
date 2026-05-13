@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.Set;
 import java.util.stream.Stream;
@@ -40,24 +40,24 @@ public class CstDomainIoRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = packageName(root, source);
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        var packageName = packageName(root);
         // Only check domain packages (not usecase)
         if (!isDomainPackage(packageName)) {
             return Stream.empty();
         }
         // Check imports for I/O packages
-        return findAll(root, RuleId.ImportDecl.class).stream()
-                      .filter(imp -> isIoImport(imp, source))
-                      .map(imp -> createDiagnostic(imp, source, ctx));
+        return findAll(root, RuleKind.IMPORT_DECL).stream()
+                      .filter(this::isIoImport)
+                      .map(imp -> createDiagnostic(imp, ctx));
     }
 
     private boolean isDomainPackage(String packageName) {
         return packageName.contains(".domain.") || packageName.endsWith(".domain");
     }
 
-    private boolean isIoImport(CstNode imp, String source) {
-        var importText = text(imp, source);
+    private boolean isIoImport(Cursor imp) {
+        var importText = text(imp);
         for (var ioPkg : IO_PACKAGES) {
             if (importText.contains(ioPkg)) {
                 return true;
@@ -72,8 +72,8 @@ public class CstDomainIoRule implements CstLintRule {
         return false;
     }
 
-    private Diagnostic createDiagnostic(CstNode imp, String source, LintContext ctx) {
-        var importText = text(imp, source).trim();
+    private Diagnostic createDiagnostic(Cursor imp, LintContext ctx) {
+        var importText = text(imp).trim();
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

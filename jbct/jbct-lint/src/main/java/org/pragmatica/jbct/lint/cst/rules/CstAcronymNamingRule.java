@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -22,52 +21,62 @@ public class CstAcronymNamingRule implements CstLintRule {
     // Excludes 2-letter sequences like LParen (Left Paren) which are just prefixes, not acronyms
     private static final Pattern ACRONYM_PATTERN = Pattern.compile("[A-Z]{3,}");
 
+    // v6: Identifier is a token, not a CST rule. Extract type names from `class/interface/enum/record <Name>`.
+    private static final Pattern TYPE_NAME_PATTERN =
+        Pattern.compile("\\b(?:class|interface|enum|record|@interface)\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
+
+    // Method name: first identifier followed by `(` (skips return-type tokens via the boundary).
+    private static final Pattern METHOD_NAME_PATTERN =
+        Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
+
     @Override
     public String ruleId() {
         return RULE_ID;
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
         // Check class declarations
         var classDiagnostics = findAllClasses(root).stream()
-                                      .flatMap(decl -> checkTypeName(decl, source, ctx));
+                                      .flatMap(decl -> checkTypeName(decl, ctx));
         // Check interface declarations
         var interfaceDiagnostics = findAllInterfaces(root).stream()
-                                          .flatMap(decl -> checkTypeName(decl, source, ctx));
+                                          .flatMap(decl -> checkTypeName(decl, ctx));
         // Check enum declarations
         var enumDiagnostics = findAllEnums(root).stream()
-                                     .flatMap(decl -> checkTypeName(decl, source, ctx));
+                                     .flatMap(decl -> checkTypeName(decl, ctx));
         // Check record declarations
         var recordDiagnostics = findAllRecords(root).stream()
-                                       .flatMap(decl -> checkTypeName(decl, source, ctx));
+                                       .flatMap(decl -> checkTypeName(decl, ctx));
         // Check method declarations
         var methodDiagnostics = findAllMethods(root).stream()
-                                       .flatMap(method -> checkMethodName(method, source, ctx));
+                                       .flatMap(method -> checkMethodName(method, ctx));
         return Stream.of(classDiagnostics, interfaceDiagnostics, enumDiagnostics, recordDiagnostics, methodDiagnostics)
                      .flatMap(s -> s);
     }
 
-    private Stream<Diagnostic> checkTypeName(CstNode decl, String source, LintContext ctx) {
-        return childByRule(decl, RuleId.Identifier.class).map(id -> text(id, source).trim())
-                          .filter(this::hasAcronymViolation)
-                          .map(name -> createDiagnostic(decl,
-                                                        "Type",
-                                                        name,
-                                                        suggestFix(name),
-                                                        ctx))
-                          .stream();
+    private Stream<Diagnostic> checkTypeName(Cursor decl, LintContext ctx) {
+        var matcher = TYPE_NAME_PATTERN.matcher(text(decl));
+        if (!matcher.find()) {
+            return Stream.empty();
+        }
+        var name = matcher.group(1);
+        if (!hasAcronymViolation(name)) {
+            return Stream.empty();
+        }
+        return Stream.of(createDiagnostic(decl, "Type", name, suggestFix(name), ctx));
     }
 
-    private Stream<Diagnostic> checkMethodName(CstNode method, String source, LintContext ctx) {
-        return childByRule(method, RuleId.Identifier.class).map(id -> text(id, source).trim())
-                          .filter(this::hasAcronymViolation)
-                          .map(name -> createDiagnostic(method,
-                                                        "Method",
-                                                        name,
-                                                        suggestFix(name),
-                                                        ctx))
-                          .stream();
+    private Stream<Diagnostic> checkMethodName(Cursor method, LintContext ctx) {
+        var matcher = METHOD_NAME_PATTERN.matcher(text(method));
+        if (!matcher.find()) {
+            return Stream.empty();
+        }
+        var name = matcher.group(1);
+        if (!hasAcronymViolation(name)) {
+            return Stream.empty();
+        }
+        return Stream.of(createDiagnostic(method, "Method", name, suggestFix(name), ctx));
     }
 
     private boolean hasAcronymViolation(String name) {
@@ -121,7 +130,7 @@ public class CstAcronymNamingRule implements CstLintRule {
         return result.toString();
     }
 
-    private Diagnostic createDiagnostic(CstNode node, String kind, String name, String suggested, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor node, String kind, String name, String suggested, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

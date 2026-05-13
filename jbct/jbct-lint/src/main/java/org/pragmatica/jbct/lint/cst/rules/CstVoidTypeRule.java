@@ -3,9 +3,10 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -14,35 +15,32 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstVoidTypeRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-04";
 
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
+
     @Override
     public String ruleId() {
         return RULE_ID;
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find methods returning Void (boxed)
         return findAllMethods(root).stream()
-                      .filter(method -> returnsBoxedVoid(method, source))
-                      .map(method -> createDiagnostic(method, source, ctx));
+                      .filter(this::returnsBoxedVoid)
+                      .map(method -> createDiagnostic(method, ctx));
     }
 
-    private boolean returnsBoxedVoid(CstNode method, String source) {
-        return childByRule(method, RuleId.Type.class).map(type -> text(type, source).trim())
+    private boolean returnsBoxedVoid(Cursor method) {
+        return childByRule(method, RuleKind.TYPE).map(type -> text(type).trim())
                           .filter(typeText -> typeText.equals("Void") || typeText.contains("<Void>"))
                           .isPresent();
     }
 
-    private Diagnostic createDiagnostic(CstNode method, String source, LintContext ctx) {
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("(unknown)");
+    private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
+        var methodName = extractMethodName(text(method));
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -50,5 +48,10 @@ public class CstVoidTypeRule implements CstLintRule {
                                      startColumn(method),
                                      "Method '" + methodName + "' uses Void; use Unit instead",
                                      "JBCT uses Unit instead of Void for side-effect returns.");
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

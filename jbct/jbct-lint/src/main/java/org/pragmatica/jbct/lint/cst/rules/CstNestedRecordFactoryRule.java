@@ -3,9 +3,10 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -13,6 +14,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// JBCT-UC-01: Use case factories should return lambdas, not nested records.
 public class CstNestedRecordFactoryRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-UC-01";
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -20,71 +22,66 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find ClassMember nodes with static methods containing local record declarations
-        return findAll(root, RuleId.ClassMember.class).stream()
-                      .filter(member -> isStaticMember(member, source))
-                      .filter(member -> !isMultiMethodInterface(root, member, source))
+        return findAll(root, RuleKind.CLASS_MEMBER).stream()
+                      .filter(this::isStaticMember)
+                      .filter(member -> !isMultiMethodInterface(root, member))
                       .flatMap(member -> findFirstMethod(member).stream())
-                      .filter(method -> containsSimpleLocalRecord(method, source))
-                      .map(method -> createDiagnostic(method, source, ctx));
+                      .filter(this::containsSimpleLocalRecord)
+                      .map(method -> createDiagnostic(method, ctx));
     }
 
-    private boolean isMultiMethodInterface(CstNode root, CstNode member, String source) {
-        return findAncestor(root, member, RuleId.TypeDecl.class)
+    private boolean isMultiMethodInterface(Cursor root, Cursor member) {
+        return findAncestor(root, member, RuleKind.TYPE_DECL)
                           .flatMap(td -> findFirstInterface(td))
-                          .map(iface -> countAbstractMethods(iface, source) > 1)
+                          .map(iface -> countAbstractMethods(iface) > 1)
                           .or(false);
     }
 
-    private int countAbstractMethods(CstNode iface, String source) {
+    private int countAbstractMethods(Cursor iface) {
         // Use ClassBody → direct ClassMember children to avoid counting methods inside nested types
-        return childByRule(iface, RuleId.ClassBody.class)
-                          .map(body -> (int) childrenByRule(body, RuleId.ClassMember.class).stream()
-                                                    .filter(member -> !contains(member, RuleId.TypeKind.class))
+        return childByRule(iface, RuleKind.CLASS_BODY)
+                          .map(body -> (int) childrenByRule(body, RuleKind.CLASS_MEMBER).stream()
+                                                    .filter(member -> !contains(member, RuleKind.TYPE_KIND))
                                                     .filter(member -> containsMethod(member))
-                                                    .filter(member -> isAbstractMethod(member, source))
+                                                    .filter(this::isAbstractMethod)
                                                     .count())
                           .or(0);
     }
 
-    private boolean isAbstractMethod(CstNode member, String source) {
-        var memberText = text(member, source);
+    private boolean isAbstractMethod(Cursor member) {
+        var memberText = text(member);
         return !memberText.contains("static ") && !memberText.contains("default ");
     }
 
-    private boolean isStaticMember(CstNode member, String source) {
-        var memberText = text(member, source);
+    private boolean isStaticMember(Cursor member) {
+        var memberText = text(member);
         return memberText.contains("static ");
     }
 
-    private boolean containsSimpleLocalRecord(CstNode method, String source) {
+    private boolean containsSimpleLocalRecord(Cursor method) {
         // Find local records implementing an interface
         return findAllRecords(method).stream()
-                      .filter(record -> hasImplementsClause(record))
-                      .anyMatch(record -> isSimpleImplementation(record));
+                      .filter(this::hasImplementsClause)
+                      .anyMatch(this::isSimpleImplementation);
     }
 
-    private boolean hasImplementsClause(CstNode record) {
-        return contains(record, RuleId.ImplementsClause.class);
+    private boolean hasImplementsClause(Cursor record) {
+        return contains(record, RuleKind.IMPLEMENTS_CLAUSE);
     }
 
-    private boolean isSimpleImplementation(CstNode record) {
+    private boolean isSimpleImplementation(Cursor record) {
         // A simple record has at most 1 method — can be replaced by a lambda.
         // Complex records (with helper methods) justify the nested record pattern.
         return countMethods(record) <= 1;
     }
 
-    private Diagnostic createDiagnostic(CstNode method, String source, LintContext ctx) {
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("(unknown)");
+    private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {
+        var methodName = extractMethodName(text(method));
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -104,5 +101,10 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
                 return request -> dep.process(request);
             }
             """);
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

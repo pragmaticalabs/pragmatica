@@ -3,10 +3,11 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -17,6 +18,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstReturnKindRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-01";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     private static final Set<String> FORBIDDEN_TYPES = Set.of("Optional",
                                                               "CompletableFuture",
@@ -29,35 +31,30 @@ public class CstReturnKindRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         return findAllMethods(root).stream()
-                      .filter(method -> !isPrivateMethod(method, root, source))
-                      .flatMap(method -> checkMethod(method, source, ctx));
+                      .filter(method -> !isPrivateMethod(method, root))
+                      .flatMap(method -> checkMethod(method, ctx));
     }
 
-    private boolean isPrivateMethod(CstNode method, CstNode root, String source) {
+    private boolean isPrivateMethod(Cursor method, Cursor root) {
         // Find the ClassMember ancestor which contains the Modifier
-        return findAncestor(root, method, RuleId.ClassMember.class).map(cm -> text(cm, source).contains("private "))
+        return findAncestor(root, method, RuleKind.CLASS_MEMBER).map(cm -> text(cm).contains("private "))
                            .or(false);
     }
 
-    private Stream<Diagnostic> checkMethod(CstNode method, String source, LintContext ctx) {
-        // Get return type - first Type child of MethodDecl
-        return childByRule(method, RuleId.Type.class).map(type -> checkReturnType(method, type, source, ctx))
+    private Stream<Diagnostic> checkMethod(Cursor method, LintContext ctx) {
+        // Get return type - first Type child of Member
+        return childByRule(method, RuleKind.TYPE).map(type -> checkReturnType(method, type, ctx))
                           .or(Stream.empty());
     }
 
-    private Stream<Diagnostic> checkReturnType(CstNode method, CstNode type, String source, LintContext ctx) {
-        var typeText = text(type, source).trim();
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("(unknown)");
+    private Stream<Diagnostic> checkReturnType(Cursor method, Cursor type, LintContext ctx) {
+        var typeText = text(type).trim();
+        var methodName = extractMethodName(text(method));
         // Check for void
         if (typeText.equals("void")) {
             return Stream.of(createVoidDiagnostic(method, methodName, ctx));
@@ -71,7 +68,7 @@ public class CstReturnKindRule implements CstLintRule {
         return Stream.empty();
     }
 
-    private Diagnostic createVoidDiagnostic(CstNode method, String methodName, LintContext ctx) {
+    private Diagnostic createVoidDiagnostic(Cursor method, String methodName, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -90,7 +87,7 @@ public class CstReturnKindRule implements CstLintRule {
                          .withDocLink(DOC_LINK);
     }
 
-    private Diagnostic createForbiddenTypeDiagnostic(CstNode method,
+    private Diagnostic createForbiddenTypeDiagnostic(Cursor method,
                                                      String methodName,
                                                      String typeName,
                                                      LintContext ctx) {
@@ -121,5 +118,10 @@ public class CstReturnKindRule implements CstLintRule {
             return "Promise<...>";
         }
         return "Result<...> or Promise<...>";
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

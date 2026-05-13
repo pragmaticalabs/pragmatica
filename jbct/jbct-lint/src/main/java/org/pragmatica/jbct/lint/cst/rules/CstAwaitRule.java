@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -19,6 +19,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstAwaitRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-PAT-03";
     private static final Pattern AWAIT_PATTERN = Pattern.compile("\\.await\\s*\\(\\s*\\)");
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -26,28 +27,23 @@ public class CstAwaitRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class)
-                .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                .map(qn -> text(qn, source))
-                .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         return findAllStatements(root).stream()
-                      .filter(stmt -> containsAwait(stmt, source))
-                      .map(stmt -> createDiagnostic(root, stmt, source, ctx));
+            .filter(this::containsAwait)
+            .map(stmt -> createDiagnostic(root, stmt, ctx));
     }
 
-    private boolean containsAwait(CstNode stmt, String source) {
-        return AWAIT_PATTERN.matcher(text(stmt, source)).find();
+    private boolean containsAwait(Cursor stmt) {
+        return AWAIT_PATTERN.matcher(text(stmt)).find();
     }
 
-    private Diagnostic createDiagnostic(CstNode root, CstNode stmt, String source, LintContext ctx) {
-        var methodName = findAncestor(root, stmt, RuleId.Member.class)
-                .flatMap(md -> childByRule(md, RuleId.Identifier.class))
-                .map(id -> text(id, source))
-                .or("(unknown)");
+    private Diagnostic createDiagnostic(Cursor root, Cursor stmt, LintContext ctx) {
+        var methodName = findAncestor(root, stmt, RuleKind.MEMBER)
+            .map(member -> extractMethodName(text(member)))
+            .or("(unknown)");
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -71,5 +67,12 @@ public class CstAwaitRule implements CstLintRule {
                 return fetchUser(id).await();
             }
             """);
+    }
+
+    private static String extractMethodName(String memberText) {
+        // Find the first identifier followed by '(' — the method declaration.
+        // Skips type names (handled by the `\\b` boundary and pattern shape).
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

@@ -3,12 +3,13 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.CstNodes;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -18,45 +19,45 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstValueObjectFactoryRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-VO-01";
 
+    private static final Pattern RECORD_NAME_PATTERN = Pattern.compile("\\brecord\\s+(\\w+)");
+    private static final Pattern INTERFACE_NAME_PATTERN = Pattern.compile("\\binterface\\s+(\\w+)");
+    private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("\\b([A-Za-z_$][A-Za-z0-9_$]*)\\b");
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
+
     @Override
     public String ruleId() {
         return RULE_ID;
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
-        var sealedInterfaceNames = collectSealedInterfaceNames(root, source);
+        var sealedInterfaceNames = collectSealedInterfaceNames(root);
         // Check records
         return findAllRecords(root).stream()
-                      .filter(record -> needsFactoryMethod(root, record, source, sealedInterfaceNames))
-                      .map(record -> createDiagnostic(record, source, ctx));
+                      .filter(record -> needsFactoryMethod(root, record, sealedInterfaceNames))
+                      .map(record -> createDiagnostic(record, ctx));
     }
 
-    private boolean needsFactoryMethod(CstNode root, CstNode record, String source, Set<String> sealedInterfaceNames) {
-        var recordName = childByRule(record, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("");
+    private boolean needsFactoryMethod(Cursor root, Cursor record, Set<String> sealedInterfaceNames) {
+        var recordName = extractRecordName(record);
         if (recordName.isEmpty()) return false;
         // Skip 'unused' records (sealed interface utility pattern marker)
         if ("unused".equals(recordName)) return false;
         // Skip zero-component records — nothing to validate
         if (hasNoComponents(record)) return false;
         // Skip records implementing a sealed interface declared in the same file
-        if (implementsSealedInterface(record, source, sealedInterfaceNames)) return false;
+        if (implementsSealedInterface(record, sealedInterfaceNames)) return false;
         // Skip records implementing their enclosing interface (implementation records, not value objects)
-        if (implementsEnclosingInterface(root, record, source)) return false;
+        if (implementsEnclosingInterface(root, record)) return false;
         // Skip builder-pattern records (have with*() methods returning Self)
-        if (hasBuilderMethods(record, recordName, source)) return false;
+        if (hasBuilderMethods(record, recordName)) return false;
         // Skip local records defined inside methods (implementation records, not value objects)
         if (isLocalRecord(root, record)) return false;
         // Check for factory returning Result<T>, Option<T>, or T
-        var recordText = text(record, source);
+        var recordText = text(record);
         var hasResultFactory = recordText.contains("Result<" + recordName + ">")
                                || recordText.contains("Result<" + recordName + " ")
                                || recordText.contains("Result<" + recordName + "<");
@@ -67,94 +68,111 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         return !hasResultFactory && !hasOptionFactory && !hasPlainFactory;
     }
 
-    private boolean implementsEnclosingInterface(CstNode root, CstNode record, String source) {
-        var implementedNames = childByRule(record, RuleId.ImplementsClause.class)
-                                          .map(clause -> extractImplementedNames(clause, source))
+    private boolean implementsEnclosingInterface(Cursor root, Cursor record) {
+        var implementedNames = childByRule(record, RuleKind.IMPLEMENTS_CLAUSE)
+                                          .map(this::extractImplementedNames)
                                           .or(Set.of());
         if (implementedNames.isEmpty()) return false;
-        // Find the nearest enclosing InterfaceDecl
-        return findAncestor(root, record, RuleId.TypeKind.class)
-                          .filter(tk -> hasChildOfRule(tk, RuleId.InterfaceKW.class))
-                          .flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
-                          .map(id -> text(id, source))
+        // Find the nearest enclosing TypeKind that is an interface
+        return findAncestor(root, record, RuleKind.TYPE_KIND)
+                          .filter(tk -> hasChildOfRule(tk, RuleKind.INTERFACE_DECL))
+                          .map(iface -> extractInterfaceNameFromTypeKind(iface))
+                          .filter(name -> !name.isEmpty())
                           .map(implementedNames::contains)
                           .or(false);
     }
 
-    private boolean isLocalRecord(CstNode root, CstNode record) {
-        return findAncestor(root, record, RuleId.Member.class)
+    private boolean isLocalRecord(Cursor root, Cursor record) {
+        return findAncestor(root, record, RuleKind.MEMBER)
                           .filter(CstNodes::isMethodMember)
                           .isPresent();
     }
 
-    private boolean hasNoComponents(CstNode record) {
-        return childByRule(record, RuleId.RecordComponents.class)
-                          .map(rc -> childrenByRule(rc, RuleId.RecordComp.class).isEmpty())
+    private boolean hasNoComponents(Cursor record) {
+        return childByRule(record, RuleKind.RECORD_COMPONENTS)
+                          .map(rc -> childrenByRule(rc, RuleKind.RECORD_COMP).isEmpty())
                           .or(true);
     }
 
-    private boolean hasBuilderMethods(CstNode record, String recordName, String source) {
+    private boolean hasBuilderMethods(Cursor record, String recordName) {
         return findAllMethods(record).stream()
-                      .anyMatch(method -> isWithMethodReturningSelf(method, recordName, source));
+                      .anyMatch(method -> isWithMethodReturningSelf(method, recordName));
     }
 
-    private boolean isWithMethodReturningSelf(CstNode method, String recordName, String source) {
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("");
+    private boolean isWithMethodReturningSelf(Cursor method, String recordName) {
+        var methodText = text(method);
+        var nameMatcher = METHOD_NAME_PATTERN.matcher(methodText);
+        if (!nameMatcher.find()) return false;
+        var methodName = nameMatcher.group(1);
         if (!methodName.startsWith("with")) return false;
-        return childByRule(method, RuleId.Type.class).map(type -> text(type, source).trim())
+        return childByRule(method, RuleKind.TYPE).map(type -> text(type).trim())
                           .map(recordName::equals)
                           .or(false);
     }
 
-    private boolean implementsSealedInterface(CstNode record, String source, Set<String> sealedInterfaceNames) {
-        return childByRule(record, RuleId.ImplementsClause.class)
-                          .map(clause -> extractImplementedNames(clause, source))
+    private boolean implementsSealedInterface(Cursor record, Set<String> sealedInterfaceNames) {
+        return childByRule(record, RuleKind.IMPLEMENTS_CLAUSE)
+                          .map(this::extractImplementedNames)
                           .or(Set.of())
                           .stream()
                           .anyMatch(sealedInterfaceNames::contains);
     }
 
-    private Set<String> extractImplementedNames(CstNode implementsClause, String source) {
-        return findAll(implementsClause, RuleId.Identifier.class).stream()
-                      .map(id -> text(id, source))
-                      .collect(Collectors.toSet());
+    private Set<String> extractImplementedNames(Cursor implementsClause) {
+        var matcher = IDENTIFIER_PATTERN.matcher(text(implementsClause));
+        var names = new java.util.HashSet<String>();
+        while (matcher.find()) {
+            var token = matcher.group(1);
+            if (!"implements".equals(token)) {
+                names.add(token);
+            }
+        }
+        return names;
     }
 
-    private Set<String> collectSealedInterfaceNames(CstNode root, String source) {
-        // Check both top-level TypeDecl and nested ClassMember nodes for sealed interfaces
-        var fromTypeDecls = findAll(root, RuleId.TypeDecl.class).stream()
-                                   .filter(node -> hasSealedModifier(node, source));
-        var fromClassMembers = findAll(root, RuleId.ClassMember.class).stream()
-                                      .filter(node -> hasSealedModifier(node, source));
+    private Set<String> collectSealedInterfaceNames(Cursor root) {
+        // Check both top-level TypeDecl and nested ClassMember nodes for sealed interfaces.
+        // In v6 modifiers are tokens (not CST children), so we detect 'sealed' textually
+        // restricted to the head of the declaration (before the first '{').
+        var fromTypeDecls = findAll(root, RuleKind.TYPE_DECL).stream()
+                                   .filter(this::hasSealedModifier);
+        var fromClassMembers = findAll(root, RuleKind.CLASS_MEMBER).stream()
+                                      .filter(this::hasSealedModifier);
         return Stream.concat(fromTypeDecls, fromClassMembers)
                      .filter(node -> containsInterface(node))
-                     .map(node -> extractInterfaceName(node, source))
+                     .map(this::extractInterfaceName)
                      .flatMap(Optional::stream)
                      .collect(Collectors.toSet());
     }
 
-    private boolean hasSealedModifier(CstNode node, String source) {
-        // Check direct Modifier children and those in a direct TypeDecl grouping child
-        var modifiers = new java.util.ArrayList<>(childrenByRule(node, RuleId.Modifier.class));
-        childrenByRule(node, RuleId.TypeDecl.class)
-        .forEach(child -> modifiers.addAll(childrenByRule(child, RuleId.Modifier.class)));
-        childrenByRule(node, RuleId.ClassMember.class)
-        .forEach(child -> modifiers.addAll(childrenByRule(child, RuleId.Modifier.class)));
-        return modifiers.stream()
-                            .anyMatch(mod -> "sealed".equals(text(mod, source).trim()));
+    private boolean hasSealedModifier(Cursor node) {
+        var declText = text(node);
+        var headEnd = declText.indexOf('{');
+        var head = headEnd >= 0 ? declText.substring(0, headEnd) : declText;
+        // Match 'sealed' as a whole-word modifier in the declaration head.
+        return Pattern.compile("\\bsealed\\b").matcher(head).find();
     }
 
-    private Optional<String> extractInterfaceName(CstNode node, String source) {
-        return findFirstInterface(node)
-                          .flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
-                          .map(id -> text(id, source))
-                          .toOptional();
+    private Optional<String> extractInterfaceName(Cursor node) {
+        var matcher = INTERFACE_NAME_PATTERN.matcher(text(node));
+        return matcher.find() ? Optional.of(matcher.group(1)) : Optional.empty();
     }
 
-    private Diagnostic createDiagnostic(CstNode record, String source, LintContext ctx) {
-        var name = childByRule(record, RuleId.Identifier.class).map(id -> text(id, source))
-                              .or("(unknown)");
+    private String extractRecordName(Cursor record) {
+        var matcher = RECORD_NAME_PATTERN.matcher(text(record));
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private String extractInterfaceNameFromTypeKind(Cursor typeKind) {
+        var matcher = INTERFACE_NAME_PATTERN.matcher(text(typeKind));
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private Diagnostic createDiagnostic(Cursor record, LintContext ctx) {
+        var name = extractRecordName(record);
+        if (name.isEmpty()) {
+            name = "(unknown)";
+        }
         var camelName = camelCase(name);
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),

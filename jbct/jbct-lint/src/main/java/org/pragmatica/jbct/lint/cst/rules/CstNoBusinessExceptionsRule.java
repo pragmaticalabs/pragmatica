@@ -3,9 +3,10 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -13,6 +14,8 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// JBCT-EX-01: No business exceptions.
 public class CstNoBusinessExceptionsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-EX-01";
+    private static final Pattern CLASS_NAME_PATTERN = Pattern.compile("\\bclass\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -20,44 +23,38 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find classes extending Exception
         var exceptionClasses = findAllClasses(root).stream()
-                                      .filter(cls -> extendsException(cls, source))
-                                      .map(cls -> createExceptionClassDiagnostic(cls, source, ctx));
+                                      .filter(this::extendsException)
+                                      .map(cls -> createExceptionClassDiagnostic(cls, ctx));
         // Find throw statements
         var throwStatements = findAllStatements(root).stream()
-                                     .filter(stmt -> text(stmt, source).trim()
-                                                         .startsWith("throw "))
+                                     .filter(stmt -> text(stmt).trim().startsWith("throw "))
                                      .map(stmt -> createThrowDiagnostic(stmt, ctx));
         // Find methods with throws clause
         var throwsClauses = findAllMethods(root).stream()
-                                   .filter(method -> hasThrowsClause(method, source))
-                                   .map(method -> createThrowsClauseDiagnostic(method, source, ctx));
+                                   .filter(this::hasThrowsClause)
+                                   .map(method -> createThrowsClauseDiagnostic(method, ctx));
         return Stream.concat(Stream.concat(exceptionClasses, throwStatements), throwsClauses);
     }
 
-    private boolean extendsException(CstNode cls, String source) {
-        var clsText = text(cls, source);
+    private boolean extendsException(Cursor cls) {
+        var clsText = text(cls);
         return clsText.contains("extends Exception") ||
         clsText.contains("extends RuntimeException") ||
         clsText.contains("extends Throwable");
     }
 
-    private boolean hasThrowsClause(CstNode method, String source) {
-        return contains(method, RuleId.Throws.class);
+    private boolean hasThrowsClause(Cursor method) {
+        return contains(method, RuleKind.THROWS);
     }
 
-    private Diagnostic createExceptionClassDiagnostic(CstNode cls, String source, LintContext ctx) {
-        var className = childByRule(cls, RuleId.Identifier.class).map(id -> text(id, source))
-                                   .or("(unknown)");
+    private Diagnostic createExceptionClassDiagnostic(Cursor cls, LintContext ctx) {
+        var className = extractClassName(text(cls));
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -67,7 +64,7 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
                                      "JBCT doesn't use exceptions for business errors. Define a Cause type.");
     }
 
-    private Diagnostic createThrowDiagnostic(CstNode stmt, LintContext ctx) {
+    private Diagnostic createThrowDiagnostic(Cursor stmt, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -77,9 +74,8 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
                                      "JBCT uses Result<T> for error handling, not exceptions.");
     }
 
-    private Diagnostic createThrowsClauseDiagnostic(CstNode method, String source, LintContext ctx) {
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("(unknown)");
+    private Diagnostic createThrowsClauseDiagnostic(Cursor method, LintContext ctx) {
+        var methodName = extractMethodName(text(method));
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -87,5 +83,15 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
                                      startColumn(method),
                                      "Method '" + methodName + "' has throws clause - use Result<T> instead",
                                      "JBCT methods shouldn't declare checked exceptions.");
+    }
+
+    private static String extractClassName(String clsText) {
+        var matcher = CLASS_NAME_PATTERN.matcher(clsText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }
