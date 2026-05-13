@@ -53,6 +53,10 @@ final class FlowPrinter {
     private final Map<Integer, Integer> tokenLineMap = new HashMap<>();
     private int currentLine;
 
+    // Track trivia tokens we've already emitted as comments (prevents double-emit when
+    // an outer node and its first CST child share leading trivia under v6 attribution).
+    private final java.util.Set<Integer> emittedTriviaTokens = new java.util.HashSet<>();
+
     // Alignment tracking
     private final AlignmentContext alignment = new AlignmentContext();
 
@@ -131,9 +135,21 @@ final class FlowPrinter {
             emitLeadingComments(node);
         }
         switch (node) {
-            case Cursor.Leaf leaf -> emitToken(leaf.text().toString());
+            case Cursor.Leaf leaf -> emitLeafTokens(leaf);
             case Cursor.Branch br -> printBranch(br);
             case Cursor.ErrorNode err -> emitToken(err.skippedText().toString());
+        }
+    }
+
+    /// Emit a Leaf node's tokens by walking the TokenArray range (skipping trivia).
+    /// Using `leaf.text()` instead would return the source slice covering trailing trivia,
+    /// causing whitespace bleed into the output.
+    private void emitLeafTokens(Cursor.Leaf leaf) {
+        var tokens = leaf.cst().tokens();
+        for (int t = leaf.firstTokenIdx(); t <= leaf.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                emitToken(tokens.textAt(t).toString());
+            }
         }
     }
 
@@ -325,9 +341,20 @@ final class FlowPrinter {
     }
 
     private void printImportDecl(Cursor imp) {
-        // Re-flow whitespace within the import. Use the literal source text (covers
-        // `import [static] qualifiedName [.*];`) and normalize whitespace.
-        var importText = text(imp).trim().replaceAll("\\s+", " ");
+        // Walk non-trivia tokens directly so trailing comments (`/// ...` after `;`) are
+        // not pulled into the import — they belong to whatever follows.
+        var tokens = imp.cst().tokens();
+        var sb = new StringBuilder();
+        for (int t = imp.firstTokenIdx(); t <= imp.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) {
+                if (sb.length() > 0) {
+                    sb.append(' ');
+                }
+                sb.append(tokens.textAt(t));
+            }
+        }
+        // Drop the space before `.` and `;` and before `*` after `.`.
+        var importText = sb.toString().replaceAll(" ([.;*])", "$1").replaceAll("([.]) ", "$1");
         emit(importText);
         newline();
     }
@@ -343,10 +370,25 @@ final class FlowPrinter {
     }
 
     private void printRecordBody(Cursor.Branch recordBody) {
-        // Under v6, brace tokens live in the TokenArray. A record body with no members
-        // emits `{}`.
         var members = childrenByRule(recordBody, RuleKind.RECORD_MEMBER);
-        if (members.isEmpty()) {
+        var tokens = recordBody.cst().tokens();
+        // Detect empty body by token-content: between `{` and `}` of the recordBody range,
+        // are all tokens trivia? (firstTokenIdx is `{`, lastTokenIdx may include trailing
+        // trivia past `}`.) Walk inclusive non-trivia tokens; if only `{` and `}` are
+        // present, the body is empty.
+        int firstTok = recordBody.firstTokenIdx();
+        int lastTok = recordBody.lastTokenIdx();
+        int nonTriviaCount = 0;
+        for (int t = firstTok; t <= lastTok; t++) {
+            if (!tokens.isTrivia(t)) {
+                nonTriviaCount++;
+                if (nonTriviaCount > 2) {
+                    break;
+                }
+            }
+        }
+        boolean isEmpty = nonTriviaCount <= 2 && members.isEmpty();
+        if (nonTriviaCount <= 2) {
             emit("{}");
         } else {
             printBracedBody(recordBody, RuleKind.RECORD_MEMBER);
@@ -367,7 +409,11 @@ final class FlowPrinter {
                 if (!first && BlankLineRules.needsBlankLineBetween(member, prevMember)) {
                     newline();
                 }
-                printIndent();
+                // Skip printIndent when the member has leading comments — emitLeadingComments
+                // owns its own newline/indent and we'd otherwise emit a stray spaces-only line.
+                if (!hasLeadingComment(member)) {
+                    printIndent();
+                }
                 printNode(member);
                 newline();
                 first = false;
@@ -474,6 +520,20 @@ final class FlowPrinter {
         var stmts = childrenByRule(block, RuleKind.BLOCK_STMT);
 
         if (!stmts.isEmpty()) {
+            // Preserve source-line layout: if the entire Block sits on a single source
+            // line (e.g. `if (x) {return y;}`), keep it inline. This mirrors the legacy
+            // formatter's same-line brace detection. Don't collapse if the stmt carries a
+            // leading comment — that's a signal the dev wants spacing.
+            if (!measuringMode
+                && !useLambdaAlign
+                && !useChainAlign
+                && isOnSingleSourceLine(block)
+                && stmts.size() == 1
+                && !hasLeadingComment(stmts.get(0))) {
+                printNode(stmts.get(0));
+                emitBare("}");
+                return;
+            }
             newline();
             if (useLambdaAlign) {
                 printAlignedBlockStatements(stmts, lambdaAlignCol);
@@ -484,7 +544,9 @@ final class FlowPrinter {
             } else {
                 indentLevel++;
                 for (var stmt : stmts) {
-                    printIndent();
+                    if (!hasLeadingComment(stmt)) {
+                        printIndent();
+                    }
                     printNode(stmt);
                     newline();
                 }
@@ -494,6 +556,35 @@ final class FlowPrinter {
         }
 
         emitBare("}");
+    }
+
+    private boolean hasLeadingComment(Cursor node) {
+        return node.leadingTrivia().anyMatch(t -> t.isLineComment() || t.isBlockComment());
+    }
+
+    /// True iff the entire token range of the node covers exactly one source line
+    /// (no '\n' in any token between the first and last non-trivia tokens, exclusive
+    /// of trailing trivia past the last non-trivia token — that trailing trivia is the
+    /// transition to the next sibling and shouldn't count).
+    private boolean isOnSingleSourceLine(Cursor.Branch node) {
+        var tokens = node.cst().tokens();
+        // Find the last non-trivia token index within the range.
+        int lastNonTrivia = -1;
+        for (int t = node.lastTokenIdx(); t >= node.firstTokenIdx(); t--) {
+            if (!tokens.isTrivia(t)) {
+                lastNonTrivia = t;
+                break;
+            }
+        }
+        if (lastNonTrivia < 0) {
+            return true;
+        }
+        for (int t = node.firstTokenIdx(); t <= lastNonTrivia; t++) {
+            if (tokens.textAt(t).toString().indexOf('\n') >= 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void printAlignedBlockStatements(List<Cursor> stmts, int alignCol) {
@@ -534,58 +625,61 @@ final class FlowPrinter {
         Cursor primary = null;
         Cursor.Branch postfix = null;
         var directPostOps = new ArrayList<Cursor>();
-        var prefixChildren = new ArrayList<Cursor>();
 
-        // Classify children, preserving order for prefix operators (!, ~, -, +, ++, --)
-        boolean foundPrimary = false;
+        // Classify children. A Unary may contain a nested Unary (e.g., `!!x` or `!(x)`),
+        // in which case we just walk tokens and let recursion handle the inner Unary.
         for (var child : kids) {
             if (child.kindIs(RuleKind.PRIMARY)) {
                 primary = child;
-                foundPrimary = true;
             } else if (child.kindIs(RuleKind.POSTFIX) && child instanceof Cursor.Branch pf) {
                 postfix = pf;
             } else if (child.kindIs(RuleKind.POST_OP)) {
                 directPostOps.add(child);
-            } else if (!foundPrimary) {
-                prefixChildren.add(child);
             }
         }
 
-        // Walk tokens that come before primary (prefix operators like !, ~, etc.)
-        // Use walkTokens range up to primary's firstTokenIdx
+        // If we found a Primary, walk tokens BEFORE primary to emit prefix operators
+        // (!, ~, -, +, ++, --), then dispatch primary+postfix.
         if (primary != null) {
             int prefixEnd = primary.firstTokenIdx() - 1;
             if (prefixEnd >= unary.firstTokenIdx()) {
-                walkTokenRange(unary, prefixChildren, unary.firstTokenIdx(), prefixEnd);
+                walkTokenRange(unary, List.of(), unary.firstTokenIdx(), prefixEnd);
+            }
+            if (postfix != null) {
+                printPostfixWithPrimary(primary, postfix);
+            } else if (!directPostOps.isEmpty()) {
+                printNode(primary);
+                for (var postOp : directPostOps) {
+                    printNode(postOp);
+                }
+            } else {
+                printNode(primary);
             }
         } else {
-            for (var pref : prefixChildren) {
-                printNode(pref);
-            }
-        }
-
-        if (primary != null && postfix != null) {
-            printPostfixWithPrimary(primary, postfix);
-        } else if (primary != null && !directPostOps.isEmpty()) {
-            printNode(primary);
-            for (var postOp : directPostOps) {
-                printNode(postOp);
-            }
-        } else if (primary != null) {
-            printNode(primary);
-        } else {
+            // No Primary — fall through to default token walk, which will recursively
+            // dispatch nested Unary/Postfix children correctly.
             walkTokens(unary);
         }
     }
 
     private void printPostfixWithPrimary(Cursor primary, Cursor.Branch postfix) {
+        if (measuringMode) {
+            // Measurement only needs width — emit primary + each postOp inline.
+            printNode(primary);
+            for (var postOp : childrenByRule(postfix, RuleKind.POST_OP)) {
+                printNode(postOp);
+            }
+            return;
+        }
         var postOps = childrenByRule(postfix, RuleKind.POST_OP);
 
+        int allDotMethodCount = countDotMethodChainLinks(postfix);
         var dotPlusParenPostOps = postOps.stream().filter(this::isDotMethodPostOp).toList();
         boolean primaryHasMethodAccess = hasMethodAccessInPrimary(primary);
         boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
-        int chainLinkCount = dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0);
+        int chainLinkCount = Math.max(allDotMethodCount,
+                                      dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
         // Break chains with 3+ links always; break 2-link chains only if they don't fit
         boolean shouldBreakChain = chainLinkCount >= 3
             || (chainLinkCount >= 2 && !fitsOnLineUnary(primary, postOps));
@@ -614,6 +708,13 @@ final class FlowPrinter {
     }
 
     private void printPostfix(Cursor.Branch postfix) {
+        if (measuringMode) {
+            // Measurement only needs the width; just emit primary + postOps in order.
+            for (var child : postfix.children().toList()) {
+                printNode(child);
+            }
+            return;
+        }
         var kids = postfix.children().toList();
         Cursor primary = null;
         var postOps = new ArrayList<Cursor>();
@@ -625,11 +726,17 @@ final class FlowPrinter {
             }
         }
 
+        // Under v6, chains can be encoded as nested Postfixes (Postfix's Primary may itself
+        // contain a nested Postfix wrapped in a parenthesized PRIMARY). To detect chains,
+        // count dot-method post-ops across the WHOLE outer expression by descending into
+        // nested Postfixes / Primarys reachable via the Primary chain.
+        int allDotMethodCount = countDotMethodChainLinks(postfix);
         var dotPlusParenPostOps = postOps.stream().filter(this::isDotMethodPostOp).toList();
         boolean primaryHasMethodAccess = primary != null && hasMethodAccessInPrimary(primary);
         boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
-        int chainLinkCount = dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0);
+        int chainLinkCount = Math.max(allDotMethodCount,
+                                      dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
         // Break chains with 3+ links always; break 2-link chains only if they don't fit
         boolean shouldBreakChain = chainLinkCount >= 3
             || (chainLinkCount >= 2 && !fitsOnLine(postfix));
@@ -694,14 +801,49 @@ final class FlowPrinter {
         }
     }
 
+    /// Count chain links visible within this Postfix when chains are encoded as nested
+    /// Postfix wrappers. Walks the Primary chain and aggregates dot-method post-ops at
+    /// each level. Used to decide whether `shouldBreakChain` for the OUTER print.
+    private int countDotMethodChainLinks(Cursor.Branch postfix) {
+        int count = 0;
+        Cursor.Branch cur = postfix;
+        while (cur != null) {
+            Cursor primaryChild = null;
+            for (var child : cur.children().toList()) {
+                if (child.kindIs(RuleKind.PRIMARY)) {
+                    primaryChild = child;
+                } else if (child.kindIs(RuleKind.POST_OP) && isDotMethodPostOp(child)) {
+                    count++;
+                }
+            }
+            cur = innerPostfix(primaryChild);
+        }
+        return count;
+    }
+
+    /// If a Primary contains a nested Postfix (chain continuation), return it. v6 may
+    /// wrap chains via deeper intermediate rules (PRIMARY > EXPR > ... > POSTFIX), so we
+    /// walk descendants looking for the first POSTFIX whose span fits inside primary's.
+    private Cursor.Branch innerPostfix(Cursor primary) {
+        if (!(primary instanceof Cursor.Branch pb)) {
+            return null;
+        }
+        return pb.descendants()
+            .filter(c -> c.kindIs(RuleKind.POSTFIX))
+            .findFirst()
+            .filter(c -> c instanceof Cursor.Branch)
+            .map(c -> (Cursor.Branch) c)
+            .orElse(null);
+    }
+
     /// A dot-method PostOp begins with `.` and contains `(`. Under v6 the `.` and `(`
-    /// are token-level — inspect the PostOp's token range.
+    /// are token-level — inspect the PostOp's token range. Works for both Branch and Leaf
+    /// PostOps (e.g. `.toList()` may be a Leaf since it has no inner CST children).
     private boolean isDotMethodPostOp(Cursor postOp) {
-        if (!(postOp instanceof Cursor.Branch br)) return false;
-        var tokens = br.cst().tokens();
+        var tokens = postOp.cst().tokens();
         boolean hasDot = false;
         boolean hasParen = false;
-        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+        for (int t = postOp.firstTokenIdx(); t <= postOp.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
             var s = tokens.textAt(t).toString();
             if (".".equals(s)) hasDot = true;
@@ -712,11 +854,10 @@ final class FlowPrinter {
 
     /// A bare invocation PostOp begins with `(` but no `.` (e.g. method call on a primary).
     private boolean isBareInvocationPostOp(Cursor postOp) {
-        if (!(postOp instanceof Cursor.Branch br)) return false;
-        var tokens = br.cst().tokens();
+        var tokens = postOp.cst().tokens();
         boolean hasDot = false;
         boolean hasParen = false;
-        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+        for (int t = postOp.firstTokenIdx(); t <= postOp.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
             var s = tokens.textAt(t).toString();
             if (".".equals(s)) hasDot = true;
@@ -935,11 +1076,22 @@ final class FlowPrinter {
     }
 
     private void printRecordDecl(Cursor.Branch recordDecl) {
+        boolean[] afterComponents = {false};
         walkTokensWith(recordDecl, new TokenWalker() {
             @Override
             public void onChild(Cursor child) {
                 if (child.kindIs(RuleKind.RECORD_COMPONENTS)) {
                     printNodeContent(child);
+                    afterComponents[0] = true;
+                } else if (child.kindIs(RuleKind.RECORD_BODY)) {
+                    // RECORD_BODY may be a Leaf (empty `{}`) or a Branch (has members).
+                    // Emit `{` without a space when we're right after components.
+                    if (child instanceof Cursor.Branch rbBranch) {
+                        printRecordBody(rbBranch);
+                    } else {
+                        emit("{}");
+                    }
+                    afterComponents[0] = false;
                 } else {
                     printNode(child);
                 }
@@ -947,7 +1099,12 @@ final class FlowPrinter {
 
             @Override
             public void onToken(int kind, String text) {
-                emitToken(text);
+                if ("{".equals(text) && afterComponents[0]) {
+                    emit("{");
+                    afterComponents[0] = false;
+                } else {
+                    emitToken(text);
+                }
             }
         });
     }
@@ -1060,57 +1217,15 @@ final class FlowPrinter {
     // ===== Method declarations =====
 
     private void printMethodDecl(Cursor.Branch methodDecl) {
-        var kids = methodDecl.children().toList();
-        int typeParamsIndex = -1;
-        for (int i = 0; i < kids.size(); i++) {
-            if (kids.get(i).kindIs(RuleKind.TYPE_PARAMS)) {
-                typeParamsIndex = i;
-                break;
-            }
-        }
-
-        if (typeParamsIndex == -1) {
-            walkTokens(methodDecl);
-            return;
-        }
-
-        var typeParams = kids.get(typeParamsIndex);
-        // Walk tokens from methodDecl start through end of TypeParams.
-        walkTokenRange(methodDecl,
-                       kids.subList(0, typeParamsIndex + 1),
-                       methodDecl.firstTokenIdx(),
-                       typeParams.lastTokenIdx());
-
-        var signatureWidth = measureSignatureWidth(kids, typeParamsIndex);
-        if (currentColumn + 1 + signatureWidth <= config.maxLineLength()) {
-            emit(" ");
-        } else {
-            newline();
-            printIndent();
-        }
-
-        for (int i = typeParamsIndex + 1; i < kids.size(); i++) {
-            printNodeContent(kids.get(i));
-        }
+        // Default: walk tokens for the entire method decl. v6 keeps modifiers and type
+        // params naturally on the same line via the spacing rules; we only need a special
+        // line-break heuristic when there's a TYPE_PARAMS clause AND the post-typeParams
+        // signature would overflow.
+        walkTokens(methodDecl);
     }
 
     private void printMethodDeclContent(Cursor.Branch methodDecl) {
-        // Equivalent to printMethodDecl but uses printNodeContent on first child
-        // (no leading-trivia emission, since called from printMember which already
-        // emitted member-level trivia).
         printMethodDecl(methodDecl);
-    }
-
-    private int measureSignatureWidth(List<Cursor> children, int typeParamsIndex) {
-        var signatureText = new StringBuilder();
-        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
-            var childText = text(children.get(i));
-            signatureText.append(childText);
-            if (childText.contains("(")) {
-                break;
-            }
-        }
-        return signatureText.toString().replaceAll("\\s+", " ").trim().length();
     }
 
     // ===== Ternary =====
@@ -1238,7 +1353,7 @@ final class FlowPrinter {
 
     private void printNodeContent(Cursor node) {
         switch (node) {
-            case Cursor.Leaf leaf -> emitToken(leaf.text().toString());
+            case Cursor.Leaf leaf -> emitLeafTokens(leaf);
             case Cursor.ErrorNode err -> emitToken(err.skippedText().toString());
             case Cursor.Branch br -> {
                 switch (br.kind()) {
@@ -1294,23 +1409,34 @@ final class FlowPrinter {
 
     private void emitLeadingComments(Cursor node) {
         boolean emittedAny = false;
-        var trivia = node.leadingTrivia().toList();
-        for (var t : trivia) {
-            if (t.isLineComment()) {
+        // Iterate by token index so we can dedupe (under v6, leading trivia is sometimes
+        // attributed to both the outer node and its first CST child — emit each token at
+        // most once across the whole format pass).
+        var triviaTokenIdxs = node.leadingTriviaTokens().toArray();
+        var tokens = node.cst().tokens();
+        for (int tokIdx : triviaTokenIdxs) {
+            if (emittedTriviaTokens.contains(tokIdx)) {
+                continue;
+            }
+            int kind = tokens.kindAt(tokIdx);
+            boolean isLine = kind == 1 || kind == 3;        // LINE_COMMENT or DOC_LINE_COMMENT
+            boolean isBlock = kind == 2 || kind == 4;       // BLOCK_COMMENT or DOC_BLOCK_COMMENT
+            if (isLine) {
                 if (currentColumn > 0) {
                     newline();
                 }
                 printIndent();
-                var text = t.text().toString().stripTrailing();
+                var text = tokens.textAt(tokIdx).toString().stripTrailing();
                 output.append(text);
                 currentColumn += text.length();
                 newline();
                 emittedAny = true;
-            } else if (t.isBlockComment()) {
+                emittedTriviaTokens.add(tokIdx);
+            } else if (isBlock) {
                 if (currentColumn > 0) {
                     newline();
                 }
-                var lines = t.text().toString().split("\n", -1);
+                var lines = tokens.textAt(tokIdx).toString().split("\n", -1);
                 for (int i = 0; i < lines.length; i++) {
                     if (i == 0) {
                         printIndent();
@@ -1326,6 +1452,7 @@ final class FlowPrinter {
                 }
                 newline();
                 emittedAny = true;
+                emittedTriviaTokens.add(tokIdx);
             }
             // Whitespace trivia ignored — flow formatter controls all whitespace
         }
