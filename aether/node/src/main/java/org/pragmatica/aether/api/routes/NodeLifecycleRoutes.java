@@ -158,11 +158,16 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     /// Step 1 of drain: write DRAINING via consensus through `MembershipFsm` (spec §9 E.4).
     /// The FSM emits `InvokeDrain` so the coordinator's drain protocol runs.
+    ///
+    /// RC1 Step 4: stamp the event with the node's canonical `HlcClock` so the resulting
+    /// `NodeLifecycleValue.transitionedAt` is causally ordered against every other HLC-
+    /// stamped action on this node.
     private Promise<Unit> initiateDrain(NodeId nodeId) {
-        nodeSupplier.get().membershipFsm()
-                          .enqueueOperatorEvent(new OperatorDrain(nodeId,
-                                                                    DrainReason.OPERATOR_DRAIN,
-                                                                    System.currentTimeMillis()));
+        var node = nodeSupplier.get();
+        node.membershipFsm()
+                  .enqueueOperatorEvent(new OperatorDrain(nodeId,
+                                                            DrainReason.OPERATOR_DRAIN,
+                                                            node.hlcClock().now()));
         return Promise.unitPromise();
     }
 
@@ -275,9 +280,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// Decommission entry point. Routes through `MembershipFsm` with `OperatorDecommission(force=true)`
     /// (spec §9 E.4). The `force` flag is `true` because the `/api/node/shutdown` route bypasses
     /// the drain protocol — this matches direct-DECOMMISSIONED-write semantics.
+    ///
+    /// RC1 Step 4: stamp the event with the node's canonical `HlcClock`.
     private Promise<Unit> initiateDecommission(NodeId nodeId) {
-        nodeSupplier.get().membershipFsm()
-                          .enqueueOperatorEvent(new OperatorDecommission(nodeId, true, System.currentTimeMillis()));
+        var node = nodeSupplier.get();
+        node.membershipFsm()
+                  .enqueueOperatorEvent(new OperatorDecommission(nodeId, true, node.hlcClock().now()));
         return Promise.unitPromise();
     }
 

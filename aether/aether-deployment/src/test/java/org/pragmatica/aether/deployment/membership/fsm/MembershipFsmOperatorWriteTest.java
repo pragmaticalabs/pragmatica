@@ -29,6 +29,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -69,6 +70,14 @@ class MembershipFsmOperatorWriteTest {
     private static final long T0 = 1_000L;
 
     private static final long T1 = 2_000L;
+
+    /// RC1 Step 4 — HLC equivalent of `T1` used when constructing events that carry
+    /// `HlcTimestamp at`. State expectations stay on the millis path via `T0` / `T1`.
+    private static final HlcTimestamp T1_HLC = new HlcTimestamp(HlcTimestamp.pack(T1 * 1000L, 0), "test");
+
+    private static HlcTimestamp hlc(long millis) {
+        return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), "test");
+    }
 
     private FakeLifecycleSnapshot lifecycleSnapshot;
 
@@ -117,7 +126,7 @@ class MembershipFsmOperatorWriteTest {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             // Drain ack stays pending → only the DRAINING write reaches consensus.
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DRAINING);
@@ -131,7 +140,7 @@ class MembershipFsmOperatorWriteTest {
         @Test void operatorDecommission_force_leader_proposesDecommissionedKvWrite() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, true, T1));
+            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, true, T1_HLC));
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
             assertThat(drainCoordinator.prepareCalls).isEmpty();
@@ -144,7 +153,7 @@ class MembershipFsmOperatorWriteTest {
             // invokes drain coordinator (spec §5 row OnDuty col OperatorDecommission(force=false)).
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, false, T1));
+            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, false, T1_HLC));
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DRAINING);
             assertThat(drainCoordinator.prepareCalls).containsExactly(new PrepareDrainCall(PEER_A,
@@ -161,7 +170,7 @@ class MembershipFsmOperatorWriteTest {
             leaderFlag.set(false);
             var fsm = startedFsm();
             var priorState = fsm.get(PEER_A).unwrap();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             assertThat(commandApplier.calls).isEmpty();
             assertThat(drainCoordinator.prepareCalls).isEmpty();
             // Local state unchanged: I1 says state derives from KV; without a write, no mutation.
@@ -177,7 +186,7 @@ class MembershipFsmOperatorWriteTest {
             var fsm = startedFsm();
             commandApplier.rejectWith(Causes.cause("consensus rejected"));
             var priorState = fsm.get(PEER_A).unwrap();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             // Write attempted but rejected — local state must remain prior state.
             assertThat(commandApplier.calls).hasSize(1);
             assertThat(fsm.get(PEER_A).unwrap()).isEqualTo(priorState);
@@ -189,7 +198,7 @@ class MembershipFsmOperatorWriteTest {
         @Test void operatorDrain_then_awaitDrainAckSuccess_writesDecommissioned() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             awaitState(fsm, PEER_A, Draining.class);
             assertThat(commandApplier.calls).hasSize(1);
             // F4: completing the awaitDrainAck Promise drives DrainOutcome(true) →
@@ -204,7 +213,7 @@ class MembershipFsmOperatorWriteTest {
         @Test void operatorDrain_then_awaitDrainAckFailure_writesFailedDrain() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             awaitState(fsm, PEER_A, Draining.class);
             drainCoordinator.failAckAt(0, Causes.cause("drain-hard-deadline"));
             awaitState(fsm, PEER_A, FailedDrain.class);
@@ -225,7 +234,7 @@ class MembershipFsmOperatorWriteTest {
             // F2: the timer's runnable enqueues JoinDeadlineExpired. We invoke the same path
             // directly to validate leader-writing classification + reducer wiring.
             commandApplier.calls.clear();
-            fsm.enqueueOperatorEvent(new JoinDeadlineExpired(PEER_A, System.currentTimeMillis()));
+            fsm.enqueueOperatorEvent(new JoinDeadlineExpired(PEER_A, hlc(System.currentTimeMillis())));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
@@ -236,7 +245,7 @@ class MembershipFsmOperatorWriteTest {
             leaderFlag.set(false);
             var fsm = startedFsm();
             commandApplier.calls.clear();
-            fsm.enqueueOperatorEvent(new JoinDeadlineExpired(PEER_A, T0 + 60_000L));
+            fsm.enqueueOperatorEvent(new JoinDeadlineExpired(PEER_A, hlc(T0 + 60_000L)));
             assertThat(commandApplier.calls).isEmpty();
         }
     }
@@ -466,7 +475,7 @@ class MembershipFsmOperatorWriteTest {
                                                                     HlcTimestamp.ZERO);
             lifecycleSnapshot.put(PEER_A, priorValue);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             assertThat(commandApplier.calls).hasSize(1);
             var write = (NodeLifecycleValue) ((Put<?, ?>) commandApplier.calls.get(0).get(0)).value();
             assertThat(write.state()).isEqualTo(NodeLifecycleState.DRAINING);
@@ -484,7 +493,7 @@ class MembershipFsmOperatorWriteTest {
                                                                     HlcTimestamp.ZERO);
             lifecycleSnapshot.put(PEER_A, priorValue);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, true, T1));
+            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, true, T1_HLC));
             var write = (NodeLifecycleValue) ((Put<?, ?>) commandApplier.calls.get(0).get(0)).value();
             assertThat(write.state()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
             assertThat(write.host()).isEqualTo("10.4.5.6");

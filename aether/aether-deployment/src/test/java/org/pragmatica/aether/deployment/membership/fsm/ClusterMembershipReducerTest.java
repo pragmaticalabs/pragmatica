@@ -37,8 +37,10 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,11 +53,23 @@ class ClusterMembershipReducerTest {
 
     private static final String SLOT_ID = "slot-1";
 
-    private static final long T0 = 1_000L;
+    private static final HlcTimestamp T0 = at(1_000L);
 
-    private static final long T1 = 2_000L;
+    private static final HlcTimestamp T1 = at(2_000L);
 
-    private static final long T2 = 3_000L;
+    private static final HlcTimestamp T2 = at(3_000L);
+
+    /// Builds an `HlcTimestamp` whose physical-microseconds component equals `millis * 1000`
+    /// so the reducer's `physicalMicros() / 1000` derivation yields exactly `millis`.
+    /// Counter component is zero, nodeId "test" — sufficient for deterministic equality.
+    private static HlcTimestamp at(long millis) {
+        return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), "test");
+    }
+
+    /// Extracts the wall-clock millis derivation used inside the reducer for state-AtMs fields.
+    private static long ms(HlcTimestamp at) {
+        return at.physicalMicros() / 1000L;
+    }
 
     private ClusterMembershipReducer reducer;
 
@@ -79,7 +93,7 @@ class ClusterMembershipReducerTest {
             // `MembershipView` is the canonical reader; the KV write is redundant with the
             // view's SWIM-derived ON_DUTY but is preserved for back-compat.
             var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, T1));
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
             assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
         }
@@ -159,7 +173,7 @@ class ClusterMembershipReducerTest {
 
     @Nested @DisplayName("Joining × *")
     class FromJoining {
-        private final Joining state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+        private final Joining state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
 
         @Test void joining_swimHealthy_promotesToOnDuty_leaderInitiated() {
             var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
@@ -170,7 +184,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void joining_swimHealthy_withoutSlot_writesLifecycleOnly() {
-            var slotless = MembershipFsmState.joining(PEER, T0, Option.none());
+            var slotless = MembershipFsmState.joining(PEER, ms(T0), Option.none());
             var outcome = reducer.apply(slotless, new SwimHealthy(PEER, 1L, T1));
             assertOnDuty(outcome, T1);
             assertThat(outcome.writes()).hasSize(1);
@@ -223,7 +237,7 @@ class ClusterMembershipReducerTest {
 
     @Nested @DisplayName("OnDuty × *")
     class FromOnDuty {
-        private final OnDuty state = MembershipFsmState.onDuty(PEER, T0);
+        private final OnDuty state = MembershipFsmState.onDuty(PEER, ms(T0));
 
         @Test void onDuty_swimHealthy_isNop_reConfirmation() {
             assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
@@ -275,7 +289,7 @@ class ClusterMembershipReducerTest {
 
     @Nested @DisplayName("Draining × *")
     class FromDraining {
-        private final Draining state = MembershipFsmState.draining(PEER, T0, DrainReason.OPERATOR_DRAIN);
+        private final Draining state = MembershipFsmState.draining(PEER, ms(T0), DrainReason.OPERATOR_DRAIN);
 
         @Test void draining_swimHealthy_isNop_drainOwnsOutcome() {
             assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
@@ -317,7 +331,7 @@ class ClusterMembershipReducerTest {
 
         @Test void draining_drainOutcomeFailure_writesFailedDrain_emitsNodeDrainFailed() {
             var outcome = reducer.apply(state, new DrainOutcome(PEER, false, T1));
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.failedDrain(PEER, T1));
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.failedDrain(PEER, ms(T1)));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.FAILED_DRAIN, T1));
             assertEmitted(outcome, MembershipDomainEvent.NODE_DRAIN_FAILED);
         }
@@ -332,7 +346,7 @@ class ClusterMembershipReducerTest {
         // Use a decommissionedAt far enough in the past (T_AGED) to be beyond the 60s
         // revival TTL — preserves the historical "zombie" semantics for the non-revival cells.
         private static final long T_AGED = 0L;
-        private static final long T_LATE = 120_000L;
+        private static final HlcTimestamp T_LATE = at(120_000L);
 
         private final Decommissioned state = MembershipFsmState.decommissioned(PEER, T_AGED);
 
@@ -379,21 +393,22 @@ class ClusterMembershipReducerTest {
     @Nested @DisplayName("Decommissioned × SwimHealthy (H.3: no revival)")
     class DecommissionedRevival {
         private static final long NOW = 1_000_000L;
+        private static final HlcTimestamp NOW_HLC = at(NOW);
 
         @Test void decommissioned_swimHealthy_isNop_hSeriesNoRevival() {
             var state = MembershipFsmState.decommissioned(PEER, NOW - 30_000L);
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW)), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC)), state);
         }
 
         @Test void decommissioned_swimHealthy_pastRetention_isNop_hSeriesNoRevival() {
             var state = MembershipFsmState.decommissioned(PEER, NOW - 600_000L);
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW)), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC)), state);
         }
     }
 
     @Nested @DisplayName("FailedDrain × *")
     class FromFailedDrain {
-        private final FailedDrain state = MembershipFsmState.failedDrain(PEER, T0);
+        private final FailedDrain state = MembershipFsmState.failedDrain(PEER, ms(T0));
 
         @Test void failedDrain_swimHealthy_isNop() {
             assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
@@ -436,7 +451,7 @@ class ClusterMembershipReducerTest {
     @Nested @DisplayName("Purity / idempotence")
     class Purity {
         @Test void apply_isPure_sameInputsYieldEqualOutcomes() {
-            var state = MembershipFsmState.onDuty(PEER, T0);
+            var state = MembershipFsmState.onDuty(PEER, ms(T0));
             var event = new SwimFaulty(PEER, 1L, T1);
             var first = reducer.apply(state, event);
             var second = reducer.apply(state, event);
@@ -444,7 +459,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void onDutyToDecommissioned_thenSwimFaulty_isNopFromTerminalState() {
-            var state = MembershipFsmState.onDuty(PEER, T0);
+            var state = MembershipFsmState.onDuty(PEER, ms(T0));
             var event = new SwimFaulty(PEER, 1L, T1);
             var first = reducer.apply(state, event);
             var second = reducer.apply(first.newState(), event);
@@ -454,7 +469,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void joiningToOnDuty_thenSwimHealthy_isNopFromOnDuty() {
-            var state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+            var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
             var event = new SwimHealthy(PEER, 1L, T1);
             var first = reducer.apply(state, event);
             var second = reducer.apply(first.newState(), event);
@@ -464,7 +479,7 @@ class ClusterMembershipReducerTest {
 
         @Test void drainOutcomeSuccess_thenReapply_isErr_atMostOnceContract() {
             // DrainOutcome is at-most-once per spec §4.1 row 4 — re-apply on Decommissioned is err.
-            var state = MembershipFsmState.draining(PEER, T0, DrainReason.OPERATOR_DRAIN);
+            var state = MembershipFsmState.draining(PEER, ms(T0), DrainReason.OPERATOR_DRAIN);
             var event = new DrainOutcome(PEER, true, T1);
             var first = reducer.apply(state, event);
             assertThatThrownBy(() -> reducer.apply(first.newState(), event)).isInstanceOf(IllegalStateException.class);
@@ -478,7 +493,7 @@ class ClusterMembershipReducerTest {
     @Nested @DisplayName("Smoking-gun replay (spec §1.1)")
     class SmokingGunReplay {
         @Test void onDutyVictim_singleFaultyObservation_writesDecommissioned() {
-            var state = MembershipFsmState.onDuty(PEER, T0);
+            var state = MembershipFsmState.onDuty(PEER, ms(T0));
             var outcome = reducer.apply(state, new SwimFaulty(PEER, 7L, T1));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DECOMMISSIONED, T1));
             assertEmitted(outcome, MembershipDomainEvent.NODE_FAILED);
@@ -492,10 +507,10 @@ class ClusterMembershipReducerTest {
     @Nested @DisplayName("Force decommission direct path (Q2=A)")
     class ForceDecommissionDirect {
         @Test void onDuty_operatorDecommissionForce_singleAtomicWrite_noDrainCoordinator() {
-            var state = MembershipFsmState.onDuty(PEER, T0);
+            var state = MembershipFsmState.onDuty(PEER, ms(T0));
             var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
 
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, T1));
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, ms(T1)));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DECOMMISSIONED, T1));
             // No DrainCoordinator invocation — Q2=A is a direct transition.
             assertThat(outcome.effects()).noneMatch(e -> e instanceof InvokeDrain);
@@ -517,27 +532,27 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void joinDeadlineExpired_inJoining_transitionsToDecommissioned() {
-            var state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+            var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
             var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1));
 
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, T1));
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, ms(T1)));
             assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_FAILED, "join-timeout");
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
         }
 
         @Test void joiningExit_emitsCancelTimer_preventingStaleFire() {
             // Any exit from Joining must cancel the join-deadline timer (spec R4).
-            var state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+            var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
             var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
         }
 
         @Test void joinDeadlineExpired_outsideJoining_isHarmlessNop() {
             // Stale-fire after Joining exit must be a no-op against every non-Joining state.
-            var onDuty = MembershipFsmState.onDuty(PEER, T0);
+            var onDuty = MembershipFsmState.onDuty(PEER, ms(T0));
             assertNop(reducer.apply(onDuty, new JoinDeadlineExpired(PEER, T2)), onDuty);
 
-            var decommissioned = MembershipFsmState.decommissioned(PEER, T0);
+            var decommissioned = MembershipFsmState.decommissioned(PEER, ms(T0));
             assertNop(reducer.apply(decommissioned, new JoinDeadlineExpired(PEER, T2)), decommissioned);
         }
     }
@@ -547,10 +562,10 @@ class ClusterMembershipReducerTest {
         @Test void joining_swimHealthy_promotesToOnDuty_noSelfWriteEvent() {
             // No self-write event exists in MembershipFsmEvent vocabulary — verified at compile time
             // by the sealed hierarchy. This test asserts the leader-observed SwimHealthy fires the promotion.
-            var state = MembershipFsmState.joining(PEER, T0, Option.some(SLOT_ID));
+            var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
             var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
 
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, T1));
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
             assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
             assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
@@ -559,11 +574,11 @@ class ClusterMembershipReducerTest {
         @Test void joining_swimHealthy_observedByLeader_fromAnyObserverIdentity() {
             // The reducer does not care who the observer was — it consumes `SwimHealthy` events
             // produced by the leader's local SWIM. This test documents that semantic.
-            var state = MembershipFsmState.joining(PEER, T0, Option.none());
+            var state = MembershipFsmState.joining(PEER, ms(T0), Option.none());
             var leaderObservation = new SwimHealthy(PEER, 1L, T1);  // observer identity is implicit
-            assertThat(reducer.apply(state, leaderObservation).newState()).isEqualTo(MembershipFsmState.onDuty(PEER, T1));
+            assertThat(reducer.apply(state, leaderObservation).newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             // A second, different observer (also the leader, different incarnation) is nop on OnDuty.
-            var reapply = reducer.apply(MembershipFsmState.onDuty(PEER, T1), new SwimHealthy(LEADER, 2L, T2));
+            var reapply = reducer.apply(MembershipFsmState.onDuty(PEER, ms(T1)), new SwimHealthy(LEADER, 2L, T2));
             assertThat(reapply.writes()).isEmpty();
         }
     }
@@ -578,31 +593,31 @@ class ClusterMembershipReducerTest {
         assertThat(outcome.effects()).isEmpty();
     }
 
-    private static void assertEntersJoining(Outcome outcome, Option<String> expectedSlotId, long expectedJoinedAt) {
-        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.joining(PEER, expectedJoinedAt, expectedSlotId));
+    private static void assertEntersJoining(Outcome outcome, Option<String> expectedSlotId, HlcTimestamp expectedJoinedAt) {
+        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.joining(PEER, ms(expectedJoinedAt), expectedSlotId));
         assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.JOINING, expectedJoinedAt));
         assertEmitted(outcome, MembershipDomainEvent.NODE_JOINING);
         assertThat(outcome.effects()).anyMatch(e -> e instanceof ScheduleTimer st && st.kind() == TimerKind.JOIN_DEADLINE);
     }
 
-    private static void assertOnDuty(Outcome outcome, long expectedAt) {
-        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, expectedAt));
+    private static void assertOnDuty(Outcome outcome, HlcTimestamp expectedAt) {
+        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(expectedAt)));
         assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.ON_DUTY, expectedAt));
     }
 
-    private static void assertDecommissioned(Outcome outcome, long expectedAt, String expectedReasonOrNull) {
+    private static void assertDecommissioned(Outcome outcome, HlcTimestamp expectedAt, String expectedReasonOrNull) {
         var expectedSwimDriven = expectedReasonOrNull != null
                                   && ("swim-faulty".equals(expectedReasonOrNull)
                                       || "swim-departed".equals(expectedReasonOrNull));
-        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, expectedAt, expectedSwimDriven));
+        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, ms(expectedAt), expectedSwimDriven));
         assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.DECOMMISSIONED, expectedAt));
         if (expectedReasonOrNull != null) {
             assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_FAILED, expectedReasonOrNull);
         }
     }
 
-    private static void assertDraining(Outcome outcome, long expectedAt, DrainReason expectedReason) {
-        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.draining(PEER, expectedAt, expectedReason));
+    private static void assertDraining(Outcome outcome, HlcTimestamp expectedAt, DrainReason expectedReason) {
+        assertThat(outcome.newState()).isEqualTo(MembershipFsmState.draining(PEER, ms(expectedAt), expectedReason));
         assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DRAINING, expectedAt));
     }
 
@@ -620,9 +635,14 @@ class ClusterMembershipReducerTest {
         assertThatThrownBy(() -> reducer.apply(state, event)).isInstanceOf(IllegalStateException.class);
     }
 
-    private static KVCommand<AetherKey> putLifecycle(NodeLifecycleState newState, long nowMs) {
+    private static KVCommand<AetherKey> putLifecycle(NodeLifecycleState newState, HlcTimestamp at) {
         var key = NodeLifecycleKey.nodeLifecycleKey(PEER);
-        var value = NodeLifecycleValue.nodeLifecycleValue(newState, nowMs);
+        var value = NodeLifecycleValue.nodeLifecycleValue(newState,
+                                                          ms(at),
+                                                          "",
+                                                          0,
+                                                          Epoch.ZERO,
+                                                          at);
         return new KVCommand.Put<>(key, value);
     }
 

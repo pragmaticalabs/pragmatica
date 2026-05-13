@@ -33,6 +33,8 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -121,6 +123,12 @@ public final class MembershipFsm {
     /// require explicit opt-in; this prevents silent test-side races.
     private final Predicate<NodeId> isKnownAliveClusterPeer;
 
+    /// RC1 Step 4 — per-node Hybrid Logical Clock. Used at every event-creation site to stamp
+    /// the event's `at` field, and to merge cross-node HLC values that arrive via KV-put
+    /// notifications carrying remote `transitionedAt`. See `mergeRemoteHlcOrDrop` for the
+    /// drift policy.
+    private final HlcClock hlcClock;
+
     private final ReentrantLock fsmLock = new ReentrantLock();
 
     private final Map<NodeId, MembershipFsmState> fsmStates = new ConcurrentHashMap<>();
@@ -152,7 +160,8 @@ public final class MembershipFsm {
                           DrainCoordinator drainCoordinator,
                           TimerScheduler scheduler,
                           BooleanSupplier isLeader,
-                          Predicate<NodeId> isKnownAliveClusterPeer) {
+                          Predicate<NodeId> isKnownAliveClusterPeer,
+                          HlcClock hlcClock) {
         this.self = self;
         this.config = config;
         this.reducer = reducer;
@@ -163,6 +172,7 @@ public final class MembershipFsm {
         this.scheduler = scheduler;
         this.isLeader = isLeader;
         this.isKnownAliveClusterPeer = isKnownAliveClusterPeer;
+        this.hlcClock = hlcClock;
     }
 
     /// Read-only factory (no-op writes). Useful for tests that only exercise the reducer +
@@ -178,7 +188,9 @@ public final class MembershipFsm {
                              NO_OP_COMMAND_APPLIER,
                              NO_OP_DRAIN_COORDINATOR,
                              defaultScheduler(),
-                             NEVER_LEADER);
+                             NEVER_LEADER,
+                             REJECT_ALL_PEERS,
+                             defaultHlcClock(self));
     }
 
     /// Write-capable factory. When `isLeader.getAsBoolean()` returns `true`, operator events
@@ -205,12 +217,17 @@ public final class MembershipFsm {
                              drainCoordinator,
                              scheduler,
                              isLeader,
-                             REJECT_ALL_PEERS);
+                             REJECT_ALL_PEERS,
+                             defaultHlcClock(self));
     }
 
-    /// F.4 (2026-05-12) — full production factory. `isKnownAliveClusterPeer` predicate gates
-    /// the QUIC `PeerConnected` synthesis bridge (`onPeerConnected`). See field doc on
+    /// F.4 (2026-05-12) — production factory. `isKnownAliveClusterPeer` predicate gates the
+    /// QUIC `PeerConnected` synthesis bridge (`onPeerConnected`). See field doc on
     /// `isKnownAliveClusterPeer` for semantics.
+    ///
+    /// **RC1 Step 4 overload.** Defaults `hlcClock` to a fresh per-node clock derived from
+    /// `self.id()` — convenient for tests. Production wiring (`AetherNode.buildMembershipFsm`)
+    /// must use the 10-arg form so the FSM shares the node's canonical HLC instance.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -220,6 +237,32 @@ public final class MembershipFsm {
                                               TimerScheduler scheduler,
                                               BooleanSupplier isLeader,
                                               Predicate<NodeId> isKnownAliveClusterPeer) {
+        return membershipFsm(self,
+                             config,
+                             lifecycleSnapshotReader,
+                             slotSnapshotReader,
+                             commandApplier,
+                             drainCoordinator,
+                             scheduler,
+                             isLeader,
+                             isKnownAliveClusterPeer,
+                             defaultHlcClock(self));
+    }
+
+    /// RC1 Step 4 — full production factory. Accepts an explicit `HlcClock` so the FSM
+    /// shares the node-wide HLC instance with other subsystems (generation snapshots,
+    /// governor announcer, etc.) — every emitted FSM event is causally ordered against
+    /// every other HLC-stamped action of this node.
+    public static MembershipFsm membershipFsm(NodeId self,
+                                              MembershipFsmConfig config,
+                                              LifecycleSnapshotReader lifecycleSnapshotReader,
+                                              SlotSnapshotReader slotSnapshotReader,
+                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                              DrainCoordinator drainCoordinator,
+                                              TimerScheduler scheduler,
+                                              BooleanSupplier isLeader,
+                                              Predicate<NodeId> isKnownAliveClusterPeer,
+                                              HlcClock hlcClock) {
         var reducer = ClusterMembershipReducer.clusterMembershipReducer(config);
         return new MembershipFsm(self,
                                  config,
@@ -230,7 +273,8 @@ public final class MembershipFsm {
                                  drainCoordinator,
                                  scheduler,
                                  isLeader,
-                                 isKnownAliveClusterPeer);
+                                 isKnownAliveClusterPeer,
+                                 hlcClock);
     }
 
     /// Custom-reducer factory (test-only — lets callers inject a reducer with deterministic
@@ -249,7 +293,29 @@ public final class MembershipFsm {
                                  NO_OP_DRAIN_COORDINATOR,
                                  defaultScheduler(),
                                  NEVER_LEADER,
-                                 REJECT_ALL_PEERS);
+                                 REJECT_ALL_PEERS,
+                                 defaultHlcClock(self));
+    }
+
+    /// Custom-reducer + custom-clock factory (test-only — lets adversarial tests inject a
+    /// `HlcClock` over a fake physical clock to exercise monotonicity and drift policy).
+    public static MembershipFsm membershipFsm(NodeId self,
+                                              MembershipFsmConfig config,
+                                              ClusterMembershipReducer reducer,
+                                              LifecycleSnapshotReader lifecycleSnapshotReader,
+                                              SlotSnapshotReader slotSnapshotReader,
+                                              HlcClock hlcClock) {
+        return new MembershipFsm(self,
+                                 config,
+                                 reducer,
+                                 lifecycleSnapshotReader,
+                                 slotSnapshotReader,
+                                 NO_OP_COMMAND_APPLIER,
+                                 NO_OP_DRAIN_COORDINATOR,
+                                 defaultScheduler(),
+                                 NEVER_LEADER,
+                                 REJECT_ALL_PEERS,
+                                 hlcClock);
     }
 
     public Promise<Unit> start() {
@@ -406,6 +472,32 @@ public final class MembershipFsm {
         return current instanceof MembershipFsmState.OnDuty;
     }
 
+    /// RC1 Step 4 — HLC drift policy site. Cross-node KV-put notifications carry the
+    /// originator's HLC in `NodeLifecycleValue.transitionedAt`; merging that into the local
+    /// clock both advances local causal time and detects pathological drift. Policy:
+    /// `HlcClock.update` fails when `remote.physicalMicros - localPhysicalMicros > 500ms`;
+    /// on failure we WARN-log peer + remote + local timestamps and DROP the event. We do
+    /// NOT silently accept (would poison local ordering) and we do NOT throw (would crash
+    /// the KV-notification dispatcher). Sentinel `HlcTimestamp.ZERO` means the value was
+    /// minted by a pre-RC1 path or a writer that did not stamp the HLC — skip the merge
+    /// and admit the put unchanged.
+    private boolean mergeRemoteHlcOrDrop(NodeId peer, HlcTimestamp remote) {
+        if (HlcTimestamp.ZERO.equals(remote)) {
+            return true;
+        }
+        var merge = hlcClock.update(remote);
+        if (merge.isFailure()) {
+            merge.onFailure(cause -> log.warn(
+                    "MembershipFsm: dropping NodeLifecyclePut from peer={} — HLC drift exceeds threshold: {} (remote={}, local={})",
+                    peer.id(),
+                    cause.message(),
+                    remote,
+                    hlcClock.peek()));
+            return false;
+        }
+        return true;
+    }
+
     private void logSwimDropOnFollower(SwimObservation observation) {
         if (log.isTraceEnabled()) {
             log.trace("MembershipFsm: SWIM observation {} dropped on follower {} (spec §6.1 — followers learn via KV notifications)",
@@ -441,11 +533,24 @@ public final class MembershipFsm {
     /// KV-notification handler for `NodeLifecycleKey` puts. Updates the FSM state from the
     /// externally-written lifecycle value WITHOUT emitting any reducer effects (the value
     /// already reflects the production write — the FSM derives its state, it doesn't re-act).
+    ///
+    /// **RC1 Step 4 — HLC drift gate.** The KV value carries the originating node's HLC in
+    /// `transitionedAt`. Before applying the update, the local clock is advanced via
+    /// `mergeRemoteHlcOrDrop`. If the remote HLC exceeds the configured drift threshold
+    /// (default 500ms), the put is DROPPED and a WARN is logged — preventing a drifting peer
+    /// from polluting local causal ordering. Sentinel `HlcTimestamp.ZERO` (pre-RC1 entries,
+    /// or values minted by a path that hasn't been migrated yet) is treated as "no remote HLC"
+    /// and the put is admitted without a clock merge.
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
         if (!started.get()) {
             return;
         }
-        applyExternalLifecyclePut(put.cause().key().nodeId(), put.cause().value());
+        var peer = put.cause().key().nodeId();
+        var value = put.cause().value();
+        if (!mergeRemoteHlcOrDrop(peer, value.transitionedAt())) {
+            return;
+        }
+        applyExternalLifecyclePut(peer, value);
     }
 
     /// KV-notification handler for `NodeLifecycleKey` removes. Returns the peer to `UNTRACKED`
@@ -566,7 +671,7 @@ public final class MembershipFsm {
         fsmLock.lock();
         try {
             ensureProvisioningTracked(peer, slotId);
-            processFsmEventLocked(new SlotClaimed(peer, slotId, value.spawnedAtMs()));
+            processFsmEventLocked(new SlotClaimed(peer, slotId, hlcClock.now()));
         } finally {
             fsmLock.unlock();
         }
@@ -753,7 +858,7 @@ public final class MembershipFsm {
         pendingTimers.remove(handle);
         log.debug("MembershipFsm: timer {} fired for {}", handle.kind(), handle.peer().id());
         if (handle.kind() == TimerKind.JOIN_DEADLINE) {
-            enqueueOperatorEvent(new JoinDeadlineExpired(handle.peer(), System.currentTimeMillis()));
+            enqueueOperatorEvent(new JoinDeadlineExpired(handle.peer(), hlcClock.now()));
         }
     }
 
@@ -768,7 +873,7 @@ public final class MembershipFsm {
         log.warn("MembershipFsm: prepareDrain failed for {}: {} — feeding DrainOutcome(false)",
                  peer.id(),
                  cause.message());
-        enqueueOperatorEvent(new DrainOutcome(peer, false, System.currentTimeMillis()));
+        enqueueOperatorEvent(new DrainOutcome(peer, false, hlcClock.now()));
     }
 
     /// Chains `DrainCoordinator.awaitDrainAck(peer, timeout)` and translates its resolution
@@ -778,7 +883,7 @@ public final class MembershipFsm {
     @Contract private void awaitDrainAndFeedback(NodeId peer, TimeSpan timeout) {
         log.debug("MembershipFsm: awaiting drain ack for {} (timeout={}ms)", peer.id(), timeout.millis());
         drainCoordinator.awaitDrainAck(peer, timeout)
-                         .onSuccess(_ -> enqueueOperatorEvent(new DrainOutcome(peer, true, System.currentTimeMillis())))
+                         .onSuccess(_ -> enqueueOperatorEvent(new DrainOutcome(peer, true, hlcClock.now())))
                          .onFailure(cause -> onAwaitDrainAckFailure(peer, cause));
     }
 
@@ -786,7 +891,7 @@ public final class MembershipFsm {
         log.warn("MembershipFsm: awaitDrainAck failed for {}: {} — feeding DrainOutcome(false)",
                  peer.id(),
                  cause.message());
-        enqueueOperatorEvent(new DrainOutcome(peer, false, System.currentTimeMillis()));
+        enqueueOperatorEvent(new DrainOutcome(peer, false, hlcClock.now()));
     }
 
     private void replayFromKv() {
@@ -852,7 +957,7 @@ public final class MembershipFsm {
         if (remainingMs <= 0L) {
             log.info("MembershipFsm: resumeDrain peer={} hard-deadline elapsed (drainStarted={}, elapsed={}ms) → DrainOutcome(false) immediate",
                      peer.id(), value.updatedAt(), elapsed);
-            enqueueOperatorEvent(new DrainOutcome(peer, false, nowMs));
+            enqueueOperatorEvent(new DrainOutcome(peer, false, hlcClock.now()));
             return;
         }
         log.info("MembershipFsm: resumeDrain peer={} remaining={}ms — re-attaching awaitDrainAck",
@@ -866,7 +971,7 @@ public final class MembershipFsm {
         if (remainingMs <= 0L) {
             log.info("MembershipFsm: resumeJoinDeadline peer={} deadline elapsed (joinedAt={}, elapsed={}ms) → JoinDeadlineExpired immediate",
                      peer.id(), value.updatedAt(), elapsed);
-            enqueueOperatorEvent(new JoinDeadlineExpired(peer, nowMs));
+            enqueueOperatorEvent(new JoinDeadlineExpired(peer, hlcClock.now()));
             return;
         }
         log.info("MembershipFsm: resumeJoinDeadline peer={} remaining={}ms — scheduling timer",
@@ -899,12 +1004,18 @@ public final class MembershipFsm {
         };
     }
 
-    private static Option<MembershipFsmEvent> translate(SwimObservation observation) {
-        var nowMs = System.currentTimeMillis();
+    /// RC1 Step 4 — translates SWIM observations into FSM events stamped with the local HLC.
+    /// `SwimObservation` does not currently carry a wire-side HLC (Step 6 future work), so the
+    /// observation is treated as a local event and the clock advances via `hlcClock.now()`.
+    /// When `SwimObservation` gains an `at` field, this site will switch to
+    /// `mergeRemoteHlcOrDrop(observation.at())` so cross-node SWIM gossip advances the local
+    /// clock and is gated by the drift policy.
+    private Option<MembershipFsmEvent> translate(SwimObservation observation) {
+        var at = hlcClock.now();
         return switch (observation) {
-            case HealthyObserved h -> some(new SwimHealthy(h.peer(), h.incarnation(), nowMs));
-            case FaultyObserved f -> some(new SwimFaulty(f.peer(), f.incarnation(), nowMs));
-            case DepartedObserved d -> some(new SwimDeparted(d.peer(), d.incarnation(), nowMs));
+            case HealthyObserved h -> some(new SwimHealthy(h.peer(), h.incarnation(), at));
+            case FaultyObserved f -> some(new SwimFaulty(f.peer(), f.incarnation(), at));
+            case DepartedObserved d -> some(new SwimDeparted(d.peer(), d.incarnation(), at));
             case SuspectObserved _ -> none();
             case UnknownObserved _ -> none();
         };
@@ -1012,4 +1123,11 @@ public final class MembershipFsm {
     /// `onPeerConnected` is inert unless callers explicitly opt in via the production
     /// 9-arg factory. See `isKnownAliveClusterPeer` field doc.
     private static final Predicate<NodeId> REJECT_ALL_PEERS = _ -> false;
+
+    /// RC1 Step 4 — default per-node `HlcClock` for test-only factories that do not accept an
+    /// explicit clock. Production wiring (`AetherNode.buildMembershipFsm`) MUST pass the node's
+    /// canonical clock instance so HLC values are shared across subsystems.
+    private static HlcClock defaultHlcClock(NodeId self) {
+        return HlcClock.hlcClock(self.id()).unwrap();
+    }
 }

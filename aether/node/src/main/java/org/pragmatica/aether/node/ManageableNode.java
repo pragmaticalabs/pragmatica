@@ -44,6 +44,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.Message;
@@ -106,6 +107,12 @@ public interface ManageableNode {
     DrainCoordinator drainCoordinator();
     NodeLifecycle nodeLifecycle();
     MembershipFsm membershipFsm();
+
+    /// RC1 Step 4 — exposes the node's canonical Hybrid Logical Clock so request-handling
+    /// routes (e.g., `NodeLifecycleRoutes` constructing operator events) can stamp events
+    /// with the same clock the `MembershipFsm` uses, preserving causal ordering across the
+    /// admission and FSM-write paths.
+    HlcClock hlcClock();
 
     /// H.1 (spec §H): derived cluster-membership view. Computed from the local SWIM
     /// `HealthSnapshot` plus `NodeLifecycleKey` KV overrides — SWIM is authoritative for

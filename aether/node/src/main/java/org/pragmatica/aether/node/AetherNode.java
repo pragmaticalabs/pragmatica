@@ -494,6 +494,7 @@ public interface AetherNode extends ManageableNode {
                           org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
                           NodeLifecycle nodeLifecycle,
                           MembershipFsm membershipFsm,
+                          HlcClock hlcClock,
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
@@ -956,7 +957,8 @@ public interface AetherNode extends ManageableNode {
                                                 clusterCommandApplier,
                                                 drainCoordinator,
                                                 isLeaderSupplier,
-                                                isKnownAliveClusterPeer);
+                                                isKnownAliveClusterPeer,
+                                                hlcClockEarly);
         membershipFsm.start();
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
@@ -1551,6 +1553,7 @@ public interface AetherNode extends ManageableNode {
                                   drainCoordinator,
                                   nodeLifecycle,
                                   membershipFsm,
+                                  hlcClockEarly,
                                   effectivePhaseSupplier,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
@@ -1657,6 +1660,7 @@ public interface AetherNode extends ManageableNode {
                                                                               drainCoordinator,
                                                                               nodeLifecycle,
                                                                               membershipFsm,
+                                                                              hlcClockEarly,
                                                                               effectivePhaseSupplier,
                                                                               startTimeMs);
                                                     }
@@ -1675,7 +1679,8 @@ public interface AetherNode extends ManageableNode {
                                                      java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                      org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
                                                      BooleanSupplier isLeaderSupplier,
-                                                     Predicate<NodeId> isKnownAliveClusterPeer) {
+                                                     Predicate<NodeId> isKnownAliveClusterPeer,
+                                                     HlcClock hlcClock) {
         var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
         MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                                                                                 AetherValue.NodeLifecycleValue.class,
@@ -1692,7 +1697,8 @@ public interface AetherNode extends ManageableNode {
                                             drainCoordinator,
                                             scheduler,
                                             isLeaderSupplier,
-                                            isKnownAliveClusterPeer);
+                                            isKnownAliveClusterPeer,
+                                            hlcClock);
     }
 
     /// F.4 (2026-05-12) — static-config sub-check for the QUIC `PeerConnected` synthesis
