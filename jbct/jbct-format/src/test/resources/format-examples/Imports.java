@@ -46,10 +46,12 @@ public class Imports {
         String collected = stream.collect(Collectors.joining());
         Instant now = Instant.now();
         Path path = Path.of(".");
+
         return none().toResult(cause);
     }
 
-    @SuppressWarnings("JBCT-ACR-01") void useIOException() throws IOException {
+    @SuppressWarnings("JBCT-ACR-01")
+    void useIOException() throws IOException {
         Files.readString(Path.of("test.txt"));
     }
 }
