@@ -1,4 +1,4 @@
-package org.pragmatica.jbct.format.cst;
+package org.pragmatica.jbct.format;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
