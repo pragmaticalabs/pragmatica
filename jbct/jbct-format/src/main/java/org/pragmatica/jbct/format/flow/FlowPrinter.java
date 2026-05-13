@@ -94,6 +94,9 @@ final class FlowPrinter {
 
     /// Print the CST root and return formatted text with token mapping.
     FlowResult print(Cursor root) {
+        if (System.getProperty("pfmt.struct") != null) {
+            dumpStruct(root, 0);
+        }
         printNode(root);
         var result = output.toString()
             .lines()
@@ -203,6 +206,10 @@ final class FlowPrinter {
 
     private void walkTokenRange(Cursor parent, List<Cursor> kids, int start, int end) {
         var tokens = parent.cst().tokens();
+        boolean breakAfterAnnotation = parent instanceof Cursor.Branch pb
+            && annotationsBreakOnNewlineInParent(pb.kind());
+        boolean spaceAfterAnnotation = parent instanceof Cursor.Branch pb2
+            && annotationsForceSpaceAfterInParent(pb2.kind());
         int kidIdx = 0;
         int t = start;
         while (t <= end) {
@@ -211,6 +218,12 @@ final class FlowPrinter {
                 printNode(kid);
                 t = kid.lastTokenIdx() + 1;
                 kidIdx++;
+                if (breakAfterAnnotation && kid.kindIs(RuleKind.ANNOTATION)) {
+                    newline();
+                    printIndent();
+                } else if (spaceAfterAnnotation && kid.kindIs(RuleKind.ANNOTATION)) {
+                    emit(" ");
+                }
             } else {
                 if (!tokens.isTrivia(t)) {
                     emitToken(tokens.textAt(t).toString());
@@ -218,6 +231,34 @@ final class FlowPrinter {
                 t++;
             }
         }
+    }
+
+    /// True if ANNOTATION children of a parent of the given kind should be followed by a
+    /// space rather than a newline. Applies to type-use positions (DIMS, ANNOTATED_TYPE_NAME)
+    /// where the annotation is inline but separated from the next token by a space.
+    private static boolean annotationsForceSpaceAfterInParent(RuleKind kind) {
+        return switch (kind) {
+            case DIMS, ANNOTATED_TYPE_NAME -> true;
+            default -> false;
+        };
+    }
+
+    /// True if ANNOTATION children of a parent of the given kind should each be followed
+    /// by newline + indent. Applies to declaration-scope parents (type decls, class members,
+    /// record members, enum constants, local var/type decls, annotation members).
+    private static boolean annotationsBreakOnNewlineInParent(RuleKind kind) {
+        return switch (kind) {
+            case TYPE_DECL,
+                 CLASS_MEMBER,
+                 ANNOTATION_MEMBER,
+                 ANNOTATION_ELEM_DECL,
+                 RECORD_MEMBER,
+                 ENUM_CONST,
+                 LOCAL_VAR,
+                 LOCAL_VAR_NO_SEMI,
+                 LOCAL_TYPE_DECL -> true;
+            default -> false;
+        };
     }
 
     /// Walk tokens of a branch, but route children and tokens through callback hooks.
@@ -268,7 +309,7 @@ final class FlowPrinter {
         boolean first = true;
         for (var type : types) {
             if (first) {
-                if (hasPackage || hasImports) {
+                if (hasImports || hasPackage) {
                     newline();
                     newline();
                 }
@@ -543,7 +584,14 @@ final class FlowPrinter {
                 printAlignedTo(chainAlignCol);
             } else {
                 indentLevel++;
-                for (var stmt : stmts) {
+                for (int i = 0; i < stmts.size(); i++) {
+                    var stmt = stmts.get(i);
+                    // Blank line before a final return/throw when the block has 2+ prior
+                    // statements — a single prior stmt (typical small methods like
+                    // `var x = ...; return x;`) packs tightly without separation.
+                    if (i >= 2 && i == stmts.size() - 1 && isReturnOrThrowStmt(stmt) && !hasLeadingComment(stmt)) {
+                        newline();
+                    }
                     if (!hasLeadingComment(stmt)) {
                         printIndent();
                     }
@@ -560,6 +608,21 @@ final class FlowPrinter {
 
     private boolean hasLeadingComment(Cursor node) {
         return node.leadingTrivia().anyMatch(t -> t.isLineComment() || t.isBlockComment());
+    }
+
+    /// True if `stmt` is a return or throw statement (used to decide whether to insert a
+    /// blank line before the final statement of a non-trivial block).
+    private static boolean isReturnOrThrowStmt(Cursor stmt) {
+        if (!(stmt instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            var txt = tokens.textAt(t).toString();
+            return "return".equals(txt) || "throw".equals(txt);
+        }
+        return false;
     }
 
     /// True iff the entire token range of the node covers exactly one source line
@@ -599,7 +662,7 @@ final class FlowPrinter {
     }
 
     private void printSwitchBlock(Cursor.Branch switchBlock) {
-        emit("{");
+        emit(" {");
         indentLevel++;
 
         var rules = childrenByRule(switchBlock, RuleKind.SWITCH_RULE);
@@ -680,9 +743,10 @@ final class FlowPrinter {
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
         int chainLinkCount = Math.max(allDotMethodCount,
                                       dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
-        // Break chains with 3+ links always; break 2-link chains only if they don't fit
-        boolean shouldBreakChain = chainLinkCount >= 3
-            || (chainLinkCount >= 2 && !fitsOnLineUnary(primary, postOps));
+        // Sequencer-as-steps: any chain with 2+ method calls breaks vertically UNLESS we
+        // are inside an inline expression context (e.g. inline args of a parent call),
+        // where chains stay horizontal so the parent's args layout is preserved.
+        boolean shouldBreakChain = chainLinkCount >= 2 && !alignment.isInInlineExpression();
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
@@ -737,9 +801,10 @@ final class FlowPrinter {
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
         int chainLinkCount = Math.max(allDotMethodCount,
                                       dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
-        // Break chains with 3+ links always; break 2-link chains only if they don't fit
-        boolean shouldBreakChain = chainLinkCount >= 3
-            || (chainLinkCount >= 2 && !fitsOnLine(postfix));
+        // Sequencer-as-steps: any chain with 2+ method calls breaks vertically UNLESS we
+        // are inside an inline expression context (e.g. inline args of a parent call),
+        // where chains stay horizontal so the parent's args layout is preserved.
+        boolean shouldBreakChain = chainLinkCount >= 2 && !alignment.isInInlineExpression();
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
@@ -767,25 +832,53 @@ final class FlowPrinter {
         var methodCallSet = new HashSet<>(methodCallPostOps);
 
         if (primary != null) {
+            // If primary contains an internal `.` (e.g. `value.trim`), the chain anchor
+            // should be that `.`'s column — that's where the FIRST chain call begins.
+            // Compute the suffix length AFTER the last `.` (e.g. `trim` = 4) so
+            // alignColumn = currentColumn (post-primary) − suffixLen − 1 (the `.` itself).
+            int suffixAfterLastDot = primaryHasInvocation ? suffixAfterLastDotInPrimary(primary) : -1;
             printNodeContent(primary);
-            alignColumn = currentColumn;
+            if (suffixAfterLastDot >= 0) {
+                alignColumn = currentColumn - suffixAfterLastDot - 1;
+            } else {
+                alignColumn = currentColumn;
+            }
         }
 
         try (var scope = alignment.enterChain(alignColumn)) {
-            // For 3+ dot-method PostOps, keep the first inline and break from second.
-            // For 2-link chains that don't fit, break at the first.
-            boolean firstMethodCall = methodCallPostOps.size() >= 2;
+            // Rule: primary + first chain call stay inline; remaining dot-method postOps each
+            // go on their own line aligned to the chain column. When the primary already
+            // contains a method access (e.g. `value.trim` + bare `()`), that bare invocation
+            // IS the first chain call — so dot-method postOps after it must all break.
+            boolean firstMethodCallPending = !primaryHasInvocation;
             for (var postOp : postOps) {
                 boolean isMethodCall = methodCallSet.contains(postOp);
-                if (isMethodCall && !firstMethodCall) {
-                    newline();
-                    printAlignedTo(scope.nextDotMethodAnchor(indentLevel * config.indentSize()));
+                if (isMethodCall && !firstMethodCallPending) {
+                    if (scope.lastPostOpWasBrokenArgs()) {
+                        // Special case: the previous bare `(...)` postOp broke its args
+                        // vertically. The first chain follow-up stays INLINE on the
+                        // same line as the closing `)`. Consume the inline slot so
+                        // subsequent dot-methods break normally (to the args-open-paren
+                        // anchor recorded by noteBrokenArgsPostOp).
+                        scope.consumeBrokenArgsInlineSlot();
+                    } else {
+                        newline();
+                        printAlignedTo(scope.nextDotMethodAnchor(indentLevel * config.indentSize()));
+                    }
                 }
                 int lineBefore = currentLine;
+                int colBefore = currentColumn;
+                boolean isBareInvoc = isBareInvocationPostOp(postOp);
                 printNodeContent(postOp);
-                scope.notePostOpEmitted(currentLine != lineBefore, containsLambda(postOp));
+                boolean spanned = currentLine != lineBefore;
+                scope.notePostOpEmitted(spanned, containsLambda(postOp));
+                if (isBareInvoc && spanned && !containsLambda(postOp)) {
+                    // Broken bare-args: capture the col where `(` landed. colBefore is the
+                    // column right before the `(` was emitted; the `(` itself sits at colBefore.
+                    scope.noteBrokenArgsPostOp(colBefore);
+                }
                 if (isMethodCall) {
-                    firstMethodCall = false;
+                    firstMethodCallPending = false;
                 }
             }
         }
@@ -870,6 +963,31 @@ final class FlowPrinter {
         return t.contains(".");
     }
 
+    /// Return the total non-trivia text length AFTER the last `.` token within `primary`
+    /// (e.g. `value.trim` -> 4 for `trim`), or -1 if no `.`. Used to compute the chain
+    /// alignment column when the primary path itself contains a method access — we subtract
+    /// this plus 1 (for the `.`) from post-primary currentColumn to get the dot's column.
+    private int suffixAfterLastDotInPrimary(Cursor primary) {
+        var tokens = primary.cst().tokens();
+        int startTok = primary.firstTokenIdx();
+        int lastTok = primary.lastTokenIdx();
+        while (startTok <= lastTok && tokens.isTrivia(startTok)) startTok++;
+        int lastDotTok = -1;
+        for (int t = startTok; t <= lastTok; t++) {
+            if (tokens.isTrivia(t)) continue;
+            if (".".equals(tokens.textAt(t).toString())) {
+                lastDotTok = t;
+            }
+        }
+        if (lastDotTok < 0) return -1;
+        int suffix = 0;
+        for (int t = lastDotTok + 1; t <= lastTok; t++) {
+            if (tokens.isTrivia(t)) continue;
+            suffix += tokens.textAt(t).length();
+        }
+        return suffix;
+    }
+
     private void printPostOp(Cursor.Branch postOp) {
         // PostOps look like `.method(args)`, `<TypeArgs>method(args)`, `(args)`, or `[expr]`.
         // We walk tokens and let child branches handle their own rendering.
@@ -903,11 +1021,15 @@ final class FlowPrinter {
 
         int argsWidth = measureWidth(args);
         if (currentColumn + argsWidth <= config.maxLineLength()) {
-            // Inline: walk tokens but use printNodeContent for child expressions.
-            walkTokensWith(args, new TokenWalker() {
-                @Override public void onChild(Cursor c) { printNodeContent(c); }
-                @Override public void onToken(int kind, String text) { emitToken(text); }
-            });
+            // Inline: walk tokens but use printNodeContent for child expressions. Suppress
+            // chain breaking inside inline args — chains that fit horizontally as an
+            // argument stay inline (e.g. `Result.all(user.map(a).map(b), ...)`).
+            try (var scope = alignment.enterInlineExpression()) {
+                walkTokensWith(args, new TokenWalker() {
+                    @Override public void onChild(Cursor c) { printNodeContent(c); }
+                    @Override public void onToken(int kind, String text) { emitToken(text); }
+                });
+            }
         } else {
             printBrokenArgs(args);
         }
@@ -948,7 +1070,18 @@ final class FlowPrinter {
                 @Override
                 public void onChild(Cursor child) {
                     if (child.kindIs(RuleKind.EXPR)) {
-                        printNodeContent(child);
+                        // If this single arg fits on its own line, render its inner
+                        // chains/expressions inline. The args layout already broke at
+                        // commas; an individual arg-expression should not force further
+                        // vertical breaks unless its own width demands it.
+                        int width = measureWidth(child);
+                        if (currentColumn + width <= config.maxLineLength()) {
+                            try (var inlineScope = alignment.enterInlineExpression()) {
+                                printNodeContent(child);
+                            }
+                        } else {
+                            printNodeContent(child);
+                        }
                     } else {
                         printNode(child);
                     }
@@ -1082,11 +1215,12 @@ final class FlowPrinter {
                     afterComponents[0] = true;
                 } else if (child.kindIs(RuleKind.RECORD_BODY)) {
                     // RECORD_BODY may be a Leaf (empty `{}`) or a Branch (has members).
-                    // Emit `{` without a space when we're right after components.
+                    // Always include a space before `{` (matches Records.java golden where
+                    // empty bodies render as `{}` with a separating space, never `(){}`.
                     if (child instanceof Cursor.Branch rbBranch) {
                         printRecordBody(rbBranch);
                     } else {
-                        emit("{}");
+                        emit(" {}");
                     }
                     afterComponents[0] = false;
                 } else {
@@ -1097,7 +1231,7 @@ final class FlowPrinter {
             @Override
             public void onToken(int kind, String text) {
                 if ("{".equals(text) && afterComponents[0]) {
-                    emit("{");
+                    emit(" {");
                     afterComponents[0] = false;
                 } else {
                     emitToken(text);
@@ -1230,23 +1364,21 @@ final class FlowPrinter {
     private void printTernary(Cursor.Branch ternary) {
         var ternaryText = text(ternary);
         if (ternaryText.contains("?") && ternaryText.contains(":")) {
-            // Nested ternary inherits its outer's alignCol so all `?` / `:` line up
-            // vertically across nesting levels; a standalone ternary anchors here.
-            // Inheritance is scoped per branch-arm (`enterTernary` only wraps the
-            // descent into the post-`?` / post-`:` child) so sibling ternaries —
-            // e.g. two parenthesized ternaries inside an Additive — do NOT bleed
-            // alignCol across each other.
-            int alignCol = alignment.inTernary()
-                ? alignment.ternaryColumn()
-                : currentColumn;
+            // Align `?` and `:` under the first non-space char of the cond expression.
+            // `currentColumn` at entry sits BEFORE any auto-space that the spacing
+            // machinery will emit before the cond's first token. We probe with a
+            // representative identifier-like first char ("x") to compute whether
+            // that auto-space is pending; if so, the cond's first emit lands at
+            // currentColumn + 1 rather than currentColumn. Each ternary uses its
+            // OWN cond-start column — nested ternaries do NOT inherit; e.g. the
+            // inner ternary in `cond ? a : (b ? c : d)` aligns at `b`'s column.
+            int alignCol = currentColumn + (needsSpaceBefore("x") ? 1 : 0);
             boolean[] skipNext = {false};
             walkTokensWith(ternary, new TokenWalker() {
                 @Override
                 public void onChild(Cursor child) {
                     if (skipNext[0]) {
-                        try (var scope = alignment.enterTernary(alignCol)) {
-                            printNodeContent(child);
-                        }
+                        printNodeContent(child);
                         skipNext[0] = false;
                     } else {
                         printNode(child);
@@ -1387,10 +1519,19 @@ final class FlowPrinter {
                     case PRIMARY -> printPrimary(br);
                     case RECORD_DECL -> printRecordDecl(br);
                     case RESOURCE_SPEC -> printResourceSpec(br);
-                    default -> walkTokensWith(br, new TokenWalker() {
-                        @Override public void onChild(Cursor c) { printNodeContent(c); }
-                        @Override public void onToken(int kind, String text) { emitToken(text); }
-                    });
+                    default -> {
+                        boolean breakAfterAnnotation = annotationsBreakOnNewlineInParent(br.kind());
+                        walkTokensWith(br, new TokenWalker() {
+                            @Override public void onChild(Cursor c) {
+                                printNodeContent(c);
+                                if (breakAfterAnnotation && c.kindIs(RuleKind.ANNOTATION)) {
+                                    newline();
+                                    printIndent();
+                                }
+                            }
+                            @Override public void onToken(int kind, String text) { emitToken(text); }
+                        });
+                    }
                 }
             }
         }
@@ -1487,6 +1628,24 @@ final class FlowPrinter {
     /// Emit raw text without spacing check. Used for controlled output like "{" after emit.
     private void emitBare(String text) {
         emit(text);
+    }
+
+    private static void dumpStruct(Cursor n, int depth) {
+        var indent = " ".repeat(depth*2);
+        var txt = "";
+        try {
+            int s = n.firstTokenIdx(); int e = n.lastTokenIdx();
+            var sb = new StringBuilder();
+            for (int t = s; t <= e && sb.length() < 60; t++) {
+                if (!n.cst().tokens().isTrivia(t)) sb.append(n.cst().tokens().textAt(t)).append(" ");
+            }
+            txt = sb.toString().trim();
+            if (txt.length() > 60) txt = txt.substring(0, 60) + "...";
+        } catch (Exception e) {}
+        System.err.println(indent + (n instanceof Cursor.Branch b ? b.kind().toString() : "leaf") + " [" + txt + "]");
+        if (n instanceof Cursor.Branch b) {
+            b.children().forEach(ch -> dumpStruct(ch, depth+1));
+        }
     }
 
     private void emit(String text) {
@@ -1621,8 +1780,9 @@ final class FlowPrinter {
         if (lastChar == '.' && prevChar == '.' && Character.isLetter(firstChar)) {
             return true;
         }
-        // Annotation rules
-        if (firstChar == '@' && lastChar == ')') {
+        // Annotation rules: `@` is a type-use or stacked annotation when following
+        // `)`, `]`, an identifier char, or `>` (after generic close).
+        if (firstChar == '@' && (lastChar == ')' || lastChar == ']' || lastChar == '>' || isIdentifierChar(lastChar))) {
             return true;
         }
         // Angle bracket rules
