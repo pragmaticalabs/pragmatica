@@ -43,6 +43,7 @@ class GoldenFormatterTest {
     "BlankLines.java",
     "LineWrapping.java",
     "Comments.java",
+    "CommentsExtended.java",
     "TextBlocks.java",
     "KeywordPrefixedIdentifiers.java"})
     void formatter_isIdempotent_onGoldenExamples(String fileName) throws IOException {
