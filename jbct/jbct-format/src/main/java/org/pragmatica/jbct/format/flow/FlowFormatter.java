@@ -5,6 +5,7 @@ import org.pragmatica.jbct.format.FormattingError;
 import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Java25Parser.Trivia;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -114,7 +115,19 @@ public class FlowFormatter {
                 changed = true;
             }
             if (shouldInlineChild(flattened, nt)) {
-                flatChildren.addAll(((CstNode.NonTerminal) flattened).children());
+                var inner = (CstNode.NonTerminal) flattened;
+                var innerKids = inner.children();
+                // Preserve inner's leadingTrivia: it represents trivia attached to the
+                // inlined wrapper (e.g., first-member docs in a nested ClassBody) — without
+                // forwarding, those comments would be lost when the wrapper is dropped.
+                if (!inner.leadingTrivia().isEmpty() && !innerKids.isEmpty()) {
+                    var firstKid = innerKids.get(0);
+                    var merged = new ArrayList<>(inner.leadingTrivia());
+                    merged.addAll(firstKid.leadingTrivia());
+                    innerKids = new ArrayList<>(innerKids);
+                    innerKids.set(0, attachLeadingTrivia(firstKid, List.copyOf(merged)));
+                }
+                flatChildren.addAll(innerKids);
                 changed = true;
             } else {
                 flatChildren.add(flattened);
@@ -124,6 +137,15 @@ public class FlowFormatter {
                ? new CstNode.NonTerminal(nt.id(), nt.span(), nt.rule(), flatChildren,
                                          nt.leadingTrivia(), nt.trailingTrivia())
                : nt;
+    }
+
+    private static CstNode attachLeadingTrivia(CstNode node, List<Trivia> leading) {
+        return switch (node) {
+            case CstNode.NonTerminal n -> new CstNode.NonTerminal(n.id(), n.span(), n.rule(), n.children(), leading, n.trailingTrivia());
+            case CstNode.Terminal t -> new CstNode.Terminal(t.id(), t.span(), t.rule(), t.textSpan(), leading, t.trailingTrivia());
+            case CstNode.Token tok -> new CstNode.Token(tok.id(), tok.span(), tok.rule(), tok.textSpan(), leading, tok.trailingTrivia());
+            case CstNode.Error e -> new CstNode.Error(e.id(), e.span(), e.skippedText(), e.expected(), leading, e.trailingTrivia());
+        };
     }
 
     private static boolean shouldInlineChild(CstNode flattened, CstNode.NonTerminal parent) {

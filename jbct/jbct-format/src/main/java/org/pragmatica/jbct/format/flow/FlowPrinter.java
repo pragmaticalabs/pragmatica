@@ -1,14 +1,13 @@
 package org.pragmatica.jbct.format.flow;
 
 import org.pragmatica.jbct.format.FormatterConfig;
+import org.pragmatica.jbct.format.cst.AlignmentContext;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 import org.pragmatica.jbct.parser.Java25Parser.Trivia;
 import org.pragmatica.lang.Option;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -55,9 +54,7 @@ final class FlowPrinter {
     private int currentLine;
 
     // Alignment tracking
-    private final Deque<Integer> lambdaAlignStack = new ArrayDeque<>();
-    private int chainColumn = -1;
-    private boolean inBreakingChain;
+    private final AlignmentContext alignment = new AlignmentContext();
 
     // Pattern for detecting method calls in chains
     private static final Pattern METHOD_CALL_PATTERN = Pattern.compile("\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(");
@@ -83,7 +80,6 @@ final class FlowPrinter {
         this.measureBuffer = 0;
         this.tokenIndex = 0;
         this.currentLine = 0;
-        this.inBreakingChain = false;
     }
 
     /// Result of flow printing: formatted text and token-to-line mapping.
@@ -130,7 +126,7 @@ final class FlowPrinter {
     // ===== Node dispatch =====
 
     private void printNode(CstNode node) {
-        // Emit leading comments inline (but not during measurement)
+        // Emit leading comments inline (but not during measurement).
         if (!measuringMode) {
             emitLeadingComments(node);
         }
@@ -154,6 +150,7 @@ final class FlowPrinter {
             case RuleId.ClassBody _ -> printClassBody(nt);
             case RuleId.AnnotationBody _ -> printAnnotationBody(nt);
             case RuleId.Block _ -> printBlock(nt);
+            case RuleId.Stmt _ -> printStmt(nt);
             case RuleId.SwitchBlock _ -> printSwitchBlock(nt);
             case RuleId.Unary _ -> printUnary(nt);
             case RuleId.Postfix _ -> printPostfix(nt);
@@ -276,11 +273,11 @@ final class FlowPrinter {
     // ===== Type bodies =====
 
     private void printClassBody(CstNode.NonTerminal classBody) {
-        printBracedBody(children(classBody), RuleId.ClassMember.class);
+        printBracedBody(classBody, RuleId.ClassMember.class);
     }
 
     private void printAnnotationBody(CstNode.NonTerminal annotBody) {
-        printBracedBody(children(annotBody), RuleId.AnnotationMember.class);
+        printBracedBody(annotBody, RuleId.AnnotationMember.class);
     }
 
     private void printRecordBody(CstNode.NonTerminal recordBody) {
@@ -290,27 +287,34 @@ final class FlowPrinter {
         if (!hasContent) {
             emit("{}");
         } else {
-            printBracedBody(allChildren, RuleId.RecordMember.class);
+            printBracedBody(recordBody, RuleId.RecordMember.class);
         }
     }
 
-    private void printBracedBody(List<CstNode> children, Class<? extends RuleId> memberRule) {
-        var hasMembers = children.stream().anyMatch(c -> memberRule.isInstance(c.rule()));
+    private void printBracedBody(CstNode.NonTerminal parent, Class<? extends RuleId> memberRule) {
+        var kids = children(parent);
+        var hasMembers = kids.stream().anyMatch(c -> memberRule.isInstance(c.rule()));
 
-        emitTerminalFrom(children, "{");
+        emitTerminalFrom(kids, "{");
 
         if (hasMembers) {
             indentLevel++;
             newline();
             boolean first = true;
             Option<CstNode> prevMember = Option.none();
-            for (var child : children) {
+            for (var child : kids) {
                 if (memberRule.isInstance(child.rule())) {
                     if (!first && BlankLineRules.needsBlankLineBetween(child, prevMember, source)) {
                         newline();
                     }
-                    printIndent();
-                    printNodeContent(child);
+                    // Skip the redundant outer printIndent when the member has a leading
+                    // line/block comment: emitLeadingTriviaFiltered emits indent for each
+                    // comment and restores indent at the end. Calling printIndent here
+                    // would force an extra blank line between '{' and the first comment.
+                    if (!hasLeadingComment(child)) {
+                        printIndent();
+                    }
+                    printNode(child);
                     newline();
                     first = false;
                     prevMember = Option.some(child);
@@ -323,6 +327,15 @@ final class FlowPrinter {
         }
 
         emitBare("}");
+    }
+
+    private static boolean hasLeadingComment(CstNode node) {
+        for (var t : node.leadingTrivia()) {
+            if (t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void emitTerminalFrom(List<CstNode> children, String text) {
@@ -352,16 +365,32 @@ final class FlowPrinter {
         if (hasBlock || hasParams) {
             printMethodDeclContent(member);
         } else {
-            // Print children content directly to avoid recursion (Member -> printNodeContent -> printMember)
+            // Print children content directly to avoid recursion (Member -> printNodeContent -> printMember).
+            // First child emits its leading trivia via printNode so member-level /// docs and // comments
+            // attached to the first terminal of the declaration are preserved.
+            boolean firstChild = true;
             for (var child : kids) {
-                printNodeContent(child);
+                if (firstChild) {
+                    printNode(child);
+                    firstChild = false;
+                } else {
+                    printNodeContent(child);
+                }
             }
         }
     }
 
     private void printFieldDecl(CstNode.NonTerminal field) {
+        // First child emits leading trivia via printNode so member-level /// docs and // comments
+        // attached to the first terminal of the field declaration are preserved.
+        boolean firstChild = true;
         for (var child : children(field)) {
-            printNodeContent(child);
+            if (firstChild) {
+                printNode(child);
+                firstChild = false;
+            } else {
+                printNodeContent(child);
+            }
         }
     }
 
@@ -424,15 +453,33 @@ final class FlowPrinter {
         return false;
     }
 
+    /// The parser inlines `Stmt <- Block` so an if/for/while body that is a Block in the
+    /// source appears as a Stmt with brace-shaped children (T<{>, BlockStmt*, T<}>) rather
+    /// than a Stmt wrapping a Block. Detect that shape and dispatch to printBlock so the
+    /// body emits with proper indentation. For brace-shaped Stmts whose '{' and '}' sit on
+    /// the same source line, preserve the existing inline form by falling through to
+    /// printChildren.
+    private void printStmt(CstNode.NonTerminal stmt) {
+        var kids = children(stmt);
+        if (kids.size() >= 2
+            && kids.get(0) instanceof CstNode.Terminal openT && "{".equals(openT.text())
+            && kids.get(kids.size() - 1) instanceof CstNode.Terminal closeT && "}".equals(closeT.text())
+            && openT.span().startLine() != closeT.span().startLine()) {
+            printBlock(stmt);
+        } else {
+            printChildren(stmt);
+        }
+    }
+
     // ===== Block =====
 
     private void printBlock(CstNode.NonTerminal block) {
         var children = children(block);
 
-        boolean useLambdaAlign = !lambdaAlignStack.isEmpty();
-        int lambdaAlignCol = lambdaAlignStack.isEmpty() ? -1 : lambdaAlignStack.peek();
-        boolean useChainAlign = !useLambdaAlign && chainColumn >= 0;
-        int chainAlignCol = chainColumn;
+        boolean useLambdaAlign = alignment.hasLambdaAlign();
+        int lambdaAlignCol = alignment.lambdaColumn();
+        boolean useChainAlign = !useLambdaAlign && alignment.chainColumn() >= 0;
+        int chainAlignCol = alignment.chainColumn();
 
         // Opening brace
         for (var child : children) {
@@ -457,8 +504,10 @@ final class FlowPrinter {
             } else {
                 indentLevel++;
                 for (var stmt : stmts) {
-                    printIndent();
-                    printNodeContent(stmt);
+                    if (!hasLeadingComment(stmt)) {
+                        printIndent();
+                    }
+                    printNode(stmt);
                     newline();
                 }
                 indentLevel--;
@@ -477,21 +526,12 @@ final class FlowPrinter {
 
     private void printAlignedBlockStatements(List<CstNode> stmts, int alignCol) {
         int bodyCol = alignCol + config.indentSize();
-        int savedChainCol = chainColumn;
-        boolean savedBreaking = inBreakingChain;
-        lambdaAlignStack.push(bodyCol);
-        try {
+        try (var scope = alignment.pushLambdaAlign(bodyCol)) {
             for (var stmt : stmts) {
                 printAlignedTo(bodyCol);
-                printNodeContent(stmt);
+                printNode(stmt);
                 newline();
             }
-        } finally {
-            if (!lambdaAlignStack.isEmpty()) {
-                lambdaAlignStack.pop();
-            }
-            chainColumn = savedChainCol;
-            inBreakingChain = savedBreaking;
         }
     }
 
@@ -652,11 +692,7 @@ final class FlowPrinter {
             alignColumn = currentColumn;
         }
 
-        int savedChainCol = chainColumn;
-        boolean savedBreaking = inBreakingChain;
-        chainColumn = alignColumn;
-        inBreakingChain = true;
-        try {
+        try (var scope = alignment.enterChain(alignColumn)) {
             // For 3+ dot-method PostOps, keep the first inline and break from second.
             // For 2-link chains that don't fit, break at the first.
             boolean firstMethodCall = methodCallPostOps.size() >= 2;
@@ -683,9 +719,6 @@ final class FlowPrinter {
                     previousWasMultiLineBareInvoke = false;
                 }
             }
-        } finally {
-            chainColumn = savedChainCol;
-            inBreakingChain = savedBreaking;
         }
     }
 
@@ -836,7 +869,7 @@ final class FlowPrinter {
                 if (containsMethodCall(exprText) || exprText.contains("-> {")) {
                     return true;
                 }
-                if (inBreakingChain && exprText.contains("(")) {
+                if (alignment.isInBreakingChain() && exprText.contains("(")) {
                     return true;
                 }
             }
@@ -860,8 +893,7 @@ final class FlowPrinter {
         var children = children(args);
         int alignCol = currentColumn;
 
-        lambdaAlignStack.push(alignCol);
-        try {
+        try (var scope = alignment.pushLambdaAlign(alignCol)) {
             for (var child : children) {
                 if (isTerminalWithText(child, ",")) {
                     emit(",");
@@ -872,10 +904,6 @@ final class FlowPrinter {
                 } else {
                     printNode(child);
                 }
-            }
-        } finally {
-            if (!lambdaAlignStack.isEmpty()) {
-                lambdaAlignStack.pop();
             }
         }
     }
@@ -1402,6 +1430,7 @@ final class FlowPrinter {
     // ===== Comment emission (inline, but never affects layout decisions) =====
 
     private void emitLeadingComments(CstNode node) {
+        boolean emittedAny = false;
         for (var trivia : node.leadingTrivia()) {
             switch (trivia) {
                 case Trivia.LineComment lc -> {
@@ -1413,6 +1442,7 @@ final class FlowPrinter {
                     output.append(text);
                     currentColumn += text.length();
                     newline();
+                    emittedAny = true;
                 }
                 case Trivia.BlockComment bc -> {
                     if (currentColumn > 0) {
@@ -1433,11 +1463,19 @@ final class FlowPrinter {
                         }
                     }
                     newline();
+                    emittedAny = true;
                 }
                 case Trivia.Whitespace _ -> {
                     // Ignored — flow formatter controls all whitespace
                 }
             }
+        }
+        // After emitting comments that ended with newline (currentColumn == 0), restore
+        // indent so the following content lands at the right column. The per-member loop
+        // in printBracedBody / printBlock skips its own printIndent for members with
+        // leading comments, so this is the sole indent emission for that case.
+        if (emittedAny && currentColumn == 0) {
+            printIndent();
         }
     }
 

@@ -11,14 +11,14 @@ import java.util.Deque;
 /// by a single {@link CstPrinter} instance during a formatting operation.
 /// All mutable state (chain column, lambda alignment stack) is modified during
 /// traversal. Create a new instance per formatting operation.
-final class AlignmentContext {
+public final class AlignmentContext {
     private final Deque<Integer> lambdaAlignStack = new ArrayDeque<>();
     private int chainColumn = - 1;
     private boolean inBreakingChain = false;
 
     /// Enter a breaking method chain context.
     /// Returns a scope guard that restores state on close.
-    ChainScope enterChain(int column) {
+    public ChainScope enterChain(int column) {
         int prevColumn = this.chainColumn;
         boolean wasBreaking = this.inBreakingChain;
         this.chainColumn = column;
@@ -28,35 +28,35 @@ final class AlignmentContext {
 
     /// Push a lambda alignment column.
     /// Returns a scope guard that pops on close.
-    LambdaScope pushLambdaAlign(int column) {
+    public LambdaScope pushLambdaAlign(int column) {
         lambdaAlignStack.push(column);
         return new LambdaScope();
     }
 
     /// Get the current chain alignment column, or -1 if not in a chain.
-    int chainColumn() {
+    public int chainColumn() {
         return chainColumn;
     }
 
     /// Check if we're inside a breaking chain.
-    boolean isInBreakingChain() {
+    public boolean isInBreakingChain() {
         return inBreakingChain;
     }
 
     /// Check if we have a lambda alignment context.
-    boolean hasLambdaAlign() {
+    public boolean hasLambdaAlign() {
         return ! lambdaAlignStack.isEmpty();
     }
 
     /// Get the current lambda alignment column, or -1 if none.
-    int lambdaColumn() {
+    public int lambdaColumn() {
         return lambdaAlignStack.isEmpty()
                ? - 1
                : lambdaAlignStack.peek();
     }
 
     /// Scope guard for chain context - restores state on close.
-    final class ChainScope implements AutoCloseable {
+    public final class ChainScope implements AutoCloseable {
         private final int prevColumn;
         private final boolean wasBreaking;
 
@@ -73,7 +73,7 @@ final class AlignmentContext {
     }
 
     /// Scope guard for lambda alignment - pops stack on close.
-    final class LambdaScope implements AutoCloseable {
+    public final class LambdaScope implements AutoCloseable {
         @Override
         public void close() {
             if (!lambdaAlignStack.isEmpty()) {
