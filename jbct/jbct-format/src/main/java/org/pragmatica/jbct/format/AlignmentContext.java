@@ -37,10 +37,14 @@ public final class AlignmentContext {
 
     /// Enter a "tail expression" context — the expression we're about to print is the
     /// value of a `return`/`throw` statement or the body of an arrow lambda. Used to
-    /// gate chain breaking — chains break vertically only in tail contexts.
+    /// gate chain breaking — chains break vertically only in tail contexts. Suspends
+    /// any active inline-expression context (chain inside lambda body breaks even when
+    /// the lambda itself is a single-arg call).
     public TailScope enterTailContext() {
         tailContextDepth++;
-        return new TailScope();
+        int suspended = inlineExpressionDepth;
+        inlineExpressionDepth = 0;
+        return new TailScope(suspended);
     }
 
     public boolean isInTailContext() {
@@ -48,7 +52,12 @@ public final class AlignmentContext {
     }
 
     public final class TailScope implements AutoCloseable {
-        @Override public void close() { tailContextDepth--; }
+        private final int suspendedInline;
+        TailScope(int suspendedInline) { this.suspendedInline = suspendedInline; }
+        @Override public void close() {
+            tailContextDepth--;
+            inlineExpressionDepth = suspendedInline;
+        }
     }
 
     /// Enter a breaking method chain context.

@@ -600,11 +600,13 @@ final class FlowPrinter {
                         && hasSimplePriorStmt(stmts, i)) {
                         newline();
                     }
-                    // Blank line BETWEEN a block-shaped stmt (if/try/while/...) and a
-                    // following non-block stmt, marking section boundaries.
+                    // Blank line around block-shaped stmts (if/try/while/...) when the
+                    // method body has 3+ stmts: a section boundary appears either when
+                    // moving from a non-block stmt to a block stmt OR from a block stmt
+                    // to a non-block stmt.
                     else if (!isLambdaBody && i >= 1 && !hasLeadingComment(stmt)
-                             && isBlockShapedStmt(stmts.get(i - 1))
-                             && !isBlockShapedStmt(stmt)) {
+                             && stmts.size() >= 3
+                             && (isBlockShapedStmt(stmts.get(i - 1)) ^ isBlockShapedStmt(stmt))) {
                         newline();
                     }
                     if (!hasLeadingComment(stmt)) {
@@ -1831,7 +1833,43 @@ final class FlowPrinter {
         if (firstChar == '>' && lastChar == '?') {
             return true;
         }
+        // Unary minus/plus: when the previous emitted token was `-` or `+` AND it sits in
+        // a unary-operator position (preceded by a unary-context char), suppress the
+        // space before the operand.
+        if ((lastChar == '-' || lastChar == '+') && isUnaryPosition()) {
+            return true;
+        }
         return false;
+    }
+
+    /// True iff the previously emitted `-`/`+` is in a unary-operator position. Looks
+    /// backwards from the operator in the output buffer, skipping a single space, to find
+    /// the preceding non-space character. If that char is a unary-context char
+    /// (`(`, `,`, `=`, `<`, `?`, `:`, `{`, `;`, `\n`, a binary-op char, or the end of a
+    /// unary-context keyword like `return`/`throw`/etc.), the operator is unary.
+    private boolean isUnaryPosition() {
+        if (measuringMode || output.length() < 2) {
+            return false;
+        }
+        int beforeIdx = output.length() - 2;
+        if (beforeIdx >= 0 && output.charAt(beforeIdx) == ' ') {
+            beforeIdx--;
+        }
+        if (beforeIdx < 0) {
+            return true;
+        }
+        char before = output.charAt(beforeIdx);
+        if (before == '(' || before == ',' || before == '=' || before == '<'
+            || before == '?' || before == ':' || before == '{' || before == ';'
+            || before == '\n' || before == '&' || before == '|' || before == '^'
+            || before == '*' || before == '/' || before == '%' || before == '!'
+            || before == '~' || before == '-' || before == '+') {
+            return true;
+        }
+        // If the preceding token is a unary-context keyword (return/throw/case/...),
+        // SPACE_AFTER_KEYWORDS would have triggered the space — and lastWord is still
+        // that keyword (operator tokens don't reset lastWord).
+        return SPACE_AFTER_KEYWORDS.contains(lastWord);
     }
 
     private boolean checkSpaceRules(String text, char firstChar) {
