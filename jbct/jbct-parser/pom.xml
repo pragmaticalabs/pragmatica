@@ -17,7 +17,7 @@
     <description>Java 25 PEG parser with CST output for JBCT tools</description>
 
     <properties>
-        <peglib.maven.plugin.version>0.6.0</peglib.maven.plugin.version>
+        <peglib.maven.plugin.version>0.6.1</peglib.maven.plugin.version>
     </properties>
 
     <dependencies>
@@ -25,6 +25,15 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
+        </dependency>
+
+        <!-- Peglib v6 runtime (used by parsers generated via generate-v6;
+             small ~25KB jar with CstArray/TokenArray/ParseResult/Diagnostic). -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>peglib-runtime</artifactId>
+            <version>${peglib.maven.plugin.version}</version>
+            <scope>test</scope>
         </dependency>
 
         <!-- Testing -->
@@ -60,6 +69,21 @@
                                     <packageName>org.pragmatica.jbct.parser</packageName>
                                     <className>Java25Parser</className>
                                     <errorReporting>ADVANCED</errorReporting>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>generate-java25-parser-v6</id>
+                                <phase>generate-test-sources</phase>
+                                <goals>
+                                    <goal>generate-v6</goal>
+                                </goals>
+                                <configuration>
+                                    <grammarFile>${project.basedir}/src/main/resources/grammars/java25.peg</grammarFile>
+                                    <outputDirectory>${project.basedir}/src/test/java</outputDirectory>
+                                    <packageName>org.pragmatica.jbct.parser.v6</packageName>
+                                    <lexerClassName>Java25Lexer</lexerClassName>
+                                    <parserClassName>Java25ParserV6</parserClassName>
+                                    <visitorClassName>Java25Visitor</visitorClassName>
                                 </configuration>
                             </execution>
                         </executions>

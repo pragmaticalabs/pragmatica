@@ -426,132 +426,156 @@ public final class Java25Parser {
             public int ordinal() { return 99; }
             public String name() { return "Shift"; }
         }
-        record Additive() implements RuleId {
+        record URShift() implements RuleId {
             public int ordinal() { return 100; }
+            public String name() { return "URShift"; }
+        }
+        record RShift() implements RuleId {
+            public int ordinal() { return 101; }
+            public String name() { return "RShift"; }
+        }
+        record LShift() implements RuleId {
+            public int ordinal() { return 102; }
+            public String name() { return "LShift"; }
+        }
+        record URShiftAssign() implements RuleId {
+            public int ordinal() { return 103; }
+            public String name() { return "URShiftAssign"; }
+        }
+        record RShiftAssign() implements RuleId {
+            public int ordinal() { return 104; }
+            public String name() { return "RShiftAssign"; }
+        }
+        record LShiftAssign() implements RuleId {
+            public int ordinal() { return 105; }
+            public String name() { return "LShiftAssign"; }
+        }
+        record Additive() implements RuleId {
+            public int ordinal() { return 106; }
             public String name() { return "Additive"; }
         }
         record Multiplicative() implements RuleId {
-            public int ordinal() { return 101; }
+            public int ordinal() { return 107; }
             public String name() { return "Multiplicative"; }
         }
         record Unary() implements RuleId {
-            public int ordinal() { return 102; }
+            public int ordinal() { return 108; }
             public String name() { return "Unary"; }
         }
         record Postfix() implements RuleId {
-            public int ordinal() { return 103; }
+            public int ordinal() { return 109; }
             public String name() { return "Postfix"; }
         }
         record PostOp() implements RuleId {
-            public int ordinal() { return 104; }
+            public int ordinal() { return 110; }
             public String name() { return "PostOp"; }
         }
         record Primary() implements RuleId {
-            public int ordinal() { return 105; }
+            public int ordinal() { return 111; }
             public String name() { return "Primary"; }
         }
         record TypeExpr() implements RuleId {
-            public int ordinal() { return 106; }
+            public int ordinal() { return 112; }
             public String name() { return "TypeExpr"; }
         }
         record Lambda() implements RuleId {
-            public int ordinal() { return 107; }
+            public int ordinal() { return 113; }
             public String name() { return "Lambda"; }
         }
         record LambdaParams() implements RuleId {
-            public int ordinal() { return 108; }
+            public int ordinal() { return 114; }
             public String name() { return "LambdaParams"; }
         }
         record LambdaParam() implements RuleId {
-            public int ordinal() { return 109; }
+            public int ordinal() { return 115; }
             public String name() { return "LambdaParam"; }
         }
         record Args() implements RuleId {
-            public int ordinal() { return 110; }
+            public int ordinal() { return 116; }
             public String name() { return "Args"; }
         }
         record ExprList() implements RuleId {
-            public int ordinal() { return 111; }
+            public int ordinal() { return 117; }
             public String name() { return "ExprList"; }
         }
         record Type() implements RuleId {
-            public int ordinal() { return 112; }
+            public int ordinal() { return 118; }
             public String name() { return "Type"; }
         }
         record PrimType() implements RuleId {
-            public int ordinal() { return 113; }
+            public int ordinal() { return 119; }
             public String name() { return "PrimType"; }
         }
         record RefType() implements RuleId {
-            public int ordinal() { return 114; }
+            public int ordinal() { return 120; }
             public String name() { return "RefType"; }
         }
         record AnnotatedTypeName() implements RuleId {
-            public int ordinal() { return 115; }
+            public int ordinal() { return 121; }
             public String name() { return "AnnotatedTypeName"; }
         }
         record Dims() implements RuleId {
-            public int ordinal() { return 116; }
+            public int ordinal() { return 122; }
             public String name() { return "Dims"; }
         }
         record ArrayType() implements RuleId {
-            public int ordinal() { return 117; }
+            public int ordinal() { return 123; }
             public String name() { return "ArrayType"; }
         }
         record DimExprs() implements RuleId {
-            public int ordinal() { return 118; }
+            public int ordinal() { return 124; }
             public String name() { return "DimExprs"; }
         }
         record TypeArgs() implements RuleId {
-            public int ordinal() { return 119; }
+            public int ordinal() { return 125; }
             public String name() { return "TypeArgs"; }
         }
         record TypeArg() implements RuleId {
-            public int ordinal() { return 120; }
+            public int ordinal() { return 126; }
             public String name() { return "TypeArg"; }
         }
         record QualifiedName() implements RuleId {
-            public int ordinal() { return 121; }
+            public int ordinal() { return 127; }
             public String name() { return "QualifiedName"; }
         }
         record Identifier() implements RuleId {
-            public int ordinal() { return 122; }
+            public int ordinal() { return 128; }
             public String name() { return "Identifier"; }
         }
         record Modifier() implements RuleId {
-            public int ordinal() { return 123; }
+            public int ordinal() { return 129; }
             public String name() { return "Modifier"; }
         }
         record Annotation() implements RuleId {
-            public int ordinal() { return 124; }
+            public int ordinal() { return 130; }
             public String name() { return "Annotation"; }
         }
         record AnnotationValue() implements RuleId {
-            public int ordinal() { return 125; }
+            public int ordinal() { return 131; }
             public String name() { return "AnnotationValue"; }
         }
         record AnnotationElem() implements RuleId {
-            public int ordinal() { return 126; }
+            public int ordinal() { return 132; }
             public String name() { return "AnnotationElem"; }
         }
         record Literal() implements RuleId {
-            public int ordinal() { return 127; }
+            public int ordinal() { return 133; }
             public String name() { return "Literal"; }
         }
         record CharLit() implements RuleId {
-            public int ordinal() { return 128; }
+            public int ordinal() { return 134; }
             public String name() { return "CharLit"; }
         }
         record StringLit() implements RuleId {
-            public int ordinal() { return 129; }
+            public int ordinal() { return 135; }
             public String name() { return "StringLit"; }
         }
         record NumLit() implements RuleId {
-            public int ordinal() { return 130; }
+            public int ordinal() { return 136; }
             public String name() { return "NumLit"; }
         }
         record Keyword() implements RuleId {
-            public int ordinal() { return 131; }
+            public int ordinal() { return 137; }
             public String name() { return "Keyword"; }
         }
         // Built-in types for anonymous terminals
@@ -674,6 +698,12 @@ public final class Java25Parser {
     private static final RuleId.Equality RULE_EQUALITY = new RuleId.Equality();
     private static final RuleId.Relational RULE_RELATIONAL = new RuleId.Relational();
     private static final RuleId.Shift RULE_SHIFT = new RuleId.Shift();
+    private static final RuleId.URShift RULE_U_R_SHIFT = new RuleId.URShift();
+    private static final RuleId.RShift RULE_R_SHIFT = new RuleId.RShift();
+    private static final RuleId.LShift RULE_L_SHIFT = new RuleId.LShift();
+    private static final RuleId.URShiftAssign RULE_U_R_SHIFT_ASSIGN = new RuleId.URShiftAssign();
+    private static final RuleId.RShiftAssign RULE_R_SHIFT_ASSIGN = new RuleId.RShiftAssign();
+    private static final RuleId.LShiftAssign RULE_L_SHIFT_ASSIGN = new RuleId.LShiftAssign();
     private static final RuleId.Additive RULE_ADDITIVE = new RuleId.Additive();
     private static final RuleId.Multiplicative RULE_MULTIPLICATIVE = new RuleId.Multiplicative();
     private static final RuleId.Unary RULE_UNARY = new RuleId.Unary();
@@ -1615,6 +1645,12 @@ private Map<Class<? extends RuleId>,
         m.put(RuleId.Equality.class, this::parse_Equality);
         m.put(RuleId.Relational.class, this::parse_Relational);
         m.put(RuleId.Shift.class, this::parse_Shift);
+        m.put(RuleId.URShift.class, this::parse_URShift);
+        m.put(RuleId.RShift.class, this::parse_RShift);
+        m.put(RuleId.LShift.class, this::parse_LShift);
+        m.put(RuleId.URShiftAssign.class, this::parse_URShiftAssign);
+        m.put(RuleId.RShiftAssign.class, this::parse_RShiftAssign);
+        m.put(RuleId.LShiftAssign.class, this::parse_LShiftAssign);
         m.put(RuleId.Additive.class, this::parse_Additive);
         m.put(RuleId.Multiplicative.class, this::parse_Multiplicative);
         m.put(RuleId.Unary.class, this::parse_Unary);
@@ -14066,115 +14102,8 @@ private Map<Class<? extends RuleId>,
         int seqStartColumn0 = column;
         int seqPending0 = 0;
         var seqChildren0 = new ArrayList<>(children);
-        boolean cut0 = false;
-        if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) skipWhitespace();
-            CstParseResult elem0_0 = CstParseResult.successNoLoc(null, "");
-            int zomStartPos1 = pos;
-            int zomStartLine1 = line;
-            int zomStartColumn1 = column;
-            var savedChildrenZom1 = new ArrayList<>(children);
-            children.clear();
-            while (true) {
-                int beforePos1 = pos;
-                int beforeLine1 = line;
-                int beforeColumn1 = column;
-                int zomIterPending1 = 0;
-                if (tokenBoundaryDepth == 0) skipWhitespace();
-                var zomElem1 = parse_Modifier();
-                if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
-                    children.add(zomElem1.node.unwrap());
-                }
-                if (zomElem1.isCutFailure()) {
-                    elem0_0 = zomElem1;
-                    break;
-                }
-                if (zomElem1.isFailure() || pos == beforePos1) {
-                    restoreLocationRaw(beforePos1, beforeLine1, beforeColumn1);
-                    break;
-                }
-            }
-            if (!elem0_0.isCutFailure()) {
-                var zomChildren1 = new ArrayList<>(children);
-                children.clear();
-                children.addAll(savedChildrenZom1);
-                if (zomChildren1.size() == 1) {
-                    children.add(zomChildren1.getFirst());
-                } else if (!zomChildren1.isEmpty()) {
-                    var zomSpan1 = new SourceSpan(zomStartLine1, zomStartColumn1, zomStartPos1, line, column, pos);
-                    children.add(new CstNode.NonTerminal(idGen.next(), zomSpan1, __ruleName, zomChildren1, List.of(), List.of()));
-                }
-                elem0_0 = CstParseResult.successNoLoc(null, substring(zomStartPos1, pos));
-            } else {
-                children.clear();
-                children.addAll(savedChildrenZom1);
-            }
-            if (elem0_0.isCutFailure()) {
-                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
-                children.clear();
-                children.addAll(seqChildren0);
-                result = elem0_0;
-            } else if (elem0_0.isFailure()) {
-                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
-                children.clear();
-                children.addAll(seqChildren0);
-                result = cut0 ? elem0_0.asCutFailure() : elem0_0;
-            }
-        }
-        if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem0_1 = parse_LocalVarType();
-            if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
-                children.add(elem0_1.node.unwrap());
-            }
-            if (elem0_1.isCutFailure()) {
-                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
-                children.clear();
-                children.addAll(seqChildren0);
-                result = elem0_1;
-            } else if (elem0_1.isFailure()) {
-                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
-                children.clear();
-                children.addAll(seqChildren0);
-                result = cut0 ? elem0_1.asCutFailure() : elem0_1;
-            }
-        }
-        if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem0_2 = parse_VarDecls();
-            if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
-                children.add(elem0_2.node.unwrap());
-            }
-            if (elem0_2.isCutFailure()) {
-                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
-                children.clear();
-                children.addAll(seqChildren0);
-                result = elem0_2;
-            } else if (elem0_2.isFailure()) {
-                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
-                children.clear();
-                children.addAll(seqChildren0);
-                result = cut0 ? elem0_2.asCutFailure() : elem0_2;
-            }
-        }
-        if (result.isSuccess()) {
-            if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem0_3 = matchLiteralCst(";", false);
-            if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
-                children.add(elem0_3.node.unwrap());
-            }
-            if (elem0_3.isCutFailure()) {
-                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
-                children.clear();
-                children.addAll(seqChildren0);
-                result = elem0_3;
-            } else if (elem0_3.isFailure()) {
-                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
-                children.clear();
-                children.addAll(seqChildren0);
-                result = cut0 ? elem0_3.asCutFailure() : elem0_3;
-            }
-        }
+        result = parse_LocalVar_seq0_chunk0(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
+        if (result.isSuccess()) result = parse_LocalVar_seq0_chunk1(children, seqStartPos0, seqStartLine0, seqStartColumn0, seqPending0, seqChildren0);
         if (result.isSuccess()) {
             result = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
         }
@@ -14198,6 +14127,182 @@ private Map<Class<? extends RuleId>,
         
         if (cache != null) cache.put(key, cacheableResult);
         return finalResult;
+    }
+
+    private CstParseResult parse_LocalVar_seq0_chunk0(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
+        var __ruleName = RULE_LOCAL_VAR;
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        boolean cut = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            CstParseResult elem_0 = CstParseResult.successNoLoc(null, "");
+            int zomStartPos0 = pos;
+            int zomStartLine0 = line;
+            int zomStartColumn0 = column;
+            var savedChildrenZom0 = new ArrayList<>(children);
+            children.clear();
+            while (true) {
+                int beforePos0 = pos;
+                int beforeLine0 = line;
+                int beforeColumn0 = column;
+                int zomIterPending0 = 0;
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                var zomElem0 = parse_Annotation();
+                if (zomElem0.isSuccess() && zomElem0.node.isPresent()) {
+                    children.add(zomElem0.node.unwrap());
+                }
+                if (zomElem0.isCutFailure()) {
+                    elem_0 = zomElem0;
+                    break;
+                }
+                if (zomElem0.isFailure() || pos == beforePos0) {
+                    restoreLocationRaw(beforePos0, beforeLine0, beforeColumn0);
+                    break;
+                }
+            }
+            if (!elem_0.isCutFailure()) {
+                var zomChildren0 = new ArrayList<>(children);
+                children.clear();
+                children.addAll(savedChildrenZom0);
+                if (zomChildren0.size() == 1) {
+                    children.add(zomChildren0.getFirst());
+                } else if (!zomChildren0.isEmpty()) {
+                    var zomSpan0 = new SourceSpan(zomStartLine0, zomStartColumn0, zomStartPos0, line, column, pos);
+                    children.add(new CstNode.NonTerminal(idGen.next(), zomSpan0, __ruleName, zomChildren0, List.of(), List.of()));
+                }
+                elem_0 = CstParseResult.successNoLoc(null, substring(zomStartPos0, pos));
+            } else {
+                children.clear();
+                children.addAll(savedChildrenZom0);
+            }
+            if (elem_0.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_0;
+            } else if (elem_0.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_0.asCutFailure() : elem_0;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            CstParseResult elem_1 = CstParseResult.successNoLoc(null, "");
+            int zomStartPos2 = pos;
+            int zomStartLine2 = line;
+            int zomStartColumn2 = column;
+            var savedChildrenZom2 = new ArrayList<>(children);
+            children.clear();
+            while (true) {
+                int beforePos2 = pos;
+                int beforeLine2 = line;
+                int beforeColumn2 = column;
+                int zomIterPending2 = 0;
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                var zomElem2 = parse_Modifier();
+                if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
+                    children.add(zomElem2.node.unwrap());
+                }
+                if (zomElem2.isCutFailure()) {
+                    elem_1 = zomElem2;
+                    break;
+                }
+                if (zomElem2.isFailure() || pos == beforePos2) {
+                    restoreLocationRaw(beforePos2, beforeLine2, beforeColumn2);
+                    break;
+                }
+            }
+            if (!elem_1.isCutFailure()) {
+                var zomChildren2 = new ArrayList<>(children);
+                children.clear();
+                children.addAll(savedChildrenZom2);
+                if (zomChildren2.size() == 1) {
+                    children.add(zomChildren2.getFirst());
+                } else if (!zomChildren2.isEmpty()) {
+                    var zomSpan2 = new SourceSpan(zomStartLine2, zomStartColumn2, zomStartPos2, line, column, pos);
+                    children.add(new CstNode.NonTerminal(idGen.next(), zomSpan2, __ruleName, zomChildren2, List.of(), List.of()));
+                }
+                elem_1 = CstParseResult.successNoLoc(null, substring(zomStartPos2, pos));
+            } else {
+                children.clear();
+                children.addAll(savedChildrenZom2);
+            }
+            if (elem_1.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_1;
+            } else if (elem_1.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_1.asCutFailure() : elem_1;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem_2 = parse_LocalVarType();
+            if (elem_2.isSuccess() && elem_2.node.isPresent()) {
+                children.add(elem_2.node.unwrap());
+            }
+            if (elem_2.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_2;
+            } else if (elem_2.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_2.asCutFailure() : elem_2;
+            }
+        }
+        return result;
+    }
+
+    private CstParseResult parse_LocalVar_seq0_chunk1(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
+        var __ruleName = RULE_LOCAL_VAR;
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        boolean cut = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem_3 = parse_VarDecls();
+            if (elem_3.isSuccess() && elem_3.node.isPresent()) {
+                children.add(elem_3.node.unwrap());
+            }
+            if (elem_3.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_3;
+            } else if (elem_3.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_3.asCutFailure() : elem_3;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem_4 = matchLiteralCst(";", false);
+            if (elem_4.isSuccess() && elem_4.node.isPresent()) {
+                children.add(elem_4.node.unwrap());
+            }
+            if (elem_4.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_4;
+            } else if (elem_4.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_4.asCutFailure() : elem_4;
+            }
+        }
+        return result;
     }
 
     private CstParseResult parse_LocalVarType() {
@@ -18868,7 +18973,7 @@ private Map<Class<? extends RuleId>,
                 int beforeColumn1 = column;
                 int zomIterPending1 = 0;
                 if (tokenBoundaryDepth == 0) skipWhitespace();
-                var zomElem1 = parse_Modifier();
+                var zomElem1 = parse_Annotation();
                 if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
                     children.add(zomElem1.node.unwrap());
                 }
@@ -18910,9 +19015,45 @@ private Map<Class<? extends RuleId>,
         }
         if (result.isSuccess()) {
             if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem0_1 = parse_LocalVarType();
-            if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
-                children.add(elem0_1.node.unwrap());
+            CstParseResult elem0_1 = CstParseResult.successNoLoc(null, "");
+            int zomStartPos3 = pos;
+            int zomStartLine3 = line;
+            int zomStartColumn3 = column;
+            var savedChildrenZom3 = new ArrayList<>(children);
+            children.clear();
+            while (true) {
+                int beforePos3 = pos;
+                int beforeLine3 = line;
+                int beforeColumn3 = column;
+                int zomIterPending3 = 0;
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                var zomElem3 = parse_Modifier();
+                if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
+                    children.add(zomElem3.node.unwrap());
+                }
+                if (zomElem3.isCutFailure()) {
+                    elem0_1 = zomElem3;
+                    break;
+                }
+                if (zomElem3.isFailure() || pos == beforePos3) {
+                    restoreLocationRaw(beforePos3, beforeLine3, beforeColumn3);
+                    break;
+                }
+            }
+            if (!elem0_1.isCutFailure()) {
+                var zomChildren3 = new ArrayList<>(children);
+                children.clear();
+                children.addAll(savedChildrenZom3);
+                if (zomChildren3.size() == 1) {
+                    children.add(zomChildren3.getFirst());
+                } else if (!zomChildren3.isEmpty()) {
+                    var zomSpan3 = new SourceSpan(zomStartLine3, zomStartColumn3, zomStartPos3, line, column, pos);
+                    children.add(new CstNode.NonTerminal(idGen.next(), zomSpan3, __ruleName, zomChildren3, List.of(), List.of()));
+                }
+                elem0_1 = CstParseResult.successNoLoc(null, substring(zomStartPos3, pos));
+            } else {
+                children.clear();
+                children.addAll(savedChildrenZom3);
             }
             if (elem0_1.isCutFailure()) {
                 restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
@@ -18928,7 +19069,7 @@ private Map<Class<? extends RuleId>,
         }
         if (result.isSuccess()) {
             if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem0_2 = parse_VarDecls();
+            var elem0_2 = parse_LocalVarType();
             if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
                 children.add(elem0_2.node.unwrap());
             }
@@ -18942,6 +19083,24 @@ private Map<Class<? extends RuleId>,
                 children.clear();
                 children.addAll(seqChildren0);
                 result = cut0 ? elem0_2.asCutFailure() : elem0_2;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_3 = parse_VarDecls();
+            if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
+                children.add(elem0_3.node.unwrap());
+            }
+            if (elem0_3.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_3;
+            } else if (elem0_3.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_3.asCutFailure() : elem0_3;
             }
         }
         if (result.isSuccess()) {
@@ -19441,7 +19600,7 @@ private Map<Class<? extends RuleId>,
                 int beforeColumn0 = column;
                 int zomIterPending0 = 0;
                 if (tokenBoundaryDepth == 0) skipWhitespace();
-                var zomElem0 = parse_Modifier();
+                var zomElem0 = parse_Annotation();
                 if (zomElem0.isSuccess() && zomElem0.node.isPresent()) {
                     children.add(zomElem0.node.unwrap());
                 }
@@ -19483,9 +19642,45 @@ private Map<Class<? extends RuleId>,
         }
         if (result.isSuccess()) {
             if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem_1 = parse_LocalVarType();
-            if (elem_1.isSuccess() && elem_1.node.isPresent()) {
-                children.add(elem_1.node.unwrap());
+            CstParseResult elem_1 = CstParseResult.successNoLoc(null, "");
+            int zomStartPos2 = pos;
+            int zomStartLine2 = line;
+            int zomStartColumn2 = column;
+            var savedChildrenZom2 = new ArrayList<>(children);
+            children.clear();
+            while (true) {
+                int beforePos2 = pos;
+                int beforeLine2 = line;
+                int beforeColumn2 = column;
+                int zomIterPending2 = 0;
+                if (tokenBoundaryDepth == 0) skipWhitespace();
+                var zomElem2 = parse_Modifier();
+                if (zomElem2.isSuccess() && zomElem2.node.isPresent()) {
+                    children.add(zomElem2.node.unwrap());
+                }
+                if (zomElem2.isCutFailure()) {
+                    elem_1 = zomElem2;
+                    break;
+                }
+                if (zomElem2.isFailure() || pos == beforePos2) {
+                    restoreLocationRaw(beforePos2, beforeLine2, beforeColumn2);
+                    break;
+                }
+            }
+            if (!elem_1.isCutFailure()) {
+                var zomChildren2 = new ArrayList<>(children);
+                children.clear();
+                children.addAll(savedChildrenZom2);
+                if (zomChildren2.size() == 1) {
+                    children.add(zomChildren2.getFirst());
+                } else if (!zomChildren2.isEmpty()) {
+                    var zomSpan2 = new SourceSpan(zomStartLine2, zomStartColumn2, zomStartPos2, line, column, pos);
+                    children.add(new CstNode.NonTerminal(idGen.next(), zomSpan2, __ruleName, zomChildren2, List.of(), List.of()));
+                }
+                elem_1 = CstParseResult.successNoLoc(null, substring(zomStartPos2, pos));
+            } else {
+                children.clear();
+                children.addAll(savedChildrenZom2);
             }
             if (elem_1.isCutFailure()) {
                 restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
@@ -19501,7 +19696,7 @@ private Map<Class<? extends RuleId>,
         }
         if (result.isSuccess()) {
             if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem_2 = parse_Identifier();
+            var elem_2 = parse_LocalVarType();
             if (elem_2.isSuccess() && elem_2.node.isPresent()) {
                 children.add(elem_2.node.unwrap());
             }
@@ -19526,7 +19721,7 @@ private Map<Class<? extends RuleId>,
         boolean cut = false;
         if (result.isSuccess()) {
             if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem_3 = matchLiteralCst("=", false);
+            var elem_3 = parse_Identifier();
             if (elem_3.isSuccess() && elem_3.node.isPresent()) {
                 children.add(elem_3.node.unwrap());
             }
@@ -19544,7 +19739,7 @@ private Map<Class<? extends RuleId>,
         }
         if (result.isSuccess()) {
             if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem_4 = parse_Expr();
+            var elem_4 = matchLiteralCst("=", false);
             if (elem_4.isSuccess() && elem_4.node.isPresent()) {
                 children.add(elem_4.node.unwrap());
             }
@@ -19558,6 +19753,24 @@ private Map<Class<? extends RuleId>,
                         children.clear();
                 children.addAll(seqChildren);
                 result = cut ? elem_4.asCutFailure() : elem_4;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem_5 = parse_Expr();
+            if (elem_5.isSuccess() && elem_5.node.isPresent()) {
+                children.add(elem_5.node.unwrap());
+            }
+            if (elem_5.isCutFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = elem_5;
+            } else if (elem_5.isFailure()) {
+                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
+                        children.clear();
+                children.addAll(seqChildren);
+                result = cut ? elem_5.asCutFailure() : elem_5;
             }
         }
         return result;
@@ -22914,11 +23127,11 @@ private Map<Class<? extends RuleId>,
         if (pos < input.length()) {
             char dispatchChar0 = input.charAt(pos);
             switch (dispatchChar0) {
-                case '=':
+                case '>':
                 {
                     children.clear();
                     children.addAll(savedChildren0);
-                    var alt0_0 = matchLiteralCst("=", false);
+                    var alt0_0 = parse_URShiftAssign();
                     if (alt0_0.isSuccess() && alt0_0.node.isPresent()) {
                         children.add(alt0_0.node.unwrap());
                     }
@@ -22928,14 +23141,9 @@ private Map<Class<? extends RuleId>,
                         result = alt0_0.asRegularFailure();
                     } else {
                         restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
-                    }
-                    break;
-                }
-                case '>':
-                {
                     children.clear();
                     children.addAll(savedChildren0);
-                    var alt0_1 = matchLiteralCst(">>>=", false);
+                    var alt0_1 = parse_RShiftAssign();
                     if (alt0_1.isSuccess() && alt0_1.node.isPresent()) {
                         children.add(alt0_1.node.unwrap());
                     }
@@ -22943,18 +23151,6 @@ private Map<Class<? extends RuleId>,
                         result = alt0_1;
                     } else if (alt0_1.isCutFailure()) {
                         result = alt0_1.asRegularFailure();
-                    } else {
-                        restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
-                    children.clear();
-                    children.addAll(savedChildren0);
-                    var alt0_2 = matchLiteralCst(">>=", false);
-                    if (alt0_2.isSuccess() && alt0_2.node.isPresent()) {
-                        children.add(alt0_2.node.unwrap());
-                    }
-                    if (alt0_2.isSuccess()) {
-                        result = alt0_2;
-                    } else if (alt0_2.isCutFailure()) {
-                        result = alt0_2.asRegularFailure();
                     } else {
                         restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
                     }
@@ -22965,7 +23161,24 @@ private Map<Class<? extends RuleId>,
                 {
                     children.clear();
                     children.addAll(savedChildren0);
-                    var alt0_3 = matchLiteralCst("<<=", false);
+                    var alt0_2 = parse_LShiftAssign();
+                    if (alt0_2.isSuccess() && alt0_2.node.isPresent()) {
+                        children.add(alt0_2.node.unwrap());
+                    }
+                    if (alt0_2.isSuccess()) {
+                        result = alt0_2;
+                    } else if (alt0_2.isCutFailure()) {
+                        result = alt0_2.asRegularFailure();
+                    } else {
+                        restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
+                    }
+                    break;
+                }
+                case '=':
+                {
+                    children.clear();
+                    children.addAll(savedChildren0);
+                    var alt0_3 = matchLiteralCst("=", false);
                     if (alt0_3.isSuccess() && alt0_3.node.isPresent()) {
                         children.add(alt0_3.node.unwrap());
                     }
@@ -25241,8 +25454,102 @@ private Map<Class<? extends RuleId>,
                 int seqStartColumn2 = column;
                 int seqPending2 = 0;
                 var seqChildren2 = new ArrayList<>(children);
-                zomElem0 = parse_Shift_seq1_chunk0(children, seqStartPos2, seqStartLine2, seqStartColumn2, seqPending2, seqChildren2);
-                if (zomElem0.isSuccess()) zomElem0 = parse_Shift_seq1_chunk1(children, seqStartPos2, seqStartLine2, seqStartColumn2, seqPending2, seqChildren2);
+                boolean cut2 = false;
+                if (zomElem0.isSuccess()) {
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                    CstParseResult elem2_0 = null;
+                    int choiceStart4Pos = pos;
+                    int choiceStart4Line = line;
+                    int choiceStart4Column = column;
+                    int choicePending4 = 0;
+                    var savedChildren4 = new ArrayList<>(children);
+                    if (pos < input.length()) {
+                        char dispatchChar4 = input.charAt(pos);
+                        switch (dispatchChar4) {
+                            case '>':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren4);
+                                var alt4_0 = parse_URShift();
+                                if (alt4_0.isSuccess() && alt4_0.node.isPresent()) {
+                                    children.add(alt4_0.node.unwrap());
+                                }
+                                if (alt4_0.isSuccess()) {
+                                    elem2_0 = alt4_0;
+                                } else if (alt4_0.isCutFailure()) {
+                                    elem2_0 = alt4_0.asRegularFailure();
+                                } else {
+                                    restoreLocationRaw(choiceStart4Pos, choiceStart4Line, choiceStart4Column);
+                                children.clear();
+                                children.addAll(savedChildren4);
+                                var alt4_2 = parse_RShift();
+                                if (alt4_2.isSuccess() && alt4_2.node.isPresent()) {
+                                    children.add(alt4_2.node.unwrap());
+                                }
+                                if (alt4_2.isSuccess()) {
+                                    elem2_0 = alt4_2;
+                                } else if (alt4_2.isCutFailure()) {
+                                    elem2_0 = alt4_2.asRegularFailure();
+                                } else {
+                                    restoreLocationRaw(choiceStart4Pos, choiceStart4Line, choiceStart4Column);
+                                }
+                                }
+                                break;
+                            }
+                            case '<':
+                            {
+                                children.clear();
+                                children.addAll(savedChildren4);
+                                var alt4_1 = parse_LShift();
+                                if (alt4_1.isSuccess() && alt4_1.node.isPresent()) {
+                                    children.add(alt4_1.node.unwrap());
+                                }
+                                if (alt4_1.isSuccess()) {
+                                    elem2_0 = alt4_1;
+                                } else if (alt4_1.isCutFailure()) {
+                                    elem2_0 = alt4_1.asRegularFailure();
+                                } else {
+                                    restoreLocationRaw(choiceStart4Pos, choiceStart4Line, choiceStart4Column);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (elem2_0 == null) {
+                        children.clear();
+                        children.addAll(savedChildren4);
+                        elem2_0 = CstParseResult.failure("one of alternatives");
+                    }
+                    if (elem2_0.isCutFailure()) {
+                        restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                        children.clear();
+                        children.addAll(seqChildren2);
+                        zomElem0 = elem2_0;
+                    } else if (elem2_0.isFailure()) {
+                        restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                        children.clear();
+                        children.addAll(seqChildren2);
+                        zomElem0 = cut2 ? elem2_0.asCutFailure() : elem2_0;
+                    }
+                }
+                if (zomElem0.isSuccess()) {
+                    if (tokenBoundaryDepth == 0) skipWhitespace();
+                    var elem2_1 = parse_Additive();
+                    if (elem2_1.isSuccess() && elem2_1.node.isPresent()) {
+                        children.add(elem2_1.node.unwrap());
+                    }
+                    if (elem2_1.isCutFailure()) {
+                        restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                        children.clear();
+                        children.addAll(seqChildren2);
+                        zomElem0 = elem2_1;
+                    } else if (elem2_1.isFailure()) {
+                        restoreLocationRaw(seqStartPos2, seqStartLine2, seqStartColumn2);
+                        children.clear();
+                        children.addAll(seqChildren2);
+                        zomElem0 = cut2 ? elem2_1.asCutFailure() : elem2_1;
+                    }
+                }
                 if (zomElem0.isSuccess()) {
                     zomElem0 = CstParseResult.successNoLoc(null, substring(seqStartPos2, pos));
                 }
@@ -25285,279 +25592,656 @@ private Map<Class<? extends RuleId>,
         return result;
     }
 
-    private CstParseResult parse_Shift_seq1_chunk0(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
-        var __ruleName = RULE_SHIFT;
+    private CstParseResult parse_URShift() {
+        int startOffset = pos;
+        int startLine = line;
+        int startColumn = column;
+        
+        // Skip leading whitespace and combine with carried pending-leading.
+        var carriedLeading = List.<Trivia>of();
+        var localLeadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
+        var leadingTrivia = concatTrivia(carriedLeading, localLeadingTrivia);
+        var children = new ArrayList<CstNode>();
+        var __ruleName = RULE_U_R_SHIFT;
+        
         CstParseResult result = CstParseResult.successNoLoc(null, "");
-        boolean cut = false;
+        int seqStartPos0 = pos;
+        int seqStartLine0 = line;
+        int seqStartColumn0 = column;
+        int seqPending0 = 0;
+        var seqChildren0 = new ArrayList<>(children);
+        boolean cut0 = false;
         if (result.isSuccess()) {
             if (tokenBoundaryDepth == 0) skipWhitespace();
-            CstParseResult elem_0 = parse_Shift_choice0(children);
-            if (elem_0.isCutFailure()) {
-                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
-                        children.clear();
-                children.addAll(seqChildren);
-                result = elem_0;
-            } else if (elem_0.isFailure()) {
-                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
-                        children.clear();
-                children.addAll(seqChildren);
-                result = cut ? elem_0.asCutFailure() : elem_0;
+            var elem0_0 = matchLiteralCst(">", false);
+            if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
+                children.add(elem0_0.node.unwrap());
+            }
+            if (elem0_0.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_0;
+            } else if (elem0_0.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_0.asCutFailure() : elem0_0;
             }
         }
-        return result;
-    }
-
-    private CstParseResult parse_Shift_choice0(ArrayList<CstNode> children) {
-        var __ruleName = RULE_SHIFT;
-        CstParseResult result = null;
-        int choiceStart0Pos = pos;
-        int choiceStart0Line = line;
-        int choiceStart0Column = column;
-        int choicePending0 = 0;
-        var savedChildren0 = new ArrayList<>(children);
-        if (pos < input.length()) {
-            char dispatchChar0 = input.charAt(pos);
-            switch (dispatchChar0) {
-                case '<':
-                {
-                    children.clear();
-                    children.addAll(savedChildren0);
-                    CstParseResult alt0_0 = CstParseResult.successNoLoc(null, "");
-                    int seqStartPos1 = pos;
-                    int seqStartLine1 = line;
-                    int seqStartColumn1 = column;
-                    int seqPending1 = 0;
-                    var seqChildren1 = new ArrayList<>(children);
-                    boolean cut1 = false;
-                    if (alt0_0.isSuccess()) {
-                        int notStartPos2 = pos;
-                        int notStartLine2 = line;
-                        int notStartColumn2 = column;
-                        var savedChildrenNot2 = new ArrayList<>(children);
-                        var notElem2 = matchLiteralCst("<<=", false);
-                        restoreLocationRaw(notStartPos2, notStartLine2, notStartColumn2);
-                        children.clear();
-                        children.addAll(savedChildrenNot2);
-                        var elem1_0 = notElem2.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
-                        if (elem1_0.isCutFailure()) {
-                            restoreLocationRaw(seqStartPos1, seqStartLine1, seqStartColumn1);
-                            children.clear();
-                            children.addAll(seqChildren1);
-                            alt0_0 = elem1_0;
-                        } else if (elem1_0.isFailure()) {
-                            restoreLocationRaw(seqStartPos1, seqStartLine1, seqStartColumn1);
-                            children.clear();
-                            children.addAll(seqChildren1);
-                            alt0_0 = cut1 ? elem1_0.asCutFailure() : elem1_0;
-                        }
-                    }
-                    if (alt0_0.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) skipWhitespace();
-                        var elem1_1 = matchLiteralCst("<<", false);
-                        if (elem1_1.isSuccess() && elem1_1.node.isPresent()) {
-                            children.add(elem1_1.node.unwrap());
-                        }
-                        if (elem1_1.isCutFailure()) {
-                            restoreLocationRaw(seqStartPos1, seqStartLine1, seqStartColumn1);
-                            children.clear();
-                            children.addAll(seqChildren1);
-                            alt0_0 = elem1_1;
-                        } else if (elem1_1.isFailure()) {
-                            restoreLocationRaw(seqStartPos1, seqStartLine1, seqStartColumn1);
-                            children.clear();
-                            children.addAll(seqChildren1);
-                            alt0_0 = cut1 ? elem1_1.asCutFailure() : elem1_1;
-                        }
-                    }
-                    if (alt0_0.isSuccess()) {
-                        alt0_0 = CstParseResult.successNoLoc(null, substring(seqStartPos1, pos));
-                    }
-                    if (alt0_0.isSuccess()) {
-                        result = alt0_0;
-                    } else if (alt0_0.isCutFailure()) {
-                        result = alt0_0.asRegularFailure();
-                    } else {
-                        restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
-                    }
-                    break;
-                }
-                case '>':
-                {
-                    children.clear();
-                    children.addAll(savedChildren0);
-                    CstParseResult alt0_1 = CstParseResult.successNoLoc(null, "");
-                    int seqStartPos5 = pos;
-                    int seqStartLine5 = line;
-                    int seqStartColumn5 = column;
-                    int seqPending5 = 0;
-                    var seqChildren5 = new ArrayList<>(children);
-                    boolean cut5 = false;
-                    if (alt0_1.isSuccess()) {
-                        int notStartPos6 = pos;
-                        int notStartLine6 = line;
-                        int notStartColumn6 = column;
-                        var savedChildrenNot6 = new ArrayList<>(children);
-                        var notElem6 = matchLiteralCst(">>>=", false);
-                        restoreLocationRaw(notStartPos6, notStartLine6, notStartColumn6);
-                        children.clear();
-                        children.addAll(savedChildrenNot6);
-                        var elem5_0 = notElem6.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
-                        if (elem5_0.isCutFailure()) {
-                            restoreLocationRaw(seqStartPos5, seqStartLine5, seqStartColumn5);
-                            children.clear();
-                            children.addAll(seqChildren5);
-                            alt0_1 = elem5_0;
-                        } else if (elem5_0.isFailure()) {
-                            restoreLocationRaw(seqStartPos5, seqStartLine5, seqStartColumn5);
-                            children.clear();
-                            children.addAll(seqChildren5);
-                            alt0_1 = cut5 ? elem5_0.asCutFailure() : elem5_0;
-                        }
-                    }
-                    if (alt0_1.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) skipWhitespace();
-                        var elem5_1 = matchLiteralCst(">>>", false);
-                        if (elem5_1.isSuccess() && elem5_1.node.isPresent()) {
-                            children.add(elem5_1.node.unwrap());
-                        }
-                        if (elem5_1.isCutFailure()) {
-                            restoreLocationRaw(seqStartPos5, seqStartLine5, seqStartColumn5);
-                            children.clear();
-                            children.addAll(seqChildren5);
-                            alt0_1 = elem5_1;
-                        } else if (elem5_1.isFailure()) {
-                            restoreLocationRaw(seqStartPos5, seqStartLine5, seqStartColumn5);
-                            children.clear();
-                            children.addAll(seqChildren5);
-                            alt0_1 = cut5 ? elem5_1.asCutFailure() : elem5_1;
-                        }
-                    }
-                    if (alt0_1.isSuccess()) {
-                        alt0_1 = CstParseResult.successNoLoc(null, substring(seqStartPos5, pos));
-                    }
-                    if (alt0_1.isSuccess()) {
-                        result = alt0_1;
-                    } else if (alt0_1.isCutFailure()) {
-                        result = alt0_1.asRegularFailure();
-                    } else {
-                        restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
-                    children.clear();
-                    children.addAll(savedChildren0);
-                    CstParseResult alt0_2 = CstParseResult.successNoLoc(null, "");
-                    int seqStartPos9 = pos;
-                    int seqStartLine9 = line;
-                    int seqStartColumn9 = column;
-                    int seqPending9 = 0;
-                    var seqChildren9 = new ArrayList<>(children);
-                    boolean cut9 = false;
-                    if (alt0_2.isSuccess()) {
-                        int notStartPos10 = pos;
-                        int notStartLine10 = line;
-                        int notStartColumn10 = column;
-                        var savedChildrenNot10 = new ArrayList<>(children);
-                        var notElem10 = matchLiteralCst(">>=", false);
-                        restoreLocationRaw(notStartPos10, notStartLine10, notStartColumn10);
-                        children.clear();
-                        children.addAll(savedChildrenNot10);
-                        var elem9_0 = notElem10.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
-                        if (elem9_0.isCutFailure()) {
-                            restoreLocationRaw(seqStartPos9, seqStartLine9, seqStartColumn9);
-                            children.clear();
-                            children.addAll(seqChildren9);
-                            alt0_2 = elem9_0;
-                        } else if (elem9_0.isFailure()) {
-                            restoreLocationRaw(seqStartPos9, seqStartLine9, seqStartColumn9);
-                            children.clear();
-                            children.addAll(seqChildren9);
-                            alt0_2 = cut9 ? elem9_0.asCutFailure() : elem9_0;
-                        }
-                    }
-                    if (alt0_2.isSuccess()) {
-                        int notStartPos12 = pos;
-                        int notStartLine12 = line;
-                        int notStartColumn12 = column;
-                        var savedChildrenNot12 = new ArrayList<>(children);
-                        var notElem12 = matchLiteralCst(">>>=", false);
-                        restoreLocationRaw(notStartPos12, notStartLine12, notStartColumn12);
-                        children.clear();
-                        children.addAll(savedChildrenNot12);
-                        var elem9_1 = notElem12.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
-                        if (elem9_1.isCutFailure()) {
-                            restoreLocationRaw(seqStartPos9, seqStartLine9, seqStartColumn9);
-                            children.clear();
-                            children.addAll(seqChildren9);
-                            alt0_2 = elem9_1;
-                        } else if (elem9_1.isFailure()) {
-                            restoreLocationRaw(seqStartPos9, seqStartLine9, seqStartColumn9);
-                            children.clear();
-                            children.addAll(seqChildren9);
-                            alt0_2 = cut9 ? elem9_1.asCutFailure() : elem9_1;
-                        }
-                    }
-                    if (alt0_2.isSuccess()) {
-                        if (tokenBoundaryDepth == 0) skipWhitespace();
-                        var elem9_2 = matchLiteralCst(">>", false);
-                        if (elem9_2.isSuccess() && elem9_2.node.isPresent()) {
-                            children.add(elem9_2.node.unwrap());
-                        }
-                        if (elem9_2.isCutFailure()) {
-                            restoreLocationRaw(seqStartPos9, seqStartLine9, seqStartColumn9);
-                            children.clear();
-                            children.addAll(seqChildren9);
-                            alt0_2 = elem9_2;
-                        } else if (elem9_2.isFailure()) {
-                            restoreLocationRaw(seqStartPos9, seqStartLine9, seqStartColumn9);
-                            children.clear();
-                            children.addAll(seqChildren9);
-                            alt0_2 = cut9 ? elem9_2.asCutFailure() : elem9_2;
-                        }
-                    }
-                    if (alt0_2.isSuccess()) {
-                        alt0_2 = CstParseResult.successNoLoc(null, substring(seqStartPos9, pos));
-                    }
-                    if (alt0_2.isSuccess()) {
-                        result = alt0_2;
-                    } else if (alt0_2.isCutFailure()) {
-                        result = alt0_2.asRegularFailure();
-                    } else {
-                        restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
-                    }
-                    }
-                    break;
-                }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_1 = matchLiteralCst(">", false);
+            if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
+                children.add(elem0_1.node.unwrap());
+            }
+            if (elem0_1.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_1;
+            } else if (elem0_1.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_1.asCutFailure() : elem0_1;
             }
         }
-        if (result == null) {
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_2 = matchLiteralCst(">", false);
+            if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
+                children.add(elem0_2.node.unwrap());
+            }
+            if (elem0_2.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_2;
+            } else if (elem0_2.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_2.asCutFailure() : elem0_2;
+            }
+        }
+        if (result.isSuccess()) {
+            int notStartPos4 = pos;
+            int notStartLine4 = line;
+            int notStartColumn4 = column;
+            var savedChildrenNot4 = new ArrayList<>(children);
+            var notElem4 = matchLiteralCst("=", false);
+            restoreLocationRaw(notStartPos4, notStartLine4, notStartColumn4);
             children.clear();
-            children.addAll(savedChildren0);
-            result = CstParseResult.failure("one of alternatives");
+            children.addAll(savedChildrenNot4);
+            var elem0_3 = notElem4.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
+            if (elem0_3.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_3;
+            } else if (elem0_3.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_3.asCutFailure() : elem0_3;
+            }
         }
-        return result;
+        if (result.isSuccess()) {
+            result = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
+        }
+        
+        CstParseResult finalResult;
+        CstParseResult cacheableResult;
+        if (result.isSuccess()) {
+            var endLoc = location();
+            var span = new SourceSpan(startLine, startColumn, startOffset, endLoc.line(), endLoc.column(), endLoc.offset());
+            var cacheNode = wrapWithRuleName(result, children, span, RULE_U_R_SHIFT, List.<Trivia>of());
+            var node = wrapWithRuleName(result, children, span, RULE_U_R_SHIFT, leadingTrivia);
+            cacheableResult = CstParseResult.success(cacheNode, result.text.or(""), endLoc);
+            finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
+        } else {
+            this.pos = startOffset;
+            this.line = startLine;
+            this.column = startColumn;
+            finalResult = result;
+            cacheableResult = finalResult;
+        }
+        
+        return finalResult;
     }
 
-    private CstParseResult parse_Shift_seq1_chunk1(ArrayList<CstNode> children, int seqStartPos, int seqStartLine, int seqStartColumn, int seqPending, ArrayList<CstNode> seqChildren) {
-        var __ruleName = RULE_SHIFT;
+    private CstParseResult parse_RShift() {
+        int startOffset = pos;
+        int startLine = line;
+        int startColumn = column;
+        
+        // Skip leading whitespace and combine with carried pending-leading.
+        var carriedLeading = List.<Trivia>of();
+        var localLeadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
+        var leadingTrivia = concatTrivia(carriedLeading, localLeadingTrivia);
+        var children = new ArrayList<CstNode>();
+        var __ruleName = RULE_R_SHIFT;
+        
         CstParseResult result = CstParseResult.successNoLoc(null, "");
-        boolean cut = false;
+        int seqStartPos0 = pos;
+        int seqStartLine0 = line;
+        int seqStartColumn0 = column;
+        int seqPending0 = 0;
+        var seqChildren0 = new ArrayList<>(children);
+        boolean cut0 = false;
         if (result.isSuccess()) {
             if (tokenBoundaryDepth == 0) skipWhitespace();
-            var elem_1 = parse_Additive();
-            if (elem_1.isSuccess() && elem_1.node.isPresent()) {
-                children.add(elem_1.node.unwrap());
+            var elem0_0 = matchLiteralCst(">", false);
+            if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
+                children.add(elem0_0.node.unwrap());
             }
-            if (elem_1.isCutFailure()) {
-                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
-                        children.clear();
-                children.addAll(seqChildren);
-                result = elem_1;
-            } else if (elem_1.isFailure()) {
-                restoreLocationRaw(seqStartPos, seqStartLine, seqStartColumn);
-                        children.clear();
-                children.addAll(seqChildren);
-                result = cut ? elem_1.asCutFailure() : elem_1;
+            if (elem0_0.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_0;
+            } else if (elem0_0.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_0.asCutFailure() : elem0_0;
             }
         }
-        return result;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_1 = matchLiteralCst(">", false);
+            if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
+                children.add(elem0_1.node.unwrap());
+            }
+            if (elem0_1.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_1;
+            } else if (elem0_1.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_1.asCutFailure() : elem0_1;
+            }
+        }
+        if (result.isSuccess()) {
+            int notStartPos3 = pos;
+            int notStartLine3 = line;
+            int notStartColumn3 = column;
+            var savedChildrenNot3 = new ArrayList<>(children);
+            var notElem3 = matchLiteralCst(">", false);
+            restoreLocationRaw(notStartPos3, notStartLine3, notStartColumn3);
+            children.clear();
+            children.addAll(savedChildrenNot3);
+            var elem0_2 = notElem3.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
+            if (elem0_2.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_2;
+            } else if (elem0_2.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_2.asCutFailure() : elem0_2;
+            }
+        }
+        if (result.isSuccess()) {
+            int notStartPos5 = pos;
+            int notStartLine5 = line;
+            int notStartColumn5 = column;
+            var savedChildrenNot5 = new ArrayList<>(children);
+            var notElem5 = matchLiteralCst("=", false);
+            restoreLocationRaw(notStartPos5, notStartLine5, notStartColumn5);
+            children.clear();
+            children.addAll(savedChildrenNot5);
+            var elem0_3 = notElem5.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
+            if (elem0_3.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_3;
+            } else if (elem0_3.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_3.asCutFailure() : elem0_3;
+            }
+        }
+        if (result.isSuccess()) {
+            result = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
+        }
+        
+        CstParseResult finalResult;
+        CstParseResult cacheableResult;
+        if (result.isSuccess()) {
+            var endLoc = location();
+            var span = new SourceSpan(startLine, startColumn, startOffset, endLoc.line(), endLoc.column(), endLoc.offset());
+            var cacheNode = wrapWithRuleName(result, children, span, RULE_R_SHIFT, List.<Trivia>of());
+            var node = wrapWithRuleName(result, children, span, RULE_R_SHIFT, leadingTrivia);
+            cacheableResult = CstParseResult.success(cacheNode, result.text.or(""), endLoc);
+            finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
+        } else {
+            this.pos = startOffset;
+            this.line = startLine;
+            this.column = startColumn;
+            finalResult = result;
+            cacheableResult = finalResult;
+        }
+        
+        return finalResult;
+    }
+
+    private CstParseResult parse_LShift() {
+        int startOffset = pos;
+        int startLine = line;
+        int startColumn = column;
+        
+        // Skip leading whitespace and combine with carried pending-leading.
+        var carriedLeading = List.<Trivia>of();
+        var localLeadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
+        var leadingTrivia = concatTrivia(carriedLeading, localLeadingTrivia);
+        var children = new ArrayList<CstNode>();
+        var __ruleName = RULE_L_SHIFT;
+        
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        int seqStartPos0 = pos;
+        int seqStartLine0 = line;
+        int seqStartColumn0 = column;
+        int seqPending0 = 0;
+        var seqChildren0 = new ArrayList<>(children);
+        boolean cut0 = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_0 = matchLiteralCst("<", false);
+            if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
+                children.add(elem0_0.node.unwrap());
+            }
+            if (elem0_0.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_0;
+            } else if (elem0_0.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_0.asCutFailure() : elem0_0;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_1 = matchLiteralCst("<", false);
+            if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
+                children.add(elem0_1.node.unwrap());
+            }
+            if (elem0_1.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_1;
+            } else if (elem0_1.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_1.asCutFailure() : elem0_1;
+            }
+        }
+        if (result.isSuccess()) {
+            int notStartPos3 = pos;
+            int notStartLine3 = line;
+            int notStartColumn3 = column;
+            var savedChildrenNot3 = new ArrayList<>(children);
+            var notElem3 = matchLiteralCst("=", false);
+            restoreLocationRaw(notStartPos3, notStartLine3, notStartColumn3);
+            children.clear();
+            children.addAll(savedChildrenNot3);
+            var elem0_2 = notElem3.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
+            if (elem0_2.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_2;
+            } else if (elem0_2.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_2.asCutFailure() : elem0_2;
+            }
+        }
+        if (result.isSuccess()) {
+            result = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
+        }
+        
+        CstParseResult finalResult;
+        CstParseResult cacheableResult;
+        if (result.isSuccess()) {
+            var endLoc = location();
+            var span = new SourceSpan(startLine, startColumn, startOffset, endLoc.line(), endLoc.column(), endLoc.offset());
+            var cacheNode = wrapWithRuleName(result, children, span, RULE_L_SHIFT, List.<Trivia>of());
+            var node = wrapWithRuleName(result, children, span, RULE_L_SHIFT, leadingTrivia);
+            cacheableResult = CstParseResult.success(cacheNode, result.text.or(""), endLoc);
+            finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
+        } else {
+            this.pos = startOffset;
+            this.line = startLine;
+            this.column = startColumn;
+            finalResult = result;
+            cacheableResult = finalResult;
+        }
+        
+        return finalResult;
+    }
+
+    private CstParseResult parse_URShiftAssign() {
+        int startOffset = pos;
+        int startLine = line;
+        int startColumn = column;
+        
+        // Skip leading whitespace and combine with carried pending-leading.
+        var carriedLeading = List.<Trivia>of();
+        var localLeadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
+        var leadingTrivia = concatTrivia(carriedLeading, localLeadingTrivia);
+        var children = new ArrayList<CstNode>();
+        var __ruleName = RULE_U_R_SHIFT_ASSIGN;
+        
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        int seqStartPos0 = pos;
+        int seqStartLine0 = line;
+        int seqStartColumn0 = column;
+        int seqPending0 = 0;
+        var seqChildren0 = new ArrayList<>(children);
+        boolean cut0 = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_0 = matchLiteralCst(">", false);
+            if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
+                children.add(elem0_0.node.unwrap());
+            }
+            if (elem0_0.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_0;
+            } else if (elem0_0.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_0.asCutFailure() : elem0_0;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_1 = matchLiteralCst(">", false);
+            if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
+                children.add(elem0_1.node.unwrap());
+            }
+            if (elem0_1.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_1;
+            } else if (elem0_1.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_1.asCutFailure() : elem0_1;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_2 = matchLiteralCst(">", false);
+            if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
+                children.add(elem0_2.node.unwrap());
+            }
+            if (elem0_2.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_2;
+            } else if (elem0_2.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_2.asCutFailure() : elem0_2;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_3 = matchLiteralCst("=", false);
+            if (elem0_3.isSuccess() && elem0_3.node.isPresent()) {
+                children.add(elem0_3.node.unwrap());
+            }
+            if (elem0_3.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_3;
+            } else if (elem0_3.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_3.asCutFailure() : elem0_3;
+            }
+        }
+        if (result.isSuccess()) {
+            result = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
+        }
+        
+        CstParseResult finalResult;
+        CstParseResult cacheableResult;
+        if (result.isSuccess()) {
+            var endLoc = location();
+            var span = new SourceSpan(startLine, startColumn, startOffset, endLoc.line(), endLoc.column(), endLoc.offset());
+            var cacheNode = wrapWithRuleName(result, children, span, RULE_U_R_SHIFT_ASSIGN, List.<Trivia>of());
+            var node = wrapWithRuleName(result, children, span, RULE_U_R_SHIFT_ASSIGN, leadingTrivia);
+            cacheableResult = CstParseResult.success(cacheNode, result.text.or(""), endLoc);
+            finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
+        } else {
+            this.pos = startOffset;
+            this.line = startLine;
+            this.column = startColumn;
+            finalResult = result;
+            cacheableResult = finalResult;
+        }
+        
+        return finalResult;
+    }
+
+    private CstParseResult parse_RShiftAssign() {
+        int startOffset = pos;
+        int startLine = line;
+        int startColumn = column;
+        
+        // Skip leading whitespace and combine with carried pending-leading.
+        var carriedLeading = List.<Trivia>of();
+        var localLeadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
+        var leadingTrivia = concatTrivia(carriedLeading, localLeadingTrivia);
+        var children = new ArrayList<CstNode>();
+        var __ruleName = RULE_R_SHIFT_ASSIGN;
+        
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        int seqStartPos0 = pos;
+        int seqStartLine0 = line;
+        int seqStartColumn0 = column;
+        int seqPending0 = 0;
+        var seqChildren0 = new ArrayList<>(children);
+        boolean cut0 = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_0 = matchLiteralCst(">", false);
+            if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
+                children.add(elem0_0.node.unwrap());
+            }
+            if (elem0_0.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_0;
+            } else if (elem0_0.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_0.asCutFailure() : elem0_0;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_1 = matchLiteralCst(">", false);
+            if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
+                children.add(elem0_1.node.unwrap());
+            }
+            if (elem0_1.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_1;
+            } else if (elem0_1.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_1.asCutFailure() : elem0_1;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_2 = matchLiteralCst("=", false);
+            if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
+                children.add(elem0_2.node.unwrap());
+            }
+            if (elem0_2.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_2;
+            } else if (elem0_2.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_2.asCutFailure() : elem0_2;
+            }
+        }
+        if (result.isSuccess()) {
+            result = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
+        }
+        
+        CstParseResult finalResult;
+        CstParseResult cacheableResult;
+        if (result.isSuccess()) {
+            var endLoc = location();
+            var span = new SourceSpan(startLine, startColumn, startOffset, endLoc.line(), endLoc.column(), endLoc.offset());
+            var cacheNode = wrapWithRuleName(result, children, span, RULE_R_SHIFT_ASSIGN, List.<Trivia>of());
+            var node = wrapWithRuleName(result, children, span, RULE_R_SHIFT_ASSIGN, leadingTrivia);
+            cacheableResult = CstParseResult.success(cacheNode, result.text.or(""), endLoc);
+            finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
+        } else {
+            this.pos = startOffset;
+            this.line = startLine;
+            this.column = startColumn;
+            finalResult = result;
+            cacheableResult = finalResult;
+        }
+        
+        return finalResult;
+    }
+
+    private CstParseResult parse_LShiftAssign() {
+        int startOffset = pos;
+        int startLine = line;
+        int startColumn = column;
+        
+        // Skip leading whitespace and combine with carried pending-leading.
+        var carriedLeading = List.<Trivia>of();
+        var localLeadingTrivia = (tokenBoundaryDepth > 0) ? List.<Trivia>of() : skipWhitespace();
+        var leadingTrivia = concatTrivia(carriedLeading, localLeadingTrivia);
+        var children = new ArrayList<CstNode>();
+        var __ruleName = RULE_L_SHIFT_ASSIGN;
+        
+        CstParseResult result = CstParseResult.successNoLoc(null, "");
+        int seqStartPos0 = pos;
+        int seqStartLine0 = line;
+        int seqStartColumn0 = column;
+        int seqPending0 = 0;
+        var seqChildren0 = new ArrayList<>(children);
+        boolean cut0 = false;
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_0 = matchLiteralCst("<", false);
+            if (elem0_0.isSuccess() && elem0_0.node.isPresent()) {
+                children.add(elem0_0.node.unwrap());
+            }
+            if (elem0_0.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_0;
+            } else if (elem0_0.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_0.asCutFailure() : elem0_0;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_1 = matchLiteralCst("<", false);
+            if (elem0_1.isSuccess() && elem0_1.node.isPresent()) {
+                children.add(elem0_1.node.unwrap());
+            }
+            if (elem0_1.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_1;
+            } else if (elem0_1.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_1.asCutFailure() : elem0_1;
+            }
+        }
+        if (result.isSuccess()) {
+            if (tokenBoundaryDepth == 0) skipWhitespace();
+            var elem0_2 = matchLiteralCst("=", false);
+            if (elem0_2.isSuccess() && elem0_2.node.isPresent()) {
+                children.add(elem0_2.node.unwrap());
+            }
+            if (elem0_2.isCutFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = elem0_2;
+            } else if (elem0_2.isFailure()) {
+                restoreLocationRaw(seqStartPos0, seqStartLine0, seqStartColumn0);
+                children.clear();
+                children.addAll(seqChildren0);
+                result = cut0 ? elem0_2.asCutFailure() : elem0_2;
+            }
+        }
+        if (result.isSuccess()) {
+            result = CstParseResult.successNoLoc(null, substring(seqStartPos0, pos));
+        }
+        
+        CstParseResult finalResult;
+        CstParseResult cacheableResult;
+        if (result.isSuccess()) {
+            var endLoc = location();
+            var span = new SourceSpan(startLine, startColumn, startOffset, endLoc.line(), endLoc.column(), endLoc.offset());
+            var cacheNode = wrapWithRuleName(result, children, span, RULE_L_SHIFT_ASSIGN, List.<Trivia>of());
+            var node = wrapWithRuleName(result, children, span, RULE_L_SHIFT_ASSIGN, leadingTrivia);
+            cacheableResult = CstParseResult.success(cacheNode, result.text.or(""), endLoc);
+            finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
+        } else {
+            this.pos = startOffset;
+            this.line = startLine;
+            this.column = startColumn;
+            finalResult = result;
+            cacheableResult = finalResult;
+        }
+        
+        return finalResult;
     }
 
     private CstParseResult parse_Additive() {
@@ -25570,7 +26254,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(100, startOffset);
+        long key = cacheKey(106, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -25946,7 +26630,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(101, startOffset);
+        long key = cacheKey(107, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -26358,7 +27042,7 @@ private Map<Class<? extends RuleId>,
         int startLine = line;
         int startColumn = column;
         
-        long key = cacheKey(102, startOffset);
+        long key = cacheKey(108, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -26932,7 +27616,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(103, startOffset);
+        long key = cacheKey(109, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -29755,7 +30439,7 @@ private Map<Class<? extends RuleId>,
         int startLine = line;
         int startColumn = column;
         
-        long key = cacheKey(108, startOffset);
+        long key = cacheKey(114, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -30154,7 +30838,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(109, startOffset);
+        long key = cacheKey(115, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -30894,7 +31578,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(110, startOffset);
+        long key = cacheKey(116, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -31074,7 +31758,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(111, startOffset);
+        long key = cacheKey(117, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -31254,7 +31938,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(112, startOffset);
+        long key = cacheKey(118, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -31561,7 +32245,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(113, startOffset);
+        long key = cacheKey(119, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -31807,7 +32491,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(114, startOffset);
+        long key = cacheKey(120, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -32158,7 +32842,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(115, startOffset);
+        long key = cacheKey(121, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -32338,7 +33022,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(116, startOffset);
+        long key = cacheKey(122, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -32632,7 +33316,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(117, startOffset);
+        long key = cacheKey(123, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -32897,7 +33581,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(118, startOffset);
+        long key = cacheKey(124, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -33380,7 +34064,7 @@ private Map<Class<? extends RuleId>,
         int startLine = line;
         int startColumn = column;
         
-        long key = cacheKey(119, startOffset);
+        long key = cacheKey(125, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -33708,7 +34392,7 @@ private Map<Class<? extends RuleId>,
         int startLine = line;
         int startColumn = column;
         
-        long key = cacheKey(120, startOffset);
+        long key = cacheKey(126, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -34123,7 +34807,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(121, startOffset);
+        long key = cacheKey(127, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -34370,7 +35054,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(122, startOffset);
+        long key = cacheKey(128, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -34521,7 +35205,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(123, startOffset);
+        long key = cacheKey(129, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -34807,7 +35491,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(124, startOffset);
+        long key = cacheKey(130, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -35067,7 +35751,7 @@ private Map<Class<? extends RuleId>,
         int startLine = line;
         int startColumn = column;
         
-        long key = cacheKey(125, startOffset);
+        long key = cacheKey(131, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -35467,7 +36151,7 @@ private Map<Class<? extends RuleId>,
         int startLine = line;
         int startColumn = column;
         
-        long key = cacheKey(126, startOffset);
+        long key = cacheKey(132, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -36250,7 +36934,7 @@ private Map<Class<? extends RuleId>,
         // trivia attribution — drain pending-leading, run skipWhitespace at
         // the same pre-WS position, then jump pos to the cached body-end and
         // attach the rebuilt leading trivia. Failure hits return as-is.
-        long key = cacheKey(128, startOffset);
+        long key = cacheKey(134, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -36459,7 +37143,7 @@ private Map<Class<? extends RuleId>,
         int startLine = line;
         int startColumn = column;
         
-        long key = cacheKey(129, startOffset);
+        long key = cacheKey(135, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -36863,7 +37547,7 @@ private Map<Class<? extends RuleId>,
         int startLine = line;
         int startColumn = column;
         
-        long key = cacheKey(130, startOffset);
+        long key = cacheKey(136, startOffset);
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
