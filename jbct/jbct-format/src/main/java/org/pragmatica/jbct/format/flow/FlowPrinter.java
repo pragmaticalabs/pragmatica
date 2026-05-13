@@ -1,11 +1,11 @@
 package org.pragmatica.jbct.format.flow;
 
+import org.pragmatica.jbct.format.AlignmentContext;
 import org.pragmatica.jbct.format.FormatterConfig;
-import org.pragmatica.jbct.format.cst.AlignmentContext;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
-import org.pragmatica.jbct.parser.Java25Parser.Trivia;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 import org.pragmatica.lang.Option;
+import org.pragmatica.peg.v6.token.TokenArray;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -23,7 +23,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///
 /// This printer never inspects trivia (comments, whitespace) from the original source
 /// for layout decisions. All formatting decisions are based on:
-/// - The syntactic structure (RuleId dispatch)
+/// - The syntactic structure (RuleKind dispatch)
 /// - Width measurement (does it fit on the current line?)
 /// - Alignment rules (chains, arguments, parameters)
 ///
@@ -89,7 +89,7 @@ final class FlowPrinter {
     record OperandInfo(boolean startsWithString, int width) {}
 
     /// Print the CST root and return formatted text with token mapping.
-    FlowResult print(CstNode root) {
+    FlowResult print(Cursor root) {
         printNode(root);
         var result = output.toString()
             .lines()
@@ -101,7 +101,7 @@ final class FlowPrinter {
 
     // ===== Measurement =====
 
-    private int measureWidth(CstNode node) {
+    private int measureWidth(Cursor node) {
         boolean wasMeasuring = measuringMode;
         int oldBuffer = measureBuffer;
         char oldLastChar = lastChar;
@@ -119,68 +119,128 @@ final class FlowPrinter {
         return width;
     }
 
-    private boolean fitsOnLine(CstNode node) {
+    private boolean fitsOnLine(Cursor node) {
         return currentColumn + measureWidth(node) <= config.maxLineLength();
     }
 
     // ===== Node dispatch =====
 
-    private void printNode(CstNode node) {
+    private void printNode(Cursor node) {
         // Emit leading comments inline (but not during measurement).
         if (!measuringMode) {
             emitLeadingComments(node);
         }
         switch (node) {
-            case CstNode.Terminal t -> emitToken(t.text());
-            case CstNode.Token tok -> emitToken(tok.text());
-            case CstNode.NonTerminal nt -> printNonTerminal(nt);
-            case CstNode.Error err -> emitToken(err.skippedText());
+            case Cursor.Leaf leaf -> emitToken(leaf.text().toString());
+            case Cursor.Branch br -> printBranch(br);
+            case Cursor.ErrorNode err -> emitToken(err.skippedText().toString());
         }
     }
 
-    private void printNonTerminal(CstNode.NonTerminal nt) {
-        switch (nt.rule()) {
-            case RuleId.CompilationUnit _ -> printOrdinaryUnit(nt);
-            case RuleId.OrdinaryUnit _ -> printOrdinaryUnit(nt);
-            case RuleId.ImportDecl _ -> printImportDecl(nt);
-            case RuleId.EnumBody _ -> printEnumBody(nt);
-            case RuleId.RecordBody _ -> printRecordBody(nt);
-            case RuleId.Member _ -> printMember(nt);
-            case RuleId.FieldDecl _ -> printFieldDecl(nt);
-            case RuleId.ClassBody _ -> printClassBody(nt);
-            case RuleId.AnnotationBody _ -> printAnnotationBody(nt);
-            case RuleId.Block _ -> printBlock(nt);
-            case RuleId.Stmt _ -> printStmt(nt);
-            case RuleId.SwitchBlock _ -> printSwitchBlock(nt);
-            case RuleId.Unary _ -> printUnary(nt);
-            case RuleId.Postfix _ -> printPostfix(nt);
-            case RuleId.PostOp _ -> printPostOp(nt);
-            case RuleId.Args _ -> printArgs(nt);
-            case RuleId.Lambda _ -> printLambda(nt);
-            case RuleId.LambdaParam _ -> printLambdaParam(nt);
-            case RuleId.Param _ -> printParam(nt);
-            case RuleId.Params _ -> printParams(nt);
-            case RuleId.Primary _ -> printPrimary(nt);
-            case RuleId.RecordDecl _ -> printRecordDecl(nt);
-            case RuleId.RecordComponents _ -> printRecordComponents(nt);
-            case RuleId.ResourceSpec _ -> printResourceSpec(nt);
-            case RuleId.Ternary _ -> printTernary(nt);
-            case RuleId.Additive _ -> printAdditive(nt);
-            case RuleId.TypeArgs _ -> printTypeArgs(nt);
-            case RuleId.TypeParams _ -> printTypeParams(nt);
-            case RuleId.MethodDecl _ -> printMethodDecl(nt);
-            default -> printChildren(nt);
+    private void printBranch(Cursor.Branch br) {
+        switch (br.kind()) {
+            case COMPILATION_UNIT -> walkTokens(br);
+            case ORDINARY_UNIT -> printOrdinaryUnit(br);
+            case IMPORT_DECL -> printImportDecl(br);
+            case ENUM_BODY -> printEnumBody(br);
+            case RECORD_BODY -> printRecordBody(br);
+            case MEMBER -> printMember(br);
+            case FIELD_DECL -> printFieldDecl(br);
+            case CLASS_BODY -> printClassBody(br);
+            case ANNOTATION_BODY -> printAnnotationBody(br);
+            case BLOCK -> printBlock(br);
+            case STMT -> printStmt(br);
+            case SWITCH_BLOCK -> printSwitchBlock(br);
+            case UNARY -> printUnary(br);
+            case POSTFIX -> printPostfix(br);
+            case POST_OP -> printPostOp(br);
+            case ARGS -> printArgs(br);
+            case LAMBDA -> printLambda(br);
+            case LAMBDA_PARAM -> printLambdaParam(br);
+            case PARAM -> printParam(br);
+            case PARAMS -> printParams(br);
+            case PRIMARY -> printPrimary(br);
+            case RECORD_DECL -> printRecordDecl(br);
+            case RECORD_COMPONENTS -> printRecordComponents(br);
+            case RESOURCE_SPEC -> printResourceSpec(br);
+            case TERNARY -> printTernary(br);
+            case ADDITIVE -> printAdditive(br);
+            case TYPE_ARGS -> printTypeArgs(br);
+            case TYPE_PARAMS -> printTypeParams(br);
+            case METHOD_DECL -> printMethodDecl(br);
+            default -> walkTokens(br);
         }
+    }
+
+    // ===== Token-walking core =====
+
+    /// Walk the tokens covered by the branch's range. At each step, if a child branch
+    /// begins at the current token index, recurse into that child; otherwise emit the
+    /// token text (skipping trivia). This is the default rendering for any branch that
+    /// doesn't override emission — it mirrors the legacy "walk children" pattern, but
+    /// under v6 keyword/punctuation tokens are not CST children, so we drive iteration
+    /// via the TokenArray.
+    private void walkTokens(Cursor.Branch parent) {
+        var kids = parent.children().toList();
+        walkTokenRange(parent, kids, parent.firstTokenIdx(), parent.lastTokenIdx());
+    }
+
+    private void walkTokenRange(Cursor parent, List<Cursor> kids, int start, int end) {
+        var tokens = parent.cst().tokens();
+        int kidIdx = 0;
+        int t = start;
+        while (t <= end) {
+            if (kidIdx < kids.size() && kids.get(kidIdx).firstTokenIdx() == t) {
+                var kid = kids.get(kidIdx);
+                printNode(kid);
+                t = kid.lastTokenIdx() + 1;
+                kidIdx++;
+            } else {
+                if (!tokens.isTrivia(t)) {
+                    emitToken(tokens.textAt(t).toString());
+                }
+                t++;
+            }
+        }
+    }
+
+    /// Walk tokens of a branch, but route children and tokens through callback hooks.
+    /// Used by special handlers that need to know which terminal/child they're emitting.
+    private void walkTokensWith(Cursor.Branch parent, TokenWalker walker) {
+        var tokens = parent.cst().tokens();
+        var kids = parent.children().toList();
+        int kidIdx = 0;
+        int t = parent.firstTokenIdx();
+        int end = parent.lastTokenIdx();
+        while (t <= end) {
+            if (kidIdx < kids.size() && kids.get(kidIdx).firstTokenIdx() == t) {
+                var kid = kids.get(kidIdx);
+                walker.onChild(kid);
+                t = kid.lastTokenIdx() + 1;
+                kidIdx++;
+            } else {
+                if (!tokens.isTrivia(t)) {
+                    walker.onToken(tokens.kindAt(t), tokens.textAt(t).toString());
+                }
+                t++;
+            }
+        }
+    }
+
+    @FunctionalInterface
+    private interface TokenWalker {
+        void onChild(Cursor child);
+        default void onToken(int kind, String text) {}
     }
 
     // ===== Compilation unit and imports =====
 
-    private void printOrdinaryUnit(CstNode.NonTerminal ou) {
-        var hasPackage = childByRule(ou, RuleId.PackageDecl.class)
+    private void printOrdinaryUnit(Cursor.Branch ou) {
+        var hasPackage = childByRule(ou, RuleKind.PACKAGE_DECL)
             .onPresent(this::printNode)
             .isPresent();
 
-        var imports = childrenByRule(ou, RuleId.ImportDecl.class);
+        var imports = childrenByRule(ou, RuleKind.IMPORT_DECL);
         var hasImports = !imports.isEmpty();
         if (hasImports) {
             newline();
@@ -188,7 +248,7 @@ final class FlowPrinter {
             printOrganizedImports(imports);
         }
 
-        var types = childrenByRule(ou, RuleId.TypeDecl.class);
+        var types = childrenByRule(ou, RuleKind.TYPE_DECL);
         boolean first = true;
         for (var type : types) {
             if (first) {
@@ -205,7 +265,7 @@ final class FlowPrinter {
         }
     }
 
-    private void printOrganizedImports(List<CstNode> imports) {
+    private void printOrganizedImports(List<Cursor> imports) {
         var pragmatica = filterImports(imports, "org.pragmatica", false);
         var javaImports = filterJavaImports(imports);
         var otherImports = filterOtherImports(imports);
@@ -218,40 +278,40 @@ final class FlowPrinter {
         printImportGroup(staticImports, needsBlank);
     }
 
-    private List<CstNode> filterImports(List<CstNode> imports, String contains, boolean isStatic) {
+    private List<Cursor> filterImports(List<Cursor> imports, String contains, boolean isStatic) {
         return imports.stream()
             .filter(i -> matchesImportFilter(i, contains, isStatic))
             .toList();
     }
 
-    private boolean matchesImportFilter(CstNode i, String contains, boolean isStatic) {
-        var t = text(i, source);
+    private boolean matchesImportFilter(Cursor i, String contains, boolean isStatic) {
+        var t = text(i);
         return t.contains(contains) && (isStatic || !t.contains("static"));
     }
 
-    private List<CstNode> filterJavaImports(List<CstNode> imports) {
+    private List<Cursor> filterJavaImports(List<Cursor> imports) {
         return imports.stream()
             .filter(this::isJavaImport)
             .toList();
     }
 
-    private boolean isJavaImport(CstNode i) {
-        var t = text(i, source);
+    private boolean isJavaImport(Cursor i) {
+        var t = text(i);
         return (t.contains("java.") || t.contains("javax.")) && !t.contains("static");
     }
 
-    private List<CstNode> filterOtherImports(List<CstNode> imports) {
+    private List<Cursor> filterOtherImports(List<Cursor> imports) {
         return imports.stream()
             .filter(this::isOtherImport)
             .toList();
     }
 
-    private boolean isOtherImport(CstNode i) {
-        var t = text(i, source);
+    private boolean isOtherImport(Cursor i) {
+        var t = text(i);
         return !t.contains("org.pragmatica") && !t.contains("java.") && !t.contains("javax.") && !t.contains("static");
     }
 
-    private boolean printImportGroup(List<CstNode> group, boolean needsBlank) {
+    private boolean printImportGroup(List<Cursor> group, boolean needsBlank) {
         if (group.isEmpty()) {
             return needsBlank;
         }
@@ -259,68 +319,59 @@ final class FlowPrinter {
             newline();
         }
         for (var imp : group) {
-            printImportDecl((CstNode.NonTerminal) imp);
+            printImportDecl(imp);
         }
         return true;
     }
 
-    private void printImportDecl(CstNode.NonTerminal imp) {
-        var importText = text(imp, source).trim();
+    private void printImportDecl(Cursor imp) {
+        // Re-flow whitespace within the import. Use the literal source text (covers
+        // `import [static] qualifiedName [.*];`) and normalize whitespace.
+        var importText = text(imp).trim().replaceAll("\\s+", " ");
         emit(importText);
         newline();
     }
 
     // ===== Type bodies =====
 
-    private void printClassBody(CstNode.NonTerminal classBody) {
-        printBracedBody(classBody, RuleId.ClassMember.class);
+    private void printClassBody(Cursor.Branch classBody) {
+        printBracedBody(classBody, RuleKind.CLASS_MEMBER);
     }
 
-    private void printAnnotationBody(CstNode.NonTerminal annotBody) {
-        printBracedBody(annotBody, RuleId.AnnotationMember.class);
+    private void printAnnotationBody(Cursor.Branch annotBody) {
+        printBracedBody(annotBody, RuleKind.ANNOTATION_MEMBER);
     }
 
-    private void printRecordBody(CstNode.NonTerminal recordBody) {
-        var allChildren = children(recordBody);
-        boolean hasContent = allChildren.stream()
-            .anyMatch(c -> !isTerminalWithText(c, "{") && !isTerminalWithText(c, "}"));
-        if (!hasContent) {
+    private void printRecordBody(Cursor.Branch recordBody) {
+        // Under v6, brace tokens live in the TokenArray. A record body with no members
+        // emits `{}`.
+        var members = childrenByRule(recordBody, RuleKind.RECORD_MEMBER);
+        if (members.isEmpty()) {
             emit("{}");
         } else {
-            printBracedBody(recordBody, RuleId.RecordMember.class);
+            printBracedBody(recordBody, RuleKind.RECORD_MEMBER);
         }
     }
 
-    private void printBracedBody(CstNode.NonTerminal parent, Class<? extends RuleId> memberRule) {
-        var kids = children(parent);
-        var hasMembers = kids.stream().anyMatch(c -> memberRule.isInstance(c.rule()));
+    private void printBracedBody(Cursor.Branch parent, RuleKind memberKind) {
+        var members = childrenByRule(parent, memberKind);
 
-        emitTerminalFrom(kids, "{");
+        emitToken("{");
 
-        if (hasMembers) {
+        if (!members.isEmpty()) {
             indentLevel++;
             newline();
+            Option<Cursor> prevMember = Option.none();
             boolean first = true;
-            Option<CstNode> prevMember = Option.none();
-            for (var child : kids) {
-                if (memberRule.isInstance(child.rule())) {
-                    if (!first && BlankLineRules.needsBlankLineBetween(child, prevMember, source)) {
-                        newline();
-                    }
-                    // Skip the redundant outer printIndent when the member has a leading
-                    // line/block comment: emitLeadingTriviaFiltered emits indent for each
-                    // comment and restores indent at the end. Calling printIndent here
-                    // would force an extra blank line between '{' and the first comment.
-                    if (!hasLeadingComment(child)) {
-                        printIndent();
-                    }
-                    printNode(child);
+            for (var member : members) {
+                if (!first && BlankLineRules.needsBlankLineBetween(member, prevMember)) {
                     newline();
-                    first = false;
-                    prevMember = Option.some(child);
-                } else if (!isTerminalWithText(child, "{") && !isTerminalWithText(child, "}")) {
-                    printNode(child);
                 }
+                printIndent();
+                printNode(member);
+                newline();
+                first = false;
+                prevMember = Option.some(member);
             }
             indentLevel--;
             printIndent();
@@ -329,82 +380,39 @@ final class FlowPrinter {
         emitBare("}");
     }
 
-    private static boolean hasLeadingComment(CstNode node) {
-        for (var t : node.leadingTrivia()) {
-            if (t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void emitTerminalFrom(List<CstNode> children, String text) {
-        for (var child : children) {
-            if (isTerminalWithText(child, text)) {
-                emitToken(text);
-                return;
-            }
-        }
-    }
-
     // ===== Members =====
 
-    private void printMember(CstNode.NonTerminal member) {
-        var kids = children(member);
-        boolean hasRecordComponents = kids.stream()
-            .anyMatch(c -> c.rule() instanceof RuleId.RecordComponents);
-
+    private void printMember(Cursor.Branch member) {
+        boolean hasRecordComponents = hasChildOfRule(member, RuleKind.RECORD_COMPONENTS);
         if (hasRecordComponents) {
             printRecordDecl(member);
             return;
         }
 
-        boolean hasBlock = kids.stream().anyMatch(c -> c.rule() instanceof RuleId.Block);
-        boolean hasParams = kids.stream().anyMatch(c -> c.rule() instanceof RuleId.Params);
+        boolean hasBlock = hasChildOfRule(member, RuleKind.BLOCK);
+        boolean hasParams = hasChildOfRule(member, RuleKind.PARAMS);
 
         if (hasBlock || hasParams) {
             printMethodDeclContent(member);
         } else {
-            // Print children content directly to avoid recursion (Member -> printNodeContent -> printMember).
-            // First child emits its leading trivia via printNode so member-level /// docs and // comments
-            // attached to the first terminal of the declaration are preserved.
-            boolean firstChild = true;
-            for (var child : kids) {
-                if (firstChild) {
-                    printNode(child);
-                    firstChild = false;
-                } else {
-                    printNodeContent(child);
-                }
-            }
+            walkTokens(member);
         }
     }
 
-    private void printFieldDecl(CstNode.NonTerminal field) {
-        // First child emits leading trivia via printNode so member-level /// docs and // comments
-        // attached to the first terminal of the field declaration are preserved.
-        boolean firstChild = true;
-        for (var child : children(field)) {
-            if (firstChild) {
-                printNode(child);
-                firstChild = false;
-            } else {
-                printNodeContent(child);
-            }
-        }
+    private void printFieldDecl(Cursor.Branch field) {
+        walkTokens(field);
     }
 
     // ===== Enum body =====
 
-    private void printEnumBody(CstNode.NonTerminal enumBody) {
-        var children = children(enumBody);
-        var classMembers = childrenByRule(enumBody, RuleId.ClassMember.class);
+    private void printEnumBody(Cursor.Branch enumBody) {
+        var classMembers = childrenByRule(enumBody, RuleKind.CLASS_MEMBER);
 
-        emitTerminalFrom(children, "{");
+        emitToken("{");
         indentLevel++;
         newline();
 
-        childByRule(enumBody, RuleId.EnumConsts.class)
+        childByRule(enumBody, RuleKind.ENUM_CONSTS)
             .onPresent(this::printEnumConstsWithIndent);
 
         if (!classMembers.isEmpty()) {
@@ -423,75 +431,47 @@ final class FlowPrinter {
         emitBare("}");
     }
 
-    private void printEnumConstsWithIndent(CstNode consts) {
+    private void printEnumConstsWithIndent(Cursor consts) {
         printIndent();
-        printEnumConsts((CstNode.NonTerminal) consts);
+        printEnumConsts(consts);
     }
 
-    private void printEnumConsts(CstNode.NonTerminal enumConsts) {
-        var childList = children(enumConsts);
-        for (int i = 0; i < childList.size(); i++) {
-            var child = childList.get(i);
-            if (isTerminalWithText(child, ",")) {
-                if (hasEnumConstAfter(childList, i)) {
-                    emit(",");
-                    newline();
-                    printIndent();
-                }
-            } else if (child.rule() instanceof RuleId.EnumConst) {
-                printNodeContent(child);
+    private void printEnumConsts(Cursor enumConsts) {
+        var constNodes = childrenByRule(enumConsts, RuleKind.ENUM_CONST);
+        for (int i = 0; i < constNodes.size(); i++) {
+            if (i > 0) {
+                emit(",");
+                newline();
+                printIndent();
             }
+            printNodeContent(constNodes.get(i));
         }
     }
 
-    private boolean hasEnumConstAfter(List<CstNode> childList, int fromIndex) {
-        for (int j = fromIndex + 1; j < childList.size(); j++) {
-            if (childList.get(j).rule() instanceof RuleId.EnumConst) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// The parser inlines `Stmt <- Block` so an if/for/while body that is a Block in the
-    /// source appears as a Stmt with brace-shaped children (T<{>, BlockStmt*, T<}>) rather
-    /// than a Stmt wrapping a Block. Detect that shape and dispatch to printBlock so the
-    /// body emits with proper indentation. For brace-shaped Stmts whose '{' and '}' sit on
-    /// the same source line, preserve the existing inline form by falling through to
-    /// printChildren.
-    private void printStmt(CstNode.NonTerminal stmt) {
-        var kids = children(stmt);
-        if (kids.size() >= 2
-            && kids.get(0) instanceof CstNode.Terminal openT && "{".equals(openT.text())
-            && kids.get(kids.size() - 1) instanceof CstNode.Terminal closeT && "}".equals(closeT.text())
-            && openT.span().startLine() != closeT.span().startLine()) {
-            printBlock(stmt);
+    /// Under v6, `Stmt` body shapes are unified:
+    /// - `Stmt[Block]` for braced bodies → dispatch to printBlock on the Block child
+    /// - `Stmt[<other>]` for unbraced single-statement bodies → walk tokens
+    /// No brace-shape detection needed (per Stage 0 findings).
+    private void printStmt(Cursor.Branch stmt) {
+        var kids = stmt.children().toList();
+        if (kids.size() == 1 && kids.get(0).kindIs(RuleKind.BLOCK) && kids.get(0) instanceof Cursor.Branch block) {
+            printBlock(block);
         } else {
-            printChildren(stmt);
+            walkTokens(stmt);
         }
     }
 
     // ===== Block =====
 
-    private void printBlock(CstNode.NonTerminal block) {
-        var children = children(block);
-
+    private void printBlock(Cursor.Branch block) {
         boolean useLambdaAlign = alignment.hasLambdaAlign();
         int lambdaAlignCol = alignment.lambdaColumn();
         boolean useChainAlign = !useLambdaAlign && alignment.chainColumn() >= 0;
         int chainAlignCol = alignment.chainColumn();
 
-        // Opening brace
-        for (var child : children) {
-            if (isTerminalWithText(child, "{")) {
-                emitToken("{");
-                break;
-            }
-        }
+        emitToken("{");
 
-        var stmts = children.stream()
-            .filter(c -> c.rule() instanceof RuleId.BlockStmt)
-            .toList();
+        var stmts = childrenByRule(block, RuleKind.BLOCK_STMT);
 
         if (!stmts.isEmpty()) {
             newline();
@@ -504,9 +484,7 @@ final class FlowPrinter {
             } else {
                 indentLevel++;
                 for (var stmt : stmts) {
-                    if (!hasLeadingComment(stmt)) {
-                        printIndent();
-                    }
+                    printIndent();
                     printNode(stmt);
                     newline();
                 }
@@ -515,16 +493,10 @@ final class FlowPrinter {
             }
         }
 
-        // Closing brace
-        for (var child : children) {
-            if (isTerminalWithText(child, "}")) {
-                emitBare("}");
-                break;
-            }
-        }
+        emitBare("}");
     }
 
-    private void printAlignedBlockStatements(List<CstNode> stmts, int alignCol) {
+    private void printAlignedBlockStatements(List<Cursor> stmts, int alignCol) {
         int bodyCol = alignCol + config.indentSize();
         try (var scope = alignment.pushLambdaAlign(bodyCol)) {
             for (var stmt : stmts) {
@@ -535,14 +507,11 @@ final class FlowPrinter {
         }
     }
 
-    private void printSwitchBlock(CstNode.NonTerminal switchBlock) {
-        var children = children(switchBlock);
+    private void printSwitchBlock(Cursor.Branch switchBlock) {
         emit("{");
         indentLevel++;
 
-        var rules = children.stream()
-            .filter(c -> c.rule() instanceof RuleId.SwitchRule)
-            .toList();
+        var rules = childrenByRule(switchBlock, RuleKind.SWITCH_RULE);
 
         if (!rules.isEmpty()) {
             newline();
@@ -560,31 +529,39 @@ final class FlowPrinter {
 
     // ===== Chains and postfix =====
 
-    private void printUnary(CstNode.NonTerminal unary) {
-        var children = children(unary);
-        CstNode primary = null;
-        CstNode.NonTerminal postfix = null;
-        var directPostOps = new ArrayList<CstNode>();
-        var prefixChildren = new ArrayList<CstNode>();
+    private void printUnary(Cursor.Branch unary) {
+        var kids = unary.children().toList();
+        Cursor primary = null;
+        Cursor.Branch postfix = null;
+        var directPostOps = new ArrayList<Cursor>();
+        var prefixChildren = new ArrayList<Cursor>();
 
         // Classify children, preserving order for prefix operators (!, ~, -, +, ++, --)
         boolean foundPrimary = false;
-        for (var child : children) {
-            if (child.rule() instanceof RuleId.Primary) {
+        for (var child : kids) {
+            if (child.kindIs(RuleKind.PRIMARY)) {
                 primary = child;
                 foundPrimary = true;
-            } else if (child.rule() instanceof RuleId.Postfix && child instanceof CstNode.NonTerminal nt) {
-                postfix = nt;
-            } else if (child.rule() instanceof RuleId.PostOp) {
+            } else if (child.kindIs(RuleKind.POSTFIX) && child instanceof Cursor.Branch pf) {
+                postfix = pf;
+            } else if (child.kindIs(RuleKind.POST_OP)) {
                 directPostOps.add(child);
             } else if (!foundPrimary) {
                 prefixChildren.add(child);
             }
         }
 
-        // Print prefix operators first (!, ~, etc.)
-        for (var prefix : prefixChildren) {
-            printNode(prefix);
+        // Walk tokens that come before primary (prefix operators like !, ~, etc.)
+        // Use walkTokens range up to primary's firstTokenIdx
+        if (primary != null) {
+            int prefixEnd = primary.firstTokenIdx() - 1;
+            if (prefixEnd >= unary.firstTokenIdx()) {
+                walkTokenRange(unary, prefixChildren, unary.firstTokenIdx(), prefixEnd);
+            }
+        } else {
+            for (var pref : prefixChildren) {
+                printNode(pref);
+            }
         }
 
         if (primary != null && postfix != null) {
@@ -597,17 +574,12 @@ final class FlowPrinter {
         } else if (primary != null) {
             printNode(primary);
         } else {
-            printChildren(unary);
+            walkTokens(unary);
         }
     }
 
-    private void printPostfixWithPrimary(CstNode primary, CstNode.NonTerminal postfix) {
-        var postOps = new ArrayList<CstNode>();
-        for (var child : children(postfix)) {
-            if (child.rule() instanceof RuleId.PostOp) {
-                postOps.add(child);
-            }
-        }
+    private void printPostfixWithPrimary(Cursor primary, Cursor.Branch postfix) {
+        var postOps = childrenByRule(postfix, RuleKind.POST_OP);
 
         var dotPlusParenPostOps = postOps.stream().filter(this::isDotMethodPostOp).toList();
         boolean primaryHasMethodAccess = hasMethodAccessInPrimary(primary);
@@ -633,7 +605,7 @@ final class FlowPrinter {
         }
     }
 
-    private boolean fitsOnLineUnary(CstNode primary, List<CstNode> postOps) {
+    private boolean fitsOnLineUnary(Cursor primary, List<Cursor> postOps) {
         int width = measureWidth(primary);
         for (var postOp : postOps) {
             width += measureWidth(postOp);
@@ -641,14 +613,14 @@ final class FlowPrinter {
         return currentColumn + width <= config.maxLineLength();
     }
 
-    private void printPostfix(CstNode.NonTerminal postfix) {
-        var children = children(postfix);
-        CstNode primary = null;
-        var postOps = new ArrayList<CstNode>();
-        for (var child : children) {
-            if (child.rule() instanceof RuleId.Primary) {
+    private void printPostfix(Cursor.Branch postfix) {
+        var kids = postfix.children().toList();
+        Cursor primary = null;
+        var postOps = new ArrayList<Cursor>();
+        for (var child : kids) {
+            if (child.kindIs(RuleKind.PRIMARY)) {
                 primary = child;
-            } else if (child.rule() instanceof RuleId.PostOp) {
+            } else if (child.kindIs(RuleKind.POST_OP)) {
                 postOps.add(child);
             }
         }
@@ -679,9 +651,9 @@ final class FlowPrinter {
         }
     }
 
-    private void printMethodChainAligned(CstNode primary,
-                                         List<CstNode> postOps,
-                                         List<CstNode> methodCallPostOps,
+    private void printMethodChainAligned(Cursor primary,
+                                         List<Cursor> postOps,
+                                         List<Cursor> methodCallPostOps,
                                          boolean primaryHasInvocation) {
         int startColumn = currentColumn;
         int alignColumn = startColumn;
@@ -722,128 +694,68 @@ final class FlowPrinter {
         }
     }
 
-    private boolean isDotMethodPostOp(CstNode postOp) {
+    /// A dot-method PostOp begins with `.` and contains `(`. Under v6 the `.` and `(`
+    /// are token-level — inspect the PostOp's token range.
+    private boolean isDotMethodPostOp(Cursor postOp) {
+        if (!(postOp instanceof Cursor.Branch br)) return false;
+        var tokens = br.cst().tokens();
         boolean hasDot = false;
         boolean hasParen = false;
-        for (var child : children(postOp)) {
-            if (isTerminalWithText(child, ".")) {
-                hasDot = true;
-            }
-            if (isTerminalWithText(child, "(")) {
-                hasParen = true;
-            }
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            var s = tokens.textAt(t).toString();
+            if (".".equals(s)) hasDot = true;
+            if ("(".equals(s)) hasParen = true;
         }
         return hasDot && hasParen;
     }
 
-    private boolean isBareInvocationPostOp(CstNode postOp) {
-        boolean hasParen = false;
+    /// A bare invocation PostOp begins with `(` but no `.` (e.g. method call on a primary).
+    private boolean isBareInvocationPostOp(Cursor postOp) {
+        if (!(postOp instanceof Cursor.Branch br)) return false;
+        var tokens = br.cst().tokens();
         boolean hasDot = false;
-        for (var child : children(postOp)) {
-            if (isTerminalWithText(child, ".")) {
-                hasDot = true;
-            }
-            if (isTerminalWithText(child, "(")) {
-                hasParen = true;
-            }
+        boolean hasParen = false;
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            var s = tokens.textAt(t).toString();
+            if (".".equals(s)) hasDot = true;
+            if ("(".equals(s)) hasParen = true;
         }
         return hasParen && !hasDot;
     }
 
-    private boolean hasMethodAccessInPrimary(CstNode primary) {
-        return containsDotInIdentifierChain(primary);
+    private boolean hasMethodAccessInPrimary(Cursor primary) {
+        // Primary contains a method-access path if its text contains a dot
+        // outside of identifier suffix (we check the structural Primary's source text).
+        var t = text(primary);
+        return t.contains(".");
     }
 
-    private boolean containsDotInIdentifierChain(CstNode node) {
-        return switch (node) {
-            case CstNode.Terminal t -> ".".equals(t.text());
-            case CstNode.Token _ -> false;
-            case CstNode.Error _ -> false;
-            case CstNode.NonTerminal nt -> {
-                if (nt.rule() instanceof RuleId.QualifiedName) {
-                    for (var child : children(nt)) {
-                        if (containsDotInIdentifierChain(child)) {
-                            yield true;
-                        }
-                    }
-                } else if (nt.rule() instanceof RuleId.Identifier) {
-                    yield false;
+    private void printPostOp(Cursor.Branch postOp) {
+        // PostOps look like `.method(args)`, `<TypeArgs>method(args)`, `(args)`, or `[expr]`.
+        // We walk tokens and let child branches handle their own rendering.
+        walkTokensWith(postOp, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.ARGS)) {
+                    printNodeContent(child);
                 } else {
-                    for (var child : children(nt)) {
-                        if (child.rule() instanceof RuleId.QualifiedName && containsDotInIdentifierChain(child)) {
-                            yield true;
-                        }
-                    }
+                    printNode(child);
                 }
-                yield false;
             }
-        };
-    }
 
-    private int findFirstDotPosition(CstNode node) {
-        return findDotPositionHelper(node, new int[]{0});
-    }
-
-    private int findDotPositionHelper(CstNode node, int[] position) {
-        return switch (node) {
-            case CstNode.Terminal t -> {
-                if (".".equals(t.text())) {
-                    yield position[0];
-                }
-                position[0] += t.text().length();
-                yield -1;
+            @Override
+            public void onToken(int kind, String text) {
+                emitToken(text);
             }
-            case CstNode.Token tok -> {
-                if (".".equals(tok.text())) {
-                    yield position[0];
-                }
-                position[0] += tok.text().length();
-                yield -1;
-            }
-            case CstNode.NonTerminal nt -> {
-                for (var child : children(nt)) {
-                    int result = findDotPositionHelper(child, position);
-                    if (result >= 0) {
-                        yield result;
-                    }
-                }
-                yield -1;
-            }
-            case CstNode.Error err -> {
-                position[0] += err.skippedText().length();
-                yield -1;
-            }
-        };
-    }
-
-    private void printPostOp(CstNode.NonTerminal postOp) {
-        var children = children(postOp);
-        boolean afterTypeArgs = false;
-        for (var child : children) {
-            if (child.rule() instanceof RuleId.TypeArgs) {
-                printNode(child);
-                afterTypeArgs = true;
-            } else if (afterTypeArgs && child.rule() instanceof RuleId.Identifier) {
-                var identText = text(child, source).trim();
-                emit(identText);
-                afterTypeArgs = false;
-            } else if (isTerminalWithText(child, "(") && child.rule() instanceof RuleId.Args == false) {
-                printNode(child);
-                afterTypeArgs = false;
-            } else if (child.rule() instanceof RuleId.Args) {
-                printNodeContent(child);
-                afterTypeArgs = false;
-            } else {
-                printNode(child);
-                afterTypeArgs = false;
-            }
-        }
+        });
     }
 
     // ===== Arguments =====
 
-    private void printArgs(CstNode.NonTerminal args) {
-        if (measuringMode) { printChildren(args); return; }
+    private void printArgs(Cursor.Branch args) {
+        if (measuringMode) { walkTokens(args); return; }
 
         boolean hasComplexArgs = hasComplexArguments(args);
         if (hasComplexArgs) {
@@ -853,19 +765,21 @@ final class FlowPrinter {
 
         int argsWidth = measureWidth(args);
         if (currentColumn + argsWidth <= config.maxLineLength()) {
-            for (var child : children(args)) {
-                printNodeContent(child);
-            }
+            // Inline: walk tokens but use printNodeContent for child expressions.
+            walkTokensWith(args, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
         } else {
             printBrokenArgs(args);
         }
     }
 
-    private boolean hasComplexArguments(CstNode.NonTerminal args) {
-        var exprs = childrenByRule(args, RuleId.Expr.class);
+    private boolean hasComplexArguments(Cursor args) {
+        var exprs = childrenByRule(args, RuleKind.EXPR);
         if (exprs.size() >= 2) {
             for (var expr : exprs) {
-                var exprText = text(expr, source);
+                var exprText = text(expr);
                 if (containsMethodCall(exprText) || exprText.contains("-> {")) {
                     return true;
                 }
@@ -889,293 +803,285 @@ final class FlowPrinter {
         return false;
     }
 
-    private void printBrokenArgs(CstNode.NonTerminal args) {
-        var children = children(args);
+    private void printBrokenArgs(Cursor.Branch args) {
         int alignCol = currentColumn;
-
         try (var scope = alignment.pushLambdaAlign(alignCol)) {
-            for (var child : children) {
-                if (isTerminalWithText(child, ",")) {
-                    emit(",");
-                    newline();
-                    printAlignedTo(alignCol);
-                } else if (child.rule() instanceof RuleId.Expr) {
-                    printNodeContent(child);
-                } else {
-                    printNode(child);
+            walkTokensWith(args, new TokenWalker() {
+                @Override
+                public void onChild(Cursor child) {
+                    if (child.kindIs(RuleKind.EXPR)) {
+                        printNodeContent(child);
+                    } else {
+                        printNode(child);
+                    }
                 }
-            }
+
+                @Override
+                public void onToken(int kind, String text) {
+                    if (",".equals(text)) {
+                        emit(",");
+                        newline();
+                        printAlignedTo(alignCol);
+                    } else {
+                        emitToken(text);
+                    }
+                }
+            });
         }
     }
 
     // ===== Lambda =====
 
-    private void printLambda(CstNode.NonTerminal lambda) {
-        var children = children(lambda);
-        boolean afterArrow = false;
-        for (var child : children) {
-            if (isTerminalWithText(child, "->")) {
-                emit(" -> ");
-                afterArrow = true;
-            } else if (afterArrow) {
-                printNodeContent(child);
-                afterArrow = false;
-            } else {
-                printNode(child);
+    private void printLambda(Cursor.Branch lambda) {
+        walkTokensWith(lambda, new TokenWalker() {
+            boolean afterArrow = false;
+
+            @Override
+            public void onChild(Cursor child) {
+                if (afterArrow) {
+                    printNodeContent(child);
+                    afterArrow = false;
+                } else {
+                    printNode(child);
+                }
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if ("->".equals(text)) {
+                    emit(" -> ");
+                    afterArrow = true;
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
     // ===== Parameters =====
 
-    private void printParams(CstNode.NonTerminal params) {
+    private void printParams(Cursor.Branch params) {
         if (measuringMode) {
-            for (var child : children(params)) {
-                printNodeContent(child);
-            }
+            walkTokens(params);
             return;
         }
 
         int paramsWidth = measureWidth(params);
         // Account for closing paren and typical suffix (") {" = 3 chars)
         if (currentColumn + paramsWidth + 3 <= config.maxLineLength()) {
-            for (var child : children(params)) {
-                printNodeContent(child);
-            }
+            walkTokensWith(params, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
         } else {
             printBrokenParams(params);
         }
     }
 
-    private void printBrokenParams(CstNode.NonTerminal params) {
-        var children = children(params);
+    private void printBrokenParams(Cursor.Branch params) {
         int alignCol = currentColumn;
-        for (var child : children) {
-            if (isTerminalWithText(child, ",")) {
-                emit(",");
-                newline();
-                printAlignedTo(alignCol);
-            } else if (child.rule() instanceof RuleId.Param) {
-                printNodeContent(child);
-            }
-        }
-    }
-
-    private void printParam(CstNode.NonTerminal param) {
-        var children = children(param);
-        var paramText = text(param, source);
-        boolean isVarargs = paramText.contains("...");
-        boolean printedDots = false;
-
-        for (var child : children) {
-            if (isTerminalWithText(child, "...")) {
-                if (!printedDots) {
-                    emitToken("...");
-                    printedDots = true;
-                }
-            } else if (child.rule() instanceof RuleId.Type && isVarargs) {
-                var typeText = text(child, source).trim();
-                if (typeText.endsWith("...")) {
-                    typeText = typeText.substring(0, typeText.length() - 3);
-                }
-                emitToken(typeText);
-            } else {
-                printNodeContent(child);
-            }
-        }
-    }
-
-    private void printLambdaParam(CstNode.NonTerminal param) {
-        var children = children(param);
-        var identifierTexts = children.stream()
-            .filter(c -> c.rule() instanceof RuleId.Identifier)
-            .map(c -> text(c, source).trim())
-            .collect(Collectors.toSet());
-
-        for (var child : children) {
-            var rule = child.rule();
-            var childText = text(child, source).trim();
-            if (rule instanceof RuleId.Identifier) {
-                emitToken(childText);
-            } else if (rule instanceof RuleId.Type) {
-                if (!identifierTexts.contains(childText)) {
+        walkTokensWith(params, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.PARAM)) {
                     printNodeContent(child);
+                } else {
+                    printNode(child);
                 }
-            } else if (rule instanceof RuleId.Annotation || rule instanceof RuleId.Modifier) {
-                printNode(child);
-            } else if (isTerminalWithText(child, "...")) {
-                emitToken("...");
-            } else {
-                printNode(child);
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if (",".equals(text)) {
+                    emit(",");
+                    newline();
+                    printAlignedTo(alignCol);
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
+    }
+
+    private void printParam(Cursor.Branch param) {
+        walkTokens(param);
+    }
+
+    private void printLambdaParam(Cursor.Branch param) {
+        walkTokens(param);
     }
 
     // ===== Primary and record =====
 
-    private void printPrimary(CstNode.NonTerminal primary) {
-        var children = children(primary);
-        boolean afterOpenParen = false;
-        for (var child : children) {
-            if (isTerminalWithText(child, "(")) {
-                printNode(child);
-                afterOpenParen = true;
-            } else if (afterOpenParen && child.rule() instanceof RuleId.Args) {
-                printNodeContent(child);
-                afterOpenParen = false;
-            } else {
-                printNode(child);
-                afterOpenParen = false;
+    private void printPrimary(Cursor.Branch primary) {
+        // Primary may be a method call `Foo.bar()`, a parenthesized expression, a new
+        // expression, etc. Walk tokens; for ARGS child use printNodeContent so it can
+        // break across lines.
+        walkTokensWith(primary, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.ARGS)) {
+                    printNodeContent(child);
+                } else {
+                    printNode(child);
+                }
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                emitToken(text);
+            }
+        });
     }
 
-    private void printRecordDecl(CstNode.NonTerminal recordDecl) {
-        var children = children(recordDecl);
-        boolean afterOpenParen = false;
-        for (var child : children) {
-            if (isTerminalWithText(child, "(")) {
-                printNode(child);
-                afterOpenParen = true;
-            } else if (afterOpenParen && child.rule() instanceof RuleId.RecordComponents) {
-                printNodeContent(child);
-                afterOpenParen = false;
-            } else {
-                printNode(child);
-                afterOpenParen = false;
+    private void printRecordDecl(Cursor.Branch recordDecl) {
+        walkTokensWith(recordDecl, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.RECORD_COMPONENTS)) {
+                    printNodeContent(child);
+                } else {
+                    printNode(child);
+                }
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                emitToken(text);
+            }
+        });
     }
 
-    private void printRecordComponents(CstNode.NonTerminal components) {
+    private void printRecordComponents(Cursor.Branch components) {
         if (measuringMode) {
-            for (var child : children(components)) {
-                printNodeContent(child);
-            }
+            walkTokens(components);
             return;
         }
 
         int width = measureWidth(components);
         if (currentColumn + width + 3 <= config.maxLineLength()) {
-            for (var child : children(components)) {
-                printNodeContent(child);
-            }
+            walkTokensWith(components, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
         } else {
             printBrokenRecordComponents(components);
         }
     }
 
-    private void printBrokenRecordComponents(CstNode.NonTerminal components) {
-        var children = children(components);
+    private void printBrokenRecordComponents(Cursor.Branch components) {
         int alignCol = currentColumn;
-        for (var child : children) {
-            if (isTerminalWithText(child, ",")) {
-                emit(",");
-                newline();
-                printAlignedTo(alignCol);
-            } else if (child.rule() instanceof RuleId.RecordComp) {
-                printNodeContent(child);
-            }
-        }
-    }
-
-    // ===== Resource spec =====
-
-    private void printResourceSpec(CstNode.NonTerminal resourceSpec) {
-        var children = children(resourceSpec);
-        // In measuring mode, just measure children sequentially — no breaking logic
-        if (measuringMode) {
-            printChildren(resourceSpec);
-            return;
-        }
-        // Width-based decision instead of trivia-based
-        int width = measureWidth(resourceSpec);
-        if (currentColumn + width <= config.maxLineLength()) {
-            printChildren(resourceSpec);
-            return;
-        }
-
-        boolean afterOpen = false;
-        int alignCol = 0;
-        boolean first = true;
-        for (var child : children) {
-            if (isTerminalWithText(child, "(")) {
-                emitToken("(");
-                alignCol = currentColumn;
-                afterOpen = true;
-            } else if (isTerminalWithText(child, ")")) {
-                emitToken(")");
-            } else if (isTerminalWithText(child, ";")) {
-                emitToken(";");
-            } else if (child.rule() instanceof RuleId.Resource) {
-                if (afterOpen) {
-                    if (!first) {
-                        newline();
-                        printAlignedTo(alignCol);
-                    }
+        walkTokensWith(components, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.RECORD_COMP)) {
                     printNodeContent(child);
-                    first = false;
                 } else {
                     printNode(child);
                 }
             }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if (",".equals(text)) {
+                    emit(",");
+                    newline();
+                    printAlignedTo(alignCol);
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
+    }
+
+    // ===== Resource spec =====
+
+    private void printResourceSpec(Cursor.Branch resourceSpec) {
+        if (measuringMode) {
+            walkTokens(resourceSpec);
+            return;
         }
+        int width = measureWidth(resourceSpec);
+        if (currentColumn + width <= config.maxLineLength()) {
+            walkTokens(resourceSpec);
+            return;
+        }
+
+        // Wrapped form: resources align after `(`, separated by `;` + newline.
+        int[] alignCol = {0};
+        boolean[] afterOpen = {false};
+        boolean[] first = {true};
+        walkTokensWith(resourceSpec, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (child.kindIs(RuleKind.RESOURCE)) {
+                    if (afterOpen[0]) {
+                        if (!first[0]) {
+                            newline();
+                            printAlignedTo(alignCol[0]);
+                        }
+                        printNodeContent(child);
+                        first[0] = false;
+                    } else {
+                        printNode(child);
+                    }
+                } else {
+                    printNode(child);
+                }
+            }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if ("(".equals(text)) {
+                    emitToken("(");
+                    alignCol[0] = currentColumn;
+                    afterOpen[0] = true;
+                } else if (";".equals(text)) {
+                    emitToken(";");
+                } else if (")".equals(text)) {
+                    emitToken(")");
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
     // ===== Type generics =====
 
-    private void printTypeArgs(CstNode.NonTerminal typeArgs) {
-        var children = children(typeArgs);
-        boolean first = true;
-        for (var child : children) {
-            if (first && isTerminalWithText(child, "<")) {
-                emitToken("<");
-                first = false;
-            } else if (isTerminalWithText(child, ">")) {
-                emitToken(">");
-            } else {
-                printNode(child);
-            }
-        }
+    private void printTypeArgs(Cursor.Branch typeArgs) {
+        walkTokens(typeArgs);
     }
 
-    private void printTypeParams(CstNode.NonTerminal typeParams) {
-        var children = children(typeParams);
-        boolean first = true;
-        for (var child : children) {
-            if (first && isTerminalWithText(child, "<")) {
-                emitToken("<");
-                first = false;
-            } else if (isTerminalWithText(child, ">")) {
-                emitToken(">");
-            } else {
-                printNode(child);
-            }
-        }
+    private void printTypeParams(Cursor.Branch typeParams) {
+        walkTokens(typeParams);
     }
 
     // ===== Method declarations =====
 
-    private void printMethodDecl(CstNode.NonTerminal methodDecl) {
-        var children = children(methodDecl);
+    private void printMethodDecl(Cursor.Branch methodDecl) {
+        var kids = methodDecl.children().toList();
         int typeParamsIndex = -1;
-        for (int i = 0; i < children.size(); i++) {
-            if (children.get(i).rule() instanceof RuleId.TypeParams) {
+        for (int i = 0; i < kids.size(); i++) {
+            if (kids.get(i).kindIs(RuleKind.TYPE_PARAMS)) {
                 typeParamsIndex = i;
                 break;
             }
         }
 
         if (typeParamsIndex == -1) {
-            printChildren(methodDecl);
+            walkTokens(methodDecl);
             return;
         }
 
-        for (int i = 0; i <= typeParamsIndex; i++) {
-            printNode(children.get(i));
-        }
+        var typeParams = kids.get(typeParamsIndex);
+        // Walk tokens from methodDecl start through end of TypeParams.
+        walkTokenRange(methodDecl,
+                       kids.subList(0, typeParamsIndex + 1),
+                       methodDecl.firstTokenIdx(),
+                       typeParams.lastTokenIdx());
 
-        var signatureWidth = measureSignatureWidth(children, typeParamsIndex);
+        var signatureWidth = measureSignatureWidth(kids, typeParamsIndex);
         if (currentColumn + 1 + signatureWidth <= config.maxLineLength()) {
             emit(" ");
         } else {
@@ -1183,48 +1089,22 @@ final class FlowPrinter {
             printIndent();
         }
 
-        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
-            printNodeContent(children.get(i));
+        for (int i = typeParamsIndex + 1; i < kids.size(); i++) {
+            printNodeContent(kids.get(i));
         }
     }
 
-    private void printMethodDeclContent(CstNode.NonTerminal methodDecl) {
-        var children = children(methodDecl);
-        int typeParamsIndex = -1;
-        for (int i = 0; i < children.size(); i++) {
-            if (children.get(i).rule() instanceof RuleId.TypeParams) {
-                typeParamsIndex = i;
-                break;
-            }
-        }
-
-        if (typeParamsIndex == -1) {
-            printNodeContent(methodDecl);
-            return;
-        }
-
-        printNodeContent(children.get(0));
-        for (int i = 1; i <= typeParamsIndex; i++) {
-            printNode(children.get(i));
-        }
-
-        var signatureWidth = measureSignatureWidth(children, typeParamsIndex);
-        if (currentColumn + 1 + signatureWidth <= config.maxLineLength()) {
-            emit(" ");
-        } else {
-            newline();
-            printIndent();
-        }
-
-        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
-            printNodeContent(children.get(i));
-        }
+    private void printMethodDeclContent(Cursor.Branch methodDecl) {
+        // Equivalent to printMethodDecl but uses printNodeContent on first child
+        // (no leading-trivia emission, since called from printMember which already
+        // emitted member-level trivia).
+        printMethodDecl(methodDecl);
     }
 
-    private int measureSignatureWidth(List<CstNode> children, int typeParamsIndex) {
+    private int measureSignatureWidth(List<Cursor> children, int typeParamsIndex) {
         var signatureText = new StringBuilder();
         for (int i = typeParamsIndex + 1; i < children.size(); i++) {
-            var childText = text(children.get(i), source);
+            var childText = text(children.get(i));
             signatureText.append(childText);
             if (childText.contains("(")) {
                 break;
@@ -1235,245 +1115,220 @@ final class FlowPrinter {
 
     // ===== Ternary =====
 
-    private void printTernary(CstNode.NonTerminal ternary) {
-        var ternaryText = text(ternary, source);
+    private void printTernary(Cursor.Branch ternary) {
+        var ternaryText = text(ternary);
         if (ternaryText.contains("?") && ternaryText.contains(":")) {
-            var children = children(ternary);
             int alignCol = currentColumn;
-            boolean skipNext = false;
-            for (var child : children) {
-                if (isTerminalWithText(child, "?")) {
-                    newline();
-                    printAlignedTo(alignCol);
-                    emit("? ");
-                    skipNext = true;
-                } else if (isTerminalWithText(child, ":")) {
-                    newline();
-                    printAlignedTo(alignCol);
-                    emit(": ");
-                    skipNext = true;
-                } else if (skipNext) {
-                    printNodeContent(child);
-                    skipNext = false;
-                } else {
-                    printNode(child);
+            boolean[] skipNext = {false};
+            walkTokensWith(ternary, new TokenWalker() {
+                @Override
+                public void onChild(Cursor child) {
+                    if (skipNext[0]) {
+                        printNodeContent(child);
+                        skipNext[0] = false;
+                    } else {
+                        printNode(child);
+                    }
                 }
-            }
+
+                @Override
+                public void onToken(int kind, String text) {
+                    if ("?".equals(text)) {
+                        newline();
+                        printAlignedTo(alignCol);
+                        emit("? ");
+                        skipNext[0] = true;
+                    } else if (":".equals(text)) {
+                        newline();
+                        printAlignedTo(alignCol);
+                        emit(": ");
+                        skipNext[0] = true;
+                    } else {
+                        emitToken(text);
+                    }
+                }
+            });
         } else {
-            printChildren(ternary);
+            walkTokens(ternary);
         }
     }
 
     // ===== Additive (string concatenation wrapping) =====
 
-    private void printAdditive(CstNode.NonTerminal additive) {
+    private void printAdditive(Cursor.Branch additive) {
         if (measuringMode) {
-            for (var child : children(additive)) {
-                printNodeContent(child);
-            }
+            walkTokensWith(additive, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
             return;
         }
 
         boolean hasStringLit = containsStringLit(additive);
         if (!hasStringLit) {
-            for (var child : children(additive)) {
-                printNodeContent(child);
-            }
+            walkTokensWith(additive, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
             return;
         }
 
         int width = measureWidth(additive);
         if (currentColumn + width <= config.maxLineLength()) {
-            for (var child : children(additive)) {
-                printNodeContent(child);
-            }
+            walkTokensWith(additive, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
             return;
         }
 
-        var children = children(additive);
+        // Multi-line: break before string-literal operands.
+        var kids = additive.children().toList();
         int alignCol = currentColumn;
-        var operandInfo = new IdentityHashMap<CstNode, OperandInfo>();
-        for (var child : children) {
-            if (!isTerminalWithText(child, "+") && !isTerminalWithText(child, "-")) {
-                operandInfo.put(child, new OperandInfo(startsWithStringLit(child), measureWidth(child)));
-            }
+        var operandInfo = new IdentityHashMap<Cursor, OperandInfo>();
+        for (var child : kids) {
+            operandInfo.put(child, new OperandInfo(startsWithStringLit(child), measureWidth(child)));
         }
 
-        boolean firstPrinted = false;
-        boolean pendingPlus = false;
-        for (var child : children) {
-            if (isTerminalWithText(child, "+")) {
-                pendingPlus = true;
-            } else if (isTerminalWithText(child, "-")) {
-                emit(" - ");
-            } else {
-                if (pendingPlus) {
+        boolean[] firstPrinted = {false};
+        boolean[] pendingPlus = {false};
+        walkTokensWith(additive, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) {
+                if (pendingPlus[0]) {
                     var info = operandInfo.get(child);
                     boolean startsWithStr = info != null && info.startsWithString();
                     int opWidth = info != null ? info.width() : 0;
-                    if (startsWithStr && firstPrinted && currentColumn + 3 + opWidth > config.maxLineLength()) {
+                    if (startsWithStr && firstPrinted[0] && currentColumn + 3 + opWidth > config.maxLineLength()) {
                         newline();
                         printAlignedTo(alignCol);
                         emit("+ ");
                     } else {
                         emit(" + ");
                     }
-                    pendingPlus = false;
+                    pendingPlus[0] = false;
                 }
                 printNodeContent(child);
-                firstPrinted = true;
+                firstPrinted[0] = true;
             }
-        }
+
+            @Override
+            public void onToken(int kind, String text) {
+                if ("+".equals(text)) {
+                    pendingPlus[0] = true;
+                } else if ("-".equals(text)) {
+                    emit(" - ");
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
-    private boolean containsStringLit(CstNode node) {
-        return switch (node) {
-            case CstNode.Terminal _ -> false;
-            case CstNode.Token _ -> false;
-            case CstNode.Error _ -> false;
-            case CstNode.NonTerminal nt -> {
-                if (nt.rule() instanceof RuleId.StringLit) {
-                    yield true;
-                }
-                for (var child : children(nt)) {
-                    if (containsStringLit(child)) {
-                        yield true;
-                    }
-                }
-                yield false;
-            }
-        };
+    private boolean containsStringLit(Cursor node) {
+        return text(node).contains("\"");
     }
 
-    private boolean startsWithStringLit(CstNode node) {
-        return switch (node) {
-            case CstNode.Terminal _ -> false;
-            case CstNode.Token _ -> false;
-            case CstNode.Error _ -> false;
-            case CstNode.NonTerminal nt -> {
-                if (nt.rule() instanceof RuleId.StringLit) {
-                    yield true;
-                }
-                var childList = children(nt);
-                if (!childList.isEmpty()) {
-                    yield startsWithStringLit(childList.getFirst());
-                }
-                yield false;
-            }
-        };
+    private boolean startsWithStringLit(Cursor node) {
+        var t = text(node).stripLeading();
+        return !t.isEmpty() && t.charAt(0) == '"';
     }
 
     // ===== Content printing (no trivia, with spacing) =====
 
-    private void printNodeContent(CstNode node) {
+    private void printNodeContent(Cursor node) {
         switch (node) {
-            case CstNode.Terminal t -> emitToken(t.text());
-            case CstNode.Token tok -> emitToken(tok.text());
-            case CstNode.Error err -> emitToken(err.skippedText());
-            case CstNode.NonTerminal nt -> {
-                switch (nt.rule()) {
-                    case RuleId.Lambda _ -> printLambdaContent(nt);
-                    case RuleId.LambdaParam _ -> printLambdaParam(nt);
-                    case RuleId.Args _ -> printArgs(nt);
-                    case RuleId.Block _ -> printBlock(nt);
-                    case RuleId.Postfix _ -> printPostfix(nt);
-                    case RuleId.PostOp _ -> printPostOp(nt);
-                    case RuleId.Ternary _ -> printTernary(nt);
-                    case RuleId.Additive _ -> printAdditive(nt);
-                    case RuleId.Params _ -> printParams(nt);
-                    case RuleId.RecordComponents _ -> printRecordComponents(nt);
-                    case RuleId.TypeArgs _ -> printTypeArgs(nt);
-                    case RuleId.TypeParams _ -> printTypeParams(nt);
-                    case RuleId.SwitchBlock _ -> printSwitchBlock(nt);
-                    case RuleId.Unary _ -> printUnary(nt);
-                    case RuleId.FieldDecl _ -> printFieldDecl(nt);
-                    case RuleId.Param _ -> printParam(nt);
-                    case RuleId.EnumBody _ -> printEnumBody(nt);
-                    case RuleId.RecordBody _ -> printRecordBody(nt);
-                    case RuleId.ClassBody _ -> printClassBody(nt);
-                    case RuleId.AnnotationBody _ -> printAnnotationBody(nt);
-                    case RuleId.Primary _ -> printPrimary(nt);
-                    case RuleId.RecordDecl _ -> printRecordDecl(nt);
-                    case RuleId.ResourceSpec _ -> printResourceSpec(nt);
-                    case RuleId.LambdaParams _ -> {
-                        for (var child : children(nt)) {
-                            printNodeContent(child);
-                        }
-                    }
-                    default -> {
-                        for (var child : children(nt)) {
-                            printNodeContent(child);
-                        }
-                    }
+            case Cursor.Leaf leaf -> emitToken(leaf.text().toString());
+            case Cursor.ErrorNode err -> emitToken(err.skippedText().toString());
+            case Cursor.Branch br -> {
+                switch (br.kind()) {
+                    case LAMBDA -> printLambdaContent(br);
+                    case LAMBDA_PARAM -> printLambdaParam(br);
+                    case ARGS -> printArgs(br);
+                    case BLOCK -> printBlock(br);
+                    case POSTFIX -> printPostfix(br);
+                    case POST_OP -> printPostOp(br);
+                    case TERNARY -> printTernary(br);
+                    case ADDITIVE -> printAdditive(br);
+                    case PARAMS -> printParams(br);
+                    case RECORD_COMPONENTS -> printRecordComponents(br);
+                    case TYPE_ARGS -> printTypeArgs(br);
+                    case TYPE_PARAMS -> printTypeParams(br);
+                    case SWITCH_BLOCK -> printSwitchBlock(br);
+                    case UNARY -> printUnary(br);
+                    case FIELD_DECL -> printFieldDecl(br);
+                    case PARAM -> printParam(br);
+                    case ENUM_BODY -> printEnumBody(br);
+                    case RECORD_BODY -> printRecordBody(br);
+                    case CLASS_BODY -> printClassBody(br);
+                    case ANNOTATION_BODY -> printAnnotationBody(br);
+                    case PRIMARY -> printPrimary(br);
+                    case RECORD_DECL -> printRecordDecl(br);
+                    case RESOURCE_SPEC -> printResourceSpec(br);
+                    default -> walkTokensWith(br, new TokenWalker() {
+                        @Override public void onChild(Cursor c) { printNodeContent(c); }
+                        @Override public void onToken(int kind, String text) { emitToken(text); }
+                    });
                 }
             }
         }
     }
 
-    private void printLambdaContent(CstNode.NonTerminal lambda) {
-        var children = children(lambda);
-        for (var child : children) {
-            if (isTerminalWithText(child, "->")) {
-                emit(" -> ");
-            } else {
-                printNodeContent(child);
-            }
-        }
-    }
+    private void printLambdaContent(Cursor.Branch lambda) {
+        walkTokensWith(lambda, new TokenWalker() {
+            @Override
+            public void onChild(Cursor child) { printNodeContent(child); }
 
-    private void printChildren(CstNode.NonTerminal nt) {
-        for (var child : children(nt)) {
-            printNode(child);
-        }
+            @Override
+            public void onToken(int kind, String text) {
+                if ("->".equals(text)) {
+                    emit(" -> ");
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
     }
 
     // ===== Comment emission (inline, but never affects layout decisions) =====
 
-    private void emitLeadingComments(CstNode node) {
+    private void emitLeadingComments(Cursor node) {
         boolean emittedAny = false;
-        for (var trivia : node.leadingTrivia()) {
-            switch (trivia) {
-                case Trivia.LineComment lc -> {
-                    if (currentColumn > 0) {
-                        newline();
-                    }
-                    printIndent();
-                    var text = lc.text().stripTrailing();
-                    output.append(text);
-                    currentColumn += text.length();
+        var trivia = node.leadingTrivia().toList();
+        for (var t : trivia) {
+            if (t.isLineComment()) {
+                if (currentColumn > 0) {
                     newline();
-                    emittedAny = true;
                 }
-                case Trivia.BlockComment bc -> {
-                    if (currentColumn > 0) {
-                        newline();
-                    }
-                    var lines = bc.text().split("\n", -1);
-                    for (int i = 0; i < lines.length; i++) {
-                        if (i == 0) {
-                            printIndent();
-                        }
-                        var line = lines[i].stripTrailing();
-                        output.append(line);
-                        currentColumn += line.length();
-                        if (i < lines.length - 1) {
-                            output.append("\n");
-                            currentColumn = 0;
-                            currentLine++;
-                        }
-                    }
+                printIndent();
+                var text = t.text().toString().stripTrailing();
+                output.append(text);
+                currentColumn += text.length();
+                newline();
+                emittedAny = true;
+            } else if (t.isBlockComment()) {
+                if (currentColumn > 0) {
                     newline();
-                    emittedAny = true;
                 }
-                case Trivia.Whitespace _ -> {
-                    // Ignored — flow formatter controls all whitespace
+                var lines = t.text().toString().split("\n", -1);
+                for (int i = 0; i < lines.length; i++) {
+                    if (i == 0) {
+                        printIndent();
+                    }
+                    var line = lines[i].stripTrailing();
+                    output.append(line);
+                    currentColumn += line.length();
+                    if (i < lines.length - 1) {
+                        output.append("\n");
+                        currentColumn = 0;
+                        currentLine++;
+                    }
                 }
+                newline();
+                emittedAny = true;
             }
+            // Whitespace trivia ignored — flow formatter controls all whitespace
         }
-        // After emitting comments that ended with newline (currentColumn == 0), restore
-        // indent so the following content lands at the right column. The per-member loop
-        // in printBracedBody / printBlock skips its own printIndent for members with
-        // leading comments, so this is the sole indent emission for that case.
         if (emittedAny && currentColumn == 0) {
             printIndent();
         }
@@ -1554,15 +1409,6 @@ final class FlowPrinter {
         if (currentColumn < column) {
             emit(" ".repeat(column - currentColumn));
         }
-    }
-
-    private boolean isTerminalWithText(CstNode node, String text) {
-        return switch (node) {
-            case CstNode.Terminal t -> text.equals(t.text());
-            case CstNode.Token tok -> text.equals(tok.text());
-            case CstNode.NonTerminal _ -> false;
-            case CstNode.Error _ -> false;
-        };
     }
 
     // ===== Spacing rules (inlined from SpacingRules — package-private in cst) =====

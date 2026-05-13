@@ -1,7 +1,7 @@
 package org.pragmatica.jbct.format;
 
 import org.pragmatica.jbct.format.flow.FlowFormatter;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
 
@@ -38,7 +38,7 @@ public class JbctFormatter {
 
     /// Format an already-parsed CST. For single-pass orchestrators that have already
     /// produced a parse tree and want to avoid re-parsing.
-    public SourceFile formatParsed(CstNode tree, SourceFile source) {
+    public SourceFile formatParsed(Cursor tree, SourceFile source) {
         return delegate.formatParsed(tree, source);
     }
 

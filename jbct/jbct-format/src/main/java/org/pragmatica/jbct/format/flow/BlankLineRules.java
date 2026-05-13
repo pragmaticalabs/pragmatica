@@ -1,6 +1,6 @@
 package org.pragmatica.jbct.format.flow;
 
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.lang.Option;
 
 import static org.pragmatica.jbct.parser.CstNodes.text;
@@ -14,15 +14,15 @@ final class BlankLineRules {
     private BlankLineRules() {}
 
     /// Determine if a blank line is needed between two consecutive members.
-    static boolean needsBlankLineBetween(CstNode current, Option<CstNode> previous, String source) {
+    static boolean needsBlankLineBetween(Cursor current, Option<Cursor> previous) {
         return previous
-            .filter(prev -> !areBothSimpleNoInitDeclarations(current, prev, source))
+            .filter(prev -> !areBothSimpleNoInitDeclarations(current, prev))
             .isPresent();
     }
 
-    private static boolean areBothSimpleNoInitDeclarations(CstNode current, CstNode previous, String source) {
-        return isSimpleNoInitDeclaration(text(current, source))
-            && isSimpleNoInitDeclaration(text(previous, source));
+    private static boolean areBothSimpleNoInitDeclarations(Cursor current, Cursor previous) {
+        return isSimpleNoInitDeclaration(text(current))
+            && isSimpleNoInitDeclaration(text(previous));
     }
 
     /// A simple declaration without initializer: ends with semicolon, no block body, no assignment.
