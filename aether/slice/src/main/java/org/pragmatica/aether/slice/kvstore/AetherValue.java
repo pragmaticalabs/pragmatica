@@ -1517,7 +1517,9 @@ import static org.pragmatica.lang.Option.none;
             BACKUP_RESTORED,
             BLUEPRINT_DEPLOYED,
             BLUEPRINT_DELETED,
-            GENERATION_CHANGED
+            GENERATION_CHANGED,
+            ALERT_INJECTED,
+            TRACE_INJECTED
         }
 
         @Codec public enum Severity {

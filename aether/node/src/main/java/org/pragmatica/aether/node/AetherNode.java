@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.api.AlertManager;
+import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
 import org.pragmatica.aether.api.ClusterEventLogPublisher;
@@ -1029,6 +1030,15 @@ public interface AetherNode extends ManageableNode {
                                                                             clusterTopologyManager.observer()::clusterSize,
                                                                             eventLogPublisher,
                                                                             isLeaderSupplier);
+        // OB1 (investigator round 2): operator-driven inject endpoints must replicate via the
+        // cluster-scoped event log so peer nodes return injected items on cross-node reads.
+        // Bind publisher + cluster-event reader to both inject surfaces (AlertManager,
+        // InvocationTraceStore). Local node-local maps remain authoritative for the originator;
+        // peers UNION via the projected `ALERT_INJECTED` / `TRACE_INJECTED` events, dedup by id.
+        alertManager.bindEventLogPublisher(eventLogPublisher::publish);
+        alertManager.bindClusterEventsSource(eventAggregator::events);
+        traceStore.bindEventLogPublisher(eventLogPublisher::publish);
+        traceStore.bindClusterEventsSource(() -> projectClusterTraceInjections(eventAggregator.events()));
         var eventLogSweeper = ClusterEventLogSweeper.clusterEventLogSweeper(kvStore::snapshot,
                                                                               isLeaderSupplier,
                                                                               ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
@@ -2789,5 +2799,31 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(StreamPublisherFactory.GovernorResolver.class,
                               new StreamPublisherFactory.GovernorResolver(() -> registry.ownerFor(TaskGroup.STREAMING)
                                                                                                  .option()));
+    }
+
+    /// Project the aggregator's materialised `ClusterEvent` view onto
+    /// `InvocationTraceStore.ClusterTraceEvent` records — filters by `TRACE_INJECTED` and
+    /// extracts the metadata stamped by `InvocationTraceStore.publishInjectionToClusterLog`.
+    /// Lives here (not in aether-invoke) because `ClusterEvent` is owned by aether/node.
+    private static List<InvocationTraceStore.ClusterTraceEvent> projectClusterTraceInjections(List<ClusterEvent> events) {
+        var list = new java.util.ArrayList<InvocationTraceStore.ClusterTraceEvent>();
+        for (var event : events) {
+            if (event.type() != org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.EventType.TRACE_INJECTED) {continue;}
+            var details = event.details();
+            var requestId = details.get("requestId");
+            if (requestId == null) {continue;}
+            var operation = details.getOrDefault("operation", "");
+            var durationMs = parseLongDetail(details.get("durationMs"), 0L);
+            var depth = (int) parseLongDetail(details.get("depth"), 0L);
+            var timestamp = parseLongDetail(details.get("timestamp"), 0L);
+            var nodeId = details.getOrDefault("originNodeId", "");
+            list.add(new InvocationTraceStore.ClusterTraceEvent(requestId, operation, durationMs, depth, timestamp, nodeId));
+        }
+        return list;
+    }
+
+    private static long parseLongDetail(String raw, long defaultValue) {
+        if (raw == null) {return defaultValue;}
+        return org.pragmatica.lang.parse.Number.parseLong(raw).or(defaultValue);
     }
 }
