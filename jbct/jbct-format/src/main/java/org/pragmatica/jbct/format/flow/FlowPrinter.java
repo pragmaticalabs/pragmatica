@@ -2000,11 +2000,10 @@ final class FlowPrinter {
     }
 
     /// True iff the previously emitted `-`/`+` is in a unary-operator position where the
-    /// goldens render with NO trailing space. Applies only to keyword-prefixed contexts
-    /// (`return -x`, `throw -1`) and parenthesised/comma contexts (`f(-x)`, `f(a, -b)`).
-    /// `x = -1` is rendered WITH a space in goldens (`x = - 1`), so this method must
-    /// return false there. Likewise, after a string-literal operand (`"[" + s`), the
-    /// operator is binary — return false.
+    /// goldens render with NO trailing space. Applies after any binary-op char, `(`, `,`,
+    /// or unary-context keyword: `return -x`, `throw -1`, `f(-x)`, `f(a, -b)`,
+    /// `x = -1`, `cond ? -x : y`. After an operand (`a - b`), the operator is binary —
+    /// return false.
     private boolean isUnaryPosition() {
         if (measuringMode || output.length() < 2) {
             return false;
@@ -2018,7 +2017,7 @@ final class FlowPrinter {
             return true;
         }
         char before = output.charAt(beforeIdx);
-        if (before == '(' || before == ',') {
+        if (before == '(' || before == ',' || BINARY_OP_CHARS.contains(before)) {
             return true;
         }
         // Keyword-prefixed: only when the operator immediately follows a space which

@@ -64,7 +64,6 @@ public class Records {
 
     record ConfiguredRecord(String value) {
         private static final int MAX_LENGTH = 100;
-
         private static final String DEFAULT = "";
 
         public static ConfiguredRecord defaultRecord() {
