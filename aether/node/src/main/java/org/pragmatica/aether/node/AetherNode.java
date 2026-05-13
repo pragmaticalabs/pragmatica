@@ -1308,6 +1308,10 @@ public interface AetherNode extends ManageableNode {
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
         attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector, membershipFsm);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> rediscoverQuicPeersOnLeaderTakeover(change,
+                                                                                                clusterNode.network(),
+                                                                                                membershipFsm)));
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
                                                                                       leaderTerm,
                                                                                       generationSnapshotPublisher,
@@ -1840,6 +1844,43 @@ public interface AetherNode extends ManageableNode {
         return notice -> router.route(OperationalEvent.GenerationChanged.generationChanged(notice.oldEpoch().toString(),
                                                                                            notice.newEpoch().toString(),
                                                                                            notice.reason().name()));
+    }
+
+    /// Leader-takeover peer re-discovery (chaos-leader-handoff fix 2026-05-13). When this node
+    /// becomes leader, re-fire `MembershipFsm.onPeerConnected` for every QUIC peer currently
+    /// connected, synthesizing a `SwimHealthy` observation for each. Without this, peers that
+    /// were SWIM-alive BEFORE the takeover (but never had a `NodeLifecycleKey` entry written,
+    /// e.g. because the previous leader died before observing them) remain stuck in `UNTRACKED`
+    /// forever — SWIM emits observations only on state change, so the new leader receives no
+    /// fresh `Healthy` event and `(UNTRACKED, SwimHealthy) → ON_DUTY` never fires.
+    ///
+    /// Symptom this fixes: after `kill-leader` chaos, the surviving leader sees N peers in its
+    /// SWIM alive-set but only those that wrote ON_DUTY before the previous leader died appear
+    /// in `/api/nodes/lifecycle`. The cluster reports `current=3 of desired=5` because 2 alive
+    /// peers (plus any CTM replacements provisioned in the meantime) are stuck UNTRACKED.
+    ///
+    /// Idempotent with the F.4 startup catch-up and the regular `onPeerJoined` listener: the
+    /// reducer's `(ON_DUTY, SwimHealthy) → nop` cell ensures repeat synthesis is harmless. The
+    /// QUIC peer set is a strict subset of "alive consensus peers" — followers are not
+    /// re-observed (no QUIC connection retained), which is fine because the new leader's own
+    /// SWIM detector will re-probe them on its next round.
+    private static void rediscoverQuicPeersOnLeaderTakeover(LeaderNotification.LeaderChange change,
+                                                             ClusterNetwork network,
+                                                             MembershipFsm membershipFsm) {
+        if (!change.localNodeIsLeader()) {
+            return;
+        }
+        if (! (network instanceof QuicClusterNetwork quicNetwork)) {
+            return;
+        }
+        var peers = quicNetwork.connectedPeers();
+        if (peers.isEmpty()) {
+            LOG.debug("rediscoverQuicPeersOnLeaderTakeover: no connected QUIC peers — nothing to rediscover");
+            return;
+        }
+        LOG.info("rediscoverQuicPeersOnLeaderTakeover: leader takeover detected — re-firing onPeerConnected for {} connected QUIC peer(s) to repopulate NodeLifecycleKey entries missed during the previous leader's tenure",
+                 peers.size());
+        peers.forEach(membershipFsm::onPeerConnected);
     }
 
     private static void onLeaderChangeForPublisher(LeaderNotification.LeaderChange change,
