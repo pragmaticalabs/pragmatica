@@ -23,12 +23,21 @@ final class BlankLineRules {
 
     /// Two members pack tightly together (no blank line) iff:
     /// - Both are simple declarations (no body, no annotation), AND
-    /// - Both share the same `static` modifier status.
+    /// - Both share the same `static` modifier status, AND
+    /// - If both are static, neither has an initializer with a multi-line value
+    ///   (text-block-style); single-line static const fields pack with one another
+    ///   even though they have initializers (the BlankLines.java convention).
     private static boolean canPackTogether(Cursor current, Cursor previous) {
         if (!isSimpleNoBodyDeclaration(current) || !isSimpleNoBodyDeclaration(previous)) {
             return false;
         }
-        return isStaticField(current) == isStaticField(previous);
+        if (isStaticField(current) != isStaticField(previous)) {
+            return false;
+        }
+        if (isStaticField(current) && (hasMultilineValue(current) || hasMultilineValue(previous))) {
+            return false;
+        }
+        return true;
     }
 
     /// A simple declaration: ends with semicolon, no block body, AND no annotation.
@@ -38,6 +47,20 @@ final class BlankLineRules {
         }
         var trimmed = text(member).trim();
         return trimmed.endsWith(";") && !trimmed.contains("{");
+    }
+
+    /// True if any token's text contains a `\n` (e.g. text blocks, multi-line strings) —
+    /// these decorate "fat" declarations whose siblings get blank separation.
+    private static boolean hasMultilineValue(Cursor member) {
+        if (!(member instanceof Cursor.Branch br)) {
+            return false;
+        }
+        var tokens = br.cst().tokens();
+        for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            if (tokens.textAt(t).toString().indexOf('\n') >= 0) return true;
+        }
+        return false;
     }
 
     /// True if the member contains a `static` modifier token.

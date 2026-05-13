@@ -593,11 +593,12 @@ final class FlowPrinter {
                 for (int i = 0; i < stmts.size(); i++) {
                     var stmt = stmts.get(i);
                     // Blank line before a final return/throw when the block has at least
-                    // one simple (non-block) prior statement. A method body of only an
-                    // `if`/`try`/`while` + `return` packs tight; assignments/var-decls +
-                    // return get separated.
+                    // one simple (non-block) prior statement AND that prior statement is
+                    // visually packed on a single source line. A method body of only an
+                    // `if`/`try`/`while` + `return` packs tight; multi-line text-block
+                    // assignments visually separate themselves and need no blank.
                     if (!isLambdaBody && i >= 1 && i == stmts.size() - 1 && isReturnOrThrowStmt(stmt) && !hasLeadingComment(stmt)
-                        && hasSimplePriorStmt(stmts, i)) {
+                        && hasSimpleSingleLinePriorStmt(stmts, i)) {
                         newline();
                     }
                     // Blank line around block-shaped stmts (if/try/while/...) when the
@@ -649,6 +650,20 @@ final class FlowPrinter {
     private static boolean hasSimplePriorStmt(List<Cursor> stmts, int returnIdx) {
         for (int i = 0; i < returnIdx; i++) {
             if (!isBlockShapedStmt(stmts.get(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// True if any simple prior stmt (non-block) sits on a single source line. Multi-line
+    /// simple stmts (e.g. `var x = """text block""";`) visually separate themselves and
+    /// don't require a blank line before the final return.
+    private boolean hasSimpleSingleLinePriorStmt(List<Cursor> stmts, int returnIdx) {
+        for (int i = 0; i < returnIdx; i++) {
+            var s = stmts.get(i);
+            if (isBlockShapedStmt(s)) continue;
+            if (s instanceof Cursor.Branch br && isOnSingleSourceLine(br)) {
                 return true;
             }
         }
@@ -1842,11 +1857,11 @@ final class FlowPrinter {
         return false;
     }
 
-    /// True iff the previously emitted `-`/`+` is in a unary-operator position. Looks
-    /// backwards from the operator in the output buffer, skipping a single space, to find
-    /// the preceding non-space character. If that char is a unary-context char
-    /// (`(`, `,`, `=`, `<`, `?`, `:`, `{`, `;`, `\n`, a binary-op char, or the end of a
-    /// unary-context keyword like `return`/`throw`/etc.), the operator is unary.
+    /// True iff the previously emitted `-`/`+` is in a unary-operator position where the
+    /// goldens render with NO trailing space. Per the live goldens this applies only to
+    /// keyword-prefixed contexts (`return -x`, `throw -1`) and parenthesised/comma contexts
+    /// (`f(-x)`, `f(a, -b)`). Note: `x = -1` is rendered with a space in goldens
+    /// (`x = - 1`), so this method must return false there.
     private boolean isUnaryPosition() {
         if (measuringMode || output.length() < 2) {
             return false;
@@ -1859,16 +1874,12 @@ final class FlowPrinter {
             return true;
         }
         char before = output.charAt(beforeIdx);
-        if (before == '(' || before == ',' || before == '=' || before == '<'
-            || before == '?' || before == ':' || before == '{' || before == ';'
-            || before == '\n' || before == '&' || before == '|' || before == '^'
-            || before == '*' || before == '/' || before == '%' || before == '!'
-            || before == '~' || before == '-' || before == '+') {
+        if (before == '(' || before == ',') {
             return true;
         }
         // If the preceding token is a unary-context keyword (return/throw/case/...),
-        // SPACE_AFTER_KEYWORDS would have triggered the space — and lastWord is still
-        // that keyword (operator tokens don't reset lastWord).
+        // SPACE_AFTER_KEYWORDS would have triggered the space — lastWord is still that
+        // keyword (operator tokens don't reset lastWord).
         return SPACE_AFTER_KEYWORDS.contains(lastWord);
     }
 
