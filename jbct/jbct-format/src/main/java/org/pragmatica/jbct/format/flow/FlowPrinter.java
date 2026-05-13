@@ -184,6 +184,7 @@ final class FlowPrinter {
             case RESOURCE_SPEC -> printResourceSpec(br);
             case TERNARY -> printTernary(br);
             case ADDITIVE -> printAdditive(br);
+            case LOG_AND -> printLogAnd(br);
             case TYPE_ARGS -> printTypeArgs(br);
             case TYPE_PARAMS -> printTypeParams(br);
             case METHOD_DECL -> printMethodDecl(br);
@@ -1678,6 +1679,50 @@ final class FlowPrinter {
         });
     }
 
+    /// Print a `LOG_AND` (`&&`) chain. In TAIL contexts (return/throw/lambda body),
+    /// always break — each `&&` lands on a new line aligned to the first operand. In
+    /// non-tail contexts (assignment RHS, args, switch case), render inline.
+    private void printLogAnd(Cursor.Branch logAnd) {
+        boolean hasOperator = false;
+        var tokens = logAnd.cst().tokens();
+        for (int t = logAnd.firstTokenIdx(); t <= logAnd.lastTokenIdx(); t++) {
+            if (tokens.isTrivia(t)) continue;
+            if ("&&".equals(tokens.textAt(t).toString())) { hasOperator = true; break; }
+        }
+        if (measuringMode
+            || alignment.isInInlineExpression()
+            || !alignment.isInTailContext()
+            || !hasOperator) {
+            walkTokensWith(logAnd, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
+            return;
+        }
+        // Multi-line: break before each `&&` aligned to the first operand's column.
+        // currentColumn at entry sits before any pending auto-space; add 1 if the next
+        // emit would auto-space (e.g. after `return`).
+        int alignCol = currentColumn + (needsSpaceBefore("x") ? 1 : 0);
+        boolean[] firstPrinted = {false};
+        walkTokensWith(logAnd, new TokenWalker() {
+            @Override
+            public void onChild(Cursor c) {
+                printNodeContent(c);
+                firstPrinted[0] = true;
+            }
+            @Override
+            public void onToken(int kind, String text) {
+                if ("&&".equals(text) && firstPrinted[0]) {
+                    newline();
+                    printAlignedTo(alignCol);
+                    emit("&& ");
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
+    }
+
     private boolean containsStringLit(Cursor node) {
         return text(node).contains("\"");
     }
@@ -1703,6 +1748,7 @@ final class FlowPrinter {
                     case POST_OP -> printPostOp(br);
                     case TERNARY -> printTernary(br);
                     case ADDITIVE -> printAdditive(br);
+            case LOG_AND -> printLogAnd(br);
                     case PARAMS -> printParams(br);
                     case RECORD_COMPONENTS -> printRecordComponents(br);
                     case TYPE_ARGS -> printTypeArgs(br);
