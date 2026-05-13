@@ -748,7 +748,11 @@ final class FlowPrinter {
             newline();
             for (var rule : rules) {
                 printIndent();
-                printNodeContent(rule);
+                // Switch case bodies render inline regardless of width — wrap in an
+                // inline-expression scope so chain/additive/etc. break logic stays inline.
+                try (var inlineScope = alignment.enterInlineExpression()) {
+                    printNodeContent(rule);
+                }
                 newline();
             }
         }
@@ -1602,12 +1606,21 @@ final class FlowPrinter {
             return;
         }
 
-        // Multi-line: break before string-literal operands.
+        // Multi-line: break before string-literal operands. Suppress breaking inside
+        // switch case expressions — goldens render those inline regardless of width.
+        if (alignment.isInInlineExpression()) {
+            walkTokensWith(additive, new TokenWalker() {
+                @Override public void onChild(Cursor c) { printNodeContent(c); }
+                @Override public void onToken(int kind, String text) { emitToken(text); }
+            });
+            return;
+        }
         var kids = additive.children().toList();
         int alignCol = currentColumn;
-        var operandInfo = new IdentityHashMap<Cursor, OperandInfo>();
+        // Key by firstTokenIdx — Cursor identity is unstable across children() calls.
+        var operandInfo = new HashMap<Integer, OperandInfo>();
         for (var child : kids) {
-            operandInfo.put(child, new OperandInfo(startsWithStringLit(child), measureWidth(child)));
+            operandInfo.put(child.firstTokenIdx(), new OperandInfo(startsWithStringLit(child), measureWidth(child)));
         }
 
         boolean[] firstPrinted = {false};
@@ -1616,10 +1629,12 @@ final class FlowPrinter {
             @Override
             public void onChild(Cursor child) {
                 if (pendingPlus[0]) {
-                    var info = operandInfo.get(child);
+                    var info = operandInfo.get(child.firstTokenIdx());
                     boolean startsWithStr = info != null && info.startsWithString();
-                    int opWidth = info != null ? info.width() : 0;
-                    if (startsWithStr && firstPrinted[0] && currentColumn + 3 + opWidth > config.maxLineLength()) {
+                    if (startsWithStr && firstPrinted[0]) {
+                        // Multi-line additive: every `+` followed by a string-literal
+                        // operand breaks onto its own line (the goldens render each
+                        // continuation aligned under the first operand).
                         newline();
                         printAlignedTo(alignCol);
                         emit("+ ");
