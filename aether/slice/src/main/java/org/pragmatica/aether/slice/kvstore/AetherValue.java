@@ -1444,6 +1444,89 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
+    /// RC1 Step 1 — cluster-scoped replicated event log value.
+    ///
+    /// Replicated via Rabia (KV-Store). One value per `(epoch, seq)` key. `nodeId` is the
+    /// originator (the node whose code emitted the event); for transport-derived events
+    /// (e.g., `PeerJoined`) only the LEADER publishes, so the leader's id is the originator.
+    ///
+    /// `at` is an HLC timestamp for human-readable timeline reconstruction and cross-cluster
+    /// diagnostics. Ordering uses the key's `(epoch, seq)`, NOT `at` — sidesteps OB1
+    /// receive-time races.
+    ///
+    /// `version` is the wire-format schema version (LAST-position default = 1) — follows the
+    /// same pattern as `NodeLifecycleValue` for forward/backward compatibility.
+    record ClusterEventValue(HlcTimestamp at,
+                              EventType type,
+                              Severity severity,
+                              String nodeId,
+                              String message,
+                              java.util.Map<String, String> metadata,
+                              byte version) implements AetherValue {
+        public static final byte CURRENT_VERSION = 1;
+
+        public ClusterEventValue {
+            if (at == null) {at = HlcTimestamp.ZERO;}
+            if (nodeId == null) {nodeId = "";}
+            if (message == null) {message = "";}
+            if (metadata == null) {metadata = java.util.Map.of();} else {metadata = java.util.Map.copyOf(metadata);}
+        }
+
+        public ClusterEventValue(HlcTimestamp at,
+                                 EventType type,
+                                 Severity severity,
+                                 String nodeId,
+                                 String message,
+                                 java.util.Map<String, String> metadata) {
+            this(at, type, severity, nodeId, message, metadata, CURRENT_VERSION);
+        }
+
+        public static ClusterEventValue clusterEventValue(HlcTimestamp at,
+                                                          EventType type,
+                                                          Severity severity,
+                                                          String nodeId,
+                                                          String message,
+                                                          java.util.Map<String, String> metadata) {
+            return new ClusterEventValue(at, type, severity, nodeId, message, metadata, CURRENT_VERSION);
+        }
+
+        /// Canonical cluster-event taxonomy. Mirrors `ClusterEvent.EventType` in `aether/node`
+        /// (the node module also re-exports these via a type-alias for API stability).
+        @Codec public enum EventType {
+            NODE_JOINED,
+            NODE_LEFT,
+            NODE_FAILED,
+            LEADER_ELECTED,
+            LEADER_LOST,
+            QUORUM_ESTABLISHED,
+            QUORUM_LOST,
+            DEPLOYMENT_STARTED,
+            DEPLOYMENT_COMPLETED,
+            DEPLOYMENT_FAILED,
+            SCALE_UP,
+            SCALE_DOWN,
+            SLICE_FAILURE,
+            CONNECTION_ESTABLISHED,
+            CONNECTION_FAILED,
+            COMMUNITY_SCALE_REQUEST,
+            COMMUNITY_METRICS_SNAPSHOT,
+            ACCESS_DENIED,
+            NODE_LIFECYCLE_CHANGED,
+            CONFIG_CHANGED,
+            BACKUP_CREATED,
+            BACKUP_RESTORED,
+            BLUEPRINT_DEPLOYED,
+            BLUEPRINT_DELETED,
+            GENERATION_CHANGED
+        }
+
+        @Codec public enum Severity {
+            INFO,
+            WARNING,
+            CRITICAL
+        }
+    }
+
     record SpokesmanValue(List<String> communities,
                           Epoch assignedEpoch,
                           HlcTimestamp assignedAt,

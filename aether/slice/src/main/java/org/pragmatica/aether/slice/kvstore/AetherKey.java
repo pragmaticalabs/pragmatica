@@ -1334,4 +1334,42 @@ import static org.pragmatica.lang.Result.success;
             return Number.parseInt(parts[2]).map(partition -> new ConsumerGroupKey(parts[0], parts[1], partition));
         }
     }
+
+    Fn1<Cause, String> CLUSTER_EVENT_LOG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-event-log key format: %s");
+
+    /// RC1 Step 1 — cluster-scoped replicated event log key.
+    ///
+    /// `(epoch, seq)` is the Rabia-committed pair that gives strict total order across the
+    /// cluster without HLC ties. Total order is established by the commit, not the HLC stamp
+    /// inside the value — sidesteps the OB1 receive-time race where two events POSTed to two
+    /// nodes within the same wall-clock tick could otherwise interleave differently per node.
+    ///
+    /// `epoch` is also the sweep unit: `ClusterEventLogSweeper` deletes all keys with
+    /// `epoch < currentEpoch - retainedEpochs` in a single pass. See spec §3.6.
+    record ClusterEventLogKey(long epoch, long seq) implements AetherKey {
+        private static final String PREFIX = "cluster-event-log/";
+
+        @Override public String asString() {
+            return PREFIX + epoch + "/" + seq;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static ClusterEventLogKey clusterEventLogKey(long epoch, long seq) {
+            return new ClusterEventLogKey(epoch, seq);
+        }
+
+        public static Result<ClusterEventLogKey> clusterEventLogKey(String key) {
+            if (!key.startsWith(PREFIX)) {return CLUSTER_EVENT_LOG_KEY_FORMAT_ERROR.apply(key).result();}
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {return CLUSTER_EVENT_LOG_KEY_FORMAT_ERROR.apply(key)
+                                                                                                                                            .result();}
+            return Result.all(Number.parseLong(content.substring(0, slashIndex)),
+                              Number.parseLong(content.substring(slashIndex + 1)))
+            .map(ClusterEventLogKey::new);
+        }
+    }
 }

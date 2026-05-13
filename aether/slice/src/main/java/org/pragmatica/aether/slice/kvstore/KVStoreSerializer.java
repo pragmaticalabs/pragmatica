@@ -170,6 +170,7 @@ import static org.pragmatica.lang.Result.success;
             case ProvisioningSlotKey _ -> "provisioning-slot";
             case GenerationSnapshotKey _ -> "generation-snapshot";
             case ClusterPhaseKey _ -> "cluster-phase";
+            case ClusterEventLogKey _ -> "cluster-event-log";
         };
     }
 
@@ -238,6 +239,7 @@ import static org.pragmatica.lang.Result.success;
             case ProvisioningSlotValue v -> serializeProvisioningSlot(v);
             case GenerationSnapshotValue _ -> "";
             case ClusterPhaseValue v -> v.phase().name();
+            case ClusterEventValue _ -> "";
         };
     }
 

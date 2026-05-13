@@ -7,6 +7,8 @@ package org.pragmatica.aether.node;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
+import org.pragmatica.aether.api.ClusterEventLogPublisher;
+import org.pragmatica.aether.api.ClusterEventLogSweeper;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
@@ -1012,8 +1014,27 @@ public interface AetherNode extends ManageableNode {
                                                                                               invocationMetrics,
                                                                                               minuteAggregator);
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
+        // RC1 Step 1 — cluster-scoped replicated event log wiring.
+        //
+        // `eventLogPublisher` writes each producer-emitted event into the replicated KV
+        // `(ClusterEventLogKey, ClusterEventValue)` family. Rabia commit order is the
+        // canonical total order. `eventLogSweeper` GCs old events on the leader, gated on
+        // `TopologyObserver.inQuorum()` so a minority-side leader cannot delete events the
+        // majority retains.
+        var eventLogPublisher = ClusterEventLogPublisher.clusterEventLogPublisher(config.self(),
+                                                                                    hlcClockEarly,
+                                                                                    rabiaTermSupplier::get,
+                                                                                    clusterCommandApplier);
         var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
-                                                                            clusterTopologyManager.observer()::clusterSize);
+                                                                            clusterTopologyManager.observer()::clusterSize,
+                                                                            eventLogPublisher,
+                                                                            isLeaderSupplier);
+        var eventLogSweeper = ClusterEventLogSweeper.clusterEventLogSweeper(kvStore::snapshot,
+                                                                              isLeaderSupplier,
+                                                                              ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
+                                                                              rabiaTermSupplier::get,
+                                                                              clusterCommandApplier);
+        eventLogSweeper.start();
         var ttmManager = TTMManager.ttmManager(config.ttm(),
                                                minuteAggregator,
                                                controller::configuration)
@@ -2403,6 +2424,12 @@ public interface AetherNode extends ManageableNode {
                                                             httpRouteRegistry::onNodeRoutesRemove)
                                                   .onRemove(AetherKey.NodeRoutesKey.class,
                                                             appHttpServer::onNodeRoutesRemove);
+        // RC1 Step 1 — materialised view subscriber. Every Rabia-committed `ClusterEventLogKey`
+        // put — whether it arrives via fresh consensus or cold-boot snapshot replay — flows
+        // through `onClusterEventLogPut` and into the local RingBuffer projection that
+        // `/api/events` reads. The `isReplay` flag inside the aggregator suppresses downstream
+        // sink fan-out during the snapshot-replay window.
+        kvRouterBuilder.onPut(AetherKey.ClusterEventLogKey.class, eventAggregator::onClusterEventLogPut);
         loadBalancerManager.onPresent(lbm -> kvRouterBuilder.onPut(AetherKey.NodeRoutesKey.class, lbm::onNodeRoutesPut)
                                                                   .onRemove(AetherKey.NodeRoutesKey.class,
                                                                             lbm::onNodeRoutesRemove));
