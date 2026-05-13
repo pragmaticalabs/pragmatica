@@ -17,6 +17,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 
@@ -49,6 +50,22 @@ import java.util.function.Supplier;
 /// - **HEALTHY in SWIM with KV `JOINING`** → still `JOINING` (operator/slot-provisioning
 ///   intermediate state — KV wins until JOINING is cleared by a downstream actor).
 ///
+/// **RC1 Step 5 — quorum gating.** External readers of the view (HTTP routes, dashboard, CTM)
+/// MUST NOT trust local SWIM + KV data while the node is non-quorate, otherwise a minority
+/// partition would claim ON_DUTY peers it cannot actually direct work to. The
+/// [#strict(SwimHealthProvider, LifecycleKvReader, BooleanSupplier)] factory enforces this:
+/// when `inQuorum.getAsBoolean()` is `false`, every derived `ON_DUTY` status is rewritten to
+/// `UNTRACKED`, `onDutyPeers()` returns the empty list, and `statusOf(peer)` returns
+/// `UNTRACKED`. The quorum bit MUST be the same `AtomicBoolean` `TopologyObserver` mutates;
+/// duplicating the source re-creates exactly the drift bug this gating exists to eliminate.
+///
+/// Bootstrap-internal callers that drive the cluster TOWARD quorum (notably the
+/// `TopologyObserver` quorum-evaluation loop itself) must use
+/// [#bootstrapAware(SwimHealthProvider, LifecycleKvReader)] instead, otherwise the
+/// quorum-bit will never flip from `false` (no peers visible → no decisions emitted → no
+/// quorum). The two-factory split makes the bypass auditable: grep for `bootstrapAware(` to
+/// find every site that elects to read minority-state.
+///
 /// **Invariants preserved:**
 ///
 /// - Single-writer for operator-declared states: only the leader writes
@@ -62,6 +79,11 @@ import java.util.function.Supplier;
 /// - Reconstructibility (I1, spec): the view is a pure function of two inputs that are
 ///   themselves reconstructible (SWIM state from gossip, KV from consensus replication).
 public interface MembershipView {
+    /// Always-quorate quorum supplier — equivalent to `bootstrapAware`. Used internally by
+    /// the legacy [#membershipView(SwimHealthProvider, LifecycleKvReader)] factory and by
+    /// tests that exercise pure-function semantics without quorum gating.
+    BooleanSupplier ALWAYS_IN_QUORUM = () -> true;
+
     /// Snapshot of the cluster's effective membership at call time.
     ///
     /// Result is a flat map keyed by `NodeId`. Peers absent from the map are equivalent to
@@ -110,13 +132,43 @@ public interface MembershipView {
         FAILED_DRAIN
     }
 
-    /// Wiring-time factory. Pure function: callers provide a `SwimHealthProvider` (typically
-    /// the local SWIM detector) and a `LifecycleKvReader` (typically the consensus
-    /// KVStore). The returned view recomputes on every `snapshot()` call — no caching, no
-    /// background refresh, no event subscriptions. This is the I7 (event-driven) realisation
-    /// of "membership derives from inputs at read time."
+    /// **Strict factory — RC1 Step 5 default for every external reader.**
+    ///
+    /// Routes, dashboard, CTM, `/api/cluster/onduty` — all consume this variant. When the
+    /// `inQuorum` supplier reports `false` the view forces every derived `ON_DUTY` to
+    /// `UNTRACKED`: a minority-side node MUST NOT advertise on-duty peers that the majority
+    /// has likely re-routed work past. Operator-declared override states (JOINING /
+    /// DRAINING / DECOMMISSIONED / FAILED_DRAIN) survive — those reflect consensus-replicated
+    /// operator intent that remains true regardless of the local node's quorum status.
+    ///
+    /// `inQuorum` MUST be backed by the same `AtomicBoolean` that `TopologyObserver` mutates
+    /// (exposed via `TopologyObserver#inQuorum()`). Constructing a second quorum source here
+    /// re-creates the bug class this gating exists to eliminate.
+    static MembershipView strict(SwimHealthProvider swimHealth,
+                                 LifecycleKvReader lifecycleKv,
+                                 BooleanSupplier inQuorum) {
+        return new MembershipViewImpl(swimHealth, lifecycleKv, inQuorum);
+    }
+
+    /// **Bootstrap-aware factory — internal use only.**
+    ///
+    /// Returns content (including ON_DUTY) even when non-quorate. Required by callers that
+    /// drive the cluster TOWARD quorum: if `TopologyObserver` consults a strict view to
+    /// decide whether to emit `MembershipDecision` deltas, the view returns empty → no
+    /// deltas → quorum never establishes (deadlock). The bootstrap-aware variant breaks
+    /// that circular dependency at the cost of leaking minority-state to its internal
+    /// caller. Grep for `bootstrapAware(` to audit every site that opts out of quorum
+    /// gating.
+    static MembershipView bootstrapAware(SwimHealthProvider swimHealth, LifecycleKvReader lifecycleKv) {
+        return new MembershipViewImpl(swimHealth, lifecycleKv, ALWAYS_IN_QUORUM);
+    }
+
+    /// Legacy factory preserved for pure-function tests and the H.2b-era
+    /// `ClusterPhaseView.legacyView` adapter. Equivalent to
+    /// [#bootstrapAware(SwimHealthProvider, LifecycleKvReader)]: returns content regardless
+    /// of quorum status. New external callers MUST use [#strict] instead.
     static MembershipView membershipView(SwimHealthProvider swimHealth, LifecycleKvReader lifecycleKv) {
-        return new MembershipViewImpl(swimHealth, lifecycleKv);
+        return bootstrapAware(swimHealth, lifecycleKv);
     }
 
     @FunctionalInterface
@@ -130,35 +182,44 @@ public interface MembershipView {
     final class MembershipViewImpl implements MembershipView {
         private final SwimHealthProvider swimHealth;
         private final LifecycleKvReader lifecycleKv;
+        private final BooleanSupplier inQuorum;
 
-        private MembershipViewImpl(SwimHealthProvider swimHealth, LifecycleKvReader lifecycleKv) {
+        private MembershipViewImpl(SwimHealthProvider swimHealth,
+                                   LifecycleKvReader lifecycleKv,
+                                   BooleanSupplier inQuorum) {
             this.swimHealth = swimHealth;
             this.lifecycleKv = lifecycleKv;
+            this.inQuorum = inQuorum;
         }
 
         @Override
         public Map<NodeId, MemberView> snapshot() {
+            var quorate = inQuorum.getAsBoolean();
             var lifecycleByPeer = collectLifecycleEntries();
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var view = new HashMap<NodeId, MemberView>();
-            lifecycleByPeer.forEach((peer, lifecycle) -> view.put(peer, deriveFromKv(peer, lifecycle, swim)));
+            lifecycleByPeer.forEach((peer, lifecycle) -> view.put(peer, deriveFromKv(peer, lifecycle, swim, quorate)));
             swim.peerHealth().forEach((peer, swimState) -> view.computeIfAbsent(peer,
-                                                                                 _ -> deriveFromSwimOnly(peer, swimState)));
+                                                                                 _ -> deriveFromSwimOnly(peer, swimState, quorate)));
             return Map.copyOf(view);
         }
 
         @Override
         public Option<MemberView> get(NodeId peer) {
+            var quorate = inQuorum.getAsBoolean();
             var lifecycle = readLifecycleFor(peer);
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
-            if (lifecycle.isPresent()) {
-                return Option.some(deriveFromKv(peer, lifecycle.unwrap(), swim));
+            return lifecycle.map(value -> deriveFromKv(peer, value, swim, quorate))
+                            .orElse(() -> swimOnlyEntry(peer, swimState, quorate));
+        }
+
+        private static Option<MemberView> swimOnlyEntry(NodeId peer, SwimHealth swimState, boolean quorate) {
+            if (swimState != SwimHealth.HEALTHY) {
+                return Option.none();
             }
-            if (swimState == SwimHealth.HEALTHY) {
-                return Option.some(new MemberView(peer, MemberStatus.ON_DUTY, swimState, Option.none()));
-            }
-            return Option.none();
+            var status = quorate ? MemberStatus.ON_DUTY : MemberStatus.UNTRACKED;
+            return Option.some(new MemberView(peer, status, swimState, Option.none()));
         }
 
         private Option<NodeLifecycleValue> readLifecycleFor(NodeId peer) {
@@ -177,24 +238,29 @@ public interface MembershipView {
             return map;
         }
 
-        private static MemberView deriveFromKv(NodeId peer, NodeLifecycleValue lifecycle, HealthSnapshot swim) {
+        private static MemberView deriveFromKv(NodeId peer,
+                                               NodeLifecycleValue lifecycle,
+                                               HealthSnapshot swim,
+                                               boolean quorate) {
             var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
-            var status = mapKvState(lifecycle.state(), swimState);
+            var status = mapKvState(lifecycle.state(), swimState, quorate);
             return new MemberView(peer, status, swimState, Option.some(lifecycle));
         }
 
-        private static MemberView deriveFromSwimOnly(NodeId peer, SwimHealth swimState) {
-            var status = swimState == SwimHealth.HEALTHY ? MemberStatus.ON_DUTY : MemberStatus.UNTRACKED;
+        private static MemberView deriveFromSwimOnly(NodeId peer, SwimHealth swimState, boolean quorate) {
+            var status = swimState == SwimHealth.HEALTHY && quorate
+                         ? MemberStatus.ON_DUTY
+                         : MemberStatus.UNTRACKED;
             return new MemberView(peer, status, swimState, Option.none());
         }
 
-        private static MemberStatus mapKvState(NodeLifecycleState kvState, SwimHealth swimState) {
+        private static MemberStatus mapKvState(NodeLifecycleState kvState, SwimHealth swimState, boolean quorate) {
             return switch (kvState) {
                 case JOINING -> MemberStatus.JOINING;
                 case DRAINING, SHUTTING_DOWN -> MemberStatus.DRAINING;
                 case DECOMMISSIONED -> MemberStatus.DECOMMISSIONED;
                 case FAILED_DRAIN -> MemberStatus.FAILED_DRAIN;
-                case ON_DUTY -> swimState == SwimHealth.HEALTHY
+                case ON_DUTY -> swimState == SwimHealth.HEALTHY && quorate
                                 ? MemberStatus.ON_DUTY
                                 : MemberStatus.UNTRACKED;
             };

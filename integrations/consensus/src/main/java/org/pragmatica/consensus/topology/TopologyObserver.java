@@ -31,6 +31,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 
 import org.slf4j.Logger;
@@ -105,6 +106,19 @@ public interface TopologyObserver extends TopologyManager {
     /// that the snapshot-backed path is actually engaged.
     default EffectiveMembership effectiveMembership() {
         return new EffectiveMembership(coreNodes(), EffectiveMembership.Source.LEGACY);
+    }
+
+    /// Accessor for the observer's quorum-established bit (RC1 Step 5).
+    ///
+    /// `MembershipView.strict(...)` consults this supplier on every read to decide whether
+    /// the local node may legitimately advertise `ON_DUTY` peers. The base interface
+    /// returns a permanently-true supplier so legacy / test-only `TopologyManager` stubs
+    /// remain trivially quorate; the production observer overrides to expose the same
+    /// `AtomicBoolean` mutated by `evaluateQuorumState`. Duplicating the source elsewhere
+    /// is exactly the drift bug `MembershipView` Step 5 exists to eliminate — always wire
+    /// through this accessor.
+    default BooleanSupplier inQuorum() {
+        return () -> true;
     }
 
     /// Default predicate used when no KV-backed lifecycle reader is wired (tests and
@@ -389,6 +403,14 @@ public interface TopologyObserver extends TopologyManager {
                                                                            EffectiveMembership.Source.SNAPSHOT))
                                      .or(() -> new EffectiveMembership(Collections.unmodifiableSet(coreNodeIds),
                                                                         EffectiveMembership.Source.LEGACY));
+            }
+
+            /// RC1 Step 5: expose the same `AtomicBoolean` mutated by `evaluateQuorumState`.
+            /// External readers thread this through `MembershipView.strict(...)` so a
+            /// minority-side node stops advertising `ON_DUTY` peers it cannot serve.
+            @Override
+            public BooleanSupplier inQuorum() {
+                return quorumEstablished::get;
             }
 
             @Override

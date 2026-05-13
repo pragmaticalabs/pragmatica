@@ -750,7 +750,12 @@ public interface AetherNode extends ManageableNode {
                 // reached `NodeLifecycle.ACTIVE` and is serving requests; if the view is
                 // queried during a self-shutdown window, KV operator overrides like
                 // `DRAINING`/`DECOMMISSIONED` still take precedence per the view rules).
-                return org.pragmatica.aether.deployment.membership.view.MembershipView.membershipView(
+                //
+                // RC1 Step 5: external accessor uses the strict factory so a minority-side
+                // node reports empty `onDutyPeers()` instead of leaking local-SWIM-derived
+                // claims that the majority has likely re-routed past. Quorum source is the
+                // TopologyObserver's `quorumEstablished` AtomicBoolean — single truth.
+                return org.pragmatica.aether.deployment.membership.view.MembershipView.strict(
                         () -> {
                             var swim = swimHealthDetector.currentHealth()
                                                           .or(() -> org.pragmatica.swim.HealthSnapshot.healthSnapshot(java.util.Map.of()));
@@ -760,7 +765,8 @@ public interface AetherNode extends ManageableNode {
                         },
                         consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                                      AetherValue.NodeLifecycleValue.class,
-                                                     consumer));
+                                                     consumer),
+                        ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum());
             }
         }
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode);
@@ -909,7 +915,12 @@ public interface AetherNode extends ManageableNode {
         // downstream of this declaration — use a forward AtomicReference and lazy-resolve at
         // each compute() call. Until the detector lands the view falls back to KV-only.
         var swimDetectorRefForPhase = new AtomicReference<CoreSwimHealthDetector>();
-        ClusterPhaseView.MembershipViewReader phaseMembershipReader = () -> MembershipView.membershipView(
+        // RC1 Step 5: ClusterPhase consumes the strict view so a minority-side partition
+        // computes COLD_BOOT/RECOVERING (zero on-duty peers under the quorum threshold)
+        // instead of falsely claiming NORMAL from local-SWIM observations. Same quorum
+        // source as `aetherNode.membershipView()`.
+        var phaseInQuorum = ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum();
+        ClusterPhaseView.MembershipViewReader phaseMembershipReader = () -> MembershipView.strict(
                 () -> {
                     // H.2 (spec §H): mirror `aetherNode.membershipView()` self-injection — SWIM
                     // doesn't observe self, but the phase calculation must count this node
@@ -923,7 +934,8 @@ public interface AetherNode extends ManageableNode {
                 },
                 consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                              AetherValue.NodeLifecycleValue.class,
-                                             consumer));
+                                             consumer),
+                phaseInQuorum);
         var clusterPhaseView = ClusterPhaseView.clusterPhaseView(config.topology().coreNodes().size(),
                                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
                                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
