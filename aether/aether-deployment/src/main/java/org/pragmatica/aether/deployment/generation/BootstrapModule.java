@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -57,6 +58,12 @@ public interface BootstrapModule {
     @Contract void onLeaderLost();
     @Contract void retryIfNeeded();
     @Contract BootstrapModule onBootstrapCommitted(Runnable callback);
+    /// RC1 Step 2: tail `MembershipDecision` events from `TopologyObserver` so the
+    /// bootstrap module retries its core-partition seeding whenever the membership
+    /// projection changes. The committed-atom KV snapshot supplier remains the source
+    /// for actual seeding work — the subscription is the dirty signal
+    /// (snapshot-then-tail).
+    @Contract void onMembershipDecision(MembershipDecision decision);
 
     static BootstrapModule bootstrapModule(BooleanSupplier isLeaderSupplier,
                                            Supplier<Long> rabiaTermSupplier,
@@ -133,6 +140,11 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract@Override public BootstrapModule onBootstrapCommitted(Runnable callback) {
         bootstrapCommittedCallback.set(callback);
         return this;
+    }
+
+    @Contract@Override public void onMembershipDecision(MembershipDecision decision) {
+        log.debug("BootstrapModule received {}", decision);
+        retryIfNeeded();
     }
 
     @Contract private void performLeaderChangeBootstrap(ClusterGenerationSnapshot seeded) {

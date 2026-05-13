@@ -174,8 +174,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
         switch (decision){
-            case MembershipDecision.NodeRemoved(var removedNode, _) -> removeNode(removedNode);
-            case MembershipDecision.NodeDecommissioned(var decommissioned, _) -> removeNode(decommissioned);
+            case MembershipDecision.NodeRemoved(var removedNode, _, _, _) -> removeNode(removedNode);
+            case MembershipDecision.NodeDecommissioned(var decommissioned, _, _, _) -> removeNode(decommissioned);
             default -> {}
         }
     }

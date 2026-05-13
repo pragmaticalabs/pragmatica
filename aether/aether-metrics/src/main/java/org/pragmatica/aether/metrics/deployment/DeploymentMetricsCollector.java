@@ -197,8 +197,8 @@ class DeploymentMetricsCollectorImpl implements DeploymentMetricsCollector {
 
     @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
         switch (decision){
-            case MembershipDecision.NodeRemoved(NodeId removedNode, _) -> removeMetricsForNode(removedNode);
-            case MembershipDecision.NodeDecommissioned(NodeId decommissioned, _) -> removeMetricsForNode(decommissioned);
+            case MembershipDecision.NodeRemoved(NodeId removedNode, _, _, _) -> removeMetricsForNode(removedNode);
+            case MembershipDecision.NodeDecommissioned(NodeId decommissioned, _, _, _) -> removeMetricsForNode(decommissioned);
             default -> {}
         }
     }

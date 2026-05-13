@@ -5,6 +5,7 @@ import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -33,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -126,27 +128,32 @@ public interface TopologyObserver extends TopologyManager {
     /// DECOMMISSIONED, so `initReconcile` reseeds every `config.coreNodes()` entry.
     Predicate<NodeId> NEVER_DECOMMISSIONED = _ -> false;
 
+    /// RC1 Step 2 default HLC supplier used by legacy factory overloads / tests that
+    /// haven't wired `HlcClock`. Always returns `HlcTimestamp.ZERO` — subscribers that
+    /// dedup on `stampedAt` must treat ZERO as a cold-replay sentinel.
+    Supplier<HlcTimestamp> ZERO_HLC_SUPPLIER = () -> HlcTimestamp.ZERO;
+
     static Result<TopologyObserver> topologyObserver(TopologyConfig config, MessageRouter router) {
-        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop(), NEVER_DECOMMISSIONED);
+        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop(), NEVER_DECOMMISSIONED, ZERO_HLC_SUPPLIER);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      TimeSource timeSource) {
-        return topologyObserver(config, router, timeSource, GenerationSnapshotSource.noop(), NEVER_DECOMMISSIONED);
+        return topologyObserver(config, router, timeSource, GenerationSnapshotSource.noop(), NEVER_DECOMMISSIONED, ZERO_HLC_SUPPLIER);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      GenerationSnapshotSource snapshotSource) {
-        return topologyObserver(config, router, TimeSource.system(), snapshotSource, NEVER_DECOMMISSIONED);
+        return topologyObserver(config, router, TimeSource.system(), snapshotSource, NEVER_DECOMMISSIONED, ZERO_HLC_SUPPLIER);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      TimeSource timeSource,
                                                      GenerationSnapshotSource snapshotSource) {
-        return topologyObserver(config, router, timeSource, snapshotSource, NEVER_DECOMMISSIONED);
+        return topologyObserver(config, router, timeSource, snapshotSource, NEVER_DECOMMISSIONED, ZERO_HLC_SUPPLIER);
     }
 
     /// Production overload: accepts a `isDecommissioned` predicate driven by the local
@@ -158,14 +165,14 @@ public interface TopologyObserver extends TopologyManager {
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      Predicate<NodeId> isDecommissioned) {
-        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop(), isDecommissioned);
+        return topologyObserver(config, router, TimeSource.system(), GenerationSnapshotSource.noop(), isDecommissioned, ZERO_HLC_SUPPLIER);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
                                                      MessageRouter router,
                                                      GenerationSnapshotSource snapshotSource,
                                                      Predicate<NodeId> isDecommissioned) {
-        return topologyObserver(config, router, TimeSource.system(), snapshotSource, isDecommissioned);
+        return topologyObserver(config, router, TimeSource.system(), snapshotSource, isDecommissioned, ZERO_HLC_SUPPLIER);
     }
 
     static Result<TopologyObserver> topologyObserver(TopologyConfig config,
@@ -173,6 +180,26 @@ public interface TopologyObserver extends TopologyManager {
                                                      TimeSource timeSource,
                                                      GenerationSnapshotSource snapshotSource,
                                                      Predicate<NodeId> isDecommissioned) {
+        return topologyObserver(config, router, timeSource, snapshotSource, isDecommissioned, ZERO_HLC_SUPPLIER);
+    }
+
+    /// RC1 Step 2 production overload: accepts an `hlcSupplier` that stamps every
+    /// `MembershipDecision` emission with the current local HLC timestamp. Subscribers
+    /// rely on `stampedAt` for cross-node causal ordering.
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     GenerationSnapshotSource snapshotSource,
+                                                     Predicate<NodeId> isDecommissioned,
+                                                     Supplier<HlcTimestamp> hlcSupplier) {
+        return topologyObserver(config, router, TimeSource.system(), snapshotSource, isDecommissioned, hlcSupplier);
+    }
+
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     TimeSource timeSource,
+                                                     GenerationSnapshotSource snapshotSource,
+                                                     Predicate<NodeId> isDecommissioned,
+                                                     Supplier<HlcTimestamp> hlcSupplier) {
         // Validate that self node is in coreNodes - required for self() to work
         var selfInCoreNodes = config.coreNodes()
                                     .stream()
@@ -197,7 +224,9 @@ public interface TopologyObserver extends TopologyManager {
                        Object lifecycleLock,
                        AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
                        AtomicReference<Set<NodeId>> previousCoreMembers,
-                       AtomicReference<TopologyMode> mode) implements TopologyObserver {
+                       AtomicReference<Map<NodeId, LifecycleState>> previousLifecycleStates,
+                       AtomicReference<TopologyMode> mode,
+                       Supplier<HlcTimestamp> hlcSupplier) implements TopologyObserver {
             private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
@@ -216,7 +245,9 @@ public interface TopologyObserver extends TopologyManager {
                     Object lifecycleLock,
                     AtomicReference<Option<ScheduledFuture<?>>> reconcileFuture,
                     AtomicReference<Set<NodeId>> previousCoreMembers,
-                    AtomicReference<TopologyMode> mode) {
+                    AtomicReference<Map<NodeId, LifecycleState>> previousLifecycleStates,
+                    AtomicReference<TopologyMode> mode,
+                    Supplier<HlcTimestamp> hlcSupplier) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -233,7 +264,9 @@ public interface TopologyObserver extends TopologyManager {
                 this.lifecycleLock = lifecycleLock;
                 this.reconcileFuture = reconcileFuture;
                 this.previousCoreMembers = previousCoreMembers;
+                this.previousLifecycleStates = previousLifecycleStates;
                 this.mode = mode;
+                this.hlcSupplier = hlcSupplier;
                 this.effectiveClusterSize.set(config.clusterSize());
                 // Mirror the `initReconcile` filter: a peer the cluster has durably retired
                 // (KV NodeLifecycleValue.DECOMMISSIONED) must not be reconstructed from
@@ -567,9 +600,22 @@ public interface TopologyObserver extends TopologyManager {
             /// SWIM / QUIC / KV-lifecycle paths that previously amplified a single peer
             /// departure into N+ redundant routings.
             ///
-            /// `MembershipDecision.NodeDecommissioned` is reserved for the lifecycle path
-            /// that projects from the `NodeLifecycleKey` DECOMMISSIONED entry; not emitted
-            /// here.
+            /// RC1 Step 2 adds a parallel lifecycle-projection walker that diffs the per-
+            /// node `LifecycleState` map of the previous snapshot against the current and
+            /// emits one `NodeJoining` / `NodeDraining` / `NodeFailedDrain` / `NodeDecommissioned`
+            /// per transition into the corresponding terminal state. Every emission is
+            /// stamped with `(logIndex = snapshotSource.observedRabiaTerm(), stampedAt =
+            /// hlcSupplier.get())`. The `observedRabiaTerm()` is the closest committed-index
+            /// proxy available at this layer; subscribers that need a strict per-event
+            /// commit index should use the consensus log directly. When the observer cannot
+            /// reconstruct a committed term (early bootstrap / unwired tests) the term is
+            /// `0L`; subscribers dedup with the documented `-1L` sentinel guard.
+            ///
+            /// RC1 Step 5 quorum gate: minority-side observers MUST NOT emit
+            /// `MembershipDecision` — they cannot make cluster-canonical statements about
+            /// membership. The `inQuorum()` check suppresses emission in this window so a
+            /// non-quorate leader does not advertise membership decisions the majority has
+            /// not committed.
             ///
             /// No-op when the snapshot source is empty (legacy / cold-boot windows). The
             /// `started` gate is enforced upstream by `evaluateQuorumState` so the router
@@ -579,11 +625,25 @@ public interface TopologyObserver extends TopologyManager {
                 if (view.isEmpty()) {
                     return;
                 }
+                // RC1 Step 5: minority-side observers cannot make cluster-canonical
+                // statements. Suppress emission when non-quorate so a partitioned leader
+                // does not advertise decisions the majority has not committed.
+                if (!quorumEstablished.get()) {
+                    return;
+                }
                 // Hook the BOOTING -> NORMAL transition into the snapshot-arrival path so
                 // it is checked on every snapshot publish, not only when external readers
                 // happen to query a count.
                 maybeTransitionToNormal(view.unwrap());
-                var current = view.unwrap().coreMemberIds();
+                var snapshot = view.unwrap();
+                var logIndex = snapshotSource.observedRabiaTerm();
+                var stampedAt = hlcSupplier.get();
+                publishCoreMembershipDelta(snapshot, logIndex, stampedAt);
+                publishLifecycleDelta(snapshot, logIndex, stampedAt);
+            }
+
+            private void publishCoreMembershipDelta(MembershipView snapshot, long logIndex, HlcTimestamp stampedAt) {
+                var current = snapshot.coreMemberIds();
                 var previous = previousCoreMembers.getAndSet(Set.copyOf(current));
                 var delta = MembershipDelta.diff(previous, current);
                 if (delta.isEmpty()) {
@@ -591,14 +651,79 @@ public interface TopologyObserver extends TopologyManager {
                 }
                 var topology = List.copyOf(current);
                 for (var added : delta.added()) {
-                    log.debug("Membership delta: NodeJoined {}", added);
-                    router.route(MembershipDecision.nodeJoined(added, topology));
+                    log.debug("Membership delta: NodeJoined {} (logIndex={}, stampedAt={})", added, logIndex, stampedAt);
+                    router.route(MembershipDecision.nodeJoined(added, topology, logIndex, stampedAt));
                 }
                 for (var removed : delta.removed()) {
-                    log.debug("Membership delta: NodeRemoved {}", removed);
-                    router.route(MembershipDecision.nodeRemoved(removed, topology));
+                    log.debug("Membership delta: NodeRemoved {} (logIndex={}, stampedAt={})", removed, logIndex, stampedAt);
+                    router.route(MembershipDecision.nodeRemoved(removed, topology, logIndex, stampedAt));
                 }
             }
+
+            /// Lifecycle-projection walker (RC1 Step 2). Diffs the previous snapshot's
+            /// lifecycle map against the current and routes one `MembershipDecision`
+            /// variant per terminal-state transition. Only the four terminal states the
+            /// downstream subscribers care about are emitted:
+            ///
+            ///   JOINING        -> `NodeJoining`
+            ///   DRAINING       -> `NodeDraining`
+            ///   FAILED_DRAIN   -> `NodeFailedDrain`
+            ///   DECOMMISSIONED -> `NodeDecommissioned`
+            ///
+            /// `ON_DUTY` is intentionally not emitted here — the `NodeJoined` core-member-
+            /// delta path already covers the steady-state "node admitted" signal. Repeating
+            /// it as a lifecycle event would re-introduce the dual-channel conflation that
+            /// Step 2 exists to eliminate.
+            private void publishLifecycleDelta(MembershipView snapshot, long logIndex, HlcTimestamp stampedAt) {
+                var current = snapshot.lifecycleStates();
+                var previous = previousLifecycleStates.getAndSet(Map.copyOf(current));
+                if (current.isEmpty() && previous.isEmpty()) {
+                    return;
+                }
+                var topology = List.copyOf(snapshot.coreMemberIds());
+                for (var entry : current.entrySet()) {
+                    var nodeId = entry.getKey();
+                    var newState = entry.getValue();
+                    var prevState = previous.get(nodeId);
+                    if (newState == prevState) {
+                        continue;
+                    }
+                    routeLifecycleTransition(nodeId, newState, topology, logIndex, stampedAt);
+                }
+            }
+
+            private void routeLifecycleTransition(NodeId nodeId,
+                                                  LifecycleState newState,
+                                                  List<NodeId> topology,
+                                                  long logIndex,
+                                                  HlcTimestamp stampedAt) {
+                switch (newState) {
+                    case JOINING -> {
+                        log.debug("Lifecycle delta: NodeJoining {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
+                        router.route(MembershipDecision.nodeJoining(nodeId, topology, logIndex, stampedAt));
+                    }
+                    case DRAINING -> {
+                        log.debug("Lifecycle delta: NodeDraining {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
+                        router.route(MembershipDecision.nodeDraining(nodeId, topology, logIndex, stampedAt));
+                    }
+                    case FAILED_DRAIN -> {
+                        log.debug("Lifecycle delta: NodeFailedDrain {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
+                        router.route(MembershipDecision.nodeFailedDrain(nodeId, topology, logIndex, stampedAt));
+                    }
+                    case DECOMMISSIONED -> {
+                        log.debug("Lifecycle delta: NodeDecommissioned {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
+                        router.route(MembershipDecision.nodeDecommissioned(nodeId, topology, logIndex, stampedAt));
+                    }
+                    case SHUTTING_DOWN -> {
+                        log.debug("Lifecycle delta: NodeShuttingDown {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
+                        router.route(MembershipDecision.nodeShuttingDown(nodeId, topology, logIndex, stampedAt));
+                    }
+                    case ON_DUTY -> {
+                        // Covered by the core-membership delta NodeJoined path.
+                    }
+                }
+            }
+
 
             /// Healthy active peers, excluding self. Used by the canonical quorum-state
             /// publisher: `+ 1` is added back to include self, matching the formula
@@ -779,6 +904,8 @@ public interface TopologyObserver extends TopologyManager {
                                           new Object(),
                                           new AtomicReference<>(Option.none()),
                                           new AtomicReference<>(Set.<NodeId>of()),
-                                          new AtomicReference<>(TopologyMode.BOOTING)));
+                                          new AtomicReference<>(Map.<NodeId, LifecycleState>of()),
+                                          new AtomicReference<>(TopologyMode.BOOTING),
+                                          hlcSupplier));
     }
 }

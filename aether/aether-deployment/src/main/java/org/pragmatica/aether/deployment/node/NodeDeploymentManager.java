@@ -25,7 +25,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -36,6 +35,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -72,7 +72,7 @@ public interface NodeDeploymentManager {
     }
 
     @Contract@MessageReceiver void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
-    @Contract@MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
+    @Contract@MessageReceiver void onMembershipDecision(MembershipDecision decision);
     @Contract@MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
     @Contract@MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
     @Contract@MessageReceiver void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
@@ -462,11 +462,13 @@ public interface NodeDeploymentManager {
             return ctx.isActive();
         }
 
-        @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
-            var key = valuePut.cause().key();
-            var value = valuePut.cause().value();
-            if (key.nodeId().equals(ctx.self()) && value.state() == NodeLifecycleState.SHUTTING_DOWN) {
-                log.warn("Node {} received SHUTTING_DOWN lifecycle state — initiating shutdown",
+        /// RC1 Step 2: replaces the retired `onNodeLifecyclePut`. The self-shutdown
+        /// trigger fires when `TopologyObserver` projects a SHUTTING_DOWN lifecycle
+        /// transition for this node — see `MembershipDecision.NodeShuttingDown`.
+        @Contract@Override public void onMembershipDecision(MembershipDecision decision) {
+            if (decision instanceof MembershipDecision.NodeShuttingDown nodeShuttingDown
+                && nodeShuttingDown.nodeId().equals(ctx.self())) {
+                log.warn("Node {} received SHUTTING_DOWN lifecycle decision — initiating shutdown",
                          ctx.self().id());
                 ctx.shutdownCallback().onPresent(Runnable::run);
             }

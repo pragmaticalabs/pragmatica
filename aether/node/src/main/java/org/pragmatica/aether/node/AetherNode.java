@@ -218,6 +218,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -1366,6 +1367,14 @@ public interface AetherNode extends ManageableNode {
                                                                                       leaderTerm,
                                                                                       generationSnapshotPublisher,
                                                                                       bootstrapModule)));
+        // RC1 Step 2: snapshot-then-tail wiring. GSP and BootstrapModule already
+        // consume the current KV snapshot via their `kvSnapshotSupplier` at the time
+        // of `projectFromKv` / `projectFromCommittedAtoms`. The routes attached below
+        // provide the "tail" — every MembershipDecision variant routed by TopologyObserver
+        // (single canonical emitter) signals dirty + bootstrap retry, replacing the
+        // retired dual-channel `onPut(NodeLifecycleKey)` listener.
+        wireMembershipDecisionTail(allEntries, generationSnapshotPublisher::onMembershipDecision);
+        wireMembershipDecisionTail(allEntries, bootstrapModule::onMembershipDecision);
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
                                                  .onPut(AetherKey.GovernorAnnouncementKey.class,
                                                         _ -> generationSnapshotPublisher.markDirty())
@@ -1378,11 +1387,11 @@ public interface AetherNode extends ManageableNode {
                                                         })
                                                  .onRemove(AetherKey.SpokesmanKey.class,
                                                            _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.NodeLifecycleKey.class,
-                                                        _ -> {
-                                                            generationSnapshotPublisher.markDirty();
-                                                            bootstrapModule.retryIfNeeded();
-                                                        })
+                                                 // RC1 Step 2: NodeLifecycleKey put listener retired — the equivalent
+                                                 // dirty signal arrives via the MembershipDecision route attached
+                                                 // below (TopologyObserver's lifecycle-projection walker emits one
+                                                 // decision per lifecycle transition, with snapshot-then-tail
+                                                 // semantics for GSP + BootstrapModule).
                                                  .onRemove(AetherKey.NodeLifecycleKey.class,
                                                            _ -> generationSnapshotPublisher.markDirty())
                                                  .onPut(AetherKey.ClusterConfigKey.class,
@@ -1804,6 +1813,22 @@ public interface AetherNode extends ManageableNode {
             case "manual" -> AetherValue.ProvisioningSource.MANUAL;
             default -> AetherValue.ProvisioningSource.UNKNOWN;
         };
+    }
+
+    /// RC1 Step 2: register a `MembershipDecision` subscriber against every concrete variant
+    /// individually because `MessageRouter` dispatches by exact class match. Subscribers that
+    /// want "every membership decision" must enumerate all six variants — this helper centralises
+    /// the enumeration so adding a new variant in the future is a single-site change.
+    @Contract
+    private static void wireMembershipDecisionTail(List<MessageRouter.Entry<?>> allEntries,
+                                                   Consumer<MembershipDecision> subscriber) {
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class, subscriber::accept));
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class, subscriber::accept));
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class, subscriber::accept));
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoining.class, subscriber::accept));
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDraining.class, subscriber::accept));
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeFailedDrain.class, subscriber::accept));
+        allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class, subscriber::accept));
     }
 
     private static void attachQuicDisconnectListener(ClusterNetwork network,
@@ -2321,12 +2346,13 @@ public interface AetherNode extends ManageableNode {
                                                          scheduledTaskStateRegistry::onStatePut)
                                                   .onRemove(AetherKey.ScheduledTaskStateKey.class,
                                                             scheduledTaskStateRegistry::onStateRemove)
-                                                  .onPut(AetherKey.NodeLifecycleKey.class,
-                                                         nodeDeploymentManager::onNodeLifecyclePut)
+                                                  // RC1 Step 2: NodeDeploymentManager + ClusterDeploymentManager no longer
+                                                  // subscribe to NodeLifecycleKey directly — they consume
+                                                  // MembershipDecision via the routes added near the
+                                                  // generationSnapshotPublisher wiring above. ClusterEventAggregator
+                                                  // (Step 1 scope) and MembershipFsm remain as KV-put consumers.
                                                   .onRemove(AetherKey.NodeLifecycleKey.class,
                                                             nodeDeploymentManager::onNodeLifecycleRemove)
-                                                  .onPut(AetherKey.NodeLifecycleKey.class,
-                                                         clusterDeploymentManager::onNodeLifecyclePut)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          eventAggregator::onNodeLifecyclePut)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
@@ -2426,6 +2452,21 @@ public interface AetherNode extends ManageableNode {
                                               clusterDeploymentManager::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               clusterDeploymentManager::onMembershipDecision));
+        // RC1 Step 2: route the new lifecycle-projection variants into CDM so the
+        // dropped `onNodeLifecyclePut` listener's work (drain eviction, etc.) is
+        // covered through the single canonical MembershipDecision channel.
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoining.class,
+                                              clusterDeploymentManager::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDraining.class,
+                                              clusterDeploymentManager::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeFailedDrain.class,
+                                              clusterDeploymentManager::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class,
+                                              clusterDeploymentManager::onMembershipDecision));
+        // RC1 Step 2: NodeDeploymentManager consumes MembershipDecision.NodeShuttingDown
+        // to trigger self-shutdown after its `onNodeLifecyclePut` listener was retired.
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class,
+                                              nodeDeploymentManager::onMembershipDecision));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                               clusterDeploymentManager::onSelfShutdown));

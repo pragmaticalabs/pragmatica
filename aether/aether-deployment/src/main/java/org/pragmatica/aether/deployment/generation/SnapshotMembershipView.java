@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.LifecycleState;
 import org.pragmatica.consensus.topology.MembershipView;
 
 import java.util.Map;
@@ -49,5 +50,26 @@ record SnapshotMembershipView(Map<NodeId, CoreMember> coreMembers,
                                    .filter(entry -> entry.getValue().provisioningSource() == ProvisioningSource.CTM)
                                    .map(Map.Entry::getKey)
                                    .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// RC1 Step 2: project the slice-level `NodeLifecycleState` into the consensus-layer
+    /// `LifecycleState` enum so `TopologyObserver.publishMembershipDeltas` (which lives in
+    /// `integrations/consensus` and cannot depend on `aether/slice` types) can diff the
+    /// per-snapshot lifecycle map and emit the three new `MembershipDecision` variants.
+    @Override public Map<NodeId, LifecycleState> lifecycleStates() {
+        return coreMembers.entrySet().stream()
+                                   .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                                          entry -> translateLifecycle(entry.getValue().lifecycle())));
+    }
+
+    private static LifecycleState translateLifecycle(NodeLifecycleState state) {
+        return switch (state) {
+            case JOINING -> LifecycleState.JOINING;
+            case ON_DUTY -> LifecycleState.ON_DUTY;
+            case DRAINING -> LifecycleState.DRAINING;
+            case DECOMMISSIONED -> LifecycleState.DECOMMISSIONED;
+            case SHUTTING_DOWN -> LifecycleState.SHUTTING_DOWN;
+            case FAILED_DRAIN -> LifecycleState.FAILED_DRAIN;
+        };
     }
 }

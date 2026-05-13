@@ -389,9 +389,9 @@ public sealed interface TaskAssignmentCoordinator {
 
         @Contract@Override public void onMembershipDecision(MembershipDecision decision) {
             switch (decision){
-                case NodeRemoved(NodeId node, var topology) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node, topology));
-                case NodeDecommissioned(NodeId node, var topology) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
-                                                                                                                topology));
+                case NodeRemoved(NodeId node, var topology, _, _) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node, topology));
+                case NodeDecommissioned(NodeId node, var topology, _, _) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
+                                                                                                                      topology));
                 default -> {}
             }
         }

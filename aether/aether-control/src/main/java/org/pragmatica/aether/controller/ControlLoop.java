@@ -143,9 +143,16 @@ import org.slf4j.LoggerFactory;
 
         @Override public void onMembershipDecision(MembershipDecision decision) {
             switch (decision){
-                case NodeJoined(_, var newTopology) -> ctx.setTopology(newTopology);
-                case NodeRemoved(_, var newTopology) -> ctx.setTopology(newTopology);
-                case NodeDecommissioned(_, var newTopology) -> ctx.setTopology(newTopology);
+                case NodeJoined(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
+                case NodeRemoved(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
+                case NodeDecommissioned(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
+                // RC1 Step 2 lifecycle-projection variants: ControlLoop reacts to terminal
+                // topology changes only — JOINING / DRAINING / FAILED_DRAIN /
+                // SHUTTING_DOWN do not adjust the committed core set.
+                case MembershipDecision.NodeJoining _,
+                     MembershipDecision.NodeDraining _,
+                     MembershipDecision.NodeFailedDrain _,
+                     MembershipDecision.NodeShuttingDown _ -> {}
             }
         }
 

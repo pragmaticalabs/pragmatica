@@ -265,6 +265,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             case NodeJoined joined -> handleNodeJoined(joined);
             case NodeRemoved removed -> handleNodeRemoved(removed);
             case NodeDecommissioned decommissioned -> handleNodeDecommissioned(decommissioned);
+            // RC1 Step 2 lifecycle-projection variants: CTM owns provisioning lifecycle
+            // through DRAINING / FAILED_DRAIN / SHUTTING_DOWN via internal pending-removal
+            // accounting; it does not need the consensus-projected event for these
+            // transitions because the slot-state is authoritative locally. JOINING is
+            // observed separately via the slot-state ladder.
+            case MembershipDecision.NodeJoining _,
+                 MembershipDecision.NodeDraining _,
+                 MembershipDecision.NodeFailedDrain _,
+                 MembershipDecision.NodeShuttingDown _ -> {}
         }
     }
 

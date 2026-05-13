@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
@@ -136,6 +137,26 @@ class BootstrapModuleTest {
             // After loss + regain, the module must apply again (bootstrapComplete reset).
             fixture.module.onLeaderGained();
             assertThat(fixture.cluster.batches.size()).isGreaterThan(batchesAfterFirstGain);
+        }
+    }
+
+    /// RC1 Step 2: the snapshot-then-tail subscriber entry point. Every variant must be
+    /// accepted by the canonical `MembershipDecision` channel without throwing.
+    @Nested
+    class MembershipDecisionTail {
+        @Test
+        void onMembershipDecision_postLeaderGained_acceptsAllSevenVariants() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.module.onLeaderGained();
+            // All seven variants must be accepted by the tail subscriber.
+            fixture.module.onMembershipDecision(MembershipDecision.nodeJoined(SELF, List.of(SELF)));
+            fixture.module.onMembershipDecision(MembershipDecision.nodeRemoved(SELF, List.of(SELF)));
+            fixture.module.onMembershipDecision(MembershipDecision.nodeDecommissioned(SELF, List.of(SELF)));
+            fixture.module.onMembershipDecision(MembershipDecision.nodeJoining(SELF, List.of(SELF)));
+            fixture.module.onMembershipDecision(MembershipDecision.nodeDraining(SELF, List.of(SELF)));
+            fixture.module.onMembershipDecision(MembershipDecision.nodeFailedDrain(SELF, List.of(SELF)));
+            fixture.module.onMembershipDecision(MembershipDecision.nodeShuttingDown(SELF, List.of(SELF)));
+            // No exception thrown — single canonical channel coverage is the assertion.
         }
     }
 

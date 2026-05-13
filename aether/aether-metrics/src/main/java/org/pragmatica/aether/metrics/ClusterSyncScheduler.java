@@ -189,9 +189,17 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
 
     @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
         switch (decision){
-            case NodeJoined(_, List<NodeId> newTopology) -> context.setTopology(newTopology);
-            case NodeRemoved(NodeId removed, List<NodeId> newTopology) -> handleNodeRemoved(removed, newTopology);
-            case NodeDecommissioned(NodeId removed, List<NodeId> newTopology) -> handleNodeRemoved(removed, newTopology);
+            case NodeJoined(_, List<NodeId> newTopology, _, _) -> context.setTopology(newTopology);
+            case NodeRemoved(NodeId removed, List<NodeId> newTopology, _, _) -> handleNodeRemoved(removed, newTopology);
+            case NodeDecommissioned(NodeId removed, List<NodeId> newTopology, _, _) -> handleNodeRemoved(removed, newTopology);
+            // RC1 Step 2 lifecycle-projection variants: ClusterSyncScheduler tracks
+            // post-commit topology only — JOINING / DRAINING / FAILED_DRAIN /
+            // SHUTTING_DOWN are pre-terminal transitions that do not change the active
+            // topology shape.
+            case MembershipDecision.NodeJoining _,
+                 MembershipDecision.NodeDraining _,
+                 MembershipDecision.NodeFailedDrain _,
+                 MembershipDecision.NodeShuttingDown _ -> {}
         }
     }
 
