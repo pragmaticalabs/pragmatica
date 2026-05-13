@@ -62,6 +62,7 @@ import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1012,11 +1013,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Contract private void provisionSingleNode() {
-        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
-                                                   "default",
-                                                   "core",
-                                                   buildProvisionContext())
-        .unwrap();
+        var context = buildProvisionContext();
+        if (context.peers().or("").isEmpty()) {
+            log.warn("CTM: provisioning deferred — no healthy peers visible in observed topology (peers list empty). "
+                     + "Spawning a new node without PEERS would cold-boot it in isolation and corrupt cluster views; "
+                     + "next reconcile tick will retry once at least one peer is HEALTHY.");
+            recordProvisioningFailure("no healthy peers visible in topology");
+            return;
+        }
+        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", context).unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
         var localTag = NodeId.nodeId("ctm-inflight-" + System.nanoTime() + "-" + Math.abs(spec.hashCode())).unwrap();
         var slotKvKey = ProvisioningSlotKey.provisioningSlotKey(java.util.UUID.randomUUID().toString());
@@ -1080,11 +1085,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private ProvisionContext buildProvisionContext() {
-        var peers = observer.topology().stream()
-                                     .filter(this::isHealthyPeer)
-                                     .flatMap(nodeId -> observer.get(nodeId).stream())
-                                     .map(ClusterTopologyManagerRecord::formatPeerEntry)
-                                     .collect(Collectors.joining(","));
+        // Always include self as a fallback bootstrap target — the CTM runs on the leader, which
+        // is alive by definition. Without this fallback, transient "no healthy remote peers"
+        // windows during chaos (e.g., a leader has just decommissioned several SWIM-faulty peers
+        // and the surviving peer's health entries are still propagating) would yield an empty
+        // PEERS list, the new container would cold-boot in isolation, and `DockerComputeProvider.
+        // preflightCheck` would defensively reject it. Including self guarantees the replacement
+        // can always reach at least one live consensus peer.
+        var selfEntry = formatPeerEntry(observer.self());
+        var remoteEntries = observer.topology().stream()
+                                                 .filter(this::isHealthyPeer)
+                                                 .flatMap(nodeId -> observer.get(nodeId).stream())
+                                                 .map(ClusterTopologyManagerRecord::formatPeerEntry)
+                                                 .filter(entry -> !entry.equals(selfEntry));
+        var peers = Stream.concat(Stream.of(selfEntry), remoteEntries)
+                                                  .collect(Collectors.joining(","));
         var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName)
                                                  .or("");
         return ProvisionContext.provisionContext(clusterName,

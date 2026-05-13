@@ -47,12 +47,45 @@ import static org.pragmatica.lang.Result.success;
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
+        var preflight = preflightCheck(spec);
+        if (preflight.isPresent()) {
+            return preflight.unwrap();
+        }
         var nodeIndex = nodeCounter.getAndIncrement();
         var containerName = buildContainerName(spec, nodeIndex);
         var command = buildRunCommand(spec, containerName, nodeIndex);
         return runner.execute(command).map(containerId -> toProvisionedInfo(containerId, containerName, spec, nodeIndex))
                              .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause))
                              .mapError(DockerComputeProvider::toProvisionError);
+    }
+
+    /// Pre-flight validation: CTM auto-heal provisioning REQUIRES a non-empty `peers`
+    /// bootstrap list (3-part `nodeId:host:port` entries) so the new container can join
+    /// the existing consensus group. Without peers the container starts with `PEERS=`
+    /// (empty), the JVM cold-boots in isolation (`quorate=false, leaderId=none`), and
+    /// nginx upstream resolvers in front of the cluster may route real management
+    /// traffic to it — returning empty `/api/nodes/lifecycle` snapshots and corrupting
+    /// the test view of cluster state.
+    ///
+    /// Bootstrap-time provisioning (`provisionedBy=bootstrap`) is intentionally exempt
+    /// — the first node legitimately has no peers and is responsible for forming the
+    /// cluster. Future enhancement: also fail when `bootstrap` is observed after
+    /// cluster formation (would require a "formed" signal threaded through here).
+    private Option<Promise<InstanceInfo>> preflightCheck(ProvisionSpec spec) {
+        var ctx = spec.context();
+        if (!ProvisionContext.PROVISIONED_BY_CTM.equals(ctx.provisionedBy())) {
+            return Option.empty();
+        }
+        if (!ctx.peers().or("").isEmpty()) {
+            return Option.empty();
+        }
+        var message = "DockerComputeProvider.provision rejected: CTM auto-heal requires a non-empty PEERS bootstrap list, "
+                       + "but the provided ProvisionContext.peers is absent or empty. Refusing to spawn an orphan container "
+                       + "that would cold-boot in isolation and corrupt cluster management views. "
+                       + "Caller (ClusterTopologyManager) should defer provisioning until at least one healthy peer is "
+                       + "visible in the observed topology.";
+        log.warn(message);
+        return Option.some(EnvironmentError.provisionFailed(new IllegalStateException(message)).promise());
     }
 
     /// Rollback hook for partial provisions. When `docker run -d` fails after the container
