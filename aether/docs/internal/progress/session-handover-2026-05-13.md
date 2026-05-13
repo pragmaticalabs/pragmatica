@@ -120,19 +120,26 @@ Four read paths now consult `MembershipView`:
 
 `MembershipView` was extended to inject `self → HEALTHY` since SWIM does not observe self.
 
-### H.3 / H.4 — Stop SWIM writes, delete defences (in `a946d7ad8`, **partially reverted in `ad77db32a`**)
+### H.3 / H.4 — Make SWIM cells nop, delete the chaos-revival defences (in `a946d7ad8`)
 
-H.3 made SWIM-driven reducer cells `nop`. H.4 removed the now-unreachable refractory, tombstone, swimDriven-discriminator, and revival cell.
+H.3 (intent): make SWIM-driven reducer cells `nop`. H.4: remove the refractory, tombstone, swimDriven-discriminator, and revival cell that defended against the storm.
 
-Result of testing: gate `00-smoke/Slices_provisioned` failed because the deployment manager and several other consumers read `NodeLifecycleKey` directly (not via the view) — without ON_DUTY entries in KV, they think no nodes are eligible to host slice instances.
+Testing surfaced an architectural conflation in the original H proposal: KV `NodeLifecycleKey` puts serve TWO purposes:
+1. **Query state** — "what's this peer's current lifecycle?"
+2. **Event signal** — many subsystems subscribe to `ValuePut<NodeLifecycleKey, ...>` notifications (`ClusterDeploymentManager`, `NodeDeploymentManager`, `ClusterDeploymentState`, `GenerationSnapshotPublisher`, `BootstrapModule`, `DecommissionedAtomGc`). Without a write, no event fires.
 
-**H.5 partial revert (`ad77db32a`):**
-- SWIM-driven `(Untracked, SwimHealthy) → ON_DUTY` write: **restored**.
-- SWIM-driven `(OnDuty, SwimFaulty|SwimDeparted) → DECOMMISSIONED` write: **restored**.
-- SWIM-driven `(Joining, SwimDeparted) → DECOMMISSIONED` write: **restored**.
-- `(Decommissioned, SwimHealthy) → ON_DUTY` revival cell: **PERMANENTLY NOP** (the chaos cure — the structural change that matters).
+Stopping SWIM-driven writes broke purpose #2 — the slice deployment manager never received the "node became ON_DUTY" event, so `00-smoke/Slices_provisioned` failed because no nodes were considered eligible.
 
-Net architectural state: `MembershipView` is the canonical reader for new code paths, and the FSM continues to write SWIM-derived `ON_DUTY`/`DECOMMISSIONED` to KV as a "materialized view" for legacy consumers. Both must agree because the view derives consistently from the same two inputs.
+### H.5 — Correct separation of concerns (`ad77db32a`)
+
+`MembershipView` is the canonical answer for purpose #1 (query). KV writes are retained as the event-emission mechanism for purpose #2 (subscribers). These are orthogonal — not back-compat shims:
+
+- SWIM-driven `(Untracked, SwimHealthy) → ON_DUTY` write: **retained as event** (consumers reacting to "peer joined").
+- SWIM-driven `(OnDuty, SwimFaulty|SwimDeparted) → DECOMMISSIONED` write: **retained as event** (consumers reacting to "peer failed").
+- SWIM-driven `(Joining, SwimDeparted) → DECOMMISSIONED` write: **retained** (slot-cleanup observers).
+- `(Decommissioned, SwimHealthy) → ON_DUTY` revival cell: **PERMANENTLY NOP**. This is the only purpose-#1 change that mattered for chaos — and it's structural and permanent.
+
+The architectural insight from H: don't use KV as the QUERY source for "current state" (stale ON_DUTY entries pollute the answer) — use the view. KV writes remain valid as transition events. The previous handover's framing of "eliminate redundant truth stores" was right in spirit but conflated two distinct mechanisms.
 
 ---
 
@@ -230,9 +237,9 @@ Last observed (run-9, partial):
 
 | Risk | Mitigation |
 |---|---|
-| H.5 partial revert means SWIM-driven KV writes still happen — if any future bug re-introduces a revival path, we're back to chaos storm | Test suite `ClusterMembershipReducerTest$DecommissionedRevival.decommissioned_swimHealthy_isNop_hSeriesNoRevival` explicitly asserts revival stays nop. Don't reintroduce. |
-| `Decommissioned.swimDriven` field still on the record but no consumer — confusing surface | Schedule a cleanup commit (low-priority H.6). |
-| Legacy consumers of `NodeLifecycleKey` may diverge from `MembershipView` in edge cases (KV ON_DUTY for SWIM-FAULTY peer) | Migration to view is the long-term answer. Currently only 4 reader paths are switched; the other consumers (slice deployment, metrics, dashboard) see the legacy KV state. |
+| Revival cell is the only permanent H change — if anyone reintroduces a `(DECOMMISSIONED, SwimHealthy) → ON_DUTY` path the chaos storm returns | `ClusterMembershipReducerTest$DecommissionedRevival.decommissioned_swimHealthy_isNop_hSeriesNoRevival` explicitly asserts revival stays nop. Don't reintroduce. |
+| `Decommissioned.swimDriven` field still on the record but no live consumer | Schedule a cleanup commit (low-priority H.6). |
+| Event-subscribing readers (slice deployment, metrics, dashboard) and view-querying readers can race during chaos (KV ON_DUTY exists, SWIM has marked peer faulty, view says UNTRACKED) | The race is bounded by SWIM detection latency (10–15s). Subscribers that need real-time alive-set should query `MembershipView` at decision time rather than caching from the put event. |
 | Per-node alert/trace storage produces flaky integration tests | Not a regression — pre-existing #219. Document in handover; don't block on it. |
 
 ---
@@ -246,7 +253,7 @@ Last observed (run-9, partial):
 | Integration cluster B | 1/6 (chaos blocked at restore_baseline) | **In flight at session end** — chaos suite makes progress past previous blockers; downstream cascade investigations remain |
 | Module tests | 390/390 aether-deployment | **405/405 aether-deployment + 373/373 aether-node** |
 | Production LOC | (pre-session) | **+~1500 / −~550 (net +~950 incl. tests + spec)** |
-| Canonical membership-truth stores | 4 (SWIM, Rabia, KV, FSM shadow) | **1 — `MembershipView` (derives from SWIM ∪ KV-overrides)**; KV writes retained as materialized view for legacy consumers |
+| Canonical membership-truth stores | 4 (SWIM, Rabia, KV, FSM shadow) | **1 — `MembershipView` for QUERIES**; KV writes retained as the **event mechanism** for transition subscribers (different purpose, not duplicate truth) |
 | Chaos revival storm defences | refractory + tombstone + 60s TTL | **revival cell deleted entirely** — no defence needed |
 
 ---
