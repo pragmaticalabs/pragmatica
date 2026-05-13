@@ -212,7 +212,7 @@ Totals: ~1890 prod / ~1900 test LOC. Six PRs. ~5-7 engineering days.
 
 **Closes:** H.5 dual-channel conflation (handover §6 item 4) — completes the H-series direction.
 
-**Mechanism.** Extend `MembershipDecision` sealed interface with three new variants — `NodeJoining`, `NodeDraining`, `NodeFailedDrain` — alongside the existing `NodeJoined`, `NodeRemoved`, `NodeDecommissioned`. All six variants carry new fields:
+**Mechanism.** Extend `MembershipDecision` sealed interface with four new variants — `NodeJoining`, `NodeDraining`, `NodeFailedDrain`, `NodeShuttingDown` — alongside the existing `NodeJoined`, `NodeRemoved`, `NodeDecommissioned`. All seven variants carry new fields:
 
 - `long logIndex` — Rabia commit index of the underlying KV snapshot. Sentinel `-1` indicates cold-replay (no committed index yet; subscriber must not use this for dedup).
 - `HlcTimestamp stampedAt` — from Step 4's `HlcClock`.
@@ -226,13 +226,15 @@ Folding both into a single event family would re-conflate the two; the H-series 
 
 **Why `logIndex = -1` as a sentinel rather than `Option<Long>`.** Subscribers must guard against `-1` (cold replay). `Option<Long>` looks cleaner at the type level but forces every subscriber to handle two cases at every read site. The sentinel pattern matches how `HlcTimestamp.ZERO` is used in the same codebase. Code review verifies the guard pattern at every dedup site.
 
-**`TopologyObserver.publishMembershipDeltas`** (line ~555) becomes the sole emitter. It gains a parallel lifecycle-projection walker that diffs the previous KV lifecycle snapshot against the current and emits the three new variants. Existing emission of `NodeJoined`/`NodeRemoved`/`NodeDecommissioned` is preserved.
+**Why a fourth variant `NodeShuttingDown`.** Initial spec listed three (`NodeJoining`, `NodeDraining`, `NodeFailedDrain`) on the assumption that `SHUTTING_DOWN` could be expressed through `NodeDraining` + a reason field. Implementation surfaced that `NodeDeploymentManager`'s pre-RC1 `onNodeLifecyclePut` listener fired self-shutdown specifically on KV `SHUTTING_DOWN` writes; collapsing it into `NodeDraining` would force every consumer to discriminate by reason at every callsite. A distinct variant keeps sealed-exhaustive switches honest at compile time, matching the spec's structural-non-confusion principle (parent v2 §3.1).
+
+**`TopologyObserver.publishMembershipDeltas`** (line ~555) becomes the sole emitter. It gains a parallel lifecycle-projection walker that diffs the previous KV lifecycle snapshot against the current and emits the four new variants. Existing emission of `NodeJoined`/`NodeRemoved`/`NodeDecommissioned` is preserved.
 
 **Subscriber migration table.**
 
 | Subscriber | Pre-RC1 | Post-RC1 |
 |---|---|---|
-| `ClusterDeploymentManager` | `onMembershipDecision` (line 87) + `onNodeLifecyclePut` (line 89) | `onMembershipDecision` only; switch expanded for 3 new variants |
+| `ClusterDeploymentManager` | `onMembershipDecision` (line 87) + `onNodeLifecyclePut` (line 89) | `onMembershipDecision` only; switch expanded for 4 new variants |
 | `NodeDeploymentManager` | `onNodeLifecyclePut` (line 75) | `onMembershipDecision`; drop KV-put |
 | `ClusterDeploymentState` | FSM input `NodeLifecyclePutReceived` | folds into `MembershipDecisionReceived` |
 | `GenerationSnapshotPublisher` | KV snapshot supplier | `MembershipDecision` subscription (snapshot-then-tail pattern) |
@@ -240,7 +242,7 @@ Folding both into a single event family would re-conflate the two; the H-series 
 
 **Files (prod).**
 
-- `integrations/consensus/src/main/java/org/pragmatica/consensus/topology/MembershipDecision.java` — 3 new variants + `logIndex` + `stampedAt`.
+- `integrations/consensus/src/main/java/org/pragmatica/consensus/topology/MembershipDecision.java` — 4 new variants + `logIndex` + `stampedAt`.
 - `integrations/consensus/src/main/java/org/pragmatica/consensus/topology/TopologyObserver.java` — extend `publishMembershipDeltas`.
 - 5 subscriber files in the migration table above.
 
