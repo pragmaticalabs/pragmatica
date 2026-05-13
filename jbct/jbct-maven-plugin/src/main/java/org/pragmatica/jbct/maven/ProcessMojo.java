@@ -157,20 +157,14 @@ public class ProcessMojo extends AbstractJbctMojo {
                                   AtomicInteger lintErrors,
                                   AtomicInteger lintWarnings,
                                   AtomicInteger lintInfos) {
-        var parseResult = parser.parseWithDiagnostics(source.content());
-        if (!parseResult.isSuccess() || parseResult.node().isEmpty()) {
+        var parseResult = parser.parse(source.content());
+        if (!parseResult.isSuccess()) {
             parseErrors.incrementAndGet();
-            var msg = parseResult.diagnostics()
-                                 .stream()
-                                 .findFirst()
-                                 .map(d -> "%d:%d - %s".formatted(d.span().start().line(),
-                                                                  d.span().start().column(),
-                                                                  d.message()))
-                                 .orElse("Parse error");
-            getLog().error("Parse error in " + file + ": " + msg);
+            parseResult.onFailure(cause ->
+                getLog().error("Parse error in " + file + ": " + cause.message()));
             return;
         }
-        var tree = parseResult.node().unwrap();
+        var tree = parseResult.unwrap();
 
         // Lint first so diagnostics reference the as-authored source.
         var diagnostics = linter.lintParsed(tree, source);
