@@ -775,27 +775,15 @@ final class FlowPrinter {
             // For 3+ dot-method PostOps, keep the first inline and break from second.
             // For 2-link chains that don't fit, break at the first.
             boolean firstMethodCall = methodCallPostOps.size() >= 2;
-            boolean previousWasMultiLineBareInvoke = false;
             for (var postOp : postOps) {
                 boolean isMethodCall = methodCallSet.contains(postOp);
                 if (isMethodCall && !firstMethodCall) {
                     newline();
-                    // If the previous bare invocation had multi-line args,
-                    // align to standard indent instead of chain column
-                    int effectiveAlign = previousWasMultiLineBareInvoke
-                        ? indentLevel * config.indentSize()
-                        : alignColumn;
-                    printAlignedTo(effectiveAlign);
+                    printAlignedTo(scope.nextDotMethodAnchor(indentLevel * config.indentSize()));
                 }
                 int lineBefore = currentLine;
                 printNodeContent(postOp);
-                boolean spannedLines = currentLine != lineBefore;
-                // After a multi-line PostOp from BROKEN ARGS (no lambda inside), the
-                // next dot-method aligns to body-indent — the prior closing `)` sits on
-                // a different visual line than the chain start. When the multi-line span
-                // comes from a LAMBDA BODY inside the PostOp, the next dot-method should
-                // still align to the chain column (Lambdas.java fixture pattern).
-                previousWasMultiLineBareInvoke = spannedLines && !containsLambda(postOp);
+                scope.notePostOpEmitted(currentLine != lineBefore, containsLambda(postOp));
                 if (isMethodCall) {
                     firstMethodCall = false;
                 }
@@ -1242,13 +1230,23 @@ final class FlowPrinter {
     private void printTernary(Cursor.Branch ternary) {
         var ternaryText = text(ternary);
         if (ternaryText.contains("?") && ternaryText.contains(":")) {
-            int alignCol = currentColumn;
+            // Nested ternary inherits its outer's alignCol so all `?` / `:` line up
+            // vertically across nesting levels; a standalone ternary anchors here.
+            // Inheritance is scoped per branch-arm (`enterTernary` only wraps the
+            // descent into the post-`?` / post-`:` child) so sibling ternaries —
+            // e.g. two parenthesized ternaries inside an Additive — do NOT bleed
+            // alignCol across each other.
+            int alignCol = alignment.inTernary()
+                ? alignment.ternaryColumn()
+                : currentColumn;
             boolean[] skipNext = {false};
             walkTokensWith(ternary, new TokenWalker() {
                 @Override
                 public void onChild(Cursor child) {
                     if (skipNext[0]) {
-                        printNodeContent(child);
+                        try (var scope = alignment.enterTernary(alignCol)) {
+                            printNodeContent(child);
+                        }
                         skipNext[0] = false;
                     } else {
                         printNode(child);

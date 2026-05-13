@@ -44,13 +44,13 @@ public class TernaryOperators {
     }
 
     java.util.function.Function<String, String> ternaryInLambda = s -> s.isEmpty()
-                                                                      ? "empty"
-                                                                      : s.toUpperCase();
+                                                                       ? "empty"
+                                                                       : s.toUpperCase();
 
     java.util.List<String> ternaryInStream(java.util.List<String> items) {
         return items.stream().map(s -> s.isEmpty()
-                                      ? "(blank)"
-                                      : s)
+                                       ? "(blank)"
+                                       : s)
                            .toList();
     }
 
