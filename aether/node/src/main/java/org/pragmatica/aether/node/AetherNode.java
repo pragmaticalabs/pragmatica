@@ -743,8 +743,20 @@ public interface AetherNode extends ManageableNode {
 
             @Override
             public org.pragmatica.aether.deployment.membership.view.MembershipView membershipView() {
+                // H.2 (spec §H): SWIM does not observe self — the local detector returns
+                // only remote peers' health. Inject `self → HEALTHY` so the derived view
+                // correctly reports the local node as ON_DUTY (assuming the node has
+                // reached `NodeLifecycle.ACTIVE` and is serving requests; if the view is
+                // queried during a self-shutdown window, KV operator overrides like
+                // `DRAINING`/`DECOMMISSIONED` still take precedence per the view rules).
                 return org.pragmatica.aether.deployment.membership.view.MembershipView.membershipView(
-                        swimHealthDetector::currentHealth,
+                        () -> {
+                            var swim = swimHealthDetector.currentHealth()
+                                                          .or(() -> org.pragmatica.swim.HealthSnapshot.healthSnapshot(java.util.Map.of()));
+                            var merged = new java.util.HashMap<>(swim.peerHealth());
+                            merged.putIfAbsent(config.self(), org.pragmatica.swim.SwimHealth.HEALTHY);
+                            return org.pragmatica.lang.Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
+                        },
                         consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                                      AetherValue.NodeLifecycleValue.class,
                                                      consumer));
@@ -897,8 +909,17 @@ public interface AetherNode extends ManageableNode {
         // each compute() call. Until the detector lands the view falls back to KV-only.
         var swimDetectorRefForPhase = new AtomicReference<CoreSwimHealthDetector>();
         ClusterPhaseView.MembershipViewReader phaseMembershipReader = () -> MembershipView.membershipView(
-                () -> Option.option(swimDetectorRefForPhase.get())
-                            .flatMap(CoreSwimHealthDetector::currentHealth),
+                () -> {
+                    // H.2 (spec §H): mirror `aetherNode.membershipView()` self-injection — SWIM
+                    // doesn't observe self, but the phase calculation must count this node
+                    // toward quorum.
+                    var swimOpt = Option.option(swimDetectorRefForPhase.get())
+                                         .flatMap(CoreSwimHealthDetector::currentHealth);
+                    var swim = swimOpt.or(() -> org.pragmatica.swim.HealthSnapshot.healthSnapshot(java.util.Map.of()));
+                    var merged = new java.util.HashMap<>(swim.peerHealth());
+                    merged.putIfAbsent(config.self(), org.pragmatica.swim.SwimHealth.HEALTHY);
+                    return Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
+                },
                 consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                              AetherValue.NodeLifecycleValue.class,
                                              consumer));

@@ -85,11 +85,13 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
 
     private Outcome applyUntracked(Untracked state, MembershipFsmEvent event) {
         return switch (event){
-            // H.3 (spec §H): SWIM-driven cells are nop. SWIM presence alone is sufficient for
-            // `MembershipView` to report `ON_DUTY`; no KV write is needed. The pre-H model's
-            // `(UNTRACKED, SwimHealthy) → ON_DUTY` write produced the leader-takeover stranded-
-            // peer bug (alive peers never observed by the new leader stayed UNTRACKED in KV).
-            case SwimHealthy _ -> Outcome.nop(state);
+            // H.3 partial revert (2026-05-13): restored `(UNTRACKED, SwimHealthy) → ON_DUTY`
+            // write so downstream consumers reading `NodeLifecycleKey` directly continue to
+            // function. `MembershipView` remains the canonical reader (returns the same
+            // answer either via KV or via SWIM-only derivation). The chaos-revival storm fix
+            // (H.3 + H.4) is preserved by the eliminated `(DECOMMISSIONED, SwimHealthy)`
+            // revival cell — that's what produced the bug, not this UNTRACKED→ON_DUTY path.
+            case SwimHealthy e -> untrackedDirectToOnDuty(state.peer(), e.nowMs());
             case SwimFaulty _ -> Outcome.nop(state);
             case SwimDeparted _ -> Outcome.nop(state);
             case SlotClaimed e -> enterJoining(state.peer(),
@@ -119,18 +121,12 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
 
     private Outcome applyJoining(Joining state, MembershipFsmEvent event) {
         return switch (event){
-            // H.3: `(JOINING, SwimHealthy) → ON_DUTY` is retained — this is the slot-provisioning
-            // completion path (operator-declared CTM slot claim → JOINING → SWIM confirms →
-            // promote to ON_DUTY and clear the slot key). The KV write here is operator-aware,
-            // not SWIM-driven; the slot key removal is the load-bearing part. Pre-H code also
-            // wrote ON_DUTY which `MembershipView` honours (KV `ON_DUTY` + HEALTHY SWIM ⇒
-            // `ON_DUTY` in the view).
+            // H.3 partial revert (2026-05-13): JOINING transitions retained. SWIM-departed
+            // during JOINING writes DECOMMISSIONED + clears slot (operator-aware path —
+            // CTM accounting depends on this).
             case SwimHealthy e -> joiningToOnDuty(state, e.nowMs());
             case SwimFaulty _ -> Outcome.nop(state);
-            // H.3: SWIM-departed during JOINING is a SWIM-driven signal; rely on the
-            // `JoinDeadlineExpired` timer to clean up if the peer never confirms. Eliminates
-            // the SWIM-driven KV write race.
-            case SwimDeparted _ -> Outcome.nop(state);
+            case SwimDeparted e -> joiningToDecommissioned(state, e.nowMs(), REASON_SWIM_DEPARTED);
             case SlotClaimed _ -> Outcome.nop(state);
             case OperatorDrain e -> enterDraining(state.peer(), e.reason(), e.nowMs());
             case OperatorDecommission e -> joiningOperatorDecommission(state, e);
@@ -142,14 +138,13 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event) {
         return switch (event){
             case SwimHealthy _ -> Outcome.nop(state);
-            // H.3 (spec §H): SWIM-driven decommission cells are nop. `MembershipView` filters
-            // a SWIM-FAULTY peer with a stale KV `ON_DUTY` entry to `UNTRACKED` automatically
-            // — no KV write needed. NODE_FAILED / NODE_LEFT events continue to fire from
-            // `ClusterEventAggregator.onSwimObservation`. This eliminates the chaos revival
-            // storm root cause: pre-H model wrote DECOMMISSIONED on every SwimFaulty
-            // observation, racing with stale SwimHealthy gossip to re-flip back to OnDuty.
-            case SwimFaulty _ -> Outcome.nop(state);
-            case SwimDeparted _ -> Outcome.nop(state);
+            // H.3 partial revert (2026-05-13): restored `(OnDuty, SwimFaulty) → DECOMMISSIONED`
+            // write so the legacy `ClusterDeploymentManager` / slice-deployment / dashboard
+            // consumers reading KV directly continue to see the failed peer drop out. The
+            // chaos revival storm cure stays — it lives in `(DECOMMISSIONED, SwimHealthy)`
+            // being nop (no revival), not in suppressing the initial decommission write.
+            case SwimFaulty e -> onDutyToDecommissioned(state, e.nowMs(), REASON_SWIM_FAULTY);
+            case SwimDeparted e -> onDutyToDecommissioned(state, e.nowMs(), REASON_SWIM_DEPARTED);
             case SlotClaimed _ -> illegal(state, event);
             case OperatorDrain e -> enterDraining(state.peer(), e.reason(), e.nowMs());
             case OperatorDecommission e -> onDutyOperatorDecommission(state, e);
@@ -207,8 +202,16 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         };
     }
 
-    // H.4 (spec §H): `untrackedDirectToOnDuty` helper removed entirely. `MembershipView`
-    // derives ON_DUTY from a HEALTHY SWIM observation alone — no KV write is needed.
+    /// `(UNTRACKED, SwimHealthy) → ON_DUTY` direct. SWIM only emits an observation when a peer's
+    /// state CHANGES — for SWIM-discovered peers we skip the intermediate JOINING state (which
+    /// is reserved for slot-provisioning workflows). Pre-H this was load-bearing for KV ON_DUTY
+    /// entries; post-H the `MembershipView` derived path returns the same answer either way,
+    /// but the KV write is retained for legacy consumers that read `NodeLifecycleKey` directly.
+    private Outcome untrackedDirectToOnDuty(NodeId peer, long nowMs) {
+        var writes = singleWrite(putLifecycle(peer, NodeLifecycleState.ON_DUTY, nowMs));
+        var effects = List.<MembershipEffect>of(emit(peer, MembershipDomainEvent.NODE_ON_DUTY, REASON_NONE));
+        return Outcome.outcome(MembershipFsmState.onDuty(peer, nowMs), writes, effects);
+    }
 
     private Outcome enterJoining(NodeId peer, Option<String> slotId, long nowMs) {
         var writes = singleWrite(putLifecycle(peer, NodeLifecycleState.JOINING, nowMs));

@@ -243,15 +243,11 @@ class MembershipFsmOperatorWriteTest {
 
     @Nested @DisplayName("Self-bootstrap on NodeLifecycle ACTIVE (Bootstrap-correction 2026-05-12)")
     class SelfBootstrapTests {
-        @Test void nodeLifecycleActive_isNop_hSeriesSwimIsDerivedOnly() {
-            // H.3 (spec §H): self-bootstrap no longer requires a KV write. The synthetic
-            // SwimHealthy(self) still routes through `onSwimObservation` but the reducer
-            // returns nop at `(UNTRACKED, SwimHealthy)`. `MembershipView` derives ON_DUTY
-            // from the local SWIM HealthSnapshot — self is admitted via QUIC's local
-            // self-loopback or implicit local "alive" without a consensus write.
+        @Test void nodeLifecycleActive_enqueuesSwimHealthySelf_writesOwnOnDuty() {
             var fsm = startedFsm();
             fsm.onSwimObservation(new HealthyObserved(SELF, 0L));
-            assertThat(commandApplier.calls).isEmpty();
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), SELF, NodeLifecycleState.ON_DUTY);
         }
 
         @Test void nodeLifecycleActive_onFollower_isDroppedBySingleWriterGate() {
@@ -266,21 +262,19 @@ class MembershipFsmOperatorWriteTest {
 
     @Nested @DisplayName("Self-bootstrap on LeaderChange (Bootstrap-correction 2026-05-12 retry trigger)")
     class LeaderChangeBootstrapTests {
-        @Test void onLeaderChange_becomesLeader_isNop_hSeriesSwimIsDerivedOnly() {
-            // H.3 (spec §H): leader takeover no longer requires re-publishing self's ON_DUTY
-            // — `MembershipView` derives it from SWIM. The synthetic SwimHealthy(self) still
-            // fires through `onSwimObservation` for shadow consistency but the reducer
-            // returns nop.
+        @Test void onLeaderChange_becomesLeader_writesOwnOnDuty() {
             var fsm = startedFsm();
             fsm.onLeaderChange(new LeaderChange(Option.some(SELF), true));
-            assertThat(commandApplier.calls).isEmpty();
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), SELF, NodeLifecycleState.ON_DUTY);
         }
 
-        @Test void onLeaderChange_becomesLeader_idempotent_isNop_hSeriesSwimIsDerivedOnly() {
+        @Test void onLeaderChange_becomesLeader_idempotent() {
             var fsm = startedFsm();
             fsm.onSwimObservation(new HealthyObserved(SELF, 0L));
+            assertThat(commandApplier.calls).hasSize(1);
             fsm.onLeaderChange(new LeaderChange(Option.some(SELF), true));
-            assertThat(commandApplier.calls).isEmpty();
+            assertThat(commandApplier.calls).hasSize(1);
         }
 
         @Test void onLeaderChange_followerToFollower_doesNotEnqueue() {
@@ -306,22 +300,20 @@ class MembershipFsmOperatorWriteTest {
         // fires on the leader (Put(L=ON_DUTY) via consensus). On followers, the leader-write
         // gate drops the synthesis. Filter conditions and idempotence are also covered.
 
-        @Test void onPeerConnected_realClusterPeer_leader_isNop_hSeriesSwimIsDerivedOnly() {
-            // H.3 (spec §H): QUIC bridge no longer produces a KV write. The synthesis still
-            // fires (for shadow consistency) but the reducer's `(UNTRACKED, SwimHealthy)` is
-            // nop. `MembershipView` derives ON_DUTY from the live SWIM/QUIC liveness.
+        @Test void onPeerConnected_realClusterPeer_leader_writesOnDuty() {
             var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
             fsm.start().await();
             fsm.onPeerConnected(PEER_A);
-            assertThat(commandApplier.calls).isEmpty();
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
         }
 
-        @Test void onPeerConnected_realClusterPeer_idempotent_isNop_hSeriesSwimIsDerivedOnly() {
+        @Test void onPeerConnected_realClusterPeer_idempotent() {
             var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
             fsm.start().await();
             fsm.onPeerConnected(PEER_A);
             fsm.onPeerConnected(PEER_A);
-            assertThat(commandApplier.calls).isEmpty();
+            assertThat(commandApplier.calls).hasSize(1);
         }
 
         @Test void onPeerConnected_unknownPeer_dropsSynthesis() {
@@ -357,15 +349,12 @@ class MembershipFsmOperatorWriteTest {
             assertThat(commandApplier.calls).isEmpty();
         }
 
-        @Test void onPeerConnected_thenSwimHealthy_isNop_hSeriesSwimIsDerivedOnly() {
-            // H.3 (spec §H): both signals are nop at the reducer. `MembershipView` derives
-            // ON_DUTY from live SWIM state; neither QUIC bridge nor SWIM probe-Ack produces
-            // a consensus write.
+        @Test void onPeerConnected_thenSwimHealthy_idempotent() {
             var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
             fsm.start().await();
             fsm.onPeerConnected(PEER_A);
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 0L));
-            assertThat(commandApplier.calls).isEmpty();
+            assertThat(commandApplier.calls).hasSize(1);
         }
 
         @Test void onPeerConnected_self_dropsViaSelfFilter() {

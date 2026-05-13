@@ -139,7 +139,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                            .filter(id -> isHealthy(topologyManager, id))
                                            .map(NodeId::id)
                                            .toList();
-        var coreCount = coreNodeIds.size();
+        // H.2 (spec §H): coreCount derives from MembershipView (SWIM ∪ KV-overrides). The
+        // legacy `coreNodeIds.size()` counted topology-observer entries with HEALTHY status
+        // — which is similar but the view is the canonical source post-H.
+        var coreCount = node.membershipView().onDutyPeers().size();
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
         var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
                                                                         id,
@@ -167,7 +170,12 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                            .filter(id -> isHealthy(topologyManager, id))
                                            .map(NodeId::id)
                                            .toList();
-        var coreCount = snapshotCoreCount(snapshot);
+        // H.2 (spec §H): prefer the MembershipView-derived count; fall back to the snapshot
+        // helper if the view is empty (e.g., during very-early bootstrap before SWIM has
+        // admitted self). The snapshot helper also now honours SWIM-derived ON_DUTY via the
+        // healthHint check (no KV ON_DUTY required) so both paths converge.
+        var viewCount = node.membershipView().onDutyPeers().size();
+        var coreCount = viewCount > 0 ? viewCount : snapshotCoreCount(snapshot);
         var epoch = Option.some(snapshot.epoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
         var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
@@ -196,11 +204,25 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private static int snapshotCoreCount(ClusterGenerationSnapshot snapshot) {
+        // H.2 callers should use `node.membershipView().onDutyPeers().size()`. This helper
+        // remains for the snapshot path; counts members whose lifecycle is `ON_DUTY` OR
+        // whose `healthHint` is `HEALTHY` (i.e. SWIM-derived: lifecycle may be absent or
+        // any non-terminal state). Falls back to the legacy strict-`ON_DUTY` predicate
+        // when neither is present.
         return (int) snapshot.coreMembers().values()
                                          .stream()
-                                         .filter(member -> member.lifecycle() == NodeLifecycleState.ON_DUTY)
-                                         .filter(member -> member.healthHint() == HealthHint.HEALTHY)
+                                         .filter(member -> isEffectiveOnDuty(member))
                                          .count();
+    }
+
+    private static boolean isEffectiveOnDuty(org.pragmatica.aether.slice.generation.CoreMember member) {
+        if (member.lifecycle() == NodeLifecycleState.DRAINING
+            || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED
+            || member.lifecycle() == NodeLifecycleState.FAILED_DRAIN
+            || member.lifecycle() == NodeLifecycleState.SHUTTING_DOWN) {
+            return false;
+        }
+        return member.healthHint() == HealthHint.HEALTHY || member.lifecycle() == NodeLifecycleState.ON_DUTY;
     }
 
     private static boolean isHealthy(TopologyManager tm, NodeId id) {

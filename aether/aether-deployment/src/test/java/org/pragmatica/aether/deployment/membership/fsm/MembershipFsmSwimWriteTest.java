@@ -97,17 +97,14 @@ class MembershipFsmSwimWriteTest {
         return fsm;
     }
 
-    @Nested @DisplayName("Smoking gun (H.3: SWIM-driven cells nop)")
+    @Nested @DisplayName("Smoking gun: (ON_DUTY, SwimFaulty) on leader → DECOMMISSIONED write")
     class SmokingGunTests {
-        @Test void swimFaulty_onDuty_leader_isNop_hSeriesSwimIsDerivedOnly() {
-            // H.3 (spec §H): the smoking-gun cell is replaced by `MembershipView` derivation
-            // (SWIM is authoritative for "alive", stale ON_DUTY KV entries resolve to
-            // UNTRACKED in the view). NODE_FAILED still fires from `ClusterEventAggregator`
-            // via the SWIM observation listener. The FSM must NOT produce a write here.
+        @Test void swimFaulty_onDuty_leader_writesDecommissioned() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 7L));
-            assertThat(commandApplier.calls).isEmpty();
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
         }
     }
 
@@ -144,24 +141,24 @@ class MembershipFsmSwimWriteTest {
         }
     }
 
-    @Nested @DisplayName("SwimDeparted (H.3: SWIM-driven cells nop)")
+    @Nested @DisplayName("SwimDeparted on leader → DECOMMISSIONED")
     class SwimDepartedTests {
-        @Test void swimDeparted_onDuty_leader_isNop_hSeriesSwimIsDerivedOnly() {
+        @Test void swimDeparted_onDuty_leader_writesDecommissioned() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
             fsm.onSwimObservation(new DepartedObserved(PEER_A, 7L));
-            assertThat(commandApplier.calls).isEmpty();
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
         }
     }
 
-    @Nested @DisplayName("SwimHealthy (H.3: SWIM-driven cells nop, JOINING is operator-only)")
+    @Nested @DisplayName("SwimHealthy → leader writes ON_DUTY")
     class SwimHealthyPromotionTests {
-        @Test void swimHealthy_untracked_leader_isNop_hSeriesSwimIsDerivedOnly() {
-            // H.3 (spec §H): SWIM presence alone is sufficient for `MembershipView` to report
-            // `ON_DUTY` — no KV write is needed for SWIM-discovered peers.
+        @Test void swimHealthy_untracked_leader_writesOnDuty() {
             var fsm = startedFsm();
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
-            assertThat(commandApplier.calls).isEmpty();
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
         }
 
         @Test void swimHealthy_joining_leader_writesOnDuty() {

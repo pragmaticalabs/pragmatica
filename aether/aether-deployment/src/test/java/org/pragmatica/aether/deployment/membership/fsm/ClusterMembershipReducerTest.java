@@ -73,10 +73,15 @@ class ClusterMembershipReducerTest {
     class FromUntracked {
         private final Untracked state = MembershipFsmState.untracked(PEER);
 
-        @Test void untracked_swimHealthy_isNop_hSeriesSwimIsDerivedOnly() {
-            // H.3 (spec §H): SWIM-driven cells are nop at the reducer. `MembershipView` derives
-            // ON_DUTY from a HEALTHY SWIM observation alone — no KV write is needed.
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
+        @Test void untracked_swimHealthy_writesOnDuty_legacyConsumers() {
+            // H partial revert (2026-05-13): SWIM-driven `ON_DUTY` write is retained so
+            // legacy consumers reading `NodeLifecycleKey` directly continue to function.
+            // `MembershipView` is the canonical reader; the KV write is redundant with the
+            // view's SWIM-derived ON_DUTY but is preserved for back-compat.
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, T1));
+            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
+            assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
         }
 
         @Test void untracked_swimFaulty_isNop_bootstrapSafe() {
@@ -176,10 +181,9 @@ class ClusterMembershipReducerTest {
             assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
         }
 
-        @Test void joining_swimDeparted_isNop_hSeriesSwimIsDerivedOnly() {
-            // H.3: SWIM-driven cells nop. JoinDeadlineExpired timer still cleans up if the
-            // peer never confirms via SWIM-HEALTHY within the join window.
-            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
+        @Test void joining_swimDeparted_writesDecommissioned() {
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            assertDecommissioned(outcome, T1, "swim-departed");
         }
 
         @Test void joining_slotClaimed_isNop_idempotentReDelivery() {
@@ -225,17 +229,15 @@ class ClusterMembershipReducerTest {
             assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
         }
 
-        @Test void onDuty_swimFaulty_isNop_hSeriesSwimIsDerivedOnly() {
-            // H.3 (spec §H): SWIM is authoritative for "alive". The pre-H smoking-gun cell
-            // (`(ON_DUTY, SwimFaulty) → Put(L=DECOMMISSIONED)`) is replaced by
-            // `MembershipView` filtering — a SWIM-FAULTY peer with a stale ON_DUTY KV entry
-            // resolves to `UNTRACKED` in the view automatically. NODE_FAILED events continue
-            // to fire from `ClusterEventAggregator.onSwimObservation`.
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+        @Test void onDuty_swimFaulty_writesDecommissioned_smokingGun() {
+            var outcome = reducer.apply(state, new SwimFaulty(PEER, 1L, T1));
+            assertDecommissioned(outcome, T1, "swim-faulty");
+            assertThat(outcome.writes()).hasSize(1);
         }
 
-        @Test void onDuty_swimDeparted_isNop_hSeriesSwimIsDerivedOnly() {
-            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
+        @Test void onDuty_swimDeparted_writesDecommissioned() {
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            assertDecommissioned(outcome, T1, "swim-departed");
         }
 
         @Test void onDuty_slotClaimed_isErr() {
@@ -473,18 +475,17 @@ class ClusterMembershipReducerTest {
     // Specific scenarios called out by the spec.
     // =================================================================================
 
-    /// H.3 (spec §H): the smoking-gun cell `(OnDuty, SwimFaulty) → Decommissioned` is replaced
-    /// by `MembershipView` derivation — a SWIM-FAULTY peer with stale ON_DUTY KV resolves to
-    /// `UNTRACKED` in the view. NODE_FAILED still fires from `ClusterEventAggregator.
-    /// onSwimObservation`. Test kept as a regression assertion: the reducer must NOT produce
-    /// a write on SwimFaulty (the pre-H smoking-gun was the WRITE that produced the revival
-    /// storm; eliminating the write is the cure).
-    @Nested @DisplayName("Smoking-gun replay (H.3: SWIM-driven cells nop)")
+    @Nested @DisplayName("Smoking-gun replay (spec §1.1)")
     class SmokingGunReplay {
-        @Test void onDutyVictim_singleFaultyObservation_isNop_hSeriesSwimIsDerivedOnly() {
-            var leaderFsmStateForVictim = MembershipFsmState.onDuty(PEER, T0);
-            assertNop(reducer.apply(leaderFsmStateForVictim, new SwimFaulty(PEER, 7L, T1)),
-                       leaderFsmStateForVictim);
+        @Test void onDutyVictim_singleFaultyObservation_writesDecommissioned() {
+            var state = MembershipFsmState.onDuty(PEER, T0);
+            var outcome = reducer.apply(state, new SwimFaulty(PEER, 7L, T1));
+            assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DECOMMISSIONED, T1));
+            assertEmitted(outcome, MembershipDomainEvent.NODE_FAILED);
+            // H.4 cure: subsequent SwimHealthy on the Decommissioned state is nop forever
+            // (revival path eliminated). Re-apply SwimFaulty: also nop (already decommissioned).
+            var reapply = reducer.apply(outcome.newState(), new SwimFaulty(PEER, 7L, T2));
+            assertThat(reapply.writes()).isEmpty();
         }
     }
 
