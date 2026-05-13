@@ -31,26 +31,61 @@ import org.pragmatica.consensus.NodeId;
 /// emitted to signal "not yet here, not failed." Once a peer reaches
 /// HEALTHY at least once, normal FAULTY semantics apply forever after for
 /// that peer.
+///
+/// ### Versioning
+/// `incarnation` = SWIM-protocol generation (per-peer monotonic counter; advances
+/// on peer restart / suspect refutation).
+/// `version`     = wire-format schema version (global, monotonic per code release;
+/// see [CURRENT_VERSION]). RC1 is the version-floor — pre-RC1 in-process state
+/// is not migrated. The field is placed LAST on every variant so that auto-generated
+/// `@Codec` decoders remain compatible with persisted state that never carried it.
+/// Receiver policy on mismatch: WARN-log and drop the observation (gossip is
+/// self-healing; dropping unknown-version frames is preferred over crashing).
 public sealed interface SwimObservation {
+    /// Current schema version stamped onto every newly-constructed observation.
+    /// Bump on any structural change to the variant payload.
+    byte CURRENT_VERSION = 1;
+
     NodeId peer();
     long incarnation();
+    byte version();
 
     /// Peer is reachable / has joined / has recovered from SUSPECT.
-    record HealthyObserved(NodeId peer, long incarnation) implements SwimObservation {}
+    record HealthyObserved(NodeId peer, long incarnation, byte version) implements SwimObservation {
+        public HealthyObserved(NodeId peer, long incarnation) {
+            this(peer, incarnation, CURRENT_VERSION);
+        }
+    }
 
     /// Failure detector has not received an ack within the probe-timeout window.
-    record SuspectObserved(NodeId peer, long incarnation) implements SwimObservation {}
+    record SuspectObserved(NodeId peer, long incarnation, byte version) implements SwimObservation {
+        public SuspectObserved(NodeId peer, long incarnation) {
+            this(peer, incarnation, CURRENT_VERSION);
+        }
+    }
 
     /// Failure detector has confirmed the peer faulty after suspect-window expiry
     /// (or k-of-n peers reporting suspect). Emitted only for peers that have
     /// previously reached HEALTHY at least once.
-    record FaultyObserved(NodeId peer, long incarnation) implements SwimObservation {}
+    record FaultyObserved(NodeId peer, long incarnation, byte version) implements SwimObservation {
+        public FaultyObserved(NodeId peer, long incarnation) {
+            this(peer, incarnation, CURRENT_VERSION);
+        }
+    }
 
     /// Peer has been removed from the membership list (gossip departed).
-    record DepartedObserved(NodeId peer, long incarnation) implements SwimObservation {}
+    record DepartedObserved(NodeId peer, long incarnation, byte version) implements SwimObservation {
+        public DepartedObserved(NodeId peer, long incarnation) {
+            this(peer, incarnation, CURRENT_VERSION);
+        }
+    }
 
     /// Cold-boot suppression placeholder: emitted in lieu of `FaultyObserved`
     /// for peers that have never been observed HEALTHY. Signals "not yet here,
     /// not failed."
-    record UnknownObserved(NodeId peer, long incarnation) implements SwimObservation {}
+    record UnknownObserved(NodeId peer, long incarnation, byte version) implements SwimObservation {
+        public UnknownObserved(NodeId peer, long incarnation) {
+            this(peer, incarnation, CURRENT_VERSION);
+        }
+    }
 }

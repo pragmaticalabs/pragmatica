@@ -637,18 +637,44 @@ import static org.pragmatica.lang.Option.none;
         UNKNOWN
     }
 
+    /// Replicated lifecycle truth for a peer.
+    ///
+    /// ### Versioning
+    /// `transitionedAt` = HLC stamp of the most recent state change (per-peer monotonic).
+    /// `version`        = wire-format schema version (global, monotonic per code release;
+    /// see [CURRENT_VERSION]). Placed LAST so auto-generated `@Codec` decoders remain
+    /// compatible with pre-RC1 persisted state — but RC1 is the version-floor:
+    /// pre-RC1 KV state lacking the trailing byte is not migrated.
+    /// Receiver policy on mismatch: fail-closed (membership truth must not be silently lost).
     record NodeLifecycleValue(NodeLifecycleState state,
                               long updatedAt,
                               String host,
                               int port,
                               Epoch observedCoreEpoch,
                               HlcTimestamp transitionedAt,
-                              ProvisioningSource provisioningSource) implements AetherValue {
+                              ProvisioningSource provisioningSource,
+                              byte version) implements AetherValue {
+        /// Current schema version stamped onto every newly-constructed value.
+        /// Bump on any structural change to the record payload.
+        public static final byte CURRENT_VERSION = 1;
+
         public NodeLifecycleValue {
             if (host == null) {host = "";}
             if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
             if (transitionedAt == null) {transitionedAt = HlcTimestamp.ZERO;}
             if (provisioningSource == null) {provisioningSource = ProvisioningSource.UNKNOWN;}
+        }
+
+        /// Backward-compatible constructor — preserves existing 7-arg call sites while
+        /// stamping `version = CURRENT_VERSION`.
+        public NodeLifecycleValue(NodeLifecycleState state,
+                                  long updatedAt,
+                                  String host,
+                                  int port,
+                                  Epoch observedCoreEpoch,
+                                  HlcTimestamp transitionedAt,
+                                  ProvisioningSource provisioningSource) {
+            this(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, provisioningSource, CURRENT_VERSION);
         }
 
         @Deprecated(since = "rc1-wave3", forRemoval = false) public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
@@ -658,7 +684,8 @@ import static org.pragmatica.lang.Option.none;
                                           0,
                                           Epoch.ZERO,
                                           HlcTimestamp.ZERO,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
@@ -671,7 +698,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           observedCoreEpoch,
                                           HlcTimestamp.ZERO,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
@@ -681,7 +709,8 @@ import static org.pragmatica.lang.Option.none;
                                           0,
                                           Epoch.ZERO,
                                           HlcTimestamp.ZERO,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, String host, int port) {
@@ -691,7 +720,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           Epoch.ZERO,
                                           HlcTimestamp.ZERO,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
@@ -704,7 +734,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           Epoch.ZERO,
                                           HlcTimestamp.ZERO,
-                                          provisioningSource);
+                                          provisioningSource,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
@@ -719,7 +750,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           observedCoreEpoch,
                                           transitionedAt,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
@@ -735,7 +767,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           observedCoreEpoch,
                                           transitionedAt,
-                                          provisioningSource);
+                                          provisioningSource,
+                                          CURRENT_VERSION);
         }
 
         public boolean hasAddress() {
@@ -752,11 +785,12 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           observedCoreEpoch,
                                           nextTransitionedAt,
-                                          provisioningSource);
+                                          provisioningSource,
+                                          version);
         }
 
         public NodeLifecycleValue withProvisioningSource(ProvisioningSource newSource) {
-            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, newSource);
+            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, newSource, version);
         }
     }
 
