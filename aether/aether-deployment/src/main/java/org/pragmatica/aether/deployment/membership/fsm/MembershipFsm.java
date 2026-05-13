@@ -140,6 +140,17 @@ public final class MembershipFsm {
     /// rewrites the value before consensus apply.
     private final Map<NodeId, NodeLifecycleValue> priorLifecycle = new ConcurrentHashMap<>();
 
+    /// RC1 Step 3 — per-peer monotone-incarnation gate (topology-rc1-spec §3.2; closes
+    /// N10 stale-arrival, SM2 ordering inversion, same-NodeId restart class). The map
+    /// is leader-local and rebuilds on takeover — incarnation is a property of the
+    /// SWIM event stream, not the FSM state, so cold-start reads KV → reconstructs FSM
+    /// → map starts empty and reseeds on the first accepted event. A stale event during
+    /// the cold window cannot damage state because the FSM has not yet started
+    /// accepting work. NOT carried in `MembershipFsmState` (avoids a snapshot schema
+    /// change for cluster-decision-stream state). Pruned on `(*, DECOMMISSIONED)` peer
+    /// transitions (terminal cell) to bound growth.
+    private final Map<NodeId, Long> latestObservedIncarnation = new ConcurrentHashMap<>();
+
     private final Map<String, NodeId> slotIdToPeer = new ConcurrentHashMap<>();
 
     // H.4 (spec §H): `swimDecommissionTombstones` map removed. The chaos-revival-storm
@@ -374,7 +385,54 @@ public final class MembershipFsm {
             logSwimDropOnFollower(observation);
             return;
         }
+        if (!admitIncarnationOrDrop(observation)) {
+            return;
+        }
         translate(observation).onPresent(this::processOperatorOrFsmEvent);
+    }
+
+    /// RC1 Step 3 — monotone-incarnation gate (topology-rc1-spec §3.2). Returns `true`
+    /// to admit, `false` to drop the observation.
+    ///
+    /// **Admit:** `incarnation > stored`. Updates the map.
+    ///
+    /// **Restart-reset:** `incarnation == 0` is treated as a legitimate peer-restart
+    /// reset (SWIM-protocol semantics — a process that restarts with a cleared counter
+    /// emits incarnation 0). Resets the map entry to 0 so the next observation from
+    /// the restarted peer's fresh stream is accepted from the beginning.
+    ///
+    /// **Drop:** `incarnation < stored` is stale (event-ordering inversion from a
+    /// slower observer). Logged at DEBUG.
+    ///
+    /// **Tie:** `incarnation == stored && stored != 0` is admitted (re-confirmation
+    /// of the same generation — harmless; the reducer cell handles idempotence).
+    ///
+    /// Suspect/Unknown observations are not gated — they translate to `Option.none()`
+    /// in `translate()` and never reach the reducer.
+    private boolean admitIncarnationOrDrop(SwimObservation observation) {
+        if (!(observation instanceof HealthyObserved || observation instanceof FaultyObserved || observation instanceof DepartedObserved)) {
+            return true;
+        }
+        var peer = observation.peer();
+        var incoming = observation.incarnation();
+        var stored = latestObservedIncarnation.getOrDefault(peer, 0L);
+        if (incoming == 0L) {
+            latestObservedIncarnation.put(peer, 0L);
+            log.debug("MembershipFsm: incarnation==0 restart-reset for peer={} (prior stored={}) — admitted, map reset",
+                      peer.id(),
+                      stored);
+            return true;
+        }
+        if (incoming < stored) {
+            log.debug("MembershipFsm: dropping stale SWIM observation {} for peer={} (incoming={} < stored={})",
+                      observation.getClass().getSimpleName(),
+                      peer.id(),
+                      incoming,
+                      stored);
+            return false;
+        }
+        latestObservedIncarnation.put(peer, incoming);
+        return true;
     }
 
     /// Leader-change entry point (spec §6.2 step 7 — Bootstrap-correction 2026-05-12, second
@@ -621,9 +679,26 @@ public final class MembershipFsm {
             priorLifecycle.put(peer, value);
             var newState = deriveStateFromLifecycle(peer, value, slotIdForPeer(peer));
             var previous = fsmStates.put(peer, newState);
+            pruneIncarnationIfDecommissioned(peer, newState);
             logExternalLifecycleChange(peer, previous, newState, value.state());
         } finally {
             fsmLock.unlock();
+        }
+    }
+
+    /// RC1 Step 3 — prune the incarnation map entry on terminal `Decommissioned`
+    /// transitions to bound map growth across long-running clusters with churning
+    /// peer IDs. Called from both consensus-write success and KV-notification paths
+    /// so leader-takeover and follower-side observation converge to the same pruned
+    /// state.
+    private void pruneIncarnationIfDecommissioned(NodeId peer, MembershipFsmState newState) {
+        if (newState instanceof MembershipFsmState.Decommissioned) {
+            var removed = latestObservedIncarnation.remove(peer);
+            if (removed != null && log.isDebugEnabled()) {
+                log.debug("MembershipFsm: pruned incarnation entry for decommissioned peer={} (stored was {})",
+                          peer.id(),
+                          removed);
+            }
         }
     }
 
@@ -757,7 +832,9 @@ public final class MembershipFsm {
                                                        List<KVCommand<AetherKey>> resolvedWrites) {
         fsmLock.lock();
         try {
-            fsmStates.put(outcome.newState().peer(), outcome.newState());
+            var newState = outcome.newState();
+            fsmStates.put(newState.peer(), newState);
+            pruneIncarnationIfDecommissioned(newState.peer(), newState);
             recordResolvedLifecycleWrites(resolvedWrites);
             applyEffectsLocked(outcome.effects());
             logOperatorOutcome(event, prior, outcome, true);
@@ -928,6 +1005,7 @@ public final class MembershipFsm {
         fsmStates.clear();
         slotIdToPeer.clear();
         priorLifecycle.clear();
+        latestObservedIncarnation.clear();
     }
 
     /// Leader-takeover step 4+5 (spec §6.2, F7/F8). After KV replay, the new leader resumes
