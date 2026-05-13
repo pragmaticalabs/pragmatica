@@ -100,9 +100,11 @@ public class CstUtilityClassRule implements CstLintRule {
 
     private boolean isSealedUtilityInterface(Cursor typeDecl) {
         var declText = text(typeDecl);
-        // Detect 'sealed' as a modifier appearing before the interface keyword.
-        // In v6 modifiers are tokens (no CST node), so we rely on textual presence.
-        if (!declText.contains("sealed ")) return false;
+        // Restrict 'sealed' check to the declaration head (before first '{') so a nested
+        // sealed type inside a non-sealed outer doesn't falsely flag the outer.
+        var headEnd = declText.indexOf('{');
+        var head = headEnd >= 0 ? declText.substring(0, headEnd) : declText;
+        if (!Pattern.compile("\\bsealed\\b").matcher(head).find()) return false;
         // Must have static methods (utility interface pattern)
         return declText.contains("static ") && declText.contains("(");
     }

@@ -41,7 +41,7 @@ public class CstNestedWrapperRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> checkMethod(Cursor method, LintContext ctx) {
-        return childByRule(method, RuleKind.TYPE).flatMap(type -> checkTypeForNesting(method, type, ctx))
+        return methodReturnType(method).flatMap(type -> checkTypeForNesting(method, type, ctx))
                           .stream();
     }
 

@@ -47,8 +47,8 @@ public class CstReturnKindRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> checkMethod(Cursor method, LintContext ctx) {
-        // Get return type - first Type child of Member
-        return childByRule(method, RuleKind.TYPE).map(type -> checkReturnType(method, type, ctx))
+        // Get return type - Member → MethodDecl → Type
+        return methodReturnType(method).map(type -> checkReturnType(method, type, ctx))
                           .or(Stream.empty());
     }
 

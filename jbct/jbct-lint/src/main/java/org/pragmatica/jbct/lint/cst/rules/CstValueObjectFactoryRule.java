@@ -69,7 +69,8 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private boolean implementsEnclosingInterface(Cursor root, Cursor record) {
-        var implementedNames = childByRule(record, RuleKind.IMPLEMENTS_CLAUSE)
+        var implementedNames = childByRule(record, RuleKind.RECORD_DECL)
+                                          .flatMap(rd -> childByRule(rd, RuleKind.IMPLEMENTS_CLAUSE))
                                           .map(this::extractImplementedNames)
                                           .or(Set.of());
         if (implementedNames.isEmpty()) return false;
@@ -89,7 +90,9 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private boolean hasNoComponents(Cursor record) {
-        return childByRule(record, RuleKind.RECORD_COMPONENTS)
+        // record cursor is TypeKind wrapping RecordDecl; RecordComponents is a child of RecordDecl.
+        return childByRule(record, RuleKind.RECORD_DECL)
+                          .flatMap(rd -> childByRule(rd, RuleKind.RECORD_COMPONENTS))
                           .map(rc -> childrenByRule(rc, RuleKind.RECORD_COMP).isEmpty())
                           .or(true);
     }
@@ -105,13 +108,14 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         if (!nameMatcher.find()) return false;
         var methodName = nameMatcher.group(1);
         if (!methodName.startsWith("with")) return false;
-        return childByRule(method, RuleKind.TYPE).map(type -> text(type).trim())
+        return methodReturnType(method).map(type -> text(type).trim())
                           .map(recordName::equals)
                           .or(false);
     }
 
     private boolean implementsSealedInterface(Cursor record, Set<String> sealedInterfaceNames) {
-        return childByRule(record, RuleKind.IMPLEMENTS_CLAUSE)
+        return childByRule(record, RuleKind.RECORD_DECL)
+                          .flatMap(rd -> childByRule(rd, RuleKind.IMPLEMENTS_CLAUSE))
                           .map(this::extractImplementedNames)
                           .or(Set.of())
                           .stream()

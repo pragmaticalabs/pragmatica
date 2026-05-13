@@ -64,21 +64,22 @@ public final class SuppressionExtractor {
     public static List<Suppression> extractSuppressions(Cursor root, String source) {
         var suppressions = new ArrayList<Suppression>();
         var lines = new LineIndex(source);
+        var src = source;
         var annotations = findAll(root, RuleKind.ANNOTATION);
         for (var annotation : annotations) {
             var name = findFirst(annotation, RuleKind.QUALIFIED_NAME)
                 .map(qn -> text(qn).trim())
                 .or("");
             if (CONTRACT_NAMES.contains(name)) {
-                addScope(root, annotation, lines, CONTRACT_SUPPRESSED_RULES, suppressions);
+                addScope(root, annotation, lines, src, CONTRACT_SUPPRESSED_RULES, suppressions);
                 continue;
             }
             if (TERMINAL_OP_NAMES.contains(name)) {
-                addScope(root, annotation, lines, TERMINAL_OP_SUPPRESSED, suppressions);
+                addScope(root, annotation, lines, src, TERMINAL_OP_SUPPRESSED, suppressions);
                 continue;
             }
             if (NULL_RETURN_NAMES.contains(name)) {
-                addScope(root, annotation, lines, NULL_RETURN_SUPPRESSED, suppressions);
+                addScope(root, annotation, lines, src, NULL_RETURN_SUPPRESSED, suppressions);
                 continue;
             }
             if (!"SuppressWarnings".equals(name) && !"java.lang.SuppressWarnings".equals(name)) {
@@ -88,17 +89,28 @@ public final class SuppressionExtractor {
             if (ruleIds.isEmpty()) {
                 continue;
             }
-            addScope(root, annotation, lines, ruleIds, suppressions);
+            addScope(root, annotation, lines, src, ruleIds, suppressions);
         }
         return suppressions;
     }
 
-    private static void addScope(Cursor root, Cursor annotation, LineIndex lines,
+    private static void addScope(Cursor root, Cursor annotation, LineIndex lines, String source,
                                  Set<String> ruleIds, ArrayList<Suppression> out) {
         findAnnotatedDeclaration(root, annotation).onPresent(scope ->
             out.add(Suppression.suppression(ruleIds,
                                             lines.lineAt(scope.spanStart()),
-                                            lines.lineAt(scope.spanEnd()))));
+                                            lines.lineAt(lastContentOffset(source, scope.spanStart(), scope.spanEnd())))));
+    }
+
+    /// Position of the last non-whitespace character within [start, end). Used to
+    /// compute a scope's effective end line, excluding trailing whitespace that
+    /// would otherwise spill into the next sibling's line.
+    private static int lastContentOffset(String source, int start, int end) {
+        int i = Math.min(end, source.length()) - 1;
+        while (i > start && Character.isWhitespace(source.charAt(i))) {
+            i--;
+        }
+        return Math.max(i, start);
     }
 
     /// Check if a rule is suppressed at a specific line.

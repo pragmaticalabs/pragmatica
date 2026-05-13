@@ -33,8 +33,8 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     }
 
     private boolean returnsResult(Cursor method) {
-        return childByRule(method, RuleKind.TYPE).map(type -> text(type))
-                          .filter(typeText -> typeText.startsWith("Result<"))
+        return methodReturnType(method).map(type -> text(type))
+                          .filter(typeText -> typeText.trim().startsWith("Result<"))
                           .isPresent();
     }
 

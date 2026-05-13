@@ -34,7 +34,7 @@ public class CstVoidTypeRule implements CstLintRule {
     }
 
     private boolean returnsBoxedVoid(Cursor method) {
-        return childByRule(method, RuleKind.TYPE).map(type -> text(type).trim())
+        return methodReturnType(method).map(type -> text(type).trim())
                           .filter(typeText -> typeText.equals("Void") || typeText.contains("<Void>"))
                           .isPresent();
     }

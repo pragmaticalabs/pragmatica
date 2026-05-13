@@ -197,27 +197,48 @@ public final class CstNodes {
 
     // ===== Member-shape detection =====
 
-    /// True for a `Member` node that represents a method declaration. Methods have a
-    /// `Type` child and a `(` literal among the children (parameter list opener). Note
-    /// that under v6 the method-name `Identifier` is a token, not a CST child, so we
-    /// only check `Type + (` structurally; this matches all non-field/non-record-component
-    /// member shapes in production grammars.
+    /// True for a `Member` node that represents a method declaration. Under v6, the
+    /// Member node wraps a single `MethodDecl` child (or `ConstructorDecl`, `FieldDecl`,
+    /// `TypeKind`). A method member is one whose first child is `MethodDecl`.
     public static boolean isMethodMember(Cursor node) {
         if (!node.kindIs(RuleKind.MEMBER)) {
             return false;
         }
-        var kids = children(node);
-        if (kids.size() < 2) {
-            return false;
-        }
-        return hasChildOfRule(node, RuleKind.TYPE)
-            && kids.stream().anyMatch(c -> isLiteral(c, "("));
+        return hasChildOfRule(node, RuleKind.METHOD_DECL);
     }
 
     public static List<Cursor> findAllMethods(Cursor root) {
         return findAll(root, RuleKind.MEMBER).stream()
             .filter(CstNodes::isMethodMember)
             .toList();
+    }
+
+    /// Return the `Type` (return-type) node for a method member. Walks
+    /// MEMBER → METHOD_DECL → TYPE.
+    public static Option<Cursor> methodReturnType(Cursor methodMember) {
+        return childByRule(methodMember, RuleKind.METHOD_DECL)
+            .flatMap(md -> childByRule(md, RuleKind.TYPE));
+    }
+
+    /// Return the `Params` node for a method member, if any.
+    /// Walks MEMBER → METHOD_DECL → PARAMS.
+    public static Option<Cursor> methodParams(Cursor methodMember) {
+        return childByRule(methodMember, RuleKind.METHOD_DECL)
+            .flatMap(md -> childByRule(md, RuleKind.PARAMS));
+    }
+
+    /// Return the `Block` body of a method member, if any.
+    /// Walks MEMBER → METHOD_DECL → BLOCK.
+    public static Option<Cursor> methodBody(Cursor methodMember) {
+        return childByRule(methodMember, RuleKind.METHOD_DECL)
+            .flatMap(md -> childByRule(md, RuleKind.BLOCK));
+    }
+
+    /// Return the `Throws` clause of a method member, if any.
+    /// Walks MEMBER → METHOD_DECL → THROWS.
+    public static Option<Cursor> methodThrows(Cursor methodMember) {
+        return childByRule(methodMember, RuleKind.METHOD_DECL)
+            .flatMap(md -> childByRule(md, RuleKind.THROWS));
     }
 
     public static Option<Cursor> findFirstMethod(Cursor root) {
@@ -286,18 +307,19 @@ public final class CstNodes {
         return findAll(root, RuleKind.BLOCK_STMT);
     }
 
-    /// True for a `Primary` node that represents a lambda expression. Lambdas have a
-    /// `LambdaParams` child.
+    /// True for a `Primary` node that represents a lambda expression. Under v6 the lambda
+    /// shape is `Primary > Lambda > [LambdaParams, (Block | Expr)]`, so we check whether
+    /// the Primary has a `Lambda` child (or, defensively, a `LambdaParams` direct child).
     public static boolean isLambdaPrimary(Cursor node) {
         if (!node.kindIs(RuleKind.PRIMARY)) {
             return false;
         }
-        return hasChildOfRule(node, RuleKind.LAMBDA_PARAMS);
+        return hasChildOfRule(node, RuleKind.LAMBDA) || hasChildOfRule(node, RuleKind.LAMBDA_PARAMS);
     }
 
+    /// Returns LAMBDA nodes (not Primary wrappers) so that direct-child lookups on lambda
+    /// internals (`LAMBDA_PARAMS`, `BLOCK`/`EXPR` body) work.
     public static List<Cursor> findAllLambdas(Cursor root) {
-        return findAll(root, RuleKind.PRIMARY).stream()
-            .filter(CstNodes::isLambdaPrimary)
-            .toList();
+        return findAll(root, RuleKind.LAMBDA);
     }
 }
