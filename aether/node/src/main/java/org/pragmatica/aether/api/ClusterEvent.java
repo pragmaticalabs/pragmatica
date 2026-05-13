@@ -79,8 +79,8 @@ public record ClusterEvent(Instant timestamp,
     public static ClusterEvent fromValue(ClusterEventValue value) {
         var details = new HashMap<>(value.metadata());
         if (!value.nodeId().isEmpty()) {details.put("originNodeId", value.nodeId());}
-        var micros = value.at().physicalMicros();
-        var instant = Instant.ofEpochSecond(micros / 1_000_000L, (micros % 1_000_000L) * 1_000L);
-        return new ClusterEvent(instant, value.type(), value.severity(), value.message(), Map.copyOf(details));
+        // Wall-clock for human/legacy queries; HLC pair retained in details/metadata for total ordering.
+        details.put("origin_hlc", value.at().toString());
+        return new ClusterEvent(Instant.now(), value.type(), value.severity(), value.message(), Map.copyOf(details));
     }
 }

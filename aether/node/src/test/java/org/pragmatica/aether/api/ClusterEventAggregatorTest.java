@@ -50,8 +50,13 @@ class ClusterEventAggregatorTest {
         final ClusterEventAggregator aggregator;
         final ClusterEventLogPublisher publisher;
         final AtomicLong epoch = new AtomicLong(1L);
+        final List<KVCommand<AetherKey>> appliedCommands = new ArrayList<>();
 
         LoopbackHarness(NodeId nodeId) {
+            this(nodeId, true);
+        }
+
+        LoopbackHarness(NodeId nodeId, boolean isLeader) {
             var hlc = HlcClock.hlcClock(nodeId.id()).unwrap();
             this.publisher = ClusterEventLogPublisher.clusterEventLogPublisher(nodeId,
                                                                                 hlc,
@@ -60,12 +65,13 @@ class ClusterEventAggregatorTest {
             this.aggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
                                                                              () -> CLUSTER_SIZE,
                                                                              publisher,
-                                                                             () -> true);
+                                                                             () -> isLeader);
             aggregator.markReplayComplete();
         }
 
         @SuppressWarnings({"unchecked", "rawtypes"}) Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
             for (var cmd : commands) {
+                appliedCommands.add(cmd);
                 if (cmd instanceof KVCommand.Put<?, ?> put && put.key() instanceof ClusterEventLogKey clk) {
                     var valuePut = (ValuePut) new ValuePut<>(new KVCommand.Put<>(clk, (ClusterEventValue) put.value()), Option.none());
                     aggregator.onClusterEventLogPut(valuePut);
@@ -233,6 +239,32 @@ class ClusterEventAggregatorTest {
         assertThat(events).hasSize(1);
         assertThat(events.getFirst().details()).containsEntry("originNodeId", NODE_A.id())
                                                 .containsEntry("principal", "alice");
+    }
+
+    /// Regression for bug H1 (Step 1 chaos diagnostic, 2026-05-13): every node receiving
+    /// the lifecycle KV-put notification used to call `publisher.publish(NODE_FAILED, ...)`,
+    /// which submits a leader-bound KVCommand. During kill-leader windows the applier fails
+    /// across all followers and the NODE_FAILED event is lost. Only the leader should
+    /// publish derived events.
+    @Test
+    void onNodeLifecyclePut_nonLeader_doesNotPublish() {
+        var h = new LoopbackHarness(NODE_A, false);
+
+        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_B, NodeLifecycleState.DECOMMISSIONED));
+
+        assertThat(h.appliedCommands).isEmpty();
+        assertThat(h.aggregator.events()).isEmpty();
+    }
+
+    @Test
+    void onNodeLifecyclePut_leader_publishesNodeFailed() {
+        var h = new LoopbackHarness(NODE_A, true);
+
+        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_B, NodeLifecycleState.DECOMMISSIONED));
+
+        assertThat(h.aggregator.events()).hasSize(1);
+        assertThat(h.aggregator.events().getFirst().type()).isEqualTo(ClusterEventValue.EventType.NODE_FAILED);
+        assertThat(h.aggregator.events().getFirst().details()).containsEntry("nodeId", NODE_B.id());
     }
 
     @Test

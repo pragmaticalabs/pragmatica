@@ -221,6 +221,8 @@ import org.slf4j.LoggerFactory;
     }
 
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
+        // Membership KV-puts replicated to every node; only leader publishes the derived NODE_FAILED event to avoid cross-cluster fan-out + leader-bound applier failures during transitions.
+        if (!isLeaderSupplier.getAsBoolean()) {return;}
         var nodeId = put.cause().key().nodeId();
         var newState = put.cause().value().state();
         var prior = lastLifecycleState.put(nodeId, newState);
