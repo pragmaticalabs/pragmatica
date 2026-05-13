@@ -39334,185 +39334,207 @@ private Map<Class<? extends RuleId>,
             int wsStartColumn = column;
             int wsStartPos = pos;
             CstParseResult wsResult = null;
-            int choiceStart1Pos = pos;
-            int choiceStart1Line = line;
-            int choiceStart1Column = column;
-            int choicePending1 = 0;
+            int choiceStart0Pos = pos;
+            int choiceStart0Line = line;
+            int choiceStart0Column = column;
+            int choicePending0 = 0;
             if (pos < input.length()) {
-                char dispatchChar1 = input.charAt(pos);
-                switch (dispatchChar1) {
+                char dispatchChar0 = input.charAt(pos);
+                switch (dispatchChar0) {
                     case '\t':
                     case '\n':
                     case '\r':
                     case ' ':
                     {
-                        var alt1_0 = matchCharClassCst(" \\t\\r\\n", false, false);
-                        if (alt1_0.isSuccess()) {
-                            wsResult = alt1_0;
-                        } else if (alt1_0.isCutFailure()) {
-                            wsResult = alt1_0.asRegularFailure();
+                        int oomEntryPending1 = 0;
+                        var oomFirst1 = matchCharClassCst(" \\t\\r\\n", false, false);
+                        CstParseResult alt0_0 = oomFirst1;
+                        int oomStartPos1 = pos;
+                        int oomStartLine1 = line;
+                        int oomStartColumn1 = column;
+                        if (oomFirst1.isSuccess()) {
+                            while (true) {
+                                int beforePos1 = pos;
+                                int beforeLine1 = line;
+                                int beforeColumn1 = column;
+                                int oomIterPending1 = 0;
+                                var oomElem1 = matchCharClassCst(" \\t\\r\\n", false, false);
+                                if (oomElem1.isCutFailure()) {
+                                    alt0_0 = oomElem1;
+                                    break;
+                                }
+                                if (oomElem1.isFailure() || pos == beforePos1) {
+                                    restoreLocationRaw(beforePos1, beforeLine1, beforeColumn1);
+                                    break;
+                                }
+                            }
+                        }
+                        if (alt0_0.isSuccess()) {
+                            wsResult = alt0_0;
+                        } else if (alt0_0.isCutFailure()) {
+                            wsResult = alt0_0.asRegularFailure();
                         } else {
-                            restoreLocationRaw(choiceStart1Pos, choiceStart1Line, choiceStart1Column);
+                            restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
                         }
                         break;
                     }
                     case '/':
                     {
-                        CstParseResult alt1_1 = CstParseResult.successNoLoc(null, "");
-                        int seqStartPos3 = pos;
-                        int seqStartLine3 = line;
-                        int seqStartColumn3 = column;
-                        int seqPending3 = 0;
-                        boolean cut3 = false;
-                        if (alt1_1.isSuccess()) {
-                            var elem3_0 = matchLiteralCst("//", false);
-                            if (elem3_0.isCutFailure()) {
-                                restoreLocationRaw(seqStartPos3, seqStartLine3, seqStartColumn3);
-                                alt1_1 = elem3_0;
-                            } else if (elem3_0.isFailure()) {
-                                restoreLocationRaw(seqStartPos3, seqStartLine3, seqStartColumn3);
-                                alt1_1 = cut3 ? elem3_0.asCutFailure() : elem3_0;
+                        CstParseResult alt0_1 = CstParseResult.successNoLoc(null, "");
+                        int seqStartPos4 = pos;
+                        int seqStartLine4 = line;
+                        int seqStartColumn4 = column;
+                        int seqPending4 = 0;
+                        boolean cut4 = false;
+                        if (alt0_1.isSuccess()) {
+                            var elem4_0 = matchLiteralCst("//", false);
+                            if (elem4_0.isCutFailure()) {
+                                restoreLocationRaw(seqStartPos4, seqStartLine4, seqStartColumn4);
+                                alt0_1 = elem4_0;
+                            } else if (elem4_0.isFailure()) {
+                                restoreLocationRaw(seqStartPos4, seqStartLine4, seqStartColumn4);
+                                alt0_1 = cut4 ? elem4_0.asCutFailure() : elem4_0;
                             }
                         }
-                        if (alt1_1.isSuccess()) {
-                            CstParseResult elem3_1 = CstParseResult.successNoLoc(null, "");
-                            int zomStartPos5 = pos;
-                            int zomStartLine5 = line;
-                            int zomStartColumn5 = column;
+                        if (alt0_1.isSuccess()) {
+                            CstParseResult elem4_1 = CstParseResult.successNoLoc(null, "");
+                            int zomStartPos6 = pos;
+                            int zomStartLine6 = line;
+                            int zomStartColumn6 = column;
                             while (true) {
-                                int beforePos5 = pos;
-                                int beforeLine5 = line;
-                                int beforeColumn5 = column;
-                                int zomIterPending5 = 0;
-                                var zomElem5 = matchCharClassCst("\\n", true, false);
-                                if (zomElem5.isCutFailure()) {
-                                    elem3_1 = zomElem5;
+                                int beforePos6 = pos;
+                                int beforeLine6 = line;
+                                int beforeColumn6 = column;
+                                int zomIterPending6 = 0;
+                                var zomElem6 = matchCharClassCst("\\n", true, false);
+                                if (zomElem6.isCutFailure()) {
+                                    elem4_1 = zomElem6;
                                     break;
                                 }
-                                if (zomElem5.isFailure() || pos == beforePos5) {
-                                    restoreLocationRaw(beforePos5, beforeLine5, beforeColumn5);
+                                if (zomElem6.isFailure() || pos == beforePos6) {
+                                    restoreLocationRaw(beforePos6, beforeLine6, beforeColumn6);
                                     break;
                                 }
                             }
-                            if (!elem3_1.isCutFailure()) {
-                                elem3_1 = CstParseResult.successNoLoc(null, substring(zomStartPos5, pos));
+                            if (!elem4_1.isCutFailure()) {
+                                elem4_1 = CstParseResult.successNoLoc(null, substring(zomStartPos6, pos));
                             }
-                            if (elem3_1.isCutFailure()) {
-                                restoreLocationRaw(seqStartPos3, seqStartLine3, seqStartColumn3);
-                                alt1_1 = elem3_1;
-                            } else if (elem3_1.isFailure()) {
-                                restoreLocationRaw(seqStartPos3, seqStartLine3, seqStartColumn3);
-                                alt1_1 = cut3 ? elem3_1.asCutFailure() : elem3_1;
+                            if (elem4_1.isCutFailure()) {
+                                restoreLocationRaw(seqStartPos4, seqStartLine4, seqStartColumn4);
+                                alt0_1 = elem4_1;
+                            } else if (elem4_1.isFailure()) {
+                                restoreLocationRaw(seqStartPos4, seqStartLine4, seqStartColumn4);
+                                alt0_1 = cut4 ? elem4_1.asCutFailure() : elem4_1;
                             }
                         }
-                        if (alt1_1.isSuccess()) {
-                            alt1_1 = CstParseResult.successNoLoc(null, substring(seqStartPos3, pos));
+                        if (alt0_1.isSuccess()) {
+                            alt0_1 = CstParseResult.successNoLoc(null, substring(seqStartPos4, pos));
                         }
-                        if (alt1_1.isSuccess()) {
-                            wsResult = alt1_1;
-                        } else if (alt1_1.isCutFailure()) {
-                            wsResult = alt1_1.asRegularFailure();
+                        if (alt0_1.isSuccess()) {
+                            wsResult = alt0_1;
+                        } else if (alt0_1.isCutFailure()) {
+                            wsResult = alt0_1.asRegularFailure();
                         } else {
-                            restoreLocationRaw(choiceStart1Pos, choiceStart1Line, choiceStart1Column);
-                        CstParseResult alt1_2 = CstParseResult.successNoLoc(null, "");
-                        int seqStartPos7 = pos;
-                        int seqStartLine7 = line;
-                        int seqStartColumn7 = column;
-                        int seqPending7 = 0;
-                        boolean cut7 = false;
-                        if (alt1_2.isSuccess()) {
-                            var elem7_0 = matchLiteralCst("/*", false);
-                            if (elem7_0.isCutFailure()) {
-                                restoreLocationRaw(seqStartPos7, seqStartLine7, seqStartColumn7);
-                                alt1_2 = elem7_0;
-                            } else if (elem7_0.isFailure()) {
-                                restoreLocationRaw(seqStartPos7, seqStartLine7, seqStartColumn7);
-                                alt1_2 = cut7 ? elem7_0.asCutFailure() : elem7_0;
+                            restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
+                        CstParseResult alt0_2 = CstParseResult.successNoLoc(null, "");
+                        int seqStartPos8 = pos;
+                        int seqStartLine8 = line;
+                        int seqStartColumn8 = column;
+                        int seqPending8 = 0;
+                        boolean cut8 = false;
+                        if (alt0_2.isSuccess()) {
+                            var elem8_0 = matchLiteralCst("/*", false);
+                            if (elem8_0.isCutFailure()) {
+                                restoreLocationRaw(seqStartPos8, seqStartLine8, seqStartColumn8);
+                                alt0_2 = elem8_0;
+                            } else if (elem8_0.isFailure()) {
+                                restoreLocationRaw(seqStartPos8, seqStartLine8, seqStartColumn8);
+                                alt0_2 = cut8 ? elem8_0.asCutFailure() : elem8_0;
                             }
                         }
-                        if (alt1_2.isSuccess()) {
-                            CstParseResult elem7_1 = CstParseResult.successNoLoc(null, "");
-                            int zomStartPos9 = pos;
-                            int zomStartLine9 = line;
-                            int zomStartColumn9 = column;
+                        if (alt0_2.isSuccess()) {
+                            CstParseResult elem8_1 = CstParseResult.successNoLoc(null, "");
+                            int zomStartPos10 = pos;
+                            int zomStartLine10 = line;
+                            int zomStartColumn10 = column;
                             while (true) {
-                                int beforePos9 = pos;
-                                int beforeLine9 = line;
-                                int beforeColumn9 = column;
-                                int zomIterPending9 = 0;
-                                CstParseResult zomElem9 = CstParseResult.successNoLoc(null, "");
-                                int seqStartPos11 = pos;
-                                int seqStartLine11 = line;
-                                int seqStartColumn11 = column;
-                                int seqPending11 = 0;
-                                boolean cut11 = false;
-                                if (zomElem9.isSuccess()) {
-                                    int notStartPos12 = pos;
-                                    int notStartLine12 = line;
-                                    int notStartColumn12 = column;
-                                    var notElem12 = matchLiteralCst("*/", false);
-                                    restoreLocationRaw(notStartPos12, notStartLine12, notStartColumn12);
-                                    var elem11_0 = notElem12.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
-                                    if (elem11_0.isCutFailure()) {
-                                        restoreLocationRaw(seqStartPos11, seqStartLine11, seqStartColumn11);
-                                        zomElem9 = elem11_0;
-                                    } else if (elem11_0.isFailure()) {
-                                        restoreLocationRaw(seqStartPos11, seqStartLine11, seqStartColumn11);
-                                        zomElem9 = cut11 ? elem11_0.asCutFailure() : elem11_0;
+                                int beforePos10 = pos;
+                                int beforeLine10 = line;
+                                int beforeColumn10 = column;
+                                int zomIterPending10 = 0;
+                                CstParseResult zomElem10 = CstParseResult.successNoLoc(null, "");
+                                int seqStartPos12 = pos;
+                                int seqStartLine12 = line;
+                                int seqStartColumn12 = column;
+                                int seqPending12 = 0;
+                                boolean cut12 = false;
+                                if (zomElem10.isSuccess()) {
+                                    int notStartPos13 = pos;
+                                    int notStartLine13 = line;
+                                    int notStartColumn13 = column;
+                                    var notElem13 = matchLiteralCst("*/", false);
+                                    restoreLocationRaw(notStartPos13, notStartLine13, notStartColumn13);
+                                    var elem12_0 = notElem13.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.successNoLoc(null, "");
+                                    if (elem12_0.isCutFailure()) {
+                                        restoreLocationRaw(seqStartPos12, seqStartLine12, seqStartColumn12);
+                                        zomElem10 = elem12_0;
+                                    } else if (elem12_0.isFailure()) {
+                                        restoreLocationRaw(seqStartPos12, seqStartLine12, seqStartColumn12);
+                                        zomElem10 = cut12 ? elem12_0.asCutFailure() : elem12_0;
                                     }
                                 }
-                                if (zomElem9.isSuccess()) {
-                                    var elem11_1 = matchAnyCst();
-                                    if (elem11_1.isCutFailure()) {
-                                        restoreLocationRaw(seqStartPos11, seqStartLine11, seqStartColumn11);
-                                        zomElem9 = elem11_1;
-                                    } else if (elem11_1.isFailure()) {
-                                        restoreLocationRaw(seqStartPos11, seqStartLine11, seqStartColumn11);
-                                        zomElem9 = cut11 ? elem11_1.asCutFailure() : elem11_1;
+                                if (zomElem10.isSuccess()) {
+                                    var elem12_1 = matchAnyCst();
+                                    if (elem12_1.isCutFailure()) {
+                                        restoreLocationRaw(seqStartPos12, seqStartLine12, seqStartColumn12);
+                                        zomElem10 = elem12_1;
+                                    } else if (elem12_1.isFailure()) {
+                                        restoreLocationRaw(seqStartPos12, seqStartLine12, seqStartColumn12);
+                                        zomElem10 = cut12 ? elem12_1.asCutFailure() : elem12_1;
                                     }
                                 }
-                                if (zomElem9.isSuccess()) {
-                                    zomElem9 = CstParseResult.successNoLoc(null, substring(seqStartPos11, pos));
+                                if (zomElem10.isSuccess()) {
+                                    zomElem10 = CstParseResult.successNoLoc(null, substring(seqStartPos12, pos));
                                 }
-                                if (zomElem9.isCutFailure()) {
-                                    elem7_1 = zomElem9;
+                                if (zomElem10.isCutFailure()) {
+                                    elem8_1 = zomElem10;
                                     break;
                                 }
-                                if (zomElem9.isFailure() || pos == beforePos9) {
-                                    restoreLocationRaw(beforePos9, beforeLine9, beforeColumn9);
+                                if (zomElem10.isFailure() || pos == beforePos10) {
+                                    restoreLocationRaw(beforePos10, beforeLine10, beforeColumn10);
                                     break;
                                 }
                             }
-                            if (!elem7_1.isCutFailure()) {
-                                elem7_1 = CstParseResult.successNoLoc(null, substring(zomStartPos9, pos));
+                            if (!elem8_1.isCutFailure()) {
+                                elem8_1 = CstParseResult.successNoLoc(null, substring(zomStartPos10, pos));
                             }
-                            if (elem7_1.isCutFailure()) {
-                                restoreLocationRaw(seqStartPos7, seqStartLine7, seqStartColumn7);
-                                alt1_2 = elem7_1;
-                            } else if (elem7_1.isFailure()) {
-                                restoreLocationRaw(seqStartPos7, seqStartLine7, seqStartColumn7);
-                                alt1_2 = cut7 ? elem7_1.asCutFailure() : elem7_1;
-                            }
-                        }
-                        if (alt1_2.isSuccess()) {
-                            var elem7_2 = matchLiteralCst("*/", false);
-                            if (elem7_2.isCutFailure()) {
-                                restoreLocationRaw(seqStartPos7, seqStartLine7, seqStartColumn7);
-                                alt1_2 = elem7_2;
-                            } else if (elem7_2.isFailure()) {
-                                restoreLocationRaw(seqStartPos7, seqStartLine7, seqStartColumn7);
-                                alt1_2 = cut7 ? elem7_2.asCutFailure() : elem7_2;
+                            if (elem8_1.isCutFailure()) {
+                                restoreLocationRaw(seqStartPos8, seqStartLine8, seqStartColumn8);
+                                alt0_2 = elem8_1;
+                            } else if (elem8_1.isFailure()) {
+                                restoreLocationRaw(seqStartPos8, seqStartLine8, seqStartColumn8);
+                                alt0_2 = cut8 ? elem8_1.asCutFailure() : elem8_1;
                             }
                         }
-                        if (alt1_2.isSuccess()) {
-                            alt1_2 = CstParseResult.successNoLoc(null, substring(seqStartPos7, pos));
+                        if (alt0_2.isSuccess()) {
+                            var elem8_2 = matchLiteralCst("*/", false);
+                            if (elem8_2.isCutFailure()) {
+                                restoreLocationRaw(seqStartPos8, seqStartLine8, seqStartColumn8);
+                                alt0_2 = elem8_2;
+                            } else if (elem8_2.isFailure()) {
+                                restoreLocationRaw(seqStartPos8, seqStartLine8, seqStartColumn8);
+                                alt0_2 = cut8 ? elem8_2.asCutFailure() : elem8_2;
+                            }
                         }
-                        if (alt1_2.isSuccess()) {
-                            wsResult = alt1_2;
-                        } else if (alt1_2.isCutFailure()) {
-                            wsResult = alt1_2.asRegularFailure();
+                        if (alt0_2.isSuccess()) {
+                            alt0_2 = CstParseResult.successNoLoc(null, substring(seqStartPos8, pos));
+                        }
+                        if (alt0_2.isSuccess()) {
+                            wsResult = alt0_2;
+                        } else if (alt0_2.isCutFailure()) {
+                            wsResult = alt0_2.asRegularFailure();
                         } else {
-                            restoreLocationRaw(choiceStart1Pos, choiceStart1Line, choiceStart1Column);
+                            restoreLocationRaw(choiceStart0Pos, choiceStart0Line, choiceStart0Column);
                         }
                         }
                         break;
@@ -40236,6 +40258,38 @@ private Map<Class<? extends RuleId>,
         }
 
         private static int matchWs_1(String input, int pos, int limit) {
+            int first = matchWs_4(input, pos, limit);
+            if (first < 0 || first == pos) return -1;
+            int cursor = first;
+            while (true) {
+                int next = matchWs_4(input, cursor, limit);
+                if (next < 0 || next == cursor) break;
+                cursor = next;
+            }
+            return cursor;
+        }
+
+        private static int matchWs_2(String input, int pos, int limit) {
+            int cursor = pos;
+            cursor = matchWs_5(input, cursor, limit);
+            if (cursor < 0) return -1;
+            cursor = matchWs_6(input, cursor, limit);
+            if (cursor < 0) return -1;
+            return cursor;
+        }
+
+        private static int matchWs_3(String input, int pos, int limit) {
+            int cursor = pos;
+            cursor = matchWs_7(input, cursor, limit);
+            if (cursor < 0) return -1;
+            cursor = matchWs_8(input, cursor, limit);
+            if (cursor < 0) return -1;
+            cursor = matchWs_9(input, cursor, limit);
+            if (cursor < 0) return -1;
+            return cursor;
+        }
+
+        private static int matchWs_4(String input, int pos, int limit) {
             if (pos >= limit) return -1;
             char c = input.charAt(pos);
             boolean inClass = matchesPattern(c, " \\t\\r\\n", false);
@@ -40243,27 +40297,7 @@ private Map<Class<? extends RuleId>,
             return ok ? pos + 1 : -1;
         }
 
-        private static int matchWs_2(String input, int pos, int limit) {
-            int cursor = pos;
-            cursor = matchWs_4(input, cursor, limit);
-            if (cursor < 0) return -1;
-            cursor = matchWs_5(input, cursor, limit);
-            if (cursor < 0) return -1;
-            return cursor;
-        }
-
-        private static int matchWs_3(String input, int pos, int limit) {
-            int cursor = pos;
-            cursor = matchWs_6(input, cursor, limit);
-            if (cursor < 0) return -1;
-            cursor = matchWs_7(input, cursor, limit);
-            if (cursor < 0) return -1;
-            cursor = matchWs_8(input, cursor, limit);
-            if (cursor < 0) return -1;
-            return cursor;
-        }
-
-        private static int matchWs_4(String input, int pos, int limit) {
+        private static int matchWs_5(String input, int pos, int limit) {
             String text = "//";
             int len = text.length();
             if (pos + len > limit) return -1;
@@ -40273,27 +40307,7 @@ private Map<Class<? extends RuleId>,
             return pos + len;
         }
 
-        private static int matchWs_5(String input, int pos, int limit) {
-            int cursor = pos;
-            while (true) {
-                int next = matchWs_9(input, cursor, limit);
-                if (next < 0 || next == cursor) break;
-                cursor = next;
-            }
-            return cursor;
-        }
-
         private static int matchWs_6(String input, int pos, int limit) {
-            String text = "/*";
-            int len = text.length();
-            if (pos + len > limit) return -1;
-            for (int i = 0; i < len; i++) {
-                if (input.charAt(pos + i) != text.charAt(i)) return -1;
-            }
-            return pos + len;
-        }
-
-        private static int matchWs_7(String input, int pos, int limit) {
             int cursor = pos;
             while (true) {
                 int next = matchWs_10(input, cursor, limit);
@@ -40303,7 +40317,27 @@ private Map<Class<? extends RuleId>,
             return cursor;
         }
 
+        private static int matchWs_7(String input, int pos, int limit) {
+            String text = "/*";
+            int len = text.length();
+            if (pos + len > limit) return -1;
+            for (int i = 0; i < len; i++) {
+                if (input.charAt(pos + i) != text.charAt(i)) return -1;
+            }
+            return pos + len;
+        }
+
         private static int matchWs_8(String input, int pos, int limit) {
+            int cursor = pos;
+            while (true) {
+                int next = matchWs_11(input, cursor, limit);
+                if (next < 0 || next == cursor) break;
+                cursor = next;
+            }
+            return cursor;
+        }
+
+        private static int matchWs_9(String input, int pos, int limit) {
             String text = "*/";
             int len = text.length();
             if (pos + len > limit) return -1;
@@ -40313,7 +40347,7 @@ private Map<Class<? extends RuleId>,
             return pos + len;
         }
 
-        private static int matchWs_9(String input, int pos, int limit) {
+        private static int matchWs_10(String input, int pos, int limit) {
             if (pos >= limit) return -1;
             char c = input.charAt(pos);
             boolean inClass = matchesPattern(c, "\\n", false);
@@ -40321,24 +40355,24 @@ private Map<Class<? extends RuleId>,
             return ok ? pos + 1 : -1;
         }
 
-        private static int matchWs_10(String input, int pos, int limit) {
+        private static int matchWs_11(String input, int pos, int limit) {
             int cursor = pos;
-            cursor = matchWs_11(input, cursor, limit);
-            if (cursor < 0) return -1;
             cursor = matchWs_12(input, cursor, limit);
+            if (cursor < 0) return -1;
+            cursor = matchWs_13(input, cursor, limit);
             if (cursor < 0) return -1;
             return cursor;
         }
 
-        private static int matchWs_11(String input, int pos, int limit) {
-            return matchWs_13(input, pos, limit) < 0 ? pos : -1;
-        }
-
         private static int matchWs_12(String input, int pos, int limit) {
-            return pos < limit ? pos + 1 : -1;
+            return matchWs_14(input, pos, limit) < 0 ? pos : -1;
         }
 
         private static int matchWs_13(String input, int pos, int limit) {
+            return pos < limit ? pos + 1 : -1;
+        }
+
+        private static int matchWs_14(String input, int pos, int limit) {
             String text = "*/";
             int len = text.length();
             if (pos + len > limit) return -1;
