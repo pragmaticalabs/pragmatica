@@ -38,6 +38,23 @@ public class CommentsExtended {
         }
     }
 
+    public void methodWithMultiStatementForBody() {
+        // Multi-statement for-body — covers the Stmt-wraps-Block parser shape (B4 regression).
+        for (int i = 0;i <counter;i++) {
+            var doubled = i * 2;
+            System.out.println(doubled);
+        }
+    }
+
+    public void methodWithMultiStatementIfBody() {
+        // Multi-statement if-body — same parser-shape coverage as the for variant above.
+        if (counter > 0) {
+            var label = "value:";
+            System.out.println(label);
+            System.out.println(counter);
+        }
+    }
+
     public void methodWithBlockBeforeLambda(List<Integer> values) {
         // Comment before a lambda expression.
         // The trivia attaches to the statement containing the lambda.

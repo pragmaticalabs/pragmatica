@@ -149,11 +149,35 @@ public class FlowFormatter {
     }
 
     private static boolean shouldInlineChild(CstNode flattened, CstNode.NonTerminal parent) {
-        return flattened instanceof CstNode.NonTerminal nested
-            && nested.rule() != null
-            && parent.rule() != null
-            && (nested.rule().getClass() == parent.rule().getClass()
-                || (parent.rule() instanceof RuleId.CompilationUnit
-                    && nested.rule() instanceof RuleId.OrdinaryUnit));
+        if (!(flattened instanceof CstNode.NonTerminal nested)
+            || nested.rule() == null || parent.rule() == null) {
+            return false;
+        }
+        if (nested.rule().getClass() == parent.rule().getClass()) {
+            return true;
+        }
+        if (parent.rule() instanceof RuleId.CompilationUnit
+            && nested.rule() instanceof RuleId.OrdinaryUnit) {
+            return true;
+        }
+        // The parser wraps multi-statement if/for/while/etc. bodies as
+        // `Stmt[T<{>, Block[BlockStmt*], T<}>]` (the inner Block holds the BlockStmts but
+        // has no '{'/'}' children of its own). Inline the Block's BlockStmt children into
+        // Stmt so printBlock(stmt) finds them and emits a proper indented body.
+        return parent.rule() instanceof RuleId.Stmt
+            && nested.rule() instanceof RuleId.Block
+            && isInlinableBlockWrapper(nested);
+    }
+
+    /// A "wrapping" Block has only BlockStmt children — no `{`/`}` terminals. Such Blocks
+    /// appear inside brace-shaped Stmt nodes; their children should be inlined.
+    private static boolean isInlinableBlockWrapper(CstNode.NonTerminal block) {
+        for (var c : block.children()) {
+            if (c instanceof CstNode.Terminal t
+                && ("{".equals(t.text()) || "}".equals(t.text()))) {
+                return false;
+            }
+        }
+        return true;
     }
 }
