@@ -3,6 +3,7 @@ package format.examples;
 import java.util.List;
 import java.util.stream.Stream;
 
+
 public class NoArgChains {
     // Single method call — not a chain, no break.
     int singleCall(List<String> items) {

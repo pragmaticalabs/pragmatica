@@ -4,6 +4,7 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Target;
 import java.util.List;
 
+
 public class AnnotationLocations {
     @Target(ElementType.TYPE_USE)
     @interface NotNull {}

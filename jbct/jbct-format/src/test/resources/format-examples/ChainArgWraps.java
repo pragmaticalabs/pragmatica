@@ -2,6 +2,7 @@ package format.examples;
 
 import org.pragmatica.lang.Result;
 
+
 public class ChainArgWraps {
     // Single method-ref args in each chain step.
     Result<String> shortRefs(Result<String> input) {

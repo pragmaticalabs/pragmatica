@@ -53,9 +53,7 @@ public class LineWrapping {
     }
 
     public String longTernary(String value) {
-        return value != null
-               && !value.isEmpty()
-               && isValid(value)
+        return value != null && !value.isEmpty() && isValid(value)
                ? processAndTransformTheValueIntoResult(value)
                : getDefaultValueForInvalidInput();
     }

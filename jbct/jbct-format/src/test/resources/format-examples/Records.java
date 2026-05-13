@@ -28,15 +28,17 @@ public class Records {
 
     record Password(String value) {
         public Password {
-            if (value.length() <8) {throw new IllegalArgumentException("Password too short");}
+            if (value.length() <8) {
+                throw new IllegalArgumentException("Password too short");
+            }
         }
     }
 
     record ValidatedEmail(String value) {
         public static Result<ValidatedEmail> validatedEmail(String raw) {
             return raw == null || raw.isBlank()
-                  ? Result.failure(null)
-                  : Result.success(new ValidatedEmail(raw.trim().toLowerCase()));
+                   ? Result.failure(null)
+                   : Result.success(new ValidatedEmail(raw.trim().toLowerCase()));
         }
     }
 

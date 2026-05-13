@@ -29,7 +29,7 @@ public class BlankLineEdges {
         try {
             x = computeRiskyValue();
         } catch (RuntimeException e) {
-            x = - 1;
+            x = -1;
         }
 
         return x;
@@ -43,7 +43,7 @@ public class BlankLineEdges {
         if (doubled > 0) {
             doubled = doubled + 1;
         } else {
-            doubled = - doubled;
+            doubled = -doubled;
         }
 
         return doubled;
