@@ -304,6 +304,74 @@ import org.slf4j.LoggerFactory;
         return sb.toString();
     }
 
+    /// View record for `/api/alerts` and `/api/alerts/active`. Flattens the union of
+    /// `ActiveAlert` (threshold-driven, `source="threshold"`) and `InjectedAlert`
+    /// (operator-driven via `POST /api/alerts/inject`, `source="injected"`). Fields not
+    /// applicable to a given alert kind are emitted as `null` so consumers can discriminate
+    /// by presence (e.g. `alertId` ⟹ injected, `nodeId` ⟹ threshold).
+    ///
+    /// Replaces the previous pre-serialized JSON String pathway (`activeAlertsAsJson` /
+    /// `alertHistoryAsJson`): wrapping a String in an Object-typed handler caused Jackson
+    /// to double-encode the response, breaking integration assertions on field substrings.
+    public record AlertView(String alertId,
+                            String name,
+                            String severity,
+                            String message,
+                            String source,
+                            String metric,
+                            Double value,
+                            String nodeId,
+                            Double threshold,
+                            Long triggeredAt,
+                            Long timestamp){}
+
+    /// View record for `/api/alerts/history`. Mirrors `AlertHistoryEntry` 1:1 as a public
+    /// type so Jackson can serialize without the String-double-encoding bug.
+    public record AlertHistoryView(long timestamp,
+                                   String metric,
+                                   String nodeId,
+                                   double value,
+                                   String severity,
+                                   String status){}
+
+    /// View record for `/api/alerts/thresholds`. Flattens the `Map<String, Threshold>` into
+    /// a list. Replaces the JSON-as-String `thresholdsAsJson` path.
+    public record ThresholdView(String metric, double warning, double critical){}
+
+    public List<AlertView> activeAlertsAsList() {
+        var list = new java.util.ArrayList<AlertView>(activeAlerts.size() + injectedAlerts.size());
+        for (var alert : activeAlerts.values()) {
+            list.add(new AlertView(null, null, alert.severity, null, "threshold",
+                                    alert.metric, alert.value, alert.nodeId.id(), alert.threshold,
+                                    alert.triggeredAt, null));
+        }
+        for (var alert : injectedAlerts.values()) {
+            list.add(new AlertView(alert.alertId, alert.name, alert.severity, alert.message, "injected",
+                                    alert.metric.or((String) null), alert.value.or((Double) null), null, null,
+                                    null, alert.timestamp));
+        }
+        return List.copyOf(list);
+    }
+
+    public List<AlertHistoryView> alertHistoryAsList() {
+        var list = new java.util.ArrayList<AlertHistoryView>(alertHistory.size());
+        for (var entry : alertHistory) {
+            list.add(new AlertHistoryView(entry.timestamp, entry.metric, entry.nodeId,
+                                            entry.value, entry.severity, entry.status));
+        }
+        return List.copyOf(list);
+    }
+
+    public List<ThresholdView> thresholdsAsList() {
+        var list = new java.util.ArrayList<ThresholdView>(thresholds.size());
+        for (var entry : thresholds.entrySet()) {
+            list.add(new ThresholdView(entry.getKey(),
+                                        entry.getValue().warning,
+                                        entry.getValue().critical));
+        }
+        return List.copyOf(list);
+    }
+
     @SuppressWarnings("JBCT-PAT-01") public String activeAlertsAsJson() {
         var sb = new StringBuilder();
         sb.append("[");

@@ -200,7 +200,8 @@ public sealed interface ManagementApiResponses {
 
     record AlertsClearedResponse(String status){}
 
-    record AlertsResponse(Object active, Object history){}
+    record AlertsResponse(List<AlertManager.AlertView> active,
+                          List<AlertManager.AlertHistoryView> history){}
 
     record AlertInjectResponse(String alertId, String name, String severity, String message, long timestamp){}
 

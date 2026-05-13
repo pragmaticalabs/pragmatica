@@ -5,11 +5,16 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.AlertManager;
+import org.pragmatica.aether.api.AlertManager.AlertHistoryView;
+import org.pragmatica.aether.api.AlertManager.AlertView;
+import org.pragmatica.aether.api.AlertManager.ThresholdView;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertsClearedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ThresholdRemovedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ThresholdSetResponse;
+
+import java.util.List;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -39,14 +44,14 @@ public final class AlertRoutes implements RouteSource {
     record InjectRequest(String name, String severity, String message, String metric, Double value){}
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<Object>route(ManagementRoute.THRESHOLDS_LIST)
-                                         .toJson(alertManager::thresholdsAsJson),
+        return Stream.of(ManagementRoutes.<List<ThresholdView>>route(ManagementRoute.THRESHOLDS_LIST)
+                                         .toJson(alertManager::thresholdsAsList),
                          ManagementRoutes.<AlertsResponse>route(ManagementRoute.ALERTS)
                                          .toJson(this::buildAlertsResponse),
-                         ManagementRoutes.<Object>route(ManagementRoute.ALERTS_ACTIVE)
-                                         .toJson(alertManager::activeAlertsAsJson),
-                         ManagementRoutes.<Object>route(ManagementRoute.ALERTS_HISTORY)
-                                         .toJson(alertManager::alertHistoryAsJson),
+                         ManagementRoutes.<List<AlertView>>route(ManagementRoute.ALERTS_ACTIVE)
+                                         .toJson(alertManager::activeAlertsAsList),
+                         ManagementRoutes.<List<AlertHistoryView>>route(ManagementRoute.ALERTS_HISTORY)
+                                         .toJson(alertManager::alertHistoryAsList),
                          ManagementRoutes.<ThresholdSetResponse>route(ManagementRoute.THRESHOLD_SET)
                                          .withBody(ThresholdRequest.class)
                                          .toJson(this::handleSetThreshold),
@@ -97,7 +102,7 @@ public final class AlertRoutes implements RouteSource {
     }
 
     private AlertsResponse buildAlertsResponse() {
-        return new AlertsResponse(alertManager.activeAlertsAsJson(), alertManager.alertHistoryAsJson());
+        return new AlertsResponse(alertManager.activeAlertsAsList(), alertManager.alertHistoryAsList());
     }
 
     private enum AlertError implements Cause {
