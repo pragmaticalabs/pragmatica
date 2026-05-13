@@ -208,7 +208,9 @@ Last observed (run-9, partial):
 
 ### Then (in order)
 
-4. **Migrate the remaining `NodeLifecycleKey` direct readers to `MembershipView`.** Greppable list:
+4. **Complete the H direction via `MembershipDecision` event stream.** The proper architecture is already half-built. `org.pragmatica.consensus.topology.MembershipDecision` (NodeJoined/NodeRemoved/NodeDecommissioned) is the higher-level event stream emitted by consensus. `ClusterTopologyManager`, `ClusterDeploymentManager`, `TaskAssignmentCoordinator`, `ClusterDeploymentState` already subscribe. The gate-stack-era added `ValuePut<NodeLifecycleKey, ...>` listeners alongside; they duplicate the membership signal. Migrate the 5 subscribers (slice deployment, node-deployment manager, ClusterDeploymentState, GenerationSnapshotPublisher, BootstrapModule) from `onNodeLifecyclePut` → `onMembershipDecision`, and then SWIM-driven `NodeLifecycleKey` writes can be removed entirely. KV `NodeLifecycleKey` becomes purely operator-override (JOINING, DRAINING, DECOMMISSIONED, FAILED_DRAIN — 4 states, never written from SWIM). This is the H-series carried to its natural conclusion and returns the architecture to its original event-driven roots, at a new level (with `MembershipView` for derived queries).
+
+5. **Migrate the remaining `NodeLifecycleKey` direct readers to `MembershipView`.** Greppable list:
    ```
    grep -rn 'NodeLifecycleKey\|nodeLifecycleKey' aether/aether-deployment/src/main /aether/node/src/main /aether/aether-metrics/src/main --include='*.java' | grep -v test
    ```
