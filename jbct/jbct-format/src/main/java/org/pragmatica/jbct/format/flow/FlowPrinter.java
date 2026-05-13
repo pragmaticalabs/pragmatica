@@ -820,7 +820,7 @@ final class FlowPrinter {
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
         int chainLinkCount = Math.max(allDotMethodCount,
                                       dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
-        boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount);
+        boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount, postOps);
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
@@ -839,21 +839,41 @@ final class FlowPrinter {
 
     /// Sequencer-as-steps: chain (2+ method calls) breaks vertically only in TAIL contexts
     /// (return/throw expression, lambda body). Exception: when the receiver is a static
-    /// factory call (e.g. `Class.method(...)`) and there are exactly 2 chain links, the
-    /// chain stays inline if it fits — that matches the idiom
-    /// `Result.all(args).map(Tuple3::new)` which reads naturally on a single line.
+    /// factory call (e.g. `Class.method(...)`) and there are exactly 2 chain links AND
+    /// the first invocation's args don't themselves have complex multi-call content,
+    /// the chain stays inline — matches the idiom `Result.all(args).map(Tuple3::new)`.
     /// In non-tail contexts (assignment RHS, argument, ternary branch), chains stay inline.
-    private boolean shouldBreakChain(Cursor primary, int chainLinkCount) {
+    private boolean shouldBreakChain(Cursor primary, int chainLinkCount, List<Cursor> postOps) {
         if (chainLinkCount < 2 || alignment.isInInlineExpression()) {
             return false;
         }
         if (!alignment.isInTailContext()) {
             return false;
         }
-        if (chainLinkCount == 2 && primary != null && isStaticFactoryReceiver(primary)) {
+        if (chainLinkCount == 2 && primary != null && isStaticFactoryReceiver(primary)
+            && !firstPostOpHasComplexArgs(postOps)) {
             return false;
         }
         return true;
+    }
+
+    /// True if the first PostOp in the list carries an Args subtree where at least one
+    /// argument contains a `.method(...)` call (signals the args layout will break
+    /// vertically, dragging the surrounding chain into vertical layout too).
+    private boolean firstPostOpHasComplexArgs(List<Cursor> postOps) {
+        if (postOps.isEmpty()) return false;
+        var first = postOps.get(0);
+        if (!(first instanceof Cursor.Branch br)) return false;
+        return br.descendants()
+            .filter(c -> c.kindIs(RuleKind.ARGS))
+            .findFirst()
+            .map(args -> {
+                if (!(args instanceof Cursor.Branch ab)) return false;
+                var exprs = childrenByRule(ab, RuleKind.EXPR);
+                if (exprs.size() < 2) return false;
+                return exprs.stream().anyMatch(e -> METHOD_CALL_PATTERN.matcher(text(e)).find());
+            })
+            .orElse(false);
     }
 
     /// True if `primary` is a class-like receiver — its first token is an identifier
@@ -863,6 +883,17 @@ final class FlowPrinter {
     private boolean isStaticFactoryReceiver(Cursor primary) {
         var t = text(primary).trim();
         return !t.isEmpty() && Character.isUpperCase(t.charAt(0));
+    }
+
+    /// Count remaining method-call PostOps in `postOps` starting from `fromIdx` (inclusive).
+    private static int countMethodCallsFromIndex(List<Cursor> postOps,
+                                                  java.util.Set<Cursor> methodCallSet,
+                                                  int fromIdx) {
+        int n = 0;
+        for (int i = fromIdx; i < postOps.size(); i++) {
+            if (methodCallSet.contains(postOps.get(i))) n++;
+        }
+        return n;
     }
 
     private boolean fitsOnLineUnary(Cursor primary, List<Cursor> postOps) {
@@ -903,7 +934,7 @@ final class FlowPrinter {
             && postOps.stream().anyMatch(this::isBareInvocationPostOp);
         int chainLinkCount = Math.max(allDotMethodCount,
                                       dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary ? 1 : 0));
-        boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount);
+        boolean shouldBreakChain = shouldBreakChain(primary, chainLinkCount, postOps);
 
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
@@ -945,24 +976,37 @@ final class FlowPrinter {
         }
 
         try (var scope = alignment.enterChain(alignColumn)) {
-            // Rule: primary + first chain call stay inline; remaining dot-method postOps each
-            // go on their own line aligned to the chain column. When the primary already
-            // contains a method access (e.g. `value.trim` + bare `()`), that bare invocation
-            // IS the first chain call — so dot-method postOps after it must all break.
+            // Rule: primary + first chain call stay inline; remaining dot-method postOps
+            // each go on their own line aligned to the chain column. Special case: after
+            // a multi-line bare-args invocation, when MULTIPLE dot-method follow-ups remain,
+            // the first follow-up stays inline (on the same line as the closing `)`) and
+            // subsequent ones break — this balances the chain layout. When only ONE
+            // follow-up remains, it breaks onto its own line aligned to the chain column.
             boolean firstMethodCallPending = !primaryHasInvocation;
-            for (var postOp : postOps) {
+            for (int pi = 0; pi < postOps.size(); pi++) {
+                var postOp = postOps.get(pi);
                 boolean isMethodCall = methodCallSet.contains(postOp);
                 if (isMethodCall && !firstMethodCallPending) {
-                    if (scope.lastPostOpWasBrokenArgs()) {
-                        // Special case: the previous bare `(...)` postOp broke its args
-                        // vertically. The first chain follow-up stays INLINE on the
-                        // same line as the closing `)`. Consume the inline slot so
-                        // subsequent dot-methods break normally (to the args-open-paren
-                        // anchor recorded by noteBrokenArgsPostOp).
+                    if (scope.lastPostOpWasBrokenArgs()
+                        && countMethodCallsFromIndex(postOps, methodCallSet, pi) >= 2) {
+                        // 2+ follow-ups remain after a broken-args invocation: the first
+                        // follow-up stays inline on the same line as the closing `)`.
+                        // Subsequent ones align to the args-open-paren column.
                         scope.consumeBrokenArgsInlineSlot();
-                    } else {
+                    } else if (scope.lastPostOpWasBrokenArgs()) {
+                        // Single follow-up after broken-args: break to the chain column
+                        // (not the args-paren column). Clear postBrokenArgsAnchor so the
+                        // chain column is used instead.
                         newline();
-                        printAlignedTo(scope.nextDotMethodAnchor(indentLevel * config.indentSize()));
+                        printAlignedTo(alignColumn);
+                        scope.clearBrokenArgsAnchor();
+                    } else {
+                        // Subsequent method calls (after the inline-consumed first) align
+                        // to the args-open-paren column when one was recorded; otherwise
+                        // align to the chain column.
+                        newline();
+                        int anchor = scope.nextDotMethodAnchor(alignColumn);
+                        printAlignedTo(anchor);
                     }
                 }
                 int lineBefore = currentLine;
@@ -1025,34 +1069,38 @@ final class FlowPrinter {
             .orElse(null);
     }
 
-    /// A dot-method PostOp begins with `.` and contains `(`. Under v6 the `.` and `(`
-    /// are token-level — inspect the PostOp's token range. Works for both Branch and Leaf
-    /// PostOps (e.g. `.toList()` may be a Leaf since it has no inner CST children).
+    /// A dot-method PostOp's FIRST non-trivia token is `.` and the range contains `(`
+    /// somewhere (the call's args paren — could be nested inside args expressions, but at
+    /// least one exists for invocation forms). Distinguished from a bare `(args)` postOp
+    /// whose first token is `(`.
     private boolean isDotMethodPostOp(Cursor postOp) {
         var tokens = postOp.cst().tokens();
-        boolean hasDot = false;
+        boolean firstIsDot = false;
+        boolean seenFirst = false;
         boolean hasParen = false;
         for (int t = postOp.firstTokenIdx(); t <= postOp.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
             var s = tokens.textAt(t).toString();
-            if (".".equals(s)) hasDot = true;
+            if (!seenFirst) {
+                firstIsDot = ".".equals(s);
+                seenFirst = true;
+            }
             if ("(".equals(s)) hasParen = true;
         }
-        return hasDot && hasParen;
+        return firstIsDot && hasParen;
     }
 
-    /// A bare invocation PostOp begins with `(` but no `.` (e.g. method call on a primary).
+    /// A bare invocation PostOp's FIRST non-trivia token is `(` (e.g. `(args)`, the
+    /// invocation following an already-qualified primary like `Result.all`). Distinguished
+    /// from a `.method(args)` postOp where the first token is `.`. Inner `.` tokens belong
+    /// to nested expressions and are not relevant.
     private boolean isBareInvocationPostOp(Cursor postOp) {
         var tokens = postOp.cst().tokens();
-        boolean hasDot = false;
-        boolean hasParen = false;
         for (int t = postOp.firstTokenIdx(); t <= postOp.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
-            var s = tokens.textAt(t).toString();
-            if (".".equals(s)) hasDot = true;
-            if ("(".equals(s)) hasParen = true;
+            return "(".equals(tokens.textAt(t).toString());
         }
-        return hasParen && !hasDot;
+        return false;
     }
 
     private boolean hasMethodAccessInPrimary(Cursor primary) {

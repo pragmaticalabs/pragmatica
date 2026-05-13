@@ -158,6 +158,14 @@ public final class AlignmentContext {
             // postBrokenArgsAnchor stays — it's the column for subsequent breaks.
         }
 
+        /// Clear the args-open-paren anchor so subsequent dot-methods use the chain
+        /// column instead. Used when the chain breaks immediately after broken args
+        /// (only one follow-up remains).
+        public void clearBrokenArgsAnchor() {
+            this.lastPostOpWasBrokenArgs = false;
+            this.postBrokenArgsAnchor = - 1;
+        }
+
         public int postBrokenArgsAnchor() {
             return postBrokenArgsAnchor;
         }
