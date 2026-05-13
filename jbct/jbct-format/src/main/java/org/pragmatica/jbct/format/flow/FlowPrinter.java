@@ -1189,6 +1189,14 @@ final class FlowPrinter {
     private boolean hasComplexArguments(Cursor args) {
         var exprs = childrenByRule(args, RuleKind.EXPR);
         if (exprs.size() >= 2) {
+            // 2+ lambda args: always break (each lambda on own line).
+            int lambdaCount = 0;
+            for (var expr : exprs) {
+                if (containsLambdaArrow(expr)) lambdaCount++;
+            }
+            if (lambdaCount >= 2) {
+                return true;
+            }
             for (var expr : exprs) {
                 var exprText = text(expr);
                 if (containsMethodCall(exprText) || exprText.contains("-> {")) {
@@ -1203,6 +1211,12 @@ final class FlowPrinter {
             }
         }
         return false;
+    }
+
+    /// True if `expr` contains a LAMBDA descendant (any `->` form).
+    private boolean containsLambdaArrow(Cursor expr) {
+        if (!(expr instanceof Cursor.Branch br)) return false;
+        return br.descendants().anyMatch(c -> c.kindIs(RuleKind.LAMBDA));
     }
 
     /// True if `expr` contains a TERNARY node at its first-level descent (i.e. the
@@ -1616,7 +1630,11 @@ final class FlowPrinter {
             return;
         }
         var kids = additive.children().toList();
-        int alignCol = currentColumn;
+        // alignCol = currentColumn - 1 so that the `+` lands one column LEFT of the
+        // first operand (the goldens align `+` under the first operand's quote, but the
+        // operand itself sits one column to the right because of the trailing space
+        // after `+`).
+        int alignCol = Math.max(0, currentColumn - 1);
         // Key by firstTokenIdx — Cursor identity is unstable across children() calls.
         var operandInfo = new HashMap<Integer, OperandInfo>();
         for (var child : kids) {

@@ -24,9 +24,9 @@ final class BlankLineRules {
     /// Two members pack tightly together (no blank line) iff:
     /// - Both are simple declarations (no body, no annotation), AND
     /// - Both share the same `static` modifier status, AND
-    /// - If both are static, neither has an initializer with a multi-line value
-    ///   (text-block-style); single-line static const fields pack with one another
-    ///   even though they have initializers (the BlankLines.java convention).
+    /// - Neither has an initializer with a multi-line value (text blocks, broken-args
+    ///   lambdas) — multi-line values visually separate themselves and warrant blank
+    ///   separation from neighbours.
     private static boolean canPackTogether(Cursor current, Cursor previous) {
         if (!isSimpleNoBodyDeclaration(current) || !isSimpleNoBodyDeclaration(previous)) {
             return false;
@@ -34,7 +34,12 @@ final class BlankLineRules {
         if (isStaticField(current) != isStaticField(previous)) {
             return false;
         }
-        if (isStaticField(current) && (hasMultilineValue(current) || hasMultilineValue(previous))) {
+        if (hasMultilineValue(current) || hasMultilineValue(previous)) {
+            return false;
+        }
+        // Fields containing an annotation anywhere in their text (e.g. annotated lambda
+        // params) get blank separation from their neighbours.
+        if (text(current).contains("@") || text(previous).contains("@")) {
             return false;
         }
         return true;
@@ -49,18 +54,23 @@ final class BlankLineRules {
         return trimmed.endsWith(";") && !trimmed.contains("{");
     }
 
-    /// True if any token's text contains a `\n` (e.g. text blocks, multi-line strings) —
-    /// these decorate "fat" declarations whose siblings get blank separation.
+    /// True if any token's text contains a `\n` (text blocks, multi-line strings) OR if
+    /// the member's flat-token concatenation exceeds the typical line length (suggesting
+    /// it will format multi-line). "Fat" declarations get blank-line separation from
+    /// neighbours.
     private static boolean hasMultilineValue(Cursor member) {
         if (!(member instanceof Cursor.Branch br)) {
             return false;
         }
         var tokens = br.cst().tokens();
+        int total = 0;
         for (int t = br.firstTokenIdx(); t <= br.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
-            if (tokens.textAt(t).toString().indexOf('\n') >= 0) return true;
+            var s = tokens.textAt(t).toString();
+            if (s.indexOf('\n') >= 0) return true;
+            total += s.length() + 1; // +1 for typical inter-token space
         }
-        return false;
+        return total > 120;
     }
 
     /// True if the member contains a `static` modifier token.
