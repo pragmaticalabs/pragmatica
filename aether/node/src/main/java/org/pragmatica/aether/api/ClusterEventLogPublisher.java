@@ -35,10 +35,11 @@ import org.slf4j.LoggerFactory;
 /// 4. Submits `KVCommand.Put<ClusterEventLogKey, ClusterEventValue>` via the cluster
 ///    command applier — Rabia replicates to all nodes; commit order is the canonical order.
 ///
-/// Single-writer-per-node: the `seq` counter is local. Coupled with the originator nodeId in
-/// the key prefix path (epoch is global, seq is local per node-publisher instance — collisions
-/// across publishers are resolved by `at` HLC tie-break in display, but ordering uses Rabia
-/// commit time, not the seq value itself).
+/// Single-writer-per-node: the `seq` counter is local. The originator `nodeId` is the
+/// middle component of `ClusterEventLogKey(epoch, nodeId, seq)` so each node owns a disjoint
+/// sub-keyspace and concurrent writes from different nodes cannot collide on `(epoch, seq)`.
+/// Cross-node total order is established by Rabia commit order at the materialised-view
+/// subscriber, not by the seq value itself.
 ///
 /// **Concurrency contract.** Single instance per node. `publish` is thread-safe (token bucket
 /// + seq are atomic).
@@ -128,12 +129,12 @@ public final class ClusterEventLogPublisher {
         var at = hlcClock.now();
         var epoch = epochSupplier.getAsLong();
         var nextSeq = seq.getAndIncrement();
-        var key = ClusterEventLogKey.clusterEventLogKey(epoch, nextSeq);
+        var key = ClusterEventLogKey.clusterEventLogKey(epoch, selfId, nextSeq);
         var value = ClusterEventValue.clusterEventValue(at, type, severity, selfId.id(), message, metadata);
         return applier.apply(List.of(asAetherCommand(key, value)))
                       .mapToUnit()
-                      .onFailure(cause -> log.warn("ClusterEventLogPublisher: apply failed for type={} epoch={} seq={}: {}",
-                                                    type, epoch, nextSeq, cause.message()));
+                      .onFailure(cause -> log.warn("ClusterEventLogPublisher: apply failed for type={} epoch={} nodeId={} seq={}: {}",
+                                                    type, epoch, selfId.id(), nextSeq, cause.message()));
     }
 
     @SuppressWarnings("unchecked") private static KVCommand<AetherKey> asAetherCommand(ClusterEventLogKey key,

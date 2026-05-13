@@ -58,11 +58,13 @@ class ClusterEventLogSweeperTest {
         }
     }
 
+    private static final NodeId NODE_A = new NodeId("sweeper-test-node");
+
     private static Map<AetherKey, AetherValue> buildLog(long lowestEpoch, long highestEpoch) {
         var map = new HashMap<AetherKey, AetherValue>();
         for (var e = lowestEpoch; e <= highestEpoch; e++) {
-            map.put(ClusterEventLogKey.clusterEventLogKey(e, 0L), value(e, 0L));
-            map.put(ClusterEventLogKey.clusterEventLogKey(e, 1L), value(e, 1L));
+            map.put(ClusterEventLogKey.clusterEventLogKey(e, NODE_A, 0L), value(e, 0L));
+            map.put(ClusterEventLogKey.clusterEventLogKey(e, NODE_A, 1L), value(e, 1L));
         }
         return map;
     }
@@ -174,7 +176,7 @@ class ClusterEventLogSweeperTest {
         // KV-Store mixes ClusterEventLogKey with NodeLifecycleKey. Sweeper must touch only
         // its own family.
         var snap = new HashMap<AetherKey, AetherValue>();
-        snap.put(ClusterEventLogKey.clusterEventLogKey(1L, 0L), value(1L, 0L));
+        snap.put(ClusterEventLogKey.clusterEventLogKey(1L, NODE_A, 0L), value(1L, 0L));
         snap.put(NodeLifecycleKey.nodeLifecycleKey(new NodeId("node-x")),
                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED));
 

@@ -24,10 +24,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// RC1 Step 1 — publisher unit tests.
 ///
 /// Covered:
-/// - assigns `(epoch, seq)` from suppliers; `seq` increments monotonically per publish
-/// - originator nodeId stamped on the value
+/// - assigns `(epoch, nodeId, seq)` from suppliers; `seq` increments monotonically per publish
+/// - originator nodeId stamped both on the value AND in the key (preventing cross-node
+///   `(epoch, seq)` collisions — see `twoPublishers_sameEpochAndSeq_doNotCollideOnKey`)
 /// - rate-cap drops excess events (high publish rate) without throwing
 /// - `resetSeqForNewEpoch` resets the counter so a new epoch starts fresh
+///
+/// **Misleading-test note.** The earlier `publish_assignsMonotonicSequenceUnderConstantEpoch`
+/// asserted only the per-node seq counter behaviour with ONE publisher, which left a
+/// dangerous implicit assumption that `(epoch, seq)` was globally unique. It was not — the
+/// `CapturingApplier` records every Put verbatim, exactly as Rabia commits would. With one
+/// publisher you never observe the collision; the bug only manifests under two concurrent
+/// publishers. The new regression test below makes the multi-writer invariant explicit.
 class ClusterEventLogPublisherTest {
 
     private static final NodeId SELF = new NodeId("publisher-test-self");
@@ -62,8 +70,50 @@ class ClusterEventLogPublisherTest {
             var put = (KVCommand.Put<?, ?>) applier.captured.get(i);
             var key = (ClusterEventLogKey) put.key();
             assertThat(key.epoch()).isEqualTo(7L);
+            assertThat(key.nodeId()).isEqualTo(SELF);
             assertThat(key.seq()).isEqualTo((long) i);
         }
+    }
+
+    /// **Regression for cross-node `(epoch, seq)` collision.** Before adding `NodeId` to the
+    /// key, two publishers on different nodes writing concurrent events at the same
+    /// `(epoch, seq=0)` would produce two `KVCommand.Put`s with the SAME key — Rabia commits
+    /// both verbatim and the KV-Store applies last-write-wins, silently dropping one event.
+    ///
+    /// With `nodeId` in the key, each publisher owns a disjoint sub-keyspace; the two Puts
+    /// land at distinct keys and both events survive. This test asserts both writes are
+    /// preserved and the resulting keys are distinct.
+    @Test
+    void twoPublishers_sameEpochAndSeq_doNotCollideOnKey() {
+        var sharedApplier = new CapturingApplier();
+        var nodeA = new NodeId("node-a");
+        var nodeB = new NodeId("node-b");
+        // Both publishers see the same epoch (1) and both start their local seq at 0.
+        var publisherA = ClusterEventLogPublisher.clusterEventLogPublisher(nodeA, newClock(), () -> 1L, sharedApplier);
+        var publisherB = ClusterEventLogPublisher.clusterEventLogPublisher(nodeB, newClock(), () -> 1L, sharedApplier);
+
+        publisherA.publish(ClusterEventValue.EventType.NODE_JOINED,
+                           ClusterEventValue.Severity.INFO,
+                           "from-A",
+                           Map.of());
+        publisherB.publish(ClusterEventValue.EventType.NODE_JOINED,
+                           ClusterEventValue.Severity.INFO,
+                           "from-B",
+                           Map.of());
+
+        assertThat(sharedApplier.captured).hasSize(2);
+        var keyA = (ClusterEventLogKey) ((KVCommand.Put<?, ?>) sharedApplier.captured.get(0)).key();
+        var keyB = (ClusterEventLogKey) ((KVCommand.Put<?, ?>) sharedApplier.captured.get(1)).key();
+        // Same (epoch, seq) — would have collided pre-fix.
+        assertThat(keyA.epoch()).isEqualTo(1L);
+        assertThat(keyB.epoch()).isEqualTo(1L);
+        assertThat(keyA.seq()).isEqualTo(0L);
+        assertThat(keyB.seq()).isEqualTo(0L);
+        // Different nodeId sub-keyspaces — distinct KV keys, both writes survive.
+        assertThat(keyA.nodeId()).isEqualTo(nodeA);
+        assertThat(keyB.nodeId()).isEqualTo(nodeB);
+        assertThat(keyA).isNotEqualTo(keyB);
+        assertThat(keyA.asString()).isNotEqualTo(keyB.asString());
     }
 
     @Test
@@ -128,10 +178,13 @@ class ClusterEventLogPublisherTest {
 
         var keys = applier.captured.stream().map(c -> (ClusterEventLogKey) ((KVCommand.Put<?, ?>) c).key()).toList();
         assertThat(keys.get(0).epoch()).isEqualTo(1L);
+        assertThat(keys.get(0).nodeId()).isEqualTo(SELF);
         assertThat(keys.get(0).seq()).isEqualTo(0L);
         assertThat(keys.get(1).epoch()).isEqualTo(1L);
+        assertThat(keys.get(1).nodeId()).isEqualTo(SELF);
         assertThat(keys.get(1).seq()).isEqualTo(1L);
         assertThat(keys.get(2).epoch()).isEqualTo(2L);
+        assertThat(keys.get(2).nodeId()).isEqualTo(SELF);
         assertThat(keys.get(2).seq()).isEqualTo(0L);
     }
 }

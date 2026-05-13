@@ -194,6 +194,11 @@ import org.slf4j.LoggerFactory;
         var details = new java.util.HashMap<>(base.details());
         details.put("originEpoch", Long.toString(key.epoch()));
         details.put("originSeq", Long.toString(key.seq()));
+        // RC1 follow-up — per-key originator nodeId. The key carries it for cross-node
+        // disambiguation (eliminates `(epoch, seq)` collisions when concurrent writers share
+        // a per-node seq counter). `originNodeId` from the VALUE remains the user-facing
+        // attribution; `keyNodeId` exposes the keyspace owner for cursor diagnostics.
+        details.put("keyNodeId", key.nodeId().id());
         return new ClusterEvent(base.timestamp(), base.type(), base.severity(), base.summary(), Map.copyOf(details));
     }
 
