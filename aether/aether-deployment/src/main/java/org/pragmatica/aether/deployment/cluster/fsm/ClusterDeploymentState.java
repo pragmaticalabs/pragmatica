@@ -309,6 +309,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void handleNodeAdded(NodeId addedNode) {
             if (!ctx.seedNodes().contains(addedNode)) {assignNodeRole(addedNode);}
             reconcile();
+            if (allocatableNodes().isEmpty()) {
+                log.info("No allocatable nodes after NodeJoined (snapshot not yet ready); scheduling retry in 2s");
+                SharedScheduler.schedule(this::reconcileIfActive, timeSpan(2).seconds());
+            }
         }
 
         private void processSelfShutdown(NodeId downNode) {

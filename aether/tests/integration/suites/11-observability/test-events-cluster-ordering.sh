@@ -84,10 +84,11 @@ test_all_nodes_agree_on_order() {
             log_fail "GET /api/events failed on node ${i} (port=${port})"
             return 1
         fi
-        # Extract just summaries of marker-bearing events, preserving array order.
+        # Extract marker-bearing event names from the details.name field (where the
+        # alert name — which carries the MARKER — is stored), preserving array order.
         local marker_summaries
         marker_summaries=$(printf '%s' "${events}" \
-            | grep -oE "\"summary\"[[:space:]]*:[[:space:]]*\"[^\"]*${MARKER}[^\"]*\"" \
+            | grep -oE "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*${MARKER}[^\"]*\"" \
             | sed -E "s/.*\"([^\"]*${MARKER}[^\"]*)\"$/\1/" \
             || true)
         if [ -z "${marker_summaries}" ]; then

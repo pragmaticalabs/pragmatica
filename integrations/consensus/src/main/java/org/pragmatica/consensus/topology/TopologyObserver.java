@@ -733,17 +733,38 @@ public interface TopologyObserver extends TopologyManager {
             ///     requires quorum to be established. Falling back to the legacy
             ///     `nodeStatesById` count avoids the catch-22 where `/health/ready` never
             ///     flips and bootstrap times out.
-            ///   NORMAL — snapshot-only. If absent during steady state, return 0.
+            ///   NORMAL — count peers that are (a) in the snapshot's `coreMemberIds` AND
+            ///     (b) HEALTHY in the live SWIM `nodeStatesById` map. Using `coreMemberIds`
+            ///     (not `onDutyMemberIds`) bridges the auto-heal lag window: replacement
+            ///     nodes start as JOINING in the snapshot (not yet ON_DUTY) but SWIM has
+            ///     already verified their connectivity. Peers outside `coreMemberIds` are
+            ///     NOT counted even if SWIM-healthy, preserving the minority-partition
+            ///     safety invariant — a truly-partitioned node is absent from the
+            ///     authoritative snapshot's coreMemberIds.
             private int healthyActivePeerCount() {
                 var view = snapshotSource.currentMembershipView();
                 if (view.isPresent()) {
                     maybeTransitionToNormal(view.unwrap());
-                    return peerHealthyOnDutyCount(view.unwrap());
+                    return swimHealthyCorePeerCount(view.unwrap().coreMemberIds());
                 }
                 if (mode.get() == TopologyMode.BOOTING) {
                     return legacyHealthyActivePeerCount();
                 }
                 return 0;
+            }
+
+            /// Count peers that are both in the authoritative core-member set (from the
+            /// snapshot) and HEALTHY in the live SWIM `nodeStatesById` map, excluding self.
+            /// This is the NORMAL-mode quorum count that bridges the JOINING lag window
+            /// while respecting minority-partition safety.
+            private int swimHealthyCorePeerCount(Set<NodeId> coreMembers) {
+                return (int) nodeStatesById.values()
+                                           .stream()
+                                           .filter(state -> !state.info().id().equals(config.self()))
+                                           .filter(state -> state.info().role() != NodeRole.PASSIVE)
+                                           .filter(state -> state.health() == NodeHealth.HEALTHY)
+                                           .filter(state -> coreMembers.contains(state.info().id()))
+                                           .count();
             }
 
             /// Snapshot's `healthyOnDutyCount` may include self; subtract it deterministically
