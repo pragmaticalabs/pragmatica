@@ -53,7 +53,7 @@ public class Lambdas {
                                 // code is shifted by one tab from 's'
                                 var trimmed = s.trim();
                                 return ! trimmed.isEmpty() && trimmed.length() > 3;
-                            }) // aligned to the 's'
+                            })  // aligned to the 's'
                     .map(s -> {
                              // code is shifted by one tab from 's'
                              var upper = s.toUpperCase();
@@ -94,9 +94,7 @@ public class Lambdas {
     };
 
     java.util.function.Supplier<String> supplierLambda = () -> "default";
-
     java.util.Comparator<String> comparatorLambda = (a, b) -> a.length() - b.length();
-
     String defaultValue = "";
 
     void log(String s) {}

@@ -64,26 +64,13 @@ public class LineWrapping {
                                                 "fourth element",
                                                 "fifth element"};
 
-    private static final List<String> LONG_LIST = List.of("first",
-                                                          "second",
-                                                          "third",
-                                                          "fourth",
-                                                          "fifth");
+    private static final List<String> LONG_LIST = List.of("first", "second", "third", "fourth", "fifth");
 
-    private static final Map<String, String> LONG_MAP = Map.of("key1",
-                                                               "value1",
-                                                               "key2",
-                                                               "value2",
-                                                               "key3",
-                                                               "value3");
+    private static final Map<String, String> LONG_MAP = Map.of("key1", "value1", "key2", "value2", "key3", "value3");
 
-    interface LongImplements extends FirstInterface,
-                                     SecondInterface,
-                                     ThirdInterface {}
+    interface LongImplements extends FirstInterface, SecondInterface, ThirdInterface {}
 
-    public void methodWithManyExceptions() throws FirstException,
-                                                  SecondException,
-                                                  ThirdException {}
+    public void methodWithManyExceptions() throws FirstException, SecondException, ThirdException {}
 
     @SuppressWarnings({"unused", "unchecked", "rawtypes", "deprecation", "serial"})
     public void methodWithLongAnnotation() {}

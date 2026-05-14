@@ -6,7 +6,6 @@ public class BlankLineRules {
     private final boolean active;
 
     private static final int MAX_SIZE = 100;
-
     private static final String DEFAULT = "";
 
     public BlankLineRules(String name, int age) {
@@ -23,7 +22,7 @@ public class BlankLineRules {
         return age;
     }
 
-    record Inner(String value){}
+    record Inner(String value) {}
 
     enum Status {
         ACTIVE,

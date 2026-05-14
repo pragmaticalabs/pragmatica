@@ -38,7 +38,7 @@ public class Comments<T> {
     }
 
     // Comment for field
-    private String field;       // one more comment
+    private String field;  // one more comment
 
     // Method with comment
     public void methodWithComment() {
@@ -71,7 +71,7 @@ public class Comments<T> {
 
     // Method comment
     public static <T> Comments<T> comments() {
-        return new Comments(); // return value comment
+        return new Comments();  // return value comment
     }
 
     /**
@@ -86,7 +86,7 @@ public class Comments<T> {
     public void inlineComments() {
         var a = 1;  // inline comment 1
         var b = 2;  // inline comment 2
-        var c = a + b; // inline comment 3
+        var c = a + b;  // inline comment 3
     }
 
     /** Here we have {@code void code()} in comment */
@@ -128,4 +128,3 @@ public class Comments<T> {
 
     void process(int x) {}
 }
-

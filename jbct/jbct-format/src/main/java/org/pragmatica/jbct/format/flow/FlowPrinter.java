@@ -59,6 +59,9 @@ final class FlowPrinter {
 
     // Alignment tracking
     private final AlignmentContext alignment = new AlignmentContext();
+    // When >= 0, emitLeadingComments uses printAlignedTo(forcedIndentCol) instead of printIndent().
+    // Set by printAlignedBlockStatements so comments in aligned lambda bodies land at bodyCol.
+    private int forcedIndentCol = -1;
 
     // Pattern for detecting method calls in chains
     private static final Pattern METHOD_CALL_PATTERN = Pattern.compile("\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(");
@@ -94,9 +97,6 @@ final class FlowPrinter {
 
     /// Print the CST root and return formatted text with token mapping.
     FlowResult print(Cursor root) {
-        if (System.getProperty("pfmt.struct") != null) {
-            dumpStruct(root, 0);
-        }
         printNode(root);
         var result = output.toString()
             .lines()
@@ -447,16 +447,22 @@ final class FlowPrinter {
             newline();
             Option<Cursor> prevMember = Option.none();
             boolean first = true;
-            for (var member : members) {
+            for (int mi = 0; mi < members.size(); mi++) {
+                var member = members.get(mi);
                 if (!first && BlankLineRules.needsBlankLineBetween(member, prevMember)) {
                     newline();
                 }
-                // Skip printIndent when the member has leading comments — emitLeadingComments
+                // Skip printIndent when the member has unemitted leading comments — emitLeadingComments
                 // owns its own newline/indent and we'd otherwise emit a stray spaces-only line.
-                if (!hasLeadingComment(member)) {
+                if (!hasUnEmittedLeadingComment(member)) {
                     printIndent();
                 }
                 printNode(member);
+                // Emit trailing line comments from the NEXT member's leading trivia before
+                // the newline, so they stay on the same line as the current member.
+                if (mi + 1 < members.size()) {
+                    emitTrailingCommentsFrom(members.get(mi + 1));
+                }
                 newline();
                 first = false;
                 prevMember = Option.some(member);
@@ -488,7 +494,52 @@ final class FlowPrinter {
     }
 
     private void printFieldDecl(Cursor.Branch field) {
+        // Check for array initializer `{elem, ...}` that overflows the line. If found and
+        // it doesn't fit, walk up to the `=` inline then break each element aligned to
+        // the first element's column. Otherwise just walk everything inline.
+        var varInitOpt = findFirst(field, RuleKind.VAR_INIT);
+        if (!measuringMode && varInitOpt.isPresent()) {
+            var varInit = varInitOpt.unwrap();
+            var initText = text(varInit);
+            if (initText.startsWith("{") && !fitsOnLine(field)) {
+                printArrayFieldDecl(field, (Cursor.Branch) varInit);
+                return;
+            }
+        }
         walkTokens(field);
+    }
+
+    private void printArrayFieldDecl(Cursor.Branch field, Cursor.Branch varInit) {
+        // Emit everything up to and including `=` inline, then break the `{...}` initializer.
+        // Each element is on its own line aligned to the column right after `{`.
+        var tokens = field.cst().tokens();
+        int initStart = varInit.firstTokenIdx();
+        for (int t = field.firstTokenIdx(); t < initStart; t++) {
+            if (!tokens.isTrivia(t)) emitToken(tokens.textAt(t).toString());
+        }
+        final int[] alignCol = {-1};
+        walkTokensWith(varInit, new TokenWalker() {
+            @Override
+            public void onChild(Cursor c) { printNodeContent(c); }
+            @Override
+            public void onToken(int kind, String text) {
+                if ("{".equals(text)) {
+                    emitToken("{");
+                    alignCol[0] = currentColumn; // right after `{`
+                } else if ("}".equals(text)) {
+                    emitToken("}");
+                } else if (",".equals(text)) {
+                    emit(",");
+                    newline();
+                    printAlignedTo(alignCol[0]);
+                } else {
+                    emitToken(text);
+                }
+            }
+        });
+        for (int t = varInit.lastTokenIdx() + 1; t <= field.lastTokenIdx(); t++) {
+            if (!tokens.isTrivia(t)) emitToken(tokens.textAt(t).toString());
+        }
     }
 
     // ===== Enum body =====
@@ -598,7 +649,10 @@ final class FlowPrinter {
                     // visually packed on a single source line. A method body of only an
                     // `if`/`try`/`while` + `return` packs tight; multi-line text-block
                     // assignments visually separate themselves and need no blank.
-                    if (!isLambdaBody && i >= 1 && i == stmts.size() - 1 && isReturnOrThrowStmt(stmt) && !hasLeadingComment(stmt)
+                    // In lambda bodies: only add blank before return when body has 4+ stmts
+                    // (3+ prior + 1 return), treating it as a substantial function body.
+                    boolean lambdaBodyAllowsBlank = !isLambdaBody || stmts.size() >= 4;
+                    if (lambdaBodyAllowsBlank && i >= 1 && i == stmts.size() - 1 && isReturnOrThrowStmt(stmt) && !hasLeadingComment(stmt)
                         && hasSimpleSingleLinePriorStmt(stmts, i)) {
                         newline();
                     }
@@ -611,10 +665,17 @@ final class FlowPrinter {
                              && (isBlockShapedStmt(stmts.get(i - 1)) ^ isBlockShapedStmt(stmt))) {
                         newline();
                     }
-                    if (!hasLeadingComment(stmt)) {
+                    if (!hasUnEmittedLeadingComment(stmt)) {
                         printIndent();
                     }
                     printNode(stmt);
+                    // Emit trailing line comments from next stmt's leading trivia before newline.
+                    if (i + 1 < stmts.size()) {
+                        emitTrailingCommentsFrom(stmts.get(i + 1));
+                    } else {
+                        // Last stmt: emit trailing comments from the block's closing `}` token range.
+                        emitBlockTrailingComments(block, stmts.get(i));
+                    }
                     newline();
                 }
                 indentLevel--;
@@ -625,8 +686,78 @@ final class FlowPrinter {
         emitBare("}");
     }
 
+    /// Emit trailing line comments that sit in the last stmt's trailing trivia region
+    /// (between the last stmt's last non-trivia token and the block's closing `}`).
+    private void emitBlockTrailingComments(Cursor.Branch block, Cursor lastStmt) {
+        if (measuringMode) return;
+        var tokens = block.cst().tokens();
+        int closingBrace = block.lastTokenIdx();
+        // Find the last non-trivia token of the last stmt to start scanning from.
+        int lastNonTrivia = lastStmt.lastTokenIdx();
+        while (lastNonTrivia > lastStmt.firstTokenIdx() && tokens.isTrivia(lastNonTrivia)) {
+            lastNonTrivia--;
+        }
+        for (int t = lastNonTrivia + 1; t <= closingBrace; t++) {
+            if (!tokens.isTrivia(t)) break;
+            int kind = tokens.kindAt(t);
+            if (kind == 1 || kind == 3) { // LINE_COMMENT or DOC_LINE_COMMENT
+                int commentStart = tokens.startAt(t);
+                if (!precedingContentOnSameLine(commentStart)) break;
+                if (!emittedTriviaTokens.contains(t)) {
+                    emit("  " + tokens.textAt(t).toString().stripTrailing());
+                    emittedTriviaTokens.add(t);
+                }
+            }
+        }
+    }
+
+    /// Emit any trailing line comments from `nextNode`'s leading trivia that sit on the
+    /// same source line as the preceding non-trivia content. Marks them emitted so
+    /// `emitLeadingComments` skips them. Call this BEFORE the `newline()` that follows the
+    /// current node, so the trailing comment lands on the right line.
+    private void emitTrailingCommentsFrom(Cursor nextNode) {
+        if (measuringMode) return;
+        var tokens = nextNode.cst().tokens();
+        for (int tokIdx : nextNode.leadingTriviaTokens().toArray()) {
+            if (emittedTriviaTokens.contains(tokIdx)) continue;
+            int kind = tokens.kindAt(tokIdx);
+            if (kind != 1 && kind != 3) continue; // LINE_COMMENT or DOC_LINE_COMMENT only
+            int commentStart = tokens.startAt(tokIdx);
+            if (!precedingContentOnSameLine(commentStart)) break;
+            var text = tokens.textAt(tokIdx).toString().stripTrailing();
+            emit("  " + text);
+            emittedTriviaTokens.add(tokIdx);
+        }
+    }
+
+    /// Returns true if there is non-whitespace content before `sourcePos` on the same source
+    /// line — i.e., this position is a trailing context (not the start of a new line).
+    private boolean precedingContentOnSameLine(int sourcePos) {
+        for (int pos = sourcePos - 1; pos >= 0; pos--) {
+            char ch = source.charAt(pos);
+            if (ch == '\n') return false;
+            if (ch != ' ' && ch != '\t' && ch != '\r') return true;
+        }
+        return false;
+    }
+
     private boolean hasLeadingComment(Cursor node) {
         return node.leadingTrivia().anyMatch(t -> t.isLineComment() || t.isBlockComment());
+    }
+
+    /// True if `node` has any line/block comment in its leading trivia that has NOT yet
+    /// been emitted. Used instead of `hasLeadingComment` when trailing comments may have
+    /// already been claimed by `emitTrailingCommentsFrom`, so we don't skip `printIndent`
+    /// for a node whose only leading trivia was a trailing comment of the prior statement.
+    private boolean hasUnEmittedLeadingComment(Cursor node) {
+        if (measuringMode) return hasLeadingComment(node);
+        var tokens = node.cst().tokens();
+        for (int tokIdx : node.leadingTriviaTokens().toArray()) {
+            if (emittedTriviaTokens.contains(tokIdx)) continue;
+            int kind = tokens.kindAt(tokIdx);
+            if (kind >= 1 && kind <= 4) return true; // any comment kind (1=LINE, 2=BLOCK, 3=DOC_LINE, 4=DOC_BLOCK)
+        }
+        return false;
     }
 
     /// True if `block` is the body of a lambda — i.e. it has a LAMBDA ancestor whose
@@ -730,13 +861,21 @@ final class FlowPrinter {
 
     private void printAlignedBlockStatements(List<Cursor> stmts, int alignCol) {
         int bodyCol = alignCol + config.indentSize();
-        try (var scope = alignment.pushLambdaAlign(bodyCol)) {
-            for (var stmt : stmts) {
+        // Use forcedIndentCol so emitLeadingComments uses printAlignedTo(bodyCol)
+        // instead of printIndent() (which uses indentLevel and may round incorrectly).
+        int savedForcedIndent = forcedIndentCol;
+        forcedIndentCol = bodyCol;
+        for (var stmt : stmts) {
+            // Skip printAlignedTo for stmts with leading comments: currentColumn is
+            // already 0 from the preceding newline, so emitLeadingComments won't add
+            // an extra blank line (it only newlines when currentColumn > 0).
+            if (!hasUnEmittedLeadingComment(stmt)) {
                 printAlignedTo(bodyCol);
-                printNode(stmt);
-                newline();
             }
+            printNode(stmt);
+            newline();
         }
+        forcedIndentCol = savedForcedIndent;
     }
 
     private void printSwitchBlock(Cursor.Branch switchBlock) {
@@ -1018,6 +1157,11 @@ final class FlowPrinter {
                 int colBefore = currentColumn;
                 boolean isBareInvoc = isBareInvocationPostOp(postOp);
                 printNodeContent(postOp);
+                // Emit trailing line comments from the next postOp's leading trivia
+                // before the newline that separates chain calls.
+                if (pi + 1 < postOps.size()) {
+                    emitTrailingCommentsFrom(postOps.get(pi + 1));
+                }
                 boolean spanned = currentLine != lineBefore;
                 scope.notePostOpEmitted(spanned, containsLambda(postOp));
                 if (isBareInvoc && spanned && !containsLambda(postOp)) {
@@ -1188,6 +1332,12 @@ final class FlowPrinter {
     }
 
     private boolean hasComplexArguments(Cursor args) {
+        // Block lambda args that contain line comments are underestimated by measureWidth()
+        // (comments are emitted to output, not measureBuffer). Force broken layout when
+        // a block lambda body has leading comments — the `//` check is a reliable proxy.
+        var argsText = text(args);
+        if (argsText.contains("-> {") && argsText.contains("//")) return true;
+
         var exprs = childrenByRule(args, RuleKind.EXPR);
         if (exprs.size() >= 2) {
             // 2+ lambda args: always break (each lambda on own line).
@@ -1196,7 +1346,14 @@ final class FlowPrinter {
                 if (containsLambdaArrow(expr)) lambdaCount++;
             }
             if (lambdaCount >= 2) {
-                return true;
+                // Force complex layout only when any lambda has non-trivial content:
+                // block body, method call in body, or string concatenation.
+                // Short expression lambdas like `s -> s` or `c -> ""` can stay inline.
+                boolean anyComplexLambda = exprs.stream().anyMatch(e -> {
+                    var t = text(e);
+                    return t.contains("-> {") || containsMethodCall(t) || t.contains(" + ");
+                });
+                if (anyComplexLambda) return true;
             }
             for (var expr : exprs) {
                 var exprText = text(expr);
@@ -1291,8 +1448,7 @@ final class FlowPrinter {
             @Override
             public void onChild(Cursor child) {
                 if (afterArrow) {
-                    // Lambda body is a tail-context expression: chains inside it break
-                    // vertically as if it were a `return` body.
+                    // Lambda body: enter tail context so chains inside break vertically.
                     try (var scope = alignment.enterTailContext()) {
                         printNodeContent(child);
                     }
@@ -1566,7 +1722,11 @@ final class FlowPrinter {
                         printNodeContent(child);
                         skipNext[0] = false;
                     } else {
-                        printNode(child);
+                        // Ternary cond: suppress LOG_AND/LOG_OR breaking so `&&`/`||`
+                        // in the cond stay on one line per the always-break-`?`/`:` rule.
+                        try (var tc = alignment.enterTernaryCond()) {
+                            printNode(child);
+                        }
                     }
                 }
 
@@ -1683,16 +1843,19 @@ final class FlowPrinter {
     /// always break — each `&&` lands on a new line aligned to the first operand. In
     /// non-tail contexts (assignment RHS, args, switch case), render inline.
     private void printLogAnd(Cursor.Branch logAnd) {
-        boolean hasOperator = false;
+        // Count `&&` operators — only break when 2+ operators (3+ operands);
+        // short `a && b` chains stay inline.
+        int operatorCount = 0;
         var tokens = logAnd.cst().tokens();
         for (int t = logAnd.firstTokenIdx(); t <= logAnd.lastTokenIdx(); t++) {
             if (tokens.isTrivia(t)) continue;
-            if ("&&".equals(tokens.textAt(t).toString())) { hasOperator = true; break; }
+            if ("&&".equals(tokens.textAt(t).toString())) operatorCount++;
         }
         if (measuringMode
             || alignment.isInInlineExpression()
+            || alignment.isInTernaryCond()
             || !alignment.isInTailContext()
-            || !hasOperator) {
+            || operatorCount < 2) {
             walkTokensWith(logAnd, new TokenWalker() {
                 @Override public void onChild(Cursor c) { printNodeContent(c); }
                 @Override public void onToken(int kind, String text) { emitToken(text); }
@@ -1818,7 +1981,11 @@ final class FlowPrinter {
                 if (currentColumn > 0) {
                     newline();
                 }
-                printIndent();
+                if (forcedIndentCol >= 0) {
+                    printAlignedTo(forcedIndentCol);
+                } else {
+                    printIndent();
+                }
                 var text = tokens.textAt(tokIdx).toString().stripTrailing();
                 output.append(text);
                 currentColumn += text.length();
@@ -1850,7 +2017,11 @@ final class FlowPrinter {
             // Whitespace trivia ignored — flow formatter controls all whitespace
         }
         if (emittedAny && currentColumn == 0) {
-            printIndent();
+            if (forcedIndentCol >= 0) {
+                printAlignedTo(forcedIndentCol);
+            } else {
+                printIndent();
+            }
         }
     }
 
@@ -1875,23 +2046,6 @@ final class FlowPrinter {
         emit(text);
     }
 
-    private static void dumpStruct(Cursor n, int depth) {
-        var indent = " ".repeat(depth*2);
-        var txt = "";
-        try {
-            int s = n.firstTokenIdx(); int e = n.lastTokenIdx();
-            var sb = new StringBuilder();
-            for (int t = s; t <= e && sb.length() < 60; t++) {
-                if (!n.cst().tokens().isTrivia(t)) sb.append(n.cst().tokens().textAt(t)).append(" ");
-            }
-            txt = sb.toString().trim();
-            if (txt.length() > 60) txt = txt.substring(0, 60) + "...";
-        } catch (Exception e) {}
-        System.err.println(indent + (n instanceof Cursor.Branch b ? b.kind().toString() : "leaf") + " [" + txt + "]");
-        if (n instanceof Cursor.Branch b) {
-            b.children().forEach(ch -> dumpStruct(ch, depth+1));
-        }
-    }
 
     private void emit(String text) {
         if (measuringMode) {

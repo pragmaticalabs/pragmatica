@@ -51,6 +51,23 @@ public final class AlignmentContext {
         return tailContextDepth > 0;
     }
 
+    private int ternaryCond = 0;
+
+    /// Enter a ternary-cond context. LOG_AND/LOG_OR inside a ternary cond stay on one
+    /// line regardless of operator count — only the `?`/`:` lines break.
+    public TernaryCondScope enterTernaryCond() {
+        ternaryCond++;
+        return new TernaryCondScope();
+    }
+
+    public boolean isInTernaryCond() {
+        return ternaryCond > 0;
+    }
+
+    public final class TernaryCondScope implements AutoCloseable {
+        @Override public void close() { ternaryCond--; }
+    }
+
     public final class TailScope implements AutoCloseable {
         private final int suspendedInline;
         TailScope(int suspendedInline) { this.suspendedInline = suspendedInline; }
