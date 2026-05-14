@@ -36,4 +36,16 @@ public class CompoundAssignments {
     int getValue() {
         return 42;
     }
+
+    long shiftLeft(long value, int n) {
+        return value << n;
+    }
+
+    int shiftRight(int x) {
+        return x >> 1;
+    }
+
+    int unsignedShiftRight(int x) {
+        return x >>> 1;
+    }
 }
