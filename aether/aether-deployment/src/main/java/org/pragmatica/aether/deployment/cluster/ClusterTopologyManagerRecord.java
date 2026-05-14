@@ -216,8 +216,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private int snapshotHealthyOnDutyCount() {
+        // Fall back to configured cluster size when no generation snapshot exists yet
+        // (cold start / leader just elected before first snapshot is published).
         return snapshotSource.currentMembershipView().map(MembershipView::healthyOnDutyCount)
-                                                   .or(0);
+                                                   .or(observer.clusterSize());
     }
 
     @Contract@Override public void onNodeReady(NodeId nodeId) {

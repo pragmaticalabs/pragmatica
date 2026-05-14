@@ -51,8 +51,19 @@ test_inject_events_round_robin() {
 # Give the replicated log a moment to fan out + the materialised-view subscribers
 # on every node a chance to catch up.
 test_wait_for_replication() {
-    sleep 5
-    log_pass "Replication window elapsed"
+    local deadline=$((SECONDS + 15))
+    while [ $SECONDS -lt $deadline ]; do
+        local port=$((MGMT_PORT + 0))
+        local events
+        events=$(curl -sfk -m 5 -H "X-API-Key: ${API_KEY}" \
+                        "http://${TARGET_HOST}:${port}/api/events" 2>/dev/null || true)
+        if printf '%s' "${events}" | grep -q "${MARKER}"; then
+            log_pass "Replication confirmed (marker visible on node 0)"
+            return 0
+        fi
+        sleep 1
+    done
+    log_pass "Replication window elapsed (15s — marker not yet visible; order assertion follows)"
 }
 
 # Read /api/events from every node, extract just the marker-bearing entries, and
