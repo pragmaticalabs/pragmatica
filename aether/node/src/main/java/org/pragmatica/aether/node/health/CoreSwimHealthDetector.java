@@ -145,10 +145,13 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                       () -> true);
     }
 
+<<<<<<< HEAD
     /// Phase-aware overload (D.3 three-phase model, 2026-05-11). `isBootingSupplier`
     /// is the cluster's `ClusterPhaseView.compute() == ClusterPhase.COLD_BOOT` projection
     /// wired from `AetherNode`. When `false` (NORMAL or RECOVERING), SWIM emits
     /// `FaultyObserved` regardless of per-peer `everSeenHealthy`.
+=======
+>>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
                                                                 TopologyConfig topologyConfig,
                                                                 Serializer serializer,
@@ -172,12 +175,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                       _ -> {});
     }
 
-    /// Leader-faulty evictor overload (2026-05-09). `faultyLeaderEvictor` is invoked
-    /// from `SwimHealthContext.routeFaulty` ONLY when the FAULTY peer equals the
-    /// current cluster leader. Production wires this to `clusterNetwork::disconnect`
-    /// to break the consensus.apply broadcast stall when the dead leader is still
-    /// QUIC-connected (cloud Container kill-leader case). See SwimHealthContext field
-    /// doc for the catch-22 rationale.
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
                                                                 TopologyConfig topologyConfig,
                                                                 Serializer serializer,

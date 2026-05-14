@@ -34,4 +34,35 @@
             <artifactId>assertj-core</artifactId>
         </dependency>
     </dependencies>
+
+    <profiles>
+        <profile>
+            <id>generate-parser</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.pragmatica-lite</groupId>
+                        <artifactId>peglib-maven-plugin</artifactId>
+                        <version>${peglib.maven.plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>generate-pg-parser</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>generate</goal>
+                                </goals>
+                                <configuration>
+                                    <grammarFile>${project.basedir}/src/main/resources/org/pragmatica/aether/pg/parser/postgres.peg</grammarFile>
+                                    <outputDirectory>${project.basedir}/src/main/java</outputDirectory>
+                                    <packageName>org.pragmatica.aether.pg.parser</packageName>
+                                    <className>PgSqlParser</className>
+                                    <errorReporting>ADVANCED</errorReporting>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

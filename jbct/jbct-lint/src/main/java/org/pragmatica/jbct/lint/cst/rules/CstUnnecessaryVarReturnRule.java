@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -19,6 +19,7 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-07";
     private static final Pattern VAR_DECL_PATTERN = Pattern.compile("^\\s*(?:var|final\\s+var)\\s+(\\w+)\\s*=");
     private static final Pattern RETURN_VAR_PATTERN = Pattern.compile("^\\s*return\\s+(\\w+)\\s*;\\s*$");
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -26,26 +27,22 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class)
-                .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                .map(qn -> text(qn, source))
-                .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
-        return findAllMethods(root).stream()
-                      .flatMap(method -> analyzeMethod(root, method, source, ctx));
+        return findAll(root, RuleKind.MEMBER).stream()
+                      .flatMap(method -> analyzeMethod(root, method, ctx));
     }
 
-    private Stream<Diagnostic> analyzeMethod(CstNode root, CstNode method, String source, LintContext ctx) {
+    private Stream<Diagnostic> analyzeMethod(Cursor root, Cursor method, LintContext ctx) {
         var statements = findAllStatements(method);
         var diagnostics = Stream.<Diagnostic>builder();
         for (int i = 0; i < statements.size() - 1; i++) {
             var current = statements.get(i);
             var next = statements.get(i + 1);
-            var currentText = text(current, source).trim();
-            var nextText = text(next, source).trim();
+            var currentText = text(current).trim();
+            var nextText = text(next).trim();
             var varMatcher = VAR_DECL_PATTERN.matcher(currentText);
             var returnMatcher = RETURN_VAR_PATTERN.matcher(nextText);
             if (!varMatcher.find() || !returnMatcher.find()) {
@@ -57,7 +54,7 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
                 continue;
             }
             // Check that the variable is not referenced elsewhere in the method
-            var methodText = text(method, source);
+            var methodText = text(method);
             var varRefPattern = Pattern.compile("\\b" + Pattern.quote(varName) + "\\b");
             var varRefMatcher = varRefPattern.matcher(methodText);
             var refCount = 0;
@@ -66,16 +63,15 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
             }
             // Expect exactly 2 references: the declaration and the return
             if (refCount <= 2) {
-                diagnostics.add(createDiagnostic(root, current, varName, source, ctx));
+                diagnostics.add(createDiagnostic(root, current, varName, ctx));
             }
         }
         return diagnostics.build();
     }
 
-    private Diagnostic createDiagnostic(CstNode root, CstNode stmt, String varName, String source, LintContext ctx) {
-        var methodName = findAncestor(root, stmt, RuleId.Member.class)
-                .flatMap(md -> childByRule(md, RuleId.Identifier.class))
-                .map(id -> text(id, source))
+    private Diagnostic createDiagnostic(Cursor root, Cursor stmt, String varName, LintContext ctx) {
+        var methodName = findAncestor(root, stmt, RuleKind.MEMBER)
+                .map(member -> extractMethodName(text(member)))
                 .or("(unknown)");
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
@@ -96,7 +92,8 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
             """);
     }
 
-    private static java.util.List<CstNode> findAllMethods(CstNode root) {
-        return findAll(root, RuleId.Member.class);
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

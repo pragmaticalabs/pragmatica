@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.stream.Stream;
 
@@ -21,22 +20,18 @@ public class CstChainLengthRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find statements with long method chains
         return findAllStatements(root).stream()
-                      .filter(stmt -> countChainedCalls(stmt, source) > MAX_CHAIN_LENGTH)
-                      .map(stmt -> createDiagnostic(stmt, source, ctx));
+                      .filter(stmt -> countChainedCalls(stmt) > MAX_CHAIN_LENGTH)
+                      .map(stmt -> createDiagnostic(stmt, ctx));
     }
 
-    private int countChainedCalls(CstNode stmt, String source) {
-        var stmtText = text(stmt, source);
+    private int countChainedCalls(Cursor stmt) {
+        var stmtText = text(stmt);
         int count = 0;
         int depth = 0;
         boolean inString = false;
@@ -74,8 +69,8 @@ public class CstChainLengthRule implements CstLintRule {
         return j < text.length() && text.charAt(j) == '(';
     }
 
-    private Diagnostic createDiagnostic(CstNode stmt, String source, LintContext ctx) {
-        var chainLength = countChainedCalls(stmt, source);
+    private Diagnostic createDiagnostic(Cursor stmt, LintContext ctx) {
+        var chainLength = countChainedCalls(stmt);
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

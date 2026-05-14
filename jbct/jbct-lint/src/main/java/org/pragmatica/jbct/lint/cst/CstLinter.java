@@ -4,11 +4,10 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.rules.*;
+import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.Java25Parser;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -45,7 +44,13 @@ public class CstLinter {
 
     /// Lint a source file.
     public Result<List<Diagnostic>> lint(SourceFile source) {
-        return parse(source).map(cst -> analyzeWithRules(cst, source));
+        return parser.parse(source.content()).map(root -> analyzeWithRules(root, source));
+    }
+
+    /// Lint an already-parsed CST. Single-pass orchestrators (e.g. ProcessMojo) call
+    /// this to avoid re-parsing when the parse tree is already in hand.
+    public List<Diagnostic> lintParsed(Cursor root, SourceFile source) {
+        return analyzeWithRules(root, source);
     }
 
     /// Check if source passes lint rules.
@@ -65,35 +70,13 @@ public class CstLinter {
                           .failOnWarning() && hasWarnings);
     }
 
-    private Result<CstNode> parse(SourceFile source) {
-        var result = parser.parseWithDiagnostics(source.content());
-        if (result.isSuccess()) {
-            return result.node()
-                         .toResult(Causes.cause("Parse error in " + source.fileName()));
-        }
-        var errorMsg = result.diagnostics()
-                             .stream()
-                             .findFirst()
-                             .map(d -> "%s:%d:%d - %s".formatted(source.fileName(),
-                                                                 d.span()
-                                                                  .start()
-                                                                  .line(),
-                                                                 d.span()
-                                                                  .start()
-                                                                  .column(),
-                                                                 d.message()))
-                             .orElse("Parse error in " + source.fileName());
-        return Causes.cause(errorMsg)
-                     .result();
-    }
-
-    private List<Diagnostic> analyzeWithRules(CstNode cst, SourceFile source) {
+    private List<Diagnostic> analyzeWithRules(Cursor root, SourceFile source) {
         var contextWithFile = context.withFileName(source.fileName());
         // Extract @SuppressWarnings suppressions
-        var suppressions = SuppressionExtractor.extractSuppressions(cst, source.content());
+        var suppressions = SuppressionExtractor.extractSuppressions(root, source.content());
         return rules.stream()
                     .filter(rule -> contextWithFile.isRuleEnabled(rule.ruleId()))
-                    .flatMap(rule -> rule.analyze(cst,
+                    .flatMap(rule -> rule.analyze(root,
                                                   source.content(),
                                                   contextWithFile))
                     .filter(diagnostic -> !SuppressionExtractor.isSuppressed(suppressions,

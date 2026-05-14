@@ -7,57 +7,62 @@ import org.pragmatica.lang.Result;
 public class TernaryOperators {
     String simpleTernary(boolean condition) {
         return condition
-              ? "yes"
-              : "no";
+               ? "yes"
+               : "no";
     }
 
     Result<String> ternaryInReturn(String value) {
         return value == null
-              ? Result.failure(null)
-              : Result.success(value);
+               ? Result.failure(null)
+               : Result.success(value);
     }
 
     String ternaryWithCalls(String value) {
         return value.isEmpty()
-              ? getDefault()
-              : process(value);
+               ? getDefault()
+               : process(value);
     }
 
     String nestedTernary(int value) {
         return value <0
-              ? "negative"
-              : value == 0
-              ? "zero"
-              : "positive";
+               ? "negative"
+               : value == 0
+                 ? "zero"
+                 : "positive";
     }
 
     void ternaryInAssignment(boolean condition) {
         String result = condition
-                       ? "long value that makes line too long"
-                       : "another long value";
+                        ? "long value that makes line too long"
+                        : "another long value";
     }
 
     Result<String> longTernary(String value) {
         return isValidAndNotEmptyAndMeetsRequirements(value)
-              ? Result.success(processAndTransformValue(value))
-              : Result.failure(null);
+               ? Result.success(processAndTransformValue(value))
+               : Result.failure(null);
     }
 
+    // Ternary in lambda body: ?/: align to one char after the arrow (= cond start).
     java.util.function.Function<String, String> ternaryInLambda = s -> s.isEmpty()
-                                                                      ? "empty"
-                                                                      : s.toUpperCase();
+                                                                       ? "empty"
+                                                                       : s.toUpperCase();
 
+    // Chain breaks each .method onto its own line aligned to first `.` of chain
+    // (same Sequencer-as-steps rule as ChainAlignment.java). The .map's multi-line
+    // lambda body keeps the inner ternary's ?/: aligned under cond start.
     java.util.List<String> ternaryInStream(java.util.List<String> items) {
-        return items.stream().map(s -> s.isEmpty()
-                                      ? "(blank)"
-                                      : s)
-                           .toList();
+        return items.stream()
+                    .map(s -> s.isEmpty()
+                              ? "(blank)"
+                              : s)
+                    .toList();
     }
 
     Option<String> optionTernary(String value) {
         return value == null
-              ? Option.none()
-              : Option.option(value);
+               ? Option.none()
+               : Option.option(value);
     }
 
     void ternaryAsArgument(String value) {
@@ -76,8 +81,8 @@ public class TernaryOperators {
 
     String instanceofTernary(Object obj) {
         return obj instanceof String s
-              ? s.toUpperCase()
-              : obj.toString();
+               ? s.toUpperCase()
+               : obj.toString();
     }
 
     String getDefault() {

@@ -3,9 +3,10 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -16,58 +17,58 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstFactoryNamingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NAM-01";
 
+    // v6: Identifier is a token, not a CST rule.
+    private static final Pattern RECORD_NAME_PATTERN =
+        Pattern.compile("\\brecord\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
+    private static final Pattern METHOD_NAME_PATTERN =
+        Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
+
     @Override
     public String ruleId() {
         return RULE_ID;
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Check records for factory methods
         return findAllRecords(root).stream()
-                      .flatMap(record -> checkFactoryMethods(record, source, ctx));
+                      .flatMap(record -> checkFactoryMethods(record, ctx));
     }
 
-    private Stream<Diagnostic> checkFactoryMethods(CstNode record, String source, LintContext ctx) {
-        var typeName = childByRule(record, RuleId.Identifier.class).map(id -> text(id, source))
-                                  .or("");
-        if (typeName.isEmpty()) return Stream.empty();
+    private Stream<Diagnostic> checkFactoryMethods(Cursor record, LintContext ctx) {
+        var nameMatcher = RECORD_NAME_PATTERN.matcher(text(record));
+        if (!nameMatcher.find()) {
+            return Stream.empty();
+        }
+        var typeName = nameMatcher.group(1);
         var expectedName = camelCase(typeName);
         // Find RecordMember nodes (wraps ClassMember in records) containing static factory methods
-        return findAll(record, RuleId.RecordMember.class).stream()
-                      .filter(member -> isStaticFactoryMember(member, typeName, source))
+        return findAll(record, RuleKind.RECORD_MEMBER).stream()
+                      .filter(member -> isStaticFactoryMember(member, typeName))
                       .flatMap(member -> findFirstMethod(member).stream())
-                      .filter(method -> !isCorrectlyNamed(method, expectedName, source))
-                      .map(method -> createDiagnostic(method, typeName, expectedName, source, ctx));
+                      .filter(method -> !isCorrectlyNamed(method, expectedName))
+                      .map(method -> createDiagnostic(method, typeName, expectedName, ctx));
     }
 
-    private boolean isStaticFactoryMember(CstNode member, String typeName, String source) {
-        var memberText = text(member, source);
+    private boolean isStaticFactoryMember(Cursor member, String typeName) {
+        var memberText = text(member);
         return memberText.contains("static ") &&
         (memberText.contains("Result<" + typeName + ">") ||
         memberText.contains(" " + typeName + " "));
     }
 
-    private boolean isCorrectlyNamed(CstNode method, String expectedName, String source) {
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("");
-        return methodName.equals(expectedName);
+    private boolean isCorrectlyNamed(Cursor method, String expectedName) {
+        return extractMethodName(text(method)).equals(expectedName);
     }
 
-    private Diagnostic createDiagnostic(CstNode method,
+    private Diagnostic createDiagnostic(Cursor method,
                                         String typeName,
                                         String expectedName,
-                                        String source,
                                         LintContext ctx) {
-        var actualName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("(unknown)");
+        var actualName = extractMethodName(text(method));
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -80,5 +81,10 @@ public class CstFactoryNamingRule implements CstLintRule {
     private String camelCase(String name) {
         if (name == null || name.isEmpty()) return name;
         return Character.toLowerCase(name.charAt(0)) + name.substring(1);
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

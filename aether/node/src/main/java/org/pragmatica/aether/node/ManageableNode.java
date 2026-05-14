@@ -88,7 +88,7 @@ public interface ManageableNode {
     Option<ClusterTopologyManager> clusterTopologyManager();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
     Option<ClusterGenerationSnapshot> currentGenerationSnapshot();
-    void requestGenerationSnapshotRefresh();
+    @SuppressWarnings("JBCT-RET-01") void requestGenerationSnapshotRefresh();
     int connectedNodeCount();
     Map<String, Number> transportMetrics();
     Set<NodeId> connectedPeerIds();

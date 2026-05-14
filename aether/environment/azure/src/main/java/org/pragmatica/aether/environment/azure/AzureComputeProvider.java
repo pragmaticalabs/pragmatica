@@ -56,8 +56,13 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
+<<<<<<< HEAD
         return client.createVm(buildCreateRequest(List.of(), defaultTags())).map(AzureComputeProvider::toInstanceInfo)
                               .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
+=======
+        return client.createVm(buildCreateRequest(List.of(),
+                                                  defaultTags())).map(AzureComputeProvider::toInstanceInfo)
+>>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
                               .mapError(AzureComputeProvider::toProvisionError);
     }
 
@@ -129,9 +134,6 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return Map.of("aether-managed", "true");
     }
 
-    /// Translate a [ProvisionContext] into Azure VM tags. Well-known `aether-*`
-    /// slots are emitted alongside the managed marker; caller-supplied
-    /// [ProvisionContext#extraTags] are folded in last (extras win on collision).
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
         var tags = new java.util.HashMap<String, String>();
         tags.put("aether-managed", "true");

@@ -1,4 +1,4 @@
-package examples;
+package format.examples;
 
 public enum Status {
     ACTIVE,
@@ -17,14 +17,17 @@ enum Color {
     RED(255, 0, 0),
     GREEN(0, 255, 0),
     BLUE(0, 0, 255);
+
     private final int r;
     private final int g;
     private final int b;
+
     Color(int r, int g, int b) {
         this.r = r;
         this.g = g;
         this.b = b;
     }
+
     public int getRed() {
         return r;
     }
@@ -33,12 +36,14 @@ enum Color {
 // Enum with body on constants
 enum Operation {
     PLUS {
-        @Override public int apply(int a, int b) {
+        @Override
+        public int apply(int a, int b) {
             return a + b;
         }
     },
     MINUS {
-        @Override public int apply(int a, int b) {
+        @Override
+        public int apply(int a, int b) {
             return a - b;
         }
     };

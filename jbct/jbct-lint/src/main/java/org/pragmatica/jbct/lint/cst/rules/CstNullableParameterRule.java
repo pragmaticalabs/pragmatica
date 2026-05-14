@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -30,6 +30,9 @@ public class CstNullableParameterRule implements CstLintRule {
 
     // Pattern to find null checks: "paramName == null" or "null == paramName" or "paramName != null"
     private static final Pattern NULL_CHECK_PATTERN = Pattern.compile("\\b(\\w+)\\s*[!=]=\\s*null\\b|\\bnull\\s*[!=]=\\s*(\\w+)\\b");
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
+    // Param shape: optional modifiers/annotations + type tokens + identifier (last word before , or end)
+    private static final Pattern PARAM_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?:,|$)");
 
     @Override
     public String ruleId() {
@@ -37,30 +40,26 @@ public class CstNullableParameterRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         return findAllMethods(root).stream()
-                      .flatMap(method -> analyzeMethod(method, source, ctx));
+                      .flatMap(method -> analyzeMethod(method, ctx));
     }
 
-    private Stream<Diagnostic> analyzeMethod(CstNode method, String source, LintContext ctx) {
+    private Stream<Diagnostic> analyzeMethod(Cursor method, LintContext ctx) {
         // Get parameter names
-        var paramNames = extractParameterNames(method, source);
+        var paramNames = extractParameterNames(method);
         if (paramNames.isEmpty()) {
             return Stream.empty();
         }
         // Get method body
-        var bodyOpt = findFirst(method, RuleId.Block.class);
+        var bodyOpt = findFirst(method, RuleKind.BLOCK);
         if (bodyOpt.isEmpty()) {
             return Stream.empty();
         }
-        var bodyText = text(bodyOpt.unwrap(), source);
+        var bodyText = text(bodyOpt.unwrap());
         // Find parameters checked for null
         var nullCheckedParams = findNullCheckedParams(bodyText, paramNames);
         if (nullCheckedParams.isEmpty()) {
@@ -69,16 +68,24 @@ public class CstNullableParameterRule implements CstLintRule {
         // Create diagnostic for first null-checked param (limit noise)
         var firstParam = nullCheckedParams.iterator()
                                           .next();
-        return Stream.of(createDiagnostic(method, firstParam, source, ctx));
+        return Stream.of(createDiagnostic(method, firstParam, ctx));
     }
 
-    private Set<String> extractParameterNames(CstNode method, String source) {
+    private Set<String> extractParameterNames(Cursor method) {
         var names = new HashSet<String>();
-        var params = findAll(method, RuleId.Param.class);
+        var params = findAll(method, RuleKind.PARAM);
         for (var param : params) {
-            // Get the identifier (parameter name) from the param
-            findFirst(param, RuleId.Identifier.class).map(id -> text(id, source).trim())
-                     .onPresent(names::add);
+            // Parameter name is a token (Identifier) in v6; recover it from param text:
+            // last identifier (the trailing one) in the param declaration.
+            var paramText = text(param).trim();
+            var matcher = PARAM_NAME_PATTERN.matcher(paramText);
+            String last = null;
+            while (matcher.find()) {
+                last = matcher.group(1);
+            }
+            if (last != null && !last.isEmpty()) {
+                names.add(last);
+            }
         }
         return names;
     }
@@ -98,9 +105,8 @@ public class CstNullableParameterRule implements CstLintRule {
         return nullChecked;
     }
 
-    private Diagnostic createDiagnostic(CstNode method, String paramName, String source, LintContext ctx) {
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("(unknown)");
+    private Diagnostic createDiagnostic(Cursor method, String paramName, LintContext ctx) {
+        var methodName = extractMethodName(text(method));
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -124,5 +130,10 @@ public class CstNullableParameterRule implements CstLintRule {
                             .or(this);
             }
             """);
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

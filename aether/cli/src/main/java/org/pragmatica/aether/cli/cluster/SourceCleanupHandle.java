@@ -27,9 +27,7 @@ import java.util.Map;
 ///   provider = "hetzner"
 ///   region = some("eu-central")
 ///   credentialEnvVars = { "api_token" -> "HCLOUD_TOKEN_PROD" }
-public record SourceCleanupHandle(String provider,
-                                  Option<String> region,
-                                  Map<String, String> credentialEnvVars) {
+public record SourceCleanupHandle(String provider, Option<String> region, Map<String, String> credentialEnvVars) {
     public SourceCleanupHandle {
         credentialEnvVars = Map.copyOf(credentialEnvVars);
     }
