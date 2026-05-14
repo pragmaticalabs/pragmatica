@@ -728,6 +728,50 @@ public final class Java25ParserV6 {
         return false;
     }
 
+    // Consume '>>' in an expression shift context.
+    // The lexer emits '>>' as two consecutive INLINE__GT tokens rather than a
+    // single KIND_RSHIFT token.  Returns true and advances past both on success.
+    private boolean advanceRShift() {
+        int k = peek();
+        if (k == KIND_RSHIFT) {
+            advance();
+            return true;
+        }
+        if (k == KIND_INLINE__GT) {
+            int nextPos = tokens.nextNonTrivia(pos + 1);
+            if (nextPos < tokens.count() && tokens.kindAt(nextPos) == KIND_INLINE__GT) {
+                advance();  // consume first >
+                advance();  // consume second >
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Consume '>>>' in an expression shift context.
+    // The lexer emits '>>>' as three consecutive INLINE__GT tokens rather than a
+    // single KIND_URSHIFT token.  Returns true and advances past all three on success.
+    private boolean advanceURShift() {
+        int k = peek();
+        if (k == KIND_URSHIFT) {
+            advance();
+            return true;
+        }
+        if (k == KIND_INLINE__GT) {
+            int nextPos1 = tokens.nextNonTrivia(pos + 1);
+            if (nextPos1 < tokens.count() && tokens.kindAt(nextPos1) == KIND_INLINE__GT) {
+                int nextPos2 = tokens.nextNonTrivia(nextPos1 + 1);
+                if (nextPos2 < tokens.count() && tokens.kindAt(nextPos2) == KIND_INLINE__GT) {
+                    advance();  // consume first >
+                    advance();  // consume second >
+                    advance();  // consume third >
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // Consume '<<' in an expression shift context.
     // The lexer emits '<<' as two consecutive INLINE__LT tokens rather than a
     // single KIND_LSHIFT token.  Returns true and advances past both tokens on
@@ -5311,8 +5355,7 @@ public final class Java25ParserV6 {
                     boolean cutHit_alt_1 = false;
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            if (peek() != KIND_URSHIFT) { fail("URShift", RULE_Shift_KIND); break; }
-                            advance();
+                            if (!advanceURShift()) { fail("URShift", RULE_Shift_KIND); break; }
                             matched_alt_1 = true;
                         } while (false);
                         if (!matched_alt_1) {
@@ -5332,8 +5375,7 @@ public final class Java25ParserV6 {
                     }
                     if (!matched_alt_1 && !cutHit_alt_1) {
                         do {
-                            if (peek() != KIND_RSHIFT) { fail("RShift", RULE_Shift_KIND); break; }
-                            advance();
+                            if (!advanceRShift()) { fail("RShift", RULE_Shift_KIND); break; }
                             matched_alt_1 = true;
                         } while (false);
                         if (!matched_alt_1) {
