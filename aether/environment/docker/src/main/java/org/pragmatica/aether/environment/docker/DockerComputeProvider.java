@@ -109,6 +109,26 @@ import static org.pragmatica.lang.Result.success;
               .onSuccess(ignored -> log.info("Rollback removed partial container {}", containerName));
     }
 
+    @Override public void resetProvisionerState(String clusterName) {
+        nodeCounter.set(0);
+        if (!clusterName.isEmpty()) {
+            runner.execute(buildCtmPruneCommand(clusterName))
+                  .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}", clusterName, cause.message()))
+                  .onSuccess(out -> { if (!out.isBlank()) {log.info("CTM sweep for cluster {}: {}", clusterName, out.strip());}});
+        }
+    }
+
+    private static List<String> buildCtmPruneCommand(String clusterName) {
+        return List.of("docker",
+                       "container",
+                       "prune",
+                       "--force",
+                       "--filter",
+                       "label=aether.cluster=" + clusterName,
+                       "--filter",
+                       "label=aether.provisioned-by=ctm");
+    }
+
     private static List<String> buildForceRemoveCommand(String containerName) {
         return List.of("docker", "rm", "-f", containerName);
     }
@@ -193,6 +213,8 @@ import static org.pragmatica.lang.Result.success;
                                               "aether.role=" + role,
                                               "--label",
                                               "aether.node-id=" + nodeId,
+                                              "--label",
+                                              "aether.provisioned-by=ctm",
                                               "-e",
                                               "NODE_ID=" + nodeId,
                                               "-e",

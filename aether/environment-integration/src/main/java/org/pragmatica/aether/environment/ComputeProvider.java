@@ -37,6 +37,8 @@ public interface ComputeProvider {
         return listInstances(selector.requiredTags());
     }
 
+    default void resetProvisionerState(String clusterName) {}
+
     private static List<InstanceInfo> filterByTags(List<InstanceInfo> instances, Map<String, String> tagFilter) {
         return instances.stream().filter(instance -> matchesTags(instance, tagFilter))
                                .toList();

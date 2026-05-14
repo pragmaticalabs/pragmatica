@@ -26,6 +26,7 @@ public interface NodeLifecycleManager {
     Promise<Unit> terminateNode(NodeId nodeId);
     Promise<Unit> restartNode(NodeId nodeId);
     boolean isCloudManaged();
+    default void resetProvisionerState(String clusterName) {}
 
     static NodeLifecycleManager nodeLifecycleManager(Option<ComputeProvider> computeProvider) {
         return new NodeLifecycleManagerRecord(computeProvider);
@@ -71,6 +72,10 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
 
     @Override public boolean isCloudManaged() {
         return computeProvider.isPresent();
+    }
+
+    @Override public void resetProvisionerState(String clusterName) {
+        computeProvider.onPresent(provider -> provider.resetProvisionerState(clusterName));
     }
 
     private Promise<Unit> lookupAndTerminate(ComputeProvider provider, NodeId nodeId) {

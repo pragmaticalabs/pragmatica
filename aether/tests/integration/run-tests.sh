@@ -508,7 +508,7 @@ deploy_docker() {
     else
         remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
         remote_scp "${SCRIPT_DIR}/nginx-mgmt-gateway-b.conf" "~/nginx-mgmt-gateway-b.conf"
-        remote_exec "cd ~ && docker compose -f docker-compose-b.yml down -v 2>/dev/null || true; docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
+        remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-core-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true; docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
     fi
 }
 
@@ -525,14 +525,16 @@ teardown() {
         docker|remote)
             local host="${TARGET_HOST:-localhost}"
             if [ "$host" = "localhost" ]; then
+                # CTM containers first — they hold the network; compose down would stall otherwise
+                docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
                 docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
                 docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
             else
+                # Same order on remote: sweep CTM containers before compose down
+                remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-a.yml down -v 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-b.yml down -v 2>/dev/null || true"
             fi
-            # Clean up orphaned CTM containers
-            docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
             ;;
         cloud)
             # `aether cluster destroy` has no --cluster flag (only operates on the active cluster).

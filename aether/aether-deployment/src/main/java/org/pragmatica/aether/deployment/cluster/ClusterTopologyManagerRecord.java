@@ -380,6 +380,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract private void resetProvisioningCircuit(String reason) {
         var prev = consecutiveProvisioningFailures.getAndSet(0);
         nextProvisioningAllowedMs.set(0L);
+        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
+        lifecycleManager.resetProvisionerState(clusterName);
         if (prev > 0) {log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)",
                                 reason,
                                 prev);}
