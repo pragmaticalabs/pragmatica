@@ -1455,14 +1455,17 @@ restore_cluster_baseline() {
         log_warn "restore_cluster_baseline: scale_cluster ${target} failed (cluster may already be at target — proceeding to wait)"
     fi
 
-    # 5. Hard barrier — exactly N ON_DUTY healthy cores. 300s budget covers
+    # 5. Hard barrier — exactly N ON_DUTY healthy cores. 600s budget covers
     # CTM provision (image pull on cold cache) + JVM boot + QUIC mesh + SWIM
-    # convergence + JOINING→ON_DUTY commit, mirroring the restart_all_nodes
-    # SLA envelope but measured against the product invariant rather than
-    # container set membership.
+    # convergence + JOINING→ON_DUTY commit + generation snapshot publication
+    # on the remote host. Raised from 300s after observing that post-chaos
+    # replacement nodes (JOINING→ON_DUTY KV commit + snapshot publication)
+    # consistently exceeded 300s on TARGET_HOST when the cluster was healing
+    # from a multi-kill scenario. Matches the wait_for_node_count_fast timeout
+    # above (480s) minus the ~60-120s JVM-boot allowance already accounted for.
     if ! wait_for "${target} ON_DUTY healthy cores" \
-        "[ \$(cluster_node_count_on_duty_healthy) -eq ${target} ]" 300; then
-        log_fail "restore_cluster_baseline: failed to converge to ${target} ON_DUTY healthy cores within 300s (current=$(cluster_node_count_on_duty_healthy))"
+        "[ \$(cluster_node_count_on_duty_healthy) -eq ${target} ]" 600; then
+        log_fail "restore_cluster_baseline: failed to converge to ${target} ON_DUTY healthy cores within 600s (current=$(cluster_node_count_on_duty_healthy))"
         return 1
     fi
 
