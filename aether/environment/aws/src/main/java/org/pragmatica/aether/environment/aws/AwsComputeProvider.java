@@ -99,7 +99,6 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     private Promise<InstanceInfo> tagAndMapFirstInstance(RunInstancesResponse response, Map<String, String> tags) {
         var instance = response.instances().getFirst();
         var instanceId = instance.instanceId();
-<<<<<<< HEAD
         return client.createTags(List.of(instanceId), tags)
                      .onFailure(cause -> rollbackPartialInstance(instanceId, cause))
                      .map(unit -> toInstanceInfo(instance));
@@ -120,9 +119,6 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                                     instanceId,
                                                     rollbackCause.message()))
               .onSuccess(ignored -> log.info("Rollback terminated partial AWS instance {}", instanceId));
-=======
-        return client.createTags(List.of(instanceId), tags).map(unit -> toInstanceInfo(instance));
->>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
     }
 
     private static Map<String, String> defaultTags() {

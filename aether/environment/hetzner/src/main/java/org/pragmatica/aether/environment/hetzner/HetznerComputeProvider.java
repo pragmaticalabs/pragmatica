@@ -60,14 +60,10 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var location = extractLocation(spec.placement());
         var userData = spec.userData().or(config.userData());
         var labels = labelsFor(spec.context());
-<<<<<<< HEAD
         return client.createServer(buildCreateRequest(location,
                                                       labels,
                                                       userData)).map(HetznerComputeProvider::toInstanceInfo)
                                   .onFailure(HetznerComputeProvider::logProvisionFailureRollbackGap)
-=======
-        return client.createServer(buildCreateRequest(location, labels, userData)).map(HetznerComputeProvider::toInstanceInfo)
->>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
                                   .mapError(HetznerComputeProvider::toProvisionError);
     }
 

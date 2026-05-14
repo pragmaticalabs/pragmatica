@@ -42,7 +42,6 @@ public final class SwimHealthContext {
     private final PeerObservationStore observationStore;
     private final SwimConfig swimConfig;
     private final LongSupplier clock;
-<<<<<<< HEAD
     /// Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). `true` when the
     /// cluster is in `COLD_BOOT` phase (FAULTY for never-HEALTHY peers should be
     /// suppressed to `UnknownObserved`); `false` in `NORMAL` and `RECOVERING` (always
@@ -51,8 +50,6 @@ public final class SwimHealthContext {
     /// `RECOVERING` branch is the critical compose-restart fix where peers were
     /// previously visible-and-Healthy. Default `() -> true` preserves legacy behavior
     /// for unit tests that don't wire a phase.
-=======
->>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
     private final BooleanSupplier isBootingSupplier;
     private final java.util.function.Consumer<NodeId> faultyLeaderEvictor;
 
@@ -243,7 +240,6 @@ public final class SwimHealthContext {
         };
     }
 
-<<<<<<< HEAD
     /// RC1-9 audit Step 3: the leader-only `routeDisconnect(peer)` and the
     /// follower-for-dead-leader `routeDisconnect(peer)` are both gone. QUIC eviction
     /// now flows via `MembershipDecision.NodeRemoved` after the leader's
@@ -262,12 +258,6 @@ public final class SwimHealthContext {
         if (!isBootingSupplier.getAsBoolean() && currentLeader.map(peer::equals).or(false)) {
             faultyLeaderEvictor.accept(peer);
         }
-=======
-    @Contract public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
-        emitLeaderHint(peer, HealthHint.FAULTY);
-        bufferHealthObservation(peer, HealthHint.FAULTY);
-        if (!isBootingSupplier.getAsBoolean() && currentLeader.map(peer::equals).or(false)) {faultyLeaderEvictor.accept(peer);}
->>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
     }
 
     public int incrementAndGetFaulty(long nowMillis) {

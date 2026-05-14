@@ -56,13 +56,8 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-<<<<<<< HEAD
         return client.createVm(buildCreateRequest(List.of(), defaultTags())).map(AzureComputeProvider::toInstanceInfo)
                               .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
-=======
-        return client.createVm(buildCreateRequest(List.of(),
-                                                  defaultTags())).map(AzureComputeProvider::toInstanceInfo)
->>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
                               .mapError(AzureComputeProvider::toProvisionError);
     }
 
