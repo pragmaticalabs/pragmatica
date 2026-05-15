@@ -46,19 +46,36 @@ test_drain_first_node_allowed() {
     local node1
     node1=$(to_node_id "node-5")
     log_info "Draining first node: ${node1}"
-    local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node1}" -X POST -H "X-API-Key: ${API_KEY}")
+
+    # Diagnostic: surface auto-heal state and current ON_DUTY count so a 503
+    # rejection has a debuggable trail. Without these the only signal is "503"
+    # which doesn't distinguish (a) auto-heal-disabled-but-budget-tripped from
+    # (b) auto-heal-still-active from (c) cluster degraded from a prior suite.
+    local autoheal_state
+    autoheal_state=$(api_get "/api/cluster/topology/auto-heal" 2>/dev/null || echo "<unreachable>")
+    log_info "auto-heal state before first drain: $(printf '%s' "$autoheal_state" | head -c 200)"
+
+    local status body_file
+    body_file=$(mktemp)
+    status=$(curl -sk -o "$body_file" -w "%{http_code}" -m 10 \
+             -X POST -H "X-API-Key: ${API_KEY}" \
+             "${CLUSTER_ENDPOINT}/api/node/drain/${node1}")
 
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "First drain accepted (${status})"
-    else
-        log_fail "First drain should be accepted (within budget), got ${status}"
-        return 1
+        rm -f "$body_file"
+        return 0
     fi
-    # Why no await_generation_quiesced here: CTM auto-heal would provision a replacement
-    # during the wait, restoring ON_DUTY count to 5 and defeating the budget test. The
-    # budget is enforced against live ON_DUTY count, so we must drain faster than
-    # CTM's replacement cycle to keep multiple nodes simultaneously unavailable.
+    local body
+    body=$(head -c 500 < "$body_file" | tr '\n' ' ')
+    rm -f "$body_file"
+    # TODO: investigate First_drain 503 — root cause likely either (a) auto-heal
+    # not fully quiesced before drain (race between disable_auto_heal and an
+    # in-flight provisioning), or (b) disruption-budget threshold miscalculated
+    # under transient lifecycle state inherited from a previous suite. Surfaces
+    # as visible failure rather than masking; do not silently downgrade to PASS.
+    log_fail "TODO: investigate First_drain 503 — status=${status} body=${body} autoheal=${autoheal_state:0:200}"
+    return 1
 }
 
 test_drain_second_node_allowed() {
