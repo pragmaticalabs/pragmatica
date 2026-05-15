@@ -16,6 +16,10 @@ test_seed_config() {
     wait_for_cluster 60
     wait_for_leader 60
     seed_cluster_config
+    # Wait for generation to quiesce after previous suite's scale-down — ensures
+    # leadership is stable before issuing scale operations (avoids "quorum unavailable"
+    # on the first scale call during a brief re-election window).
+    await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 60 || true
 }
 
 test_scale_up_to_7() {
