@@ -46,6 +46,7 @@ import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimObservation.DepartedObserved;
 import org.pragmatica.swim.SwimObservation.FaultyObserved;
 import org.pragmatica.swim.SwimObservation.HealthyObserved;
+import org.pragmatica.swim.SwimObservation.JoinAnnounced;
 import org.pragmatica.swim.SwimObservation.SuspectObserved;
 import org.pragmatica.swim.SwimObservation.UnknownObserved;
 
@@ -988,6 +989,7 @@ public final class MembershipFsm {
             case DepartedObserved d -> some(new SwimDeparted(d.peer(), d.incarnation(), at));
             case SuspectObserved _ -> none();
             case UnknownObserved _ -> none();
+            case JoinAnnounced _ -> none();
         };
     }
 

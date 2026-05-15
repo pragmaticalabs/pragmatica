@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.stream.Stream;
 
@@ -153,6 +154,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private volatile PeerConnectivityReporter connectivityReporter;
     private volatile ObservedEpochSupplier observedEpochSupplier;
 
+    /// SWIM health gate for the missing-peer reconciler. When present, the reconciler
+    /// calls this predicate before dialling an EVICTED peer: `true` means SWIM considers
+    /// the peer healthy enough to attempt reconnection (HEALTHY or SUSPECTED); `false`
+    /// means FAULTY or UNKNOWN — skip until SWIM signals recovery.
+    ///
+    /// Defaults to empty (absent) → reconciler allows all reconnects, preserving existing
+    /// behaviour until AetherNode wires the gate post-construction.
+    private volatile Option<Function<NodeId, Boolean>> swimHealthGate = Option.empty();
+
     /// Minimal cross-module shape for the follower's observed epoch — keeps the
     /// consensus module free of `aether/slice` types. Upper layers translate.
     public interface ObservedEpochSupplier {
@@ -252,6 +262,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.observedEpochSupplier = observedEpochSupplier == null ? ObservedEpochSupplier.zero() : observedEpochSupplier;
     }
 
+    /// Attach a SWIM health gate for the missing-peer reconciler. The predicate receives
+    /// a `NodeId` and returns `true` when SWIM considers the peer healthy enough to
+    /// reconnect (HEALTHY or SUSPECTED); `false` when FAULTY or UNKNOWN.
+    /// A `null` argument removes the gate (all reconnects allowed — default behaviour).
+    @Contract public void setSwimHealthGate(Function<NodeId, Boolean> gate) {
+        this.swimHealthGate = Option.option(gate);
+    }
+
     /// Attach a QUIC-disconnect listener post-construction. Higher layers (e.g.
     /// `AetherNode`) need to wire the listener after the enclosing `RabiaNode`
     /// — which owns this network — has already been built. A `null` argument
@@ -347,6 +365,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         topologyManager.get(connectNode.node())
                        .onPresent(this::connectPeer)
                        .onEmpty(() -> log.error("Unknown {}", connectNode.node()));
+    }
+
+    @Override
+    public void connect(NodeInfo nodeInfo) {
+        if (!isRunning.get() || nodeInfo.id().equals(self.id())) {
+            return;
+        }
+        connectPeer(nodeInfo);
     }
 
     @Override
@@ -910,6 +936,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
             log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
             return;
         }
+        if (!swimHealthAllows(peerId)) {
+            log.debug("Missing-peer reconciler suppressed by SWIM health gate for {} — peer is FAULTY or UNKNOWN", peerId);
+            return;
+        }
         topologyManager.get(peerId)
                        .onPresent(this::reconcileDialPeer)
                        .onEmpty(() -> log.debug("Missing-peer reconciler: no NodeInfo for {} — topology lookup empty", peerId));
@@ -919,6 +949,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// don't need wide jitter at the 5-60s tempo; correlated retries are tolerable.
     private long reconcileJitter(long delayMs) {
         return JitterUtil.applyJitter(delayMs, JitterUtil.LIGHT_MIN_FACTOR, JitterUtil.LIGHT_MAX_FACTOR);
+    }
+
+    /// Returns `true` when the SWIM health gate is absent (default — allow all) or when
+    /// the gate predicate says the peer is reconnect-eligible (HEALTHY or SUSPECTED).
+    /// Returns `false` only when the gate is present and explicitly rejects the peer.
+    private boolean swimHealthAllows(NodeId peerId) {
+        return swimHealthGate.map(gate -> gate.apply(peerId)).or(true);
     }
 
     @Contract private void reconcileDialPeer(NodeInfo peer) {

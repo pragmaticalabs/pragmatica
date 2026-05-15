@@ -534,9 +534,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private int activationDesiredSize() {
         var fromSnapshot = snapshotDesiredCoreSize();
-        return fromSnapshot > 0
-              ? fromSnapshot
-              : observer.healthyActiveNodeCount();
+        if (fromSnapshot > 0) {
+            return fromSnapshot;
+        }
+        // clusterSize() includes SWIM-faulty nodes, returning pre-kill count during the snapshot-gap after failover
+        return clusterConfigReader.get()
+            .map(ClusterConfigValue::coreCount)
+            .or(() -> observer.clusterSize());
     }
 
     @Contract private void activateWithLeaderFailover(int effectiveActual, int desired) {

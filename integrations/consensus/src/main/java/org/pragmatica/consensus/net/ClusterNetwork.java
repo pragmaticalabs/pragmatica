@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -26,6 +27,7 @@ import org.pragmatica.net.tcp.Server;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 import static org.pragmatica.consensus.net.NetworkServiceMessage.*;
 
@@ -55,6 +57,14 @@ public interface ClusterNetwork {
     /// peer entry entirely (REMOVED state) and closes the datagram channel, preventing
     /// WARN flood from broadcast attempts to a dead node.
     default void departurePermanent(NodeId nodeId) {}
+
+    /// Connect to a newly-announced peer using its full NodeInfo (address + id).
+    /// Called by the SWIM JoinAnnounced listener for peers not in the static topology.
+    default void connect(NodeInfo nodeInfo) {}
+
+    /// Gate the missing-peer reconciler: peers for which the supplier returns false
+    /// (FAULTY or UNKNOWN in SWIM) are skipped during reconnect attempts.
+    default void setSwimHealthGate(Function<NodeId, Boolean> gate) {}
 
     @MessageReceiver
     void listNodes(ListConnectedNodes listConnectedNodes);

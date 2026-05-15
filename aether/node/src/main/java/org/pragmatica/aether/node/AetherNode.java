@@ -36,7 +36,6 @@ import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
@@ -201,6 +200,7 @@ import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
 import org.pragmatica.swim.SwimConfig;
+import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.TransportObservation;
 import org.pragmatica.messaging.Message;
@@ -227,6 +227,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.net.InetSocketAddress;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1294,11 +1295,25 @@ public interface AetherNode extends ManageableNode {
         swimDetectorRefForPhase.set(swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
+        var announceTopology = config.topology();
+        var selfNodeInfo = announceTopology.coreNodes().stream()
+                                          .filter(n -> n.id().equals(announceTopology.self()))
+                                          .findFirst().orElse(null);
+        var swimSeeds = announceTopology.coreNodes().stream()
+                                        .filter(n -> !n.id().equals(announceTopology.self()))
+                                        .map(n -> InetSocketAddress.createUnresolved(n.address().host(),
+                                                                                      n.address().port() + CoreSwimHealthDetector.SWIM_PORT_OFFSET))
+                                        .toList();
+        var quorumThreshold = announceTopology.coreNodes().size() / 2 + 1;
+        Runnable announceJoinTrigger = selfNodeInfo == null ? () -> {} : () ->
+            swimHealthDetector.announceJoin(selfNodeInfo, swimConfig.clusterName(), System.currentTimeMillis(),
+                                            swimSeeds, () -> clusterNode.network().connectedNodeCount() + 1 >= quorumThreshold);
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification,
                                                                                    swimHealthDetector,
                                                                                    clusterNode.network(),
-                                                                                   rotatingEncryptor)));
+                                                                                   rotatingEncryptor,
+                                                                                   announceJoinTrigger)));
         swimHealthDetector.addObservationListener(membershipFsm::onSwimObservation);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
@@ -1324,8 +1339,19 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                                  (MembershipDecision.NodeDecommissioned decommissioned) ->
                                                      clusterNetworkRef.departurePermanent(decommissioned.nodeId())));
-        swimHealthDetector.addObservationListener(
-            obs -> disconnectUntrackedFaulty(obs, membershipFsm, clusterNetworkRef));
+        swimHealthDetector.addObservationListener(obs -> {
+            switch (obs) {
+                case SwimObservation.JoinAnnounced j -> clusterNetworkRef.connect(j.nodeInfo());
+                case SwimObservation.FaultyObserved f -> clusterNetworkRef.disconnect(
+                    new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(f.peer()));
+                case SwimObservation.DepartedObserved d -> clusterNetworkRef.departurePermanent(d.peer());
+                default -> {}
+            }
+        });
+        clusterNetworkRef.setSwimHealthGate(nodeId -> {
+            var h = swimHealthDetector.healthOf(nodeId);
+            return h != SwimHealth.FAULTY && h != SwimHealth.UNKNOWN;
+        });
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
@@ -1827,15 +1853,6 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class, subscriber::accept));
     }
 
-    @Contract private static void disconnectUntrackedFaulty(SwimObservation obs,
-                                                              MembershipFsm membershipFsm,
-                                                              ClusterNetwork network) {
-        if (obs instanceof SwimObservation.FaultyObserved faulty
-            && membershipFsm.get(faulty.peer()).map(s -> s instanceof MembershipFsmState.Untracked).or(false)) {
-            network.departurePermanent(faulty.peer());
-        }
-    }
-
     private static void attachQuicDisconnectListener(ClusterNetwork network,
                                                      HealthSignalSink sink,
                                                      Supplier<Epoch> epochSupplier) {
@@ -1948,10 +1965,12 @@ public interface AetherNode extends ManageableNode {
     private static void startSwimOnQuorum(QuorumStateNotification notification,
                                           CoreSwimHealthDetector swimHealthDetector,
                                           ClusterNetwork network,
-                                          RotatingGossipEncryptor encryptor) {
+                                          RotatingGossipEncryptor encryptor,
+                                          Runnable announceJoinTrigger) {
         if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
             var workerGroup = network.server().map(org.pragmatica.net.tcp.Server::workerGroup);
             swimHealthDetector.start(workerGroup, encryptor);
+            announceJoinTrigger.run();
         }
     }
 
