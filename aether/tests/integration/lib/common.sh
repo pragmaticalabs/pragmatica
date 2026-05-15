@@ -123,7 +123,16 @@ log_info()  { echo -e "${GREEN}[INFO]${NC}  $(_log_prefix)$1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(_log_prefix)$1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_pass()  { echo -e "${GREEN}[PASS]${NC}  $(_log_prefix)$1"; }
-log_fail()  { echo -e "${RED}[FAIL]${NC}  $(_log_prefix)$1"; }
+# log_fail: cosmetic-only used to lie about results. Now increments a per-test
+# latch (TEST_FAIL_COUNT) that run_test consults — so any test that emits a
+# [FAIL] line is recorded as failing even if the test function happened to
+# `return 0` afterwards (a real bug pattern: helpers report failure via log_fail
+# without latching, the caller's last command was an unrelated `true`, and
+# the test was counted as PASS).
+log_fail()  {
+    echo -e "${RED}[FAIL]${NC}  $(_log_prefix)$1"
+    TEST_FAIL_COUNT=$(( ${TEST_FAIL_COUNT:-0} + 1 ))
+}
 log_step()  { echo -e "${BLUE}[STEP]${NC}  $(_log_prefix)$1"; }
 
 # ---------------------------------------------------------------------------
@@ -656,11 +665,24 @@ run_test() {
         collect_metrics_before "$sanitized_name"
     fi
 
-    local t_start t_elapsed
+    # H2 latch: log_fail increments TEST_FAIL_COUNT. Reset to 0 here so each test
+    # starts clean (any harness-scope log_fail calls before run_test are not
+    # attributed to this test). After the test function runs, treat the test as
+    # PASS only if BOTH the function returned 0 AND no [FAIL] lines were emitted.
+    # Without this, helpers that emit `log_fail "..."` without propagating a
+    # non-zero return (e.g. early in a long test, before later success-coded
+    # commands) caused the suite to record PASS while the logs screamed FAIL.
+    TEST_FAIL_COUNT=0
+    local t_start t_elapsed fn_rc
     t_start=$(date +%s)
-    if "$fn"; then
+    "$fn"
+    fn_rc=$?
+    if [ "$fn_rc" -eq 0 ] && [ "${TEST_FAIL_COUNT:-0}" -eq 0 ]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
+        if [ "$fn_rc" -eq 0 ] && [ "${TEST_FAIL_COUNT:-0}" -gt 0 ]; then
+            log_warn "run_test: '${name}' function returned 0 but emitted ${TEST_FAIL_COUNT} [FAIL] line(s) — recording as FAIL"
+        fi
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
     t_elapsed=$(( $(date +%s) - t_start ))
@@ -675,6 +697,9 @@ run_test() {
         print_metrics_summary "$sanitized_name"
     fi
     unset TEST_TAG
+    # Clear the latch so any scaffolding between tests doesn't carry stale state
+    # into the next run_test invocation (defence in depth — run_test resets at top too).
+    TEST_FAIL_COUNT=0
 }
 
 skip_test() {

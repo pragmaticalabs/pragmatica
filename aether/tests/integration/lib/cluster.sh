@@ -193,13 +193,45 @@ pick_non_leader() {
     local pinned
     pinned=$(mgmt_entry_point_node)
 
+    # Fail-fast: an empty or "none" leader argument means the caller hasn't actually
+    # observed a stable leader. Returning a candidate here is dangerous — the very
+    # node we pick might *be* the leader by the time the caller kills it (the
+    # caller's `cluster_leader` call could have raced re-election). The caller
+    # should `wait_for_leader` before invoking us.
+    if [ -z "$leader" ] || [ "$leader" = "none" ]; then
+        log_fail "pick_non_leader: refusing to pick — caller passed leader='${leader}' (call wait_for_leader first)" >&2
+        return 1
+    fi
+
+    # Single /api/status fetch: enumerate ON_DUTY members AND re-derive the leader
+    # from the SAME payload. Previously the caller passed `leader` and we re-read
+    # `/api/status` independently; under MGMT_ENTRY_POINT round-robin those two
+    # reads could hit different backends and disagree, so we'd happily echo the
+    # *current* leader as a victim. Now: one payload, one truth.
+    local status_payload
+    status_payload=$(api_get "/api/status" 2>/dev/null || true)
+    if [ -z "$status_payload" ]; then
+        log_fail "pick_non_leader: /api/status returned empty body — cannot select victim" >&2
+        return 1
+    fi
+    # Re-derived leader from the same payload. cluster.leaderId is a string field
+    # at the top level; tolerate both `"leaderId":"x"` and `"leaderId":null`.
+    local derived_leader
+    derived_leader=$(printf '%s' "$status_payload" \
+        | grep -o '"leaderId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 \
+        | sed 's/.*"leaderId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)
+    if [ -n "$derived_leader" ] && [ "$derived_leader" != "none" ]; then
+        leader="$derived_leader"
+    fi
+
     # Extract node IDs with lifecycleState=ON_DUTY from /api/status cluster.nodes[].
     # NodeInfo JSON field order (Jackson record serialization): id, isLeader, lifecycleState.
     # We split on '{' so each token is one candidate object, keep only tokens that carry
     # "lifecycleState":"ON_DUTY", then extract the "id" value with sed.
     # BSD awk (macOS default) lacks 3-arg match(), so we use grep+sed throughout.
     local current_members
-    current_members=$(api_get "/api/status" 2>/dev/null \
+    current_members=$(printf '%s' "$status_payload" \
         | tr '{' '\n' \
         | grep '"lifecycleState"[[:space:]]*:[[:space:]]*"ON_DUTY"' \
         | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
@@ -565,7 +597,12 @@ wait_for_leader() {
     if [ "${CLUSTER_ID:-}" = "b" ] && [ -z "${WAIT_FOR_LEADER_TIMEOUT:-}" ] && [ "$timeout" -lt 120 ] 2>/dev/null; then
         timeout=120
     fi
-    wait_for "leader elected" "[ -n \"\$(cluster_leader)\" ] && [ \"\$(cluster_leader)\" != 'none' ]" "$timeout"
+    # Single-read predicate: capture cluster_leader once per iteration. The prior
+    # form `[ -n "$(cluster_leader)" ] && [ "$(cluster_leader)" != 'none' ]` made
+    # two gateway round-trips per probe; under round-robin MGMT_ENTRY_POINT the
+    # two calls could land on different backends during a re-election and yield
+    # inconsistent reads — non-deterministic pass/fail at the predicate level.
+    wait_for "leader elected" 'lid=$(cluster_leader); [ -n "$lid" ] && [ "$lid" != "none" ]' "$timeout"
 }
 
 # Spec §4.5 / §10: a leader is "committed" once `LeaderKey` is observable in KV
@@ -574,8 +611,9 @@ wait_for_leader() {
 # document intent ("we need consensus-committed leader, not just a candidate").
 wait_for_leader_committed() {
     local timeout="${1:-60}"
+    # Single-read predicate — see wait_for_leader for rationale.
     wait_for "leader committed" \
-        "[ -n \"\$(cluster_leader)\" ] && [ \"\$(cluster_leader)\" != 'none' ]" \
+        'lid=$(cluster_leader); [ -n "$lid" ] && [ "$lid" != "none" ]' \
         "$timeout"
 }
 
@@ -938,7 +976,19 @@ drop_ctm_replacements() {
     if [ "$CLOUD_MODE" = "true" ]; then
         return 0
     fi
-    remote_exec "docker rm -f \$(docker ps -aq --filter name=core-node-) 2>/dev/null || true" 2>/dev/null
+    # Capture stderr separately so SSH transport errors (rc!=0) surface as warnings
+    # rather than being swallowed by the legacy `2>/dev/null` wrapper. The inner
+    # `2>/dev/null` on `docker rm -f $(docker ps -aq ...)` stays — that one
+    # legitimately silences "no matching containers" when the cluster is clean.
+    local err_file rc
+    err_file=$(mktemp -t drop_ctm.XXXXXX)
+    remote_exec "docker rm -f \$(docker ps -aq --filter name=core-node-) 2>/dev/null || true" >/dev/null 2>"$err_file"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_warn "drop_ctm_replacements: remote_exec rc=${rc}: $(head -c 300 < "$err_file")"
+    fi
+    rm -f "$err_file"
+    return 0
 }
 
 ## DEPRECATED for routine cleanup — prefer `restore_cluster_baseline`. This
@@ -1503,7 +1553,14 @@ scale_cluster() {
     # + scaled-in-config Put). 30s rejected legitimate slow-but-eventual-success
     # calls as test failures; 90s lets them complete while still bounding genuinely
     # stuck states (no leader / partition / consensus deadlock).
-    local endpoint url result rc
+    local endpoint url rc http_status
+    local body_file
+    body_file=$(mktemp -t scale_cluster.XXXXXX)
+    # Capture HTTP status separately from body so we can distinguish transport
+    # failures (rc!=0) from server-side errors (rc=0 + 4xx/5xx + JSON error body).
+    # Pre-fix: curl without -f and without a status check returned rc=0 for
+    # `{"error":"quorum unavailable"}`, so callers spun the full timeout waiting
+    # for a scale that the server had already refused.
     if [ "$CLOUD_MODE" = "true" ]; then
         local leader_ip
         leader_ip=$(cloud_node_ip "$leader" 2>/dev/null || echo "")
@@ -1514,19 +1571,33 @@ scale_cluster() {
             endpoint="http://${leader_ip}:8080"
         fi
         url="${endpoint}/api/cluster/scale"
-        result=$(cloud_ssh "$leader" "curl -sk -m 90 -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '{\"coreCount\":${target},\"expectedVersion\":0}' http://localhost:8080/api/cluster/scale" 2>&1)
+        # Remote curl writes body to a remote tmp, prints HTTP code on stdout, then echoes
+        # body on a new line. We split locally: first line = code, remainder = body.
+        local combined
+        combined=$(cloud_ssh "$leader" "tmp=\$(mktemp); curl -sk -m 90 -o \$tmp -w '%{http_code}\\n' -X POST -H 'X-API-Key: ${API_KEY}' -H 'Content-Type: application/json' -d '{\"coreCount\":${target},\"expectedVersion\":0}' http://localhost:8080/api/cluster/scale; rc=\$?; cat \$tmp; rm -f \$tmp; exit \$rc")
         rc=$?
+        http_status=$(printf '%s\n' "$combined" | head -n1)
+        printf '%s\n' "$combined" | tail -n +2 > "$body_file"
     else
         url="${CLUSTER_ENDPOINT}/api/cluster/scale"
-        result=$(curl -sk -m 90 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                      -d "{\"coreCount\":${target},\"expectedVersion\":0}" "$url" 2>&1)
+        http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
+                          -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+                          -d "{\"coreCount\":${target},\"expectedVersion\":0}" "$url")
         rc=$?
     fi
+    local body
+    body=$(head -c 500 "$body_file" 2>/dev/null)
+    rm -f "$body_file"
     if [ "$rc" -ne 0 ]; then
-        log_warn "scale_cluster: POST /api/cluster/scale rc=${rc} (likely 90s timeout — cluster degraded; CTM circuit breaker may be tripped). Output: $(printf '%s' "$result" | head -c 300)"
+        log_warn "scale_cluster: POST /api/cluster/scale rc=${rc} (likely 90s timeout — cluster degraded; CTM circuit breaker may be tripped). Body: ${body}"
         return 1
     fi
-    log_info "Scale result: ${result}" >&2
+    if [ -z "$http_status" ] || [ "$http_status" -lt 200 ] 2>/dev/null || [ "$http_status" -ge 300 ] 2>/dev/null; then
+        log_warn "scale_cluster: POST /api/cluster/scale returned HTTP ${http_status:-<empty>} (e.g. quorum unavailable / version conflict / 5xx). Body: ${body}"
+        return 1
+    fi
+    log_info "Scale result: HTTP ${http_status} ${body}" >&2
+    return 0
 }
 
 # POST to the leader node — finds leader via CLI, targets its management port
@@ -1761,7 +1832,22 @@ container_running() {
     # would still report `status=running` for the brief seconds the container is up,
     # making the helper unreliable as a "node is operational" signal. The /health/live
     # probe (port 8080 + offset by node id) is the canonical liveness signal.
-    remote_exec "docker ps --filter 'name=${name}' --filter 'status=running' -q" 2>/dev/null | grep -q . || return 1
+    #
+    # Stderr capture: distinguishes "no match" (grep rc=1 against empty stdout, ssh ok)
+    # from "ssh dead" (rc!=0 from ssh itself). Pre-fix outer `2>/dev/null` ate both
+    # silently, leaving stale containers and dead SSH sessions indistinguishable
+    # from a legitimate "container not running" result.
+    local err_file ssh_rc docker_out
+    err_file=$(mktemp -t container_running.XXXXXX)
+    docker_out=$(remote_exec "docker ps --filter 'name=${name}' --filter 'status=running' -q" 2>"$err_file")
+    ssh_rc=$?
+    if [ "$ssh_rc" -ne 0 ]; then
+        log_warn "container_running: remote_exec rc=${ssh_rc} for '${name}': $(head -c 300 < "$err_file")"
+        rm -f "$err_file"
+        return 1
+    fi
+    rm -f "$err_file"
+    printf '%s' "$docker_out" | grep -q . || return 1
     local offset port
     offset=$(printf '%s' "$name" | grep -oE '[0-9]+$' | head -1)
     if [ -z "$offset" ]; then
