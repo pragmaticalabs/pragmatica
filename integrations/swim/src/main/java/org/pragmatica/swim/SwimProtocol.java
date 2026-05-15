@@ -46,6 +46,7 @@ import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
+import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimMessage.PingReq;
@@ -346,6 +347,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             case Ping ping -> handlePing(sender, ping);
             case Ack ack -> handleAck(ack);
             case PingReq pingReq -> handlePingReq(sender, pingReq);
+            case Announce announce -> handleAnnounce(announce);
         }
     }
 
@@ -571,6 +573,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void handlePingReq(InetSocketAddress requesterAddress, PingReq pingReq) {
         option(members.get(pingReq.target()))
             .onPresent(target -> relayPingReq(requesterAddress, pingReq, target));
+    }
+
+    private void handleAnnounce(Announce announce) {
+        deliverObservation(new SwimObservation.JoinAnnounced(announce.nodeInfo(), announce.clusterName(), announce.incarnation()));
     }
 
     private void relayPingReq(InetSocketAddress requesterAddress, PingReq pingReq, SwimMember target) {

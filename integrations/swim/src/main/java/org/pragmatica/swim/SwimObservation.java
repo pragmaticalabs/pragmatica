@@ -17,6 +17,7 @@
 package org.pragmatica.swim;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 
 /// Edge-triggered per-peer health observation emitted by SWIM (Layer 1).
 ///
@@ -86,6 +87,22 @@ public sealed interface SwimObservation {
     record UnknownObserved(NodeId peer, long incarnation, byte version) implements SwimObservation {
         public UnknownObserved(NodeId peer, long incarnation) {
             this(peer, incarnation, CURRENT_VERSION);
+        }
+    }
+
+    /// A new peer has announced itself via the ANNOUNCE datagram and the gossip layer
+    /// has propagated the event. Carries the full `NodeInfo` (id, address, role, labels)
+    /// so receivers can immediately register the peer without a separate lookup.
+    record JoinAnnounced(NodeInfo nodeInfo, String clusterName, long incarnation, byte version)
+        implements SwimObservation {
+
+        public JoinAnnounced(NodeInfo nodeInfo, String clusterName, long incarnation) {
+            this(nodeInfo, clusterName, incarnation, CURRENT_VERSION);
+        }
+
+        @Override
+        public NodeId peer() {
+            return nodeInfo.id();
         }
     }
 }
