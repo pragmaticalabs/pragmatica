@@ -713,7 +713,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override public Set<NodeId> connectedPeerIds() {
-                return clusterNode.network().connectedPeers();
+                // Use activePeers (CONNECTED + EVICTED) to match the quorum-counting
+                // semantics inside QuicClusterNetwork.activeConnectedCount. Without this,
+                // a brief EVICTED transition on any peer flickers the externally-visible
+                // /api/cluster/topology.connectedPeerCount below quorum.
+                return clusterNode.network().activePeers();
             }
 
             @Override public boolean isLeader() {

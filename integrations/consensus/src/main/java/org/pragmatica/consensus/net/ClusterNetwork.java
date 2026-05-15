@@ -95,6 +95,14 @@ public interface ClusterNetwork {
     /// This set does NOT include self - only remote peers with active connections.
     Set<NodeId> connectedPeers();
 
+    /// Peers locally reachable for quorum purposes — includes CONNECTED and EVICTED
+    /// (transient stale-link awaiting reconcile). Mirrors `activeConnectedCount`
+    /// semantics so externally-visible counts do not flicker on momentary evictions.
+    /// Default falls back to `connectedPeers` for transports without an EVICTED state.
+    default Set<NodeId> activePeers() {
+        return connectedPeers();
+    }
+
     /// Get the underlying server instance for metrics collection.
     /// Returns empty if the network has not been started yet.
     Option<Server> server();

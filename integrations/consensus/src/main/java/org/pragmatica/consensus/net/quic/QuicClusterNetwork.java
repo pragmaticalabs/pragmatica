@@ -467,6 +467,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
+    public Set<NodeId> activePeers() {
+        // Mirror `activeConnectedCount` semantics: include EVICTED (transient stale-link
+        // awaiting reconcile) so external counts do not flicker on momentary evictions.
+        return peers.values()
+                    .stream()
+                    .filter(p -> !p.isPassive())
+                    .filter(p -> p.phase() == PeerState.Phase.CONNECTED
+                                 || p.phase() == PeerState.Phase.EVICTED)
+                    .map(PeerState::peerId)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    @Override
     public Option<Server> server() {
         // QUIC transport does not use a TCP Server instance.
         return Option.empty();
