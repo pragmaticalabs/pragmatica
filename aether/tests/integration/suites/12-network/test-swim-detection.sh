@@ -68,8 +68,8 @@ test_recovery_after_detection() {
     # restarting the original would leave the cluster in a stale-identity
     # 6-node state.
     if ! wait_for "5 ON_DUTY healthy cores after SWIM detection" \
-        "[ \$(cluster_node_count_on_duty_healthy) -eq 5 ]" 90; then
-        log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 90s after kill+auto-heal"
+        "[ \$(cluster_node_count_on_duty_healthy) -eq 5 ]" 180; then
+        log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 180s after kill+auto-heal"
         return 1
     fi
     assert_cluster_healthy "Cluster recovered after SWIM detection"

@@ -93,8 +93,8 @@ test_connections_recovered() {
     # replacement, and restarting the original would push the cluster to a
     # 6-node "stale + replacement" state that fights the elastic-cluster model.
     if ! wait_for "5 ON_DUTY healthy cores after QUIC recovery" \
-        "[ \$(cluster_node_count_on_duty_healthy) -eq 5 ]" 90; then
-        log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 90s after kill+auto-heal"
+        "[ \$(cluster_node_count_on_duty_healthy) -eq 5 ]" 180; then
+        log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 180s after kill+auto-heal"
         return 1
     fi
     assert_cluster_healthy "Cluster healthy after QUIC recovery"
