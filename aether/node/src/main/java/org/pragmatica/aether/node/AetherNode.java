@@ -959,21 +959,11 @@ public interface AetherNode extends ManageableNode {
                 .consensusDrainCoordinator(ctmLifecycleWriter, lifecycleReader::apply, inFlightProbe);
         // MembershipFsm wiring (spec §9 — post-E.8 always active). Constructed AFTER
         // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
-        // F.4 (2026-05-12) — `swimDetectorRef` is set BELOW after CoreSwimHealthDetector is
-        // constructed; the QUIC `PeerConnected` synthesis bridge predicate captures it lazily
-        // (the FSM is built before the detector, but the bridge is invoked only after the
-        // detector exists, i.e. once QUIC peers begin connecting, which can only happen after
-        // the cluster network is started downstream of the SWIM-detector build).
-        var swimDetectorRef = new AtomicReference<CoreSwimHealthDetector>();
-        Predicate<NodeId> isKnownAliveClusterPeer =
-                peer -> isKnownStaticClusterPeer(config.topology(), peer)
-                        && isCurrentlySwimAlive(swimDetectorRef.get(), peer);
         var membershipFsm = buildMembershipFsm(config.self(),
                                                 kvStore,
                                                 clusterCommandApplier,
                                                 drainCoordinator,
                                                 isLeaderSupplier,
-                                                isKnownAliveClusterPeer,
                                                 hlcClockEarly);
         membershipFsm.start();
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
@@ -1293,11 +1283,6 @@ public interface AetherNode extends ManageableNode {
                                                                                swimConfig,
                                                                                swimIsBootingSupplier,
                                                                                faultyLeaderEvictor);
-        // F.4 (2026-05-12) — publish the detector reference so the MembershipFsm's
-        // `isKnownAliveClusterPeer` predicate (declared upstream) can perform the SWIM-alive
-        // check inside `onPeerConnected`. Must be set BEFORE attachQuicPeerStateListener
-        // below since that's the listener that invokes the bridge.
-        swimDetectorRef.set(swimHealthDetector);
         swimDetectorRefForPhase.set(swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
@@ -1388,11 +1373,7 @@ public interface AetherNode extends ManageableNode {
                                                   java.util.concurrent.TimeUnit.SECONDS);
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
         attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
-        attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector, membershipFsm);
-        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                                 change -> rediscoverQuicPeersOnLeaderTakeover(change,
-                                                                                                clusterNode.network(),
-                                                                                                membershipFsm)));
+        attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
                                                                                       leaderTerm,
@@ -1731,7 +1712,6 @@ public interface AetherNode extends ManageableNode {
                                                      java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                      org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
                                                      BooleanSupplier isLeaderSupplier,
-                                                     Predicate<NodeId> isKnownAliveClusterPeer,
                                                      HlcClock hlcClock) {
         var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
         MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
@@ -1749,31 +1729,7 @@ public interface AetherNode extends ManageableNode {
                                             drainCoordinator,
                                             scheduler,
                                             isLeaderSupplier,
-                                            isKnownAliveClusterPeer,
                                             hlcClock);
-    }
-
-    /// F.4 (2026-05-12) — static-config sub-check for the QUIC `PeerConnected` synthesis
-    /// bridge. Returns `true` iff `peer` is a real cluster peer present in
-    /// `TopologyConfig.coreNodes()` — auto-provisioned dynamic peers (fresh NodeIds outside
-    /// the static config) are intentionally excluded and continue through the SWIM probe-Ack
-    /// path. See `MembershipFsm#onPeerConnected` for the full filter chain.
-    private static boolean isKnownStaticClusterPeer(TopologyConfig topologyConfig, NodeId peer) {
-        return topologyConfig.coreNodes().stream().anyMatch(node -> node.id().equals(peer));
-    }
-
-    /// F.4 (2026-05-12) — SWIM-alive sub-check for the QUIC `PeerConnected` synthesis bridge.
-    /// Returns `true` iff `detector` exists (constructed) AND has a current health snapshot
-    /// in which `peer` is observed as `HEALTHY`. Pre-detector calls return `false` so the
-    /// bridge stays inert until SWIM is ready. See `MembershipFsm#onPeerConnected`.
-    private static boolean isCurrentlySwimAlive(CoreSwimHealthDetector detector, NodeId peer) {
-        if (detector == null) {
-            return false;
-        }
-        return detector.currentHealth()
-                       .flatMap(snapshot -> snapshot.healthOf(peer))
-                       .map(health -> health == org.pragmatica.swim.SwimHealth.HEALTHY)
-                       .or(false);
     }
 
     /// Self-bootstrap (Bootstrap-correction 2026-05-12; spec §6 step 7). SWIM does not observe
@@ -1873,8 +1829,7 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static void attachQuicPeerStateListener(ClusterNetwork network,
-                                                     CoreSwimHealthDetector swimDetector,
-                                                     MembershipFsm membershipFsm) {
+                                                     CoreSwimHealthDetector swimDetector) {
         LOG.debug("attachQuicPeerStateListener: network class={}",
                   network == null
                   ? "null"
@@ -1885,15 +1840,13 @@ public interface AetherNode extends ManageableNode {
         }
         var listener = new QuicPeerStateListener() {
             @Override@Contract public void onPeerJoined(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable) + MembershipFsm.onPeerConnected (F.4)", nodeId);
+                LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable)", nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-                membershipFsm.onPeerConnected(nodeId);
             }
 
             @Override@Contract public void onPeerReconnected(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable) + MembershipFsm.onPeerConnected (F.4)", nodeId);
+                LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable)", nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-                membershipFsm.onPeerConnected(nodeId);
             }
 
             @Override@Contract public void onPeerLeft(NodeId nodeId) {
@@ -1905,10 +1858,9 @@ public interface AetherNode extends ManageableNode {
         quicNetwork.setPeerStateListener(listener);
         quicNetwork.connectedPeers()
                                   .forEach(peer -> {
-                                               LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) + onPeerConnected for already-connected peer {} (F.4)",
+                                               LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) for already-connected peer {}",
                                                          peer);
                                                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
-                                               membershipFsm.onPeerConnected(peer);
                                            });
     }
 
@@ -1954,43 +1906,6 @@ public interface AetherNode extends ManageableNode {
         return notice -> router.route(OperationalEvent.GenerationChanged.generationChanged(notice.oldEpoch().toString(),
                                                                                            notice.newEpoch().toString(),
                                                                                            notice.reason().name()));
-    }
-
-    /// Leader-takeover peer re-discovery (chaos-leader-handoff fix 2026-05-13). When this node
-    /// becomes leader, re-fire `MembershipFsm.onPeerConnected` for every QUIC peer currently
-    /// connected, synthesizing a `SwimHealthy` observation for each. Without this, peers that
-    /// were SWIM-alive BEFORE the takeover (but never had a `NodeLifecycleKey` entry written,
-    /// e.g. because the previous leader died before observing them) remain stuck in `UNTRACKED`
-    /// forever — SWIM emits observations only on state change, so the new leader receives no
-    /// fresh `Healthy` event and `(UNTRACKED, SwimHealthy) → ON_DUTY` never fires.
-    ///
-    /// Symptom this fixes: after `kill-leader` chaos, the surviving leader sees N peers in its
-    /// SWIM alive-set but only those that wrote ON_DUTY before the previous leader died appear
-    /// in `/api/nodes/lifecycle`. The cluster reports `current=3 of desired=5` because 2 alive
-    /// peers (plus any CTM replacements provisioned in the meantime) are stuck UNTRACKED.
-    ///
-    /// Idempotent with the F.4 startup catch-up and the regular `onPeerJoined` listener: the
-    /// reducer's `(ON_DUTY, SwimHealthy) → nop` cell ensures repeat synthesis is harmless. The
-    /// QUIC peer set is a strict subset of "alive consensus peers" — followers are not
-    /// re-observed (no QUIC connection retained), which is fine because the new leader's own
-    /// SWIM detector will re-probe them on its next round.
-    private static void rediscoverQuicPeersOnLeaderTakeover(LeaderNotification.LeaderChange change,
-                                                             ClusterNetwork network,
-                                                             MembershipFsm membershipFsm) {
-        if (!change.localNodeIsLeader()) {
-            return;
-        }
-        if (! (network instanceof QuicClusterNetwork quicNetwork)) {
-            return;
-        }
-        var peers = quicNetwork.connectedPeers();
-        if (peers.isEmpty()) {
-            LOG.debug("rediscoverQuicPeersOnLeaderTakeover: no connected QUIC peers — nothing to rediscover");
-            return;
-        }
-        LOG.info("rediscoverQuicPeersOnLeaderTakeover: leader takeover detected — re-firing onPeerConnected for {} connected QUIC peer(s) to repopulate NodeLifecycleKey entries missed during the previous leader's tenure",
-                 peers.size());
-        peers.forEach(membershipFsm::onPeerConnected);
     }
 
     private static void onLeaderChangeForPublisher(LeaderNotification.LeaderChange change,
