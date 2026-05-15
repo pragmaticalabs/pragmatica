@@ -422,6 +422,18 @@ public final class MembershipFsm {
 
     @Contract public void setSwimHealthGate(Function<NodeId, Boolean> gate) {
         this.swimHealthGate = gate;
+        // Re-evaluate JOINING peers immediately — handles the common wiring order where
+        // AetherNode calls setSwimHealthGate after start(), so resumeJoinDeadline already
+        // ran with the default false-gate and skipped synthesis for SWIM-healthy peers.
+        if (started.get() && isLeader.getAsBoolean()) {
+            fsmStates.forEach((peer, state) -> {
+                if (state instanceof MembershipFsmState.Joining && gate.apply(peer)) {
+                    log.info("MembershipFsm: setSwimHealthGate — SWIM already healthy for JOINING peer={}, synthesizing SwimHealthy",
+                             peer.id());
+                    onSwimObservation(new HealthyObserved(peer, 0L));
+                }
+            });
+        }
     }
 
     private boolean isSelfAlreadyOnDuty() {
