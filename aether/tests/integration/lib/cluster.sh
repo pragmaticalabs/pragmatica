@@ -91,28 +91,27 @@ cluster_phase() {
     aether_field status clusterPhase
 }
 
-# Count nodes whose per-node lifecycle atom reports state=ON_DUTY. HealthReconciler
-# is the single writer of NodeLifecycleKey (spec §4.3 P4) and only transitions
-# JOINING→ON_DUTY once the node has cleared the healthy + committed barrier, so
-# state=ON_DUTY is the operator-visible "healthy and on duty" signal — the same
-# predicate the docs/operator use. Used by `restore_cluster_baseline` to assert
-# the cluster has converged to N healthy cores AFTER CTM auto-heal, without
-# requiring those cores to be the original five compose nodes (CTM replacements
-# come up with fresh NodeIds — fighting that is what `restart_all_nodes` did).
+# Count nodes whose derived membership state is ON_DUTY. H-series MembershipView
+# derives ON_DUTY at read-time from SWIM health rather than persisting an explicit
+# NodeLifecycleKey KV atom — so /api/nodes/lifecycle no longer carries ON_DUTY entries.
+# /api/cluster/topology `coreCount` is the authoritative operator-visible count of
+# cores that are ON_DUTY+HEALTHY (as noted in cluster_node_count comment above).
+# Used by `restore_cluster_baseline` to assert the cluster has converged to N healthy
+# cores AFTER CTM auto-heal, without requiring those cores to be the original five
+# compose nodes (CTM replacements come up with fresh NodeIds).
 cluster_node_count_on_duty_healthy() {
-    local lifecycle
-    lifecycle=$(api_get "/api/nodes/lifecycle" 2>/dev/null || true)
-    if [ -z "$lifecycle" ]; then
+    local topology
+    topology=$(api_get "/api/cluster/topology" 2>/dev/null || true)
+    if [ -z "$topology" ]; then
         echo 0
         return 0
     fi
-    # Same parser as pick_non_leader — handles both key orders that the API
-    # emits depending on Jackson field ordering. Each match represents one
-    # ON_DUTY entry; counting matches gives the ON_DUTY-healthy core total.
-    printf '%s' "$lifecycle" \
-        | grep -oE '"nodeId":"[^"]+","state":"ON_DUTY"|"state":"ON_DUTY","nodeId":"[^"]+"' \
-        | wc -l \
-        | tr -d ' '
+    # Extract `coreCount` integer value — topology endpoint filters to ON_DUTY+HEALTHY cores.
+    printf '%s' "$topology" \
+        | grep -o '"coreCount"[[:space:]]*:[[:space:]]*[0-9]*' \
+        | head -1 \
+        | grep -o '[0-9]*$' \
+        || echo 0
 }
 
 # Whether the cluster currently has quorum (leader committed AND ≥ ⌈N/2⌉+1 ON_DUTY nodes).
@@ -121,9 +120,9 @@ cluster_quorate() {
     aether_field status cluster.quorate
 }
 
-# Per-node lifecycle state from the per-node NodeLifecycleKey atom in KV-Store
-# (HealthReconciler is sole writer — see spec §4.3 P4). One of:
-# JOINING, ON_DUTY, DRAINING, DECOMMISSIONED, SHUTTING_DOWN — or UNKNOWN if no atom yet.
+# Per-node lifecycle state as derived by H-series MembershipView (SWIM health ∪ KV
+# override). One of: JOINING, ON_DUTY, DRAINING, DECOMMISSIONED, SHUTTING_DOWN — or
+# UNKNOWN if the node is untracked (not yet seen by SWIM or KV-Store).
 node_lifecycle_state() {
     local target_node="$1"
     aether_json status 2>/dev/null \
@@ -179,38 +178,41 @@ mgmt_entry_point_node() {
 # docker/remote runs since the mgmt-gateway sidecar removed the need for
 # client-side node pinning). Fails loudly if no candidate remains.
 #
-# Source of truth: `/api/nodes/lifecycle` filtered to state=ON_DUTY. This
-# excludes nodes that were drained / killed / decommissioned by earlier
-# suites — those are NOT valid kill targets because:
-#  (a) their KV state is DECOMMISSIONED (single-writer rule) so they can't
-#      be re-admitted to the cluster even when the container restarts,
-#  (b) the surviving cluster has already removed them from its SWIM members
-#      map, so killing them produces no Ping timeout and no FAULTY edge.
-# Falls back to the static `node-1..5` list only if the API call fails
-# (e.g. cluster not yet ready / pre-bootstrap).
+# Source of truth: `/api/status` cluster.nodes[] filtered to lifecycleState=ON_DUTY.
+# H-series MembershipView derives ON_DUTY at read-time from SWIM health, so
+# /api/nodes/lifecycle no longer carries explicit ON_DUTY atoms. /api/status
+# reflects the same derived view and carries per-node id + lifecycleState.
+# Nodes that were drained / killed / decommissioned are NOT valid kill targets:
+#  (a) their derived state will be DECOMMISSIONED or UNKNOWN (not ON_DUTY),
+#  (b) the surviving cluster has already removed them from its SWIM members map,
+#      so killing them produces no Ping timeout and no FAULTY edge.
+# Falls back to empty (fail-closed) if the API call fails.
 pick_non_leader() {
     local leader="$1"
     local count="${2:-1}"
     local pinned
     pinned=$(mgmt_entry_point_node)
 
+    # Extract node IDs with lifecycleState=ON_DUTY from /api/status cluster.nodes[].
+    # NodeInfo JSON field order (Jackson record serialization): id, isLeader, lifecycleState.
+    # We split on '{' so each token is one candidate object, keep only tokens that carry
+    # "lifecycleState":"ON_DUTY", then extract the "id" value with sed.
+    # BSD awk (macOS default) lacks 3-arg match(), so we use grep+sed throughout.
     local current_members
-    current_members=$(api_get "/api/nodes/lifecycle" 2>/dev/null \
-        | grep -oE '"nodeId":"[^"]+","state":"ON_DUTY"|"state":"ON_DUTY","nodeId":"[^"]+"' \
-        | grep -oE '"nodeId":"[^"]+"' \
-        | sed 's/"nodeId":"\([^"]*\)"/\1/' || true)
+    current_members=$(api_get "/api/status" 2>/dev/null \
+        | tr '{' '\n' \
+        | grep '"lifecycleState"[[:space:]]*:[[:space:]]*"ON_DUTY"' \
+        | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/"id"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
     if [ -z "$current_members" ]; then
-        # Fail-closed: previously fell back to a hardcoded `node-1..5` list, which
-        # silently picked DECOMMISSIONED victims — kill_node became a no-op, NODE_FAILED
-        # never fired, and the suite "passed" against a stale cluster snapshot. If
-        # /api/nodes/lifecycle has no ON_DUTY members, the test premise (a healthy
-        # cluster from which we can pick a non-leader) is broken.
+        # Fail-closed: if /api/status has no ON_DUTY members, the test premise
+        # (a healthy cluster from which we can pick a non-leader) is broken.
         #
         # log_fail goes to stderr — pick_non_leader is consumed via `$(...)`, so any
         # stdout output is interpreted by the caller as a node-id. Sending the error
         # to stderr lets callers see the FAIL banner while `$(...)` captures the empty
         # string and the caller's `if [ -z ... ]` check fires correctly.
-        log_fail "pick_non_leader: /api/nodes/lifecycle returned no ON_DUTY members — cannot select victim" >&2
+        log_fail "pick_non_leader: /api/status returned no ON_DUTY members — cannot select victim" >&2
         return 1
     fi
 

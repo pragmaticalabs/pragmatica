@@ -153,6 +153,8 @@ public final class MembershipFsm {
 
     private final AtomicBoolean started = new AtomicBoolean();
 
+    private volatile Function<NodeId, Boolean> swimHealthGate = ignored -> false;
+
     private MembershipFsm(NodeId self,
                           MembershipFsmConfig config,
                           ClusterMembershipReducer reducer,
@@ -416,6 +418,10 @@ public final class MembershipFsm {
         log.info("MembershipFsm: onLeaderChange(self={}) — synthesizing SwimHealthy(self) for self-bootstrap (spec §6.2 step 7)",
                  self.id());
         onSwimObservation(new HealthyObserved(self, 0L));
+    }
+
+    @Contract public void setSwimHealthGate(Function<NodeId, Boolean> gate) {
+        this.swimHealthGate = gate;
     }
 
     private boolean isSelfAlreadyOnDuty() {
@@ -951,6 +957,11 @@ public final class MembershipFsm {
         cancelTimer(peer, TimerKind.JOIN_DEADLINE);
         var future = scheduler.schedule(() -> onTimerFired(handle), TimeSpan.timeSpan(remainingMs).millis());
         pendingTimers.put(handle, future);
+        if (swimHealthGate.apply(peer)) {
+            log.info("MembershipFsm: resumeJoinDeadline peer={} — SWIM already healthy on leader takeover, synthesizing SwimHealthy",
+                     peer.id());
+            onSwimObservation(new HealthyObserved(peer, 0L));
+        }
     }
 
     private Option<String> slotIdForPeer(NodeId peer) {

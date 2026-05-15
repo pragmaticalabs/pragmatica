@@ -1315,6 +1315,7 @@ public interface AetherNode extends ManageableNode {
                                                                                    rotatingEncryptor,
                                                                                    announceJoinTrigger)));
         swimHealthDetector.addObservationListener(membershipFsm::onSwimObservation);
+        membershipFsm.setSwimHealthGate(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
         // cluster-wide `TransportObservation` stream so subscribers (LeaderManager,
         // ClusterFsmRouter, etc.) reach all `TransportObservation.PeerObservedFaulty` edges.
