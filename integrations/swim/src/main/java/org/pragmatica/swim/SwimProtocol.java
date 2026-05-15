@@ -36,6 +36,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -539,9 +540,6 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void handlePing(InetSocketAddress sender, Ping ping) {
         processPiggyback(ping.piggyback());
-        if (!members.containsKey(ping.from())) {
-            applyNewMember(MembershipUpdate.membershipUpdate(ping.from(), MemberState.ALIVE, 0L, sender));
-        }
         var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ack = Ack.ack(selfId, ping.sequence(), piggyback);
         transport.send(sender, ack);
@@ -579,7 +577,63 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void handleAnnounce(Announce announce) {
-        deliverObservation(new SwimObservation.JoinAnnounced(announce.nodeInfo(), announce.clusterName(), announce.incarnation()));
+        var expectedName = config.clusterName();
+        if (!expectedName.isEmpty() && !expectedName.equals(announce.clusterName())) {
+            LOG.warn("ANNOUNCE from {} rejected: cluster name mismatch (got '{}', expected '{}')",
+                     announce.nodeInfo().id().id(), announce.clusterName(), expectedName);
+            return;
+        }
+
+        if (!members.containsKey(announce.nodeInfo().id())) {
+            var update = MembershipUpdate.membershipUpdate(
+                announce.nodeInfo().id(), MemberState.ALIVE, announce.incarnation(),
+                new InetSocketAddress(announce.nodeInfo().address().host(), announce.nodeInfo().address().port()));
+            applyNewMember(update);
+            addMemberUpdate(update);
+        }
+
+        deliverObservation(new SwimObservation.JoinAnnounced(
+            announce.nodeInfo(), announce.clusterName(), announce.incarnation()));
+    }
+
+    /// Send ANNOUNCE to all seeds every 500ms until quorum is reached or 60 attempts are exhausted.
+    ///
+    /// Runs on the shared scheduler. Stops when `quorumReached` returns true or after 60 attempts (30s).
+    @Contract public void announceJoin(NodeInfo self, String clusterName, long incarnation,
+                                       List<InetSocketAddress> seeds, BooleanSupplier quorumReached) {
+        var attempts = new AtomicInteger(0);
+        var future = new AtomicReference<ScheduledFuture<?>>();
+        var task = SharedScheduler.scheduleAtFixedRate(
+            () -> runAnnounceAttempt(self, clusterName, incarnation, seeds, quorumReached, attempts, future),
+            TimeSpan.timeSpan(500).millis());
+        future.set(task);
+    }
+
+    public SwimHealth healthOf(NodeId nodeId) {
+        return lastEmittedHealth.getOrDefault(nodeId, SwimHealth.UNKNOWN);
+    }
+
+    private void runAnnounceAttempt(NodeInfo self, String clusterName, long incarnation,
+                                    List<InetSocketAddress> seeds, BooleanSupplier quorumReached,
+                                    AtomicInteger attempts, AtomicReference<ScheduledFuture<?>> future) {
+        if (quorumReached.getAsBoolean()) {
+            cancelAnnounce(future, self, "quorum reached");
+            return;
+        }
+
+        var attempt = attempts.incrementAndGet();
+        LOG.info("SWIM ANNOUNCE join attempt {}/60 for node {} to {} seeds",
+                 attempt, self.id().id(), seeds.size());
+        seeds.forEach(seed -> transport.send(seed, Announce.announce(self, clusterName, incarnation)));
+
+        if (attempt >= 60) {
+            cancelAnnounce(future, self, "max attempts reached");
+        }
+    }
+
+    private void cancelAnnounce(AtomicReference<ScheduledFuture<?>> future, NodeInfo self, String reason) {
+        option(future.getAndSet(null)).onPresent(f -> f.cancel(false));
+        LOG.info("SWIM ANNOUNCE join stopped for node {} ({})", self.id().id(), reason);
     }
 
     private void relayPingReq(InetSocketAddress requesterAddress, PingReq pingReq, SwimMember target) {

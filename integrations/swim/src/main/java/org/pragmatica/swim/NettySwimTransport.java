@@ -18,6 +18,9 @@ package org.pragmatica.swim;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.bootstrap.Bootstrap;
@@ -34,10 +37,14 @@ import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.resolver.dns.DnsNameResolver;
 import io.netty.resolver.dns.DnsNameResolverBuilder;
 import io.netty.util.concurrent.Future;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.RateLimiter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.slf4j.Logger;
@@ -46,6 +53,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Netty-based UDP transport for SWIM protocol messages with async DNS resolution.
 ///
@@ -56,6 +64,11 @@ import static org.pragmatica.lang.Unit.unit;
 public final class NettySwimTransport implements SwimTransport {
     private static final Logger LOG = LoggerFactory.getLogger(NettySwimTransport.class);
 
+    /// ANNOUNCE rate: 10 per second per source IP.
+    private static final int ANNOUNCE_RATE_PER_SECOND = 10;
+    /// Evict per-source rate limiter entries idle longer than this.
+    private static final long ANNOUNCE_LIMITER_IDLE_EVICT_MS = 5 * 60 * 1_000L;
+
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final GossipEncryptor encryptor;
@@ -63,6 +76,9 @@ public final class NettySwimTransport implements SwimTransport {
     private final AtomicReference<Option<Channel>> channel = new AtomicReference<>(none());
     private final AtomicReference<Option<EventLoopGroup>> group = new AtomicReference<>(none());
     private final AtomicReference<Option<DnsNameResolver>> nettyResolver = new AtomicReference<>(none());
+    /// Per-source IP rate limiter map for ANNOUNCE flood protection.
+    /// Entries idle > {@value #ANNOUNCE_LIMITER_IDLE_EVICT_MS} ms are evicted lazily.
+    private final Map<InetAddress, AnnounceRateLimiterEntry> announceRateLimiters = new ConcurrentHashMap<>();
 
     private NettySwimTransport(Serializer serializer, Deserializer deserializer,
                                 GossipEncryptor encryptor, Option<EventLoopGroup> externalGroup) {
@@ -105,6 +121,23 @@ public final class NettySwimTransport implements SwimTransport {
     @Override
     public Promise<Unit> stop() {
         return Promise.lift(SwimError.TransportFailure::new, this::doStop);
+    }
+
+    /// Send an ANNOUNCE message to the given seed address, advertising this node's join.
+    public Promise<Unit> sendAnnounce(NodeInfo self, String clusterName, long incarnation, InetSocketAddress target) {
+        return send(target, SwimMessage.Announce.announce(self, clusterName, incarnation));
+    }
+
+    /// Check whether the given source IP is within its per-source ANNOUNCE rate limit.
+    /// Returns {@code true} if the message should be processed, {@code false} if it should be dropped.
+    /// Evicts entries that have been idle longer than {@value #ANNOUNCE_LIMITER_IDLE_EVICT_MS} ms.
+    /// The rate-limiter promise resolves synchronously; {@code await()} never blocks here.
+    @TerminalOperation
+    boolean isAnnounceAllowed(InetAddress source) {
+        evictIdleAnnounceLimiters();
+        var entry = announceRateLimiters.computeIfAbsent(source, this::newAnnounceEntry);
+        entry.touch();
+        return entry.limiter().execute(Promise::unitPromise).await().isSuccess();
     }
 
     /// Resolve DNS asynchronously if target is unresolved, then send.
@@ -248,6 +281,50 @@ public final class NettySwimTransport implements SwimTransport {
 
     private void dispatchDecrypted(SwimMessageHandler handler, InetSocketAddress sender, byte[] decrypted) {
         SwimMessage message = deserializer.decode(decrypted);
+        if (message instanceof SwimMessage.Announce && !isAnnounceAllowed(sender.getAddress())) {
+            LOG.debug("ANNOUNCE rate limit exceeded from {}; dropping", sender.getAddress());
+            return;
+        }
         handler.onMessage(sender, message);
+    }
+
+    private AnnounceRateLimiterEntry newAnnounceEntry(InetAddress ignored) {
+        return new AnnounceRateLimiterEntry(
+            RateLimiter.rateLimiter(ANNOUNCE_RATE_PER_SECOND, timeSpan(1).seconds()),
+            System.currentTimeMillis()
+        );
+    }
+
+    private void evictIdleAnnounceLimiters() {
+        var now = System.currentTimeMillis();
+        Iterator<Map.Entry<InetAddress, AnnounceRateLimiterEntry>> it = announceRateLimiters.entrySet().iterator();
+        while (it.hasNext()) {
+            if (now - it.next().getValue().lastUsedMs() > ANNOUNCE_LIMITER_IDLE_EVICT_MS) {
+                it.remove();
+            }
+        }
+    }
+
+    /// Holds a per-source rate limiter and tracks last-access time for idle eviction.
+    private static final class AnnounceRateLimiterEntry {
+        private final RateLimiter limiter;
+        private volatile long lastUsedMs;
+
+        AnnounceRateLimiterEntry(RateLimiter limiter, long lastUsedMs) {
+            this.limiter = limiter;
+            this.lastUsedMs = lastUsedMs;
+        }
+
+        RateLimiter limiter() {
+            return limiter;
+        }
+
+        long lastUsedMs() {
+            return lastUsedMs;
+        }
+
+        @Contract void touch() {
+            lastUsedMs = System.currentTimeMillis();
+        }
     }
 }

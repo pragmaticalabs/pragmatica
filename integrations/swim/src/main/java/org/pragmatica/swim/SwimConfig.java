@@ -31,6 +31,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param maxPiggyback    maximum number of membership updates piggybacked per message
 /// @param revivalGrace    grace period after markAlive — don't probe recently-revived members
 /// @param startupDelay    cooldown after quorum before first probe — allows all TCP connections to establish
+/// @param clusterName     cluster identifier used to gate ANNOUNCE membership (empty string means no gating)
 @Codec
 @CodecFor({TimeSpan.class, java.net.InetSocketAddress.class})
 public record SwimConfig(TimeSpan period,
@@ -39,7 +40,8 @@ public record SwimConfig(TimeSpan period,
                          TimeSpan suspectTimeout,
                          int maxPiggyback,
                          TimeSpan revivalGrace,
-                         TimeSpan startupDelay) {
+                         TimeSpan startupDelay,
+                         String clusterName) {
 
     /// Default configuration — suitable for Docker and containerized environments.
     /// `suspectTimeout` is the dominant hop in the SWIM detection chain; lowered
@@ -54,10 +56,24 @@ public record SwimConfig(TimeSpan period,
         timeSpan(10).seconds(),
         8,
         timeSpan(5).seconds(),
-        timeSpan(10).seconds()
+        timeSpan(10).seconds(),
+        ""
     );
 
-    /// Factory with all parameters.
+    /// Factory with all parameters including cluster name.
+    public static SwimConfig swimConfig(TimeSpan period,
+                                        TimeSpan probeTimeout,
+                                        int indirectProbes,
+                                        TimeSpan suspectTimeout,
+                                        int maxPiggyback,
+                                        TimeSpan revivalGrace,
+                                        TimeSpan startupDelay,
+                                        String clusterName) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, revivalGrace, startupDelay, clusterName);
+    }
+
+    /// Factory with all timing/probe parameters — clusterName defaults to empty (no gating).
     public static SwimConfig swimConfig(TimeSpan period,
                                         TimeSpan probeTimeout,
                                         int indirectProbes,
@@ -66,7 +82,7 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan revivalGrace,
                                         TimeSpan startupDelay) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, revivalGrace, startupDelay);
+                              maxPiggyback, revivalGrace, startupDelay, "");
     }
 
     /// Factory with defaults for revivalGrace and startupDelay.
@@ -76,7 +92,7 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan suspectTimeout,
                                         int maxPiggyback) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, timeSpan(5).seconds(), timeSpan(10).seconds());
+                              maxPiggyback, timeSpan(5).seconds(), timeSpan(10).seconds(), "");
     }
 
     /// Factory with defaults.
@@ -100,6 +116,13 @@ public record SwimConfig(TimeSpan period,
                               suspectTimeout,
                               DEFAULT.maxPiggyback(),
                               DEFAULT.revivalGrace(),
-                              DEFAULT.startupDelay());
+                              DEFAULT.startupDelay(),
+                              DEFAULT.clusterName());
+    }
+
+    /// Derive a new config with the given cluster name.
+    public SwimConfig withClusterName(String name) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, revivalGrace, startupDelay, name);
     }
 }
