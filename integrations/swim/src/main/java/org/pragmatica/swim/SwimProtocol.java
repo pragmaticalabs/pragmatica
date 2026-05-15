@@ -539,6 +539,9 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void handlePing(InetSocketAddress sender, Ping ping) {
         processPiggyback(ping.piggyback());
+        if (!members.containsKey(ping.from())) {
+            applyNewMember(MembershipUpdate.membershipUpdate(ping.from(), MemberState.ALIVE, 0L, sender));
+        }
         var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ack = Ack.ack(selfId, ping.sequence(), piggyback);
         transport.send(sender, ack);
@@ -646,6 +649,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void applyNewMember(MembershipUpdate update) {
         var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
         members.put(update.nodeId(), member);
+        addMemberUpdate(update);
 
         switch (update.state()) {
             case ALIVE -> applyNewAliveMember(member);

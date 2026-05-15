@@ -20,10 +20,8 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
@@ -31,8 +29,6 @@ import java.util.function.LongSupplier;
 import java.util.stream.Stream;
 
 import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.concurrent.Future;
@@ -92,14 +88,10 @@ import static org.pragmatica.lang.Unit.unit;
 ///   - `disconnect(DisconnectNode)` → `authoritativeRemove`
 ///   - `stop()` / `closePeerConnections()` → `authoritativeRemove` on all
 ///
-/// The [outboundQueues] map remains for Netty stream-level writability backpressure — that
-/// queue is channel-specific (bytes are for the current `QuicStreamChannel`) and is wiped on
-/// eviction. The [PeerState] offline buffer is peer-level and survives transient evictions so
+/// The [PeerState] offline buffer is peer-level and survives transient evictions so
 /// consensus broadcasts delivered during a reconnect storm are not lost.
 public class QuicClusterNetwork implements ClusterNetwork {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterNetwork.class);
-
-    private static final int MAX_BACKPRESSURE_QUEUE_SIZE = 100;
 
     private final NodeInfo self;
     private final Serializer serializer;
@@ -110,7 +102,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private volatile QuicSslContext clientSslContext;
 
     private final Map<NodeId, PeerState> peers = new ConcurrentHashMap<>();
-    private final Map<NodeId, Map<StreamType, Queue<byte[]>>> outboundQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
 
@@ -389,8 +380,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
             peer.evict(System.nanoTime())
                 .onPresent(this::closeDroppedConnection);
         }
-        // Channel-level writability backpressure queue is bytes-for-the-dead-channel; wipe.
-        cleanupPeerQueues(nodeId);
         // Drop the per-peer ephemeral UDP socket; client opens a fresh one on reconnect.
         var clientRef = client;
         if (clientRef != null) {
@@ -398,6 +387,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         resetReconnectBackoff(nodeId);
         quicMetrics.onConnectionClosed();
+        processViewChange(REMOVE, nodeId);
+    }
+
+    @Override
+    @SuppressWarnings("JBCT-PAT-01") // Peer removal + channel close + view change
+    public void departurePermanent(NodeId nodeId) {
+        var peer = peers.remove(nodeId);
+        if (peer != null) {
+            peer.authoritativeRemove(System.nanoTime())
+                .onPresent(this::closeDroppedConnection);
+        }
+        var clientRef = client;
+        if (clientRef != null) {
+            clientRef.closeDatagramChannel(nodeId);
+        }
         processViewChange(REMOVE, nodeId);
     }
 
@@ -610,7 +614,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // missing-peer reconciler backoff (handles the asymmetric-handshake recovery path).
         resetReconnectBackoff(peerId);
         state.resetReconcileBackoff();
-        installWritabilityHandler(connection, peerId);
         drainOfflineBufferInto(state, connection);
 
         if (isReconnect) {
@@ -751,90 +754,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
               .onEmpty(() -> log.warn("No stream available for peer {}", peerId));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Netty-writability: drain-then-send or enqueue
     private void writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
         if (!ch.isWritable()) {
-            enqueueOrDrop(bytes, peerId, streamType);
+            quicMetrics.onBackpressureDrop();
+            log.warn("Channel to peer {} not writable on stream {} — dropping message", peerId, streamType);
             return;
         }
-        drainQueue(ch, peerId, streamType);
         quicMetrics.onMessageSent();
         ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
           .addListener(future -> handleWriteResult(future, peerId, streamType));
-    }
-
-    private void enqueueOrDrop(byte[] bytes, NodeId peerId, StreamType streamType) {
-        var queue = getOrCreateQueue(peerId, streamType);
-        if (queue.size() < MAX_BACKPRESSURE_QUEUE_SIZE) {
-            queue.offer(bytes);
-            quicMetrics.onBackpressureQueued();
-            log.trace("Channel to peer {} not writable, queued message on stream {}", peerId, streamType);
-        } else {
-            quicMetrics.onBackpressureDrop();
-            log.warn("Backpressure queue full for peer {} stream {}, dropping message", peerId, streamType);
-        }
-    }
-
-    private Queue<byte[]> getOrCreateQueue(NodeId peerId, StreamType streamType) {
-        return outboundQueues.computeIfAbsent(peerId, _ -> new ConcurrentHashMap<>())
-                             .computeIfAbsent(streamType, _ -> new ConcurrentLinkedQueue<>());
-    }
-
-    private void drainQueue(QuicStreamChannel ch, NodeId peerId, StreamType streamType) {
-        var peerQueues = outboundQueues.get(peerId);
-        if (peerQueues == null) {
-            return;
-        }
-        var queue = peerQueues.get(streamType);
-        if (queue == null) {
-            return;
-        }
-        drainQueueMessages(ch, queue, peerId, streamType);
-    }
-
-    private void drainQueueMessages(QuicStreamChannel ch, Queue<byte[]> queue, NodeId peerId, StreamType streamType) {
-        byte[] queued;
-        while (ch.isWritable() && (queued = queue.poll()) != null) {
-            quicMetrics.onBackpressureDrained();
-            quicMetrics.onMessageSent();
-            ch.writeAndFlush(Unpooled.wrappedBuffer(queued))
-              .addListener(future -> handleWriteResult(future, peerId, streamType));
-        }
-    }
-
-    /// Called when a channel becomes writable again — drains queued messages for the peer/stream.
-    void onChannelWritable(NodeId peerId, StreamType streamType, QuicStreamChannel ch) {
-        drainQueue(ch, peerId, streamType);
-    }
-
-    /// Install a writability handler on the consensus stream to drain backpressure queues
-    /// when the channel becomes writable again.
-    private void installWritabilityHandler(QuicPeerConnection connection, NodeId peerId) {
-        connection.stream(StreamType.CONSENSUS)
-                  .onPresent(ch -> addWritabilityHandler(ch, peerId, StreamType.CONSENSUS));
-    }
-
-    private void addWritabilityHandler(QuicStreamChannel ch, NodeId peerId, StreamType streamType) {
-        ch.pipeline().addLast("backpressure-drain", new BackpressureDrainHandler(peerId, streamType));
-    }
-
-    /// Netty handler that drains queued messages when a channel becomes writable.
-    private class BackpressureDrainHandler extends ChannelInboundHandlerAdapter {
-        private final NodeId peerId;
-        private final StreamType streamType;
-
-        BackpressureDrainHandler(NodeId peerId, StreamType streamType) {
-            this.peerId = peerId;
-            this.streamType = streamType;
-        }
-
-        @Override
-        public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-            if (ctx.channel().isWritable()) {
-                onChannelWritable(peerId, streamType, (QuicStreamChannel) ctx.channel());
-            }
-            super.channelWritabilityChanged(ctx);
-        }
     }
 
     private void handleWriteResult(Future<? super Void> future, NodeId peerId, StreamType streamType) {
@@ -855,22 +783,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.debug("Write to {} failed; deferring removal to QUIC channel lifecycle", peerId);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") // Queue cleanup with size tracking
-    private void cleanupPeerQueues(NodeId peerId) {
-        var peerQueues = outboundQueues.remove(peerId);
-        if (peerQueues != null) {
-            var totalDropped = peerQueues.values()
-                                         .stream()
-                                         .mapToInt(Queue::size)
-                                         .sum();
-            if (totalDropped > 0) {
-                quicMetrics.onBackpressureQueueCleared(totalDropped);
-                log.debug("Cleaned up {} queued messages for disconnected peer {}", totalDropped, peerId);
-            }
-        }
-    }
-
-    @SuppressWarnings("JBCT-PAT-01") // Evict transition + channel close + reconnect attempt
+    @SuppressWarnings("JBCT-PAT-01") // Evict transition + channel close
     private void evictStaleConnection(NodeId peerId, QuicPeerConnection connection) {
         var state = peers.get(peerId);
         if (state == null) {
@@ -881,8 +794,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
             log.debug("Node {} stale link already replaced — nothing to evict", peerId);
             return;
         }
-        // Wipe channel-level writability backpressure — bytes were for the dead channel.
-        cleanupPeerQueues(peerId);
         quicMetrics.onConnectionClosed();
         evicted.onPresent(this::closeDroppedConnection);
         // Close the per-peer ephemeral UDP socket. Without this, every reconnect leaks
@@ -894,12 +805,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         log.warn("Node {} evicted stale (inactive) link — peer remains in topology, offline buffer preserved for reconnect",
                  peerId);
-        // Re-dial the peer if we are the initiator side. Higher NodeIds wait for inbound.
-        // Backoff-gated to prevent the 1Hz consensus tempo from re-firing eviction every
-        // heartbeat against a peer that is genuinely down.
-        if (ConnectionDirection.shouldInitiate(self.id(), peerId) && backoffAllowsReconnect(peerId)) {
-            topologyManager.get(peerId).onPresent(this::connectPeer);
-        }
         // Explicit use of the `connection` parameter to satisfy the API contract — the
         // identity check already happened inside `state.evict()` which matches by phase.
         if (connection != null && connection.isActive()) {
@@ -1173,7 +1078,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
                  .onPresent(conn -> promises.add(conn.close()));
         }
         peers.clear();
-        outboundQueues.clear();
         reconnectBackoff.clear();
         if (promises.isEmpty()) {
             return Promise.unitPromise();

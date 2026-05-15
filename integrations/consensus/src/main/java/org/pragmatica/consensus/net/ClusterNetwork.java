@@ -50,6 +50,12 @@ public interface ClusterNetwork {
     @MessageReceiver
     void disconnect(DisconnectNode disconnectNode);
 
+    /// Permanently remove a decommissioned peer. Unlike [#disconnect(DisconnectNode)],
+    /// which soft-evicts to EVICTED state (allowing future reconnect), this removes the
+    /// peer entry entirely (REMOVED state) and closes the datagram channel, preventing
+    /// WARN flood from broadcast attempts to a dead node.
+    default void departurePermanent(NodeId nodeId) {}
+
     @MessageReceiver
     void listNodes(ListConnectedNodes listConnectedNodes);
 

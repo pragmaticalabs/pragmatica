@@ -155,6 +155,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
@@ -330,6 +331,8 @@ public interface AetherNode extends ManageableNode {
         Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                       LeaderValue.class)
         .map(LeaderValue::leader);
+        var hlcClock = HlcClock.hlcClock(config.self().id()).unwrap();
+        var snapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
         return RabiaNode.rabiaNode(nodeConfig,
                                    delegateRouter,
                                    kvStore,
@@ -341,7 +344,9 @@ public interface AetherNode extends ManageableNode {
                                    config.quicTls(),
                                    rabiaTermSupplier,
                                    isDecommissioned,
-                                   currentLeaderFromKvSupplier)
+                                   currentLeaderFromKvSupplier,
+                                   snapshotSource,
+                                   hlcClock::now)
         .flatMap(clusterNode -> assembleNode(config,
                                              delegateRouter,
                                              kvStore,
@@ -354,7 +359,9 @@ public interface AetherNode extends ManageableNode {
                                              deserializer,
                                              nodeCodec,
                                              dhtNode,
-                                             leaderTerm));
+                                             leaderTerm,
+                                             hlcClock,
+                                             snapshotSource));
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
@@ -404,7 +411,9 @@ public interface AetherNode extends ManageableNode {
                                                    Deserializer deserializer,
                                                    SliceCodec nodeCodec,
                                                    DHTNode dhtNode,
-                                                   AtomicLong leaderTerm) {
+                                                   AtomicLong leaderTerm,
+                                                   HlcClock hlcClock,
+                                                   GenerationSnapshotSource snapshotSource) {
         DHTNetwork dhtNetwork = (target, msg) -> clusterNode.network().send(target, msg);
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, dhtNetwork, config.artifactRepo());
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
@@ -865,14 +874,12 @@ public interface AetherNode extends ManageableNode {
                                                                                             clusterNode.leaderManager()));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
-        var hlcClockEarly = HlcClock.hlcClock(config.self().id()).unwrap();
         var projectorEarly = ClusterGenerationProjector.clusterGenerationProjector();
         var generationChangedSink = buildGenerationChangedSink(delegateRouter);
         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> kvStore.getTyped(AetherKey.GenerationSnapshotKey.SINGLETON,
                                                                                               AetherValue.GenerationSnapshotValue.class)
         .map(AetherValue.GenerationSnapshotValue::snapshot);
         cdmSnapshotSupplierRef.set(snapshotSupplier);
-        var generationSnapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
         var metricsScheduler = ClusterSyncScheduler.clusterSyncScheduler(config.self(),
                                                                          clusterNode.network(),
                                                                          metricsCollector,
@@ -890,7 +897,7 @@ public interface AetherNode extends ManageableNode {
         java.util.function.Function<NodeId, Option<AetherValue.NodeLifecycleValue>> lifecycleReader = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId)).filter(v -> v instanceof AetherValue.NodeLifecycleValue)
                                                                                                                            .map(v -> (AetherValue.NodeLifecycleValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
-        var leaderAwareSnapshotSource = generationSnapshotSource;
+        var leaderAwareSnapshotSource = snapshotSource;
         // Drain infrastructure: tracker is shared with NodeLifecycleRoutes (/api/node/inflight).
         // ConsensusDrainCoordinator is constructed below once ctmLifecycleWriter exists.
         var inFlightTrackerForDrain = org.pragmatica.aether.deployment.drain.InFlightRequestTracker.inFlightRequestTracker();
@@ -964,7 +971,7 @@ public interface AetherNode extends ManageableNode {
                                                 clusterCommandApplier,
                                                 drainCoordinator,
                                                 isLeaderSupplier,
-                                                hlcClockEarly);
+                                                hlcClock);
         membershipFsm.start();
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
@@ -1013,7 +1020,7 @@ public interface AetherNode extends ManageableNode {
         // `TopologyObserver.inQuorum()` so a minority-side leader cannot delete events the
         // majority retains.
         var eventLogPublisher = ClusterEventLogPublisher.clusterEventLogPublisher(config.self(),
-                                                                                    hlcClockEarly,
+                                                                                    hlcClock,
                                                                                     rabiaTermSupplier::get,
                                                                                     clusterCommandApplier);
         var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
@@ -1315,8 +1322,7 @@ public interface AetherNode extends ManageableNode {
                                                          new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                                  (MembershipDecision.NodeDecommissioned decommissioned) ->
-                                                     clusterNetworkRef.disconnect(
-                                                         new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(decommissioned.nodeId()))));
+                                                     clusterNetworkRef.departurePermanent(decommissioned.nodeId())));
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
@@ -1337,7 +1343,7 @@ public interface AetherNode extends ManageableNode {
         peerObservationStore.subscribeHealth(swimHints::onPeerHealth);
         var generationSnapshotPublisher = GenerationSnapshotPublisher.generationSnapshotPublisher(isLeaderSupplier,
                                                                                                   rabiaTermSupplier,
-                                                                                                  hlcClockEarly,
+                                                                                                  hlcClock,
                                                                                                   projectorEarly,
                                                                                                   swimHints,
                                                                                                   kvStore::snapshot,
@@ -1350,7 +1356,7 @@ public interface AetherNode extends ManageableNode {
                                                               () -> isLeaderSupplier.getAsBoolean()
                                                                    ? Option.some(leaderTerm.get())
                                                                    : Option.<Long>none(),
-                                                              hlcClockEarly,
+                                                              hlcClock,
                                                               projectorEarly,
                                                               kvStore::snapshot,
                                                               config::self,
@@ -1586,7 +1592,7 @@ public interface AetherNode extends ManageableNode {
                                   drainCoordinator,
                                   nodeLifecycle,
                                   membershipFsm,
-                                  hlcClockEarly,
+                                  hlcClock,
                                   effectivePhaseSupplier,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
@@ -1693,7 +1699,7 @@ public interface AetherNode extends ManageableNode {
                                                                               drainCoordinator,
                                                                               nodeLifecycle,
                                                                               membershipFsm,
-                                                                              hlcClockEarly,
+                                                                              hlcClock,
                                                                               effectivePhaseSupplier,
                                                                               startTimeMs);
                                                     }
