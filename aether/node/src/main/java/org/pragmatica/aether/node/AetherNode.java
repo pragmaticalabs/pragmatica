@@ -36,6 +36,7 @@ import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState;
 import org.pragmatica.aether.deployment.membership.phase.ClusterPhaseView;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
@@ -1323,6 +1324,8 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                                  (MembershipDecision.NodeDecommissioned decommissioned) ->
                                                      clusterNetworkRef.departurePermanent(decommissioned.nodeId())));
+        swimHealthDetector.addObservationListener(
+            obs -> disconnectUntrackedFaulty(obs, membershipFsm, clusterNetworkRef));
         var topologyForSwim = clusterNode.topologyManager();
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
@@ -1822,6 +1825,15 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDraining.class, subscriber::accept));
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeFailedDrain.class, subscriber::accept));
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class, subscriber::accept));
+    }
+
+    @Contract private static void disconnectUntrackedFaulty(SwimObservation obs,
+                                                              MembershipFsm membershipFsm,
+                                                              ClusterNetwork network) {
+        if (obs instanceof SwimObservation.FaultyObserved faulty
+            && membershipFsm.get(faulty.peer()).map(s -> s instanceof MembershipFsmState.Untracked).or(false)) {
+            network.departurePermanent(faulty.peer());
+        }
     }
 
     private static void attachQuicDisconnectListener(ClusterNetwork network,

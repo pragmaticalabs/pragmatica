@@ -649,7 +649,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void applyNewMember(MembershipUpdate update) {
         var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
         members.put(update.nodeId(), member);
-        addMemberUpdate(update);
+        if (update.state() != MemberState.FAULTY) {
+            addMemberUpdate(update);
+        }
 
         switch (update.state()) {
             case ALIVE -> applyNewAliveMember(member);
