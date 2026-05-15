@@ -32,6 +32,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param revivalGrace    grace period after markAlive — don't probe recently-revived members
 /// @param startupDelay    cooldown after quorum before first probe — allows all TCP connections to establish
 /// @param clusterName     cluster identifier used to gate ANNOUNCE membership (empty string means no gating)
+/// @param swimPortOffset  offset added to a peer's primary (e.g. QUIC) port to derive its SWIM listen port.
+///                        `NodeInfo.address()` carries the cluster transport port; SWIM listens on
+///                        `port + swimPortOffset`. When ANNOUNCE/Ping/Ack carry the sender's `NodeInfo`
+///                        the receiver applies this offset to compute the authoritative SWIM address.
+///                        Defaults to `0` for backwards compatibility (when the same port is used).
 @Codec
 @CodecFor({TimeSpan.class, java.net.InetSocketAddress.class})
 public record SwimConfig(TimeSpan period,
@@ -41,7 +46,8 @@ public record SwimConfig(TimeSpan period,
                          int maxPiggyback,
                          TimeSpan revivalGrace,
                          TimeSpan startupDelay,
-                         String clusterName) {
+                         String clusterName,
+                         int swimPortOffset) {
 
     /// Default configuration — suitable for Docker and containerized environments.
     /// `suspectTimeout` is the dominant hop in the SWIM detection chain; lowered
@@ -57,10 +63,25 @@ public record SwimConfig(TimeSpan period,
         8,
         timeSpan(5).seconds(),
         timeSpan(10).seconds(),
-        ""
+        "",
+        0
     );
 
-    /// Factory with all parameters including cluster name.
+    /// Factory with all parameters including cluster name and swim port offset.
+    public static SwimConfig swimConfig(TimeSpan period,
+                                        TimeSpan probeTimeout,
+                                        int indirectProbes,
+                                        TimeSpan suspectTimeout,
+                                        int maxPiggyback,
+                                        TimeSpan revivalGrace,
+                                        TimeSpan startupDelay,
+                                        String clusterName,
+                                        int swimPortOffset) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, revivalGrace, startupDelay, clusterName, swimPortOffset);
+    }
+
+    /// Factory with all parameters including cluster name; swimPortOffset defaults to 0.
     public static SwimConfig swimConfig(TimeSpan period,
                                         TimeSpan probeTimeout,
                                         int indirectProbes,
@@ -70,7 +91,7 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan startupDelay,
                                         String clusterName) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, revivalGrace, startupDelay, clusterName);
+                              maxPiggyback, revivalGrace, startupDelay, clusterName, 0);
     }
 
     /// Factory with all timing/probe parameters — clusterName defaults to empty (no gating).
@@ -82,7 +103,7 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan revivalGrace,
                                         TimeSpan startupDelay) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, revivalGrace, startupDelay, "");
+                              maxPiggyback, revivalGrace, startupDelay, "", 0);
     }
 
     /// Factory with defaults for revivalGrace and startupDelay.
@@ -92,7 +113,7 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan suspectTimeout,
                                         int maxPiggyback) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, timeSpan(5).seconds(), timeSpan(10).seconds(), "");
+                              maxPiggyback, timeSpan(5).seconds(), timeSpan(10).seconds(), "", 0);
     }
 
     /// Factory with defaults.
@@ -103,7 +124,7 @@ public record SwimConfig(TimeSpan period,
     /// Build a [`SwimConfig`] from caller-supplied timing values, preserving
     /// [`SwimConfig#DEFAULT`]'s tuning constants for fields that are not exposed
     /// at the call boundary (`indirectProbes`, `maxPiggyback`, `revivalGrace`,
-    /// `startupDelay`).
+    /// `startupDelay`, `swimPortOffset`).
     ///
     /// Used by `aether-config`'s `TimeoutsConfig.SwimTimeouts` to wire the
     /// toml-parsed `[timeouts.swim]` section into the SWIM detector.
@@ -117,12 +138,21 @@ public record SwimConfig(TimeSpan period,
                               DEFAULT.maxPiggyback(),
                               DEFAULT.revivalGrace(),
                               DEFAULT.startupDelay(),
-                              DEFAULT.clusterName());
+                              DEFAULT.clusterName(),
+                              DEFAULT.swimPortOffset());
     }
 
     /// Derive a new config with the given cluster name.
     public SwimConfig withClusterName(String name) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
-                              maxPiggyback, revivalGrace, startupDelay, name);
+                              maxPiggyback, revivalGrace, startupDelay, name, swimPortOffset);
+    }
+
+    /// Derive a new config with the given SWIM port offset. The offset is added to
+    /// a peer's primary (e.g. QUIC) port to derive its SWIM listen port. See
+    /// [`#swimPortOffset()`].
+    public SwimConfig withSwimPortOffset(int offset) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, revivalGrace, startupDelay, clusterName, offset);
     }
 }

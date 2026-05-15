@@ -587,13 +587,23 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (!members.containsKey(announce.nodeInfo().id())) {
             var update = MembershipUpdate.membershipUpdate(
                 announce.nodeInfo().id(), MemberState.ALIVE, announce.incarnation(),
-                new InetSocketAddress(announce.nodeInfo().address().host(), announce.nodeInfo().address().port()));
+                swimAddressFor(announce.nodeInfo()));
             applyNewMember(update);
             addMemberUpdate(update);
         }
 
         deliverObservation(new SwimObservation.JoinAnnounced(
             announce.nodeInfo(), announce.clusterName(), announce.incarnation()));
+    }
+
+    /// Derive the authoritative SWIM listen address for a peer from its `NodeInfo`.
+    /// `NodeInfo.address()` carries the cluster's primary transport port (e.g. QUIC);
+    /// SWIM listens on `port + swimPortOffset`. Applied uniformly at every site that
+    /// learns a peer's address from a SWIM control message (ANNOUNCE/Ping/Ack).
+    /// Defaults preserve legacy behavior (offset == 0).
+    private InetSocketAddress swimAddressFor(NodeInfo nodeInfo) {
+        return new InetSocketAddress(nodeInfo.address().host(),
+                                     nodeInfo.address().port() + config.swimPortOffset());
     }
 
     /// Send ANNOUNCE to all seeds every 500ms until quorum is reached or 60 attempts are exhausted.
@@ -609,8 +619,20 @@ public final class SwimProtocol implements SwimMessageHandler {
         future.set(task);
     }
 
+    /// Per-peer health view used by transport-side gates (e.g. `swimHealthGate`
+    /// in `QuicClusterNetwork`). Reads the last edge-emitted health; if none has
+    /// been emitted yet (startup window between `addSeedMember` and the first
+    /// probe-ack edge), fall back to the live `members` map so an ALIVE seed is
+    /// reported HEALTHY rather than UNKNOWN. Resolves the 1–2s startup window
+    /// where the gate would otherwise reject all peers (P3).
     public SwimHealth healthOf(NodeId nodeId) {
-        return lastEmittedHealth.getOrDefault(nodeId, SwimHealth.UNKNOWN);
+        var emitted = lastEmittedHealth.get(nodeId);
+        if (emitted != null) {
+            return emitted;
+        }
+        return option(members.get(nodeId))
+            .map(m -> m.state() == MemberState.ALIVE ? SwimHealth.HEALTHY : SwimHealth.UNKNOWN)
+            .or(SwimHealth.UNKNOWN);
     }
 
     private void runAnnounceAttempt(NodeInfo self, String clusterName, long incarnation,

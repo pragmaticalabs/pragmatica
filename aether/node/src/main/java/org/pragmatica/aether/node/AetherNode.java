@@ -1261,7 +1261,8 @@ public interface AetherNode extends ManageableNode {
         var swimTimeouts = config.timeouts().swim();
         var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
                                                  swimTimeouts.probeTimeout(),
-                                                 swimTimeouts.suspectTimeout());
+                                                 swimTimeouts.suspectTimeout())
+                                   .withSwimPortOffset(CoreSwimHealthDetector.SWIM_PORT_OFFSET);
         // Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). SWIM suppresses
         // FAULTY-for-never-HEALTHY peers ONLY while the cluster is in `COLD_BOOT`
         // (initial formation, never reached quorum). In `NORMAL` and `RECOVERING`,
