@@ -8,12 +8,13 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +24,7 @@ import org.slf4j.LoggerFactory;
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
 
     private final EventWebSocketHandler handler;
-    private final Function<Instant, List<ClusterEvent>> eventsSinceProvider;
+    private final Supplier<List<ClusterEvent>> allEventsProvider;
     private final Function<List<ClusterEvent>, String> jsonSerializer;
     private final long intervalMs;
 
@@ -31,29 +32,29 @@ import org.slf4j.LoggerFactory;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    private final AtomicReference<Instant> lastBroadcast = new AtomicReference<>(Instant.EPOCH);
+    private final AtomicInteger lastPublishedCount = new AtomicInteger(0);
 
     private EventWebSocketPublisher(EventWebSocketHandler handler,
-                                    Function<Instant, List<ClusterEvent>> eventsSinceProvider,
+                                    Supplier<List<ClusterEvent>> allEventsProvider,
                                     Function<List<ClusterEvent>, String> jsonSerializer,
                                     long intervalMs) {
         this.handler = handler;
-        this.eventsSinceProvider = eventsSinceProvider;
+        this.allEventsProvider = allEventsProvider;
         this.jsonSerializer = jsonSerializer;
         this.intervalMs = intervalMs;
     }
 
     public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                  Function<Instant, List<ClusterEvent>> eventsSinceProvider,
+                                                                  Supplier<List<ClusterEvent>> allEventsProvider,
                                                                   Function<List<ClusterEvent>, String> jsonSerializer,
                                                                   long intervalMs) {
-        return new EventWebSocketPublisher(handler, eventsSinceProvider, jsonSerializer, intervalMs);
+        return new EventWebSocketPublisher(handler, allEventsProvider, jsonSerializer, intervalMs);
     }
 
     public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                  Function<Instant, List<ClusterEvent>> eventsSinceProvider,
+                                                                  Supplier<List<ClusterEvent>> allEventsProvider,
                                                                   Function<List<ClusterEvent>, String> jsonSerializer) {
-        return new EventWebSocketPublisher(handler, eventsSinceProvider, jsonSerializer, 1000);
+        return new EventWebSocketPublisher(handler, allEventsProvider, jsonSerializer, 1000);
     }
 
     public void start() {
@@ -72,14 +73,13 @@ import org.slf4j.LoggerFactory;
     private void publish() {
         if (handler.connectedClients() == 0) {return;}
         try {
-            var since = lastBroadcast.get();
-            var now = Instant.now();
-            var newEvents = eventsSinceProvider.apply(since);
-            if (!newEvents.isEmpty()) {
-                var json = jsonSerializer.apply(newEvents);
-                handler.broadcast(json);
+            var all = allEventsProvider.get();
+            var last = lastPublishedCount.get();
+            if (last < all.size()) {
+                var newEvents = all.subList(last, all.size());
+                handler.broadcast(jsonSerializer.apply(newEvents));
+                lastPublishedCount.set(all.size());
             }
-            lastBroadcast.set(now);
         } catch (Exception e) {
             log.error("Error publishing events via WebSocket", e);
         }

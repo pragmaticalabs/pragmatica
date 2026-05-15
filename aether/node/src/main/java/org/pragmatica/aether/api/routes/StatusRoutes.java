@@ -35,7 +35,6 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -71,21 +70,19 @@ public final class StatusRoutes implements RouteSource {
                          ManagementRoutes.<ReadinessResponse>route(ManagementRoute.HEALTH_READY)
                                          .toJson(this::buildReadinessResponse),
                          ManagementRoutes.<List<ClusterEvent>>route(ManagementRoute.EVENTS)
-                                         .<String>withQuery(QueryParameter.aString("since"))
+                                         .withQuery(QueryParameter.aLong("sinceEpoch"), QueryParameter.aLong("sinceSeq"))
                                          .toValue(this::buildEventsResponse)
                                          .asJson(),
                          ManagementRoutes.<CertificateStatusResponse>route(ManagementRoute.CERTIFICATE)
                                          .toJson(this::buildCertificateStatusResponse));
     }
 
-    private List<ClusterEvent> buildEventsResponse(Option<String> sinceParam) {
+    private List<ClusterEvent> buildEventsResponse(Option<Long> sinceEpochParam, Option<Long> sinceSeqParam) {
         var aggregator = nodeSupplier.get().eventAggregator();
-        return sinceParam.map(StatusRoutes::parseInstant).map(aggregator::eventsSince)
-                             .or(aggregator.events());
-    }
-
-    private static Instant parseInstant(String raw) {
-        return Instant.parse(raw);
+        if (sinceEpochParam.isEmpty() && sinceSeqParam.isEmpty()) {
+            return aggregator.events();
+        }
+        return aggregator.eventsSince(sinceEpochParam.or(0L), sinceSeqParam.or(-1L));
     }
 
     private StatusResponse buildStatusResponse() {

@@ -26,7 +26,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.utility.RingBuffer;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -128,17 +127,8 @@ import org.slf4j.LoggerFactory;
         return buffer.toList();
     }
 
-    /// **Deprecated** since RC1 Step 1. The canonical cursor is `(epoch, seq)` —
-    /// see `eventsSince(long, long)`. This method survives as a best-effort back-compat shim
-    /// over the materialised view (wall-clock `Instant` filtering against the projected
-    /// `timestamp`, which reconstructs from HLC physical-microseconds). Will be removed in a
-    /// follow-up; coordinate with `dashboard-ui-spec.md` owner.
-    @Deprecated(since = "rc1", forRemoval = true) public List<ClusterEvent> eventsSince(Instant since) {
-        return buffer.filter(e -> e.timestamp().isAfter(since));
-    }
-
     /// Cursor-based pagination: returns events with `(epoch, seq) > (sinceEpoch, sinceSeq)`
-    /// from the materialised view. Preferred over `eventsSince(Instant)`. Returns
+    /// from the materialised view. Returns
     /// commit-order with strict total ordering by the Rabia-assigned key pair.
     ///
     /// The materialised view doesn't surface `(epoch, seq)` to `ClusterEvent` consumers

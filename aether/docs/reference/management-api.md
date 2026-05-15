@@ -216,15 +216,18 @@ List all known cluster nodes with role and leader status.
 Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
 
 **Query Parameters:**
-- `since` (optional) -- ISO-8601 timestamp to filter events after a given time (e.g. `2024-01-15T10:30:00Z`).
+- `sinceEpoch` (optional) -- Rabia term epoch for cursor-based pagination (default: 0).
+- `sinceSeq` (optional) -- Sequence number for cursor-based pagination (default: -1, meaning from the beginning).
+
+Both parameters must be used together to form a cursor. Clients should persist the `originEpoch` and `originSeq` fields from the last received event and pass them on the next request.
 
 **Examples:**
 ```bash
 # All events
 curl http://localhost:8080/api/events
 
-# Events since a specific time
-curl "http://localhost:8080/api/events?since=2024-01-15T10:30:00Z"
+# Events after a known cursor position
+curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 ```
 
 **Response:**

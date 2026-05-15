@@ -41,8 +41,10 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
@@ -174,7 +176,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               Predicate<NodeId> isDecommissioned) {
         return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
                           metrics, useConsensusLeaderElection, persistence, tlsConfig,
-                          rabiaTermSupplier, isDecommissioned, Option::none);
+                          rabiaTermSupplier, isDecommissioned, Option::none,
+                          GenerationSnapshotSource.noop(), TopologyObserver.ZERO_HLC_SUPPLIER);
     }
 
     /// Full-arity overload accepting a `currentLeaderFromKvSupplier` — pull-side complement
@@ -182,6 +185,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// (Aether's `AetherNode`) plumbs `() -> kvStore.get(LeaderKey.INSTANCE).map(LeaderValue::leader)`
     /// so the leader-election FSM can adopt the cluster-committed leader on entry to
     /// `Electing` / `ReElecting`, even when the rejoining node missed the notification path.
+    ///
+    /// Also accepts a `snapshotSource` and `hlcSupplier` that are forwarded to
+    /// [`TopologyObserver`] so `MembershipDecision` emissions carry real HLC timestamps
+    /// and are backed by the KV-Store generation snapshot rather than the legacy defaults.
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
                                                               StateMachine<C> stateMachine,
@@ -193,9 +200,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier,
                                                               Predicate<NodeId> isDecommissioned,
-                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              GenerationSnapshotSource snapshotSource,
+                                                              Supplier<HlcTimestamp> hlcSupplier) {
         return Result.all(
-            TopologyObserver.topologyObserver(config.topology(), delegateRouter, isDecommissioned),
+            TopologyObserver.topologyObserver(config.topology(), delegateRouter, snapshotSource, isDecommissioned, hlcSupplier),
             QuicTlsProvider.serverContext(tlsConfig),
             QuicTlsProvider.clientContext(tlsConfig)
         ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(config,
