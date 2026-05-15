@@ -877,9 +877,50 @@ slices_target_total() {
 }
 
 push_blueprint() {
+    # Push a blueprint artifact, tolerating "already exists" responses and
+    # retrying transient leader-unavailable errors. Returns 0 on success or
+    # already-pushed-state; non-zero only on terminal failure. Previously the
+    # `2>/dev/null` here swallowed the actual stderr — combined with `set -e`
+    # in callers, this caused tests to abort silently mid `test_cluster_ready`
+    # without any indication of the root cause. Now stderr is captured to a
+    # tempfile and inspected; idempotent successes are surfaced as PASS.
     local coords="$1"
-    log_info "Pushing blueprint artifacts: ${coords}" >&2
-    aether_failover artifact push "$coords" 2>/dev/null
+    local attempts="${PUSH_BLUEPRINT_ATTEMPTS:-3}"
+    local errfile
+    errfile=$(mktemp)
+    local i=1
+    while [ "$i" -le "$attempts" ]; do
+        log_info "Pushing blueprint artifacts: ${coords} (attempt ${i}/${attempts})" >&2
+        local out
+        if out=$(aether_failover artifact push "$coords" 2>"$errfile"); then
+            printf '%s' "$out"
+            rm -f "$errfile"
+            return 0
+        fi
+        local rc=$?
+        local err
+        err=$(cat "$errfile" 2>/dev/null || echo "")
+        # Idempotent: any "already exists" / 409 / "already pushed" signal counts as success.
+        if printf '%s%s' "$out" "$err" | grep -qiE 'already exists|already pushed|409|conflict|duplicate artifact'; then
+            log_info "push_blueprint ${coords}: artifact already present (idempotent success)" >&2
+            rm -f "$errfile"
+            return 0
+        fi
+        # Transient leader / not-yet-ready errors → retry.
+        if printf '%s%s' "$out" "$err" | grep -qiE 'NotLeader|leader unavailable|503|temporarily|timeout|connection refused'; then
+            log_warn "push_blueprint ${coords}: transient error on attempt ${i}: $(printf '%s' "$err" | head -c 200)" >&2
+            sleep 2
+            i=$((i + 1))
+            continue
+        fi
+        # Terminal failure: surface the stderr so the caller sees WHY the push failed.
+        log_warn "push_blueprint ${coords}: failed with rc=${rc}: $(printf '%s' "$err" | head -c 300)" >&2
+        rm -f "$errfile"
+        return "$rc"
+    done
+    log_warn "push_blueprint ${coords}: exhausted ${attempts} attempts" >&2
+    rm -f "$errfile"
+    return 1
 }
 
 deploy_blueprint() {
