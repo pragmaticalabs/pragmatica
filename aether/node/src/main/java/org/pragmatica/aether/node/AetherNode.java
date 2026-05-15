@@ -1355,9 +1355,16 @@ public interface AetherNode extends ManageableNode {
             return h != SwimHealth.FAULTY && h != SwimHealth.UNKNOWN;
         });
         var topologyForSwim = clusterNode.topologyManager();
+        // P1 fix: prefer the transport-supplied `NodeInfo` (QUIC/Netty Hello handshake)
+        // over the static-topology lookup. CTM-replaced or topology-forgotten peers are
+        // absent from `topologyForSwim`, so the legacy NodeId-only path produced a SWIM
+        // `PeerConnected(id, none())` that the FSM's `resolveSwimAddress` could not
+        // resolve — leaving the peer permanently UNKNOWN and rejected by the gate.
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
-                                                 connection -> topologyForSwim.get(connection.nodeId()).onPresent(swimHealthDetector::onNodeConnected)
-                                                                                  .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
+                                                 connection -> connection.nodeInfo()
+                                                                          .orElse(() -> topologyForSwim.get(connection.nodeId()))
+                                                                          .onPresent(swimHealthDetector::onNodeConnected)
+                                                                          .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
         Supplier<Integer> initialCoreSizeSupplier = () -> config.topology().coreNodes()
                                                                          .size();
         var publisherExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {

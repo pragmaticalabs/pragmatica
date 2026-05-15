@@ -197,7 +197,12 @@ public class NettyClusterNetwork implements ClusterNetwork {
         // R5 (spec §4.1): transport never mutates the topology projection. ConnectionEstablished
         // and processViewChange(ADD) emit informational signals only; HealthReconciler is the
         // sole writer of NodeLifecycleKey.
-        router.route(new NetworkServiceMessage.ConnectionEstablished(hello.sender()));
+        // P1 fix (QUIC parity): forward `unknownNodeInfo` so SWIM can learn the peer's full
+        // identity without a stale static-topology lookup. The Netty Hello handshake path
+        // already constructs `unknownNodeInfo` when the peer is not in the static topology.
+        // TODO(#NETTY-RECONNECT-PARITY): align Netty reconnect lifecycle with the QUIC
+        // `finalizeReconnect` path. Netty is not used in prod; tracked post-GA.
+        router.route(new NetworkServiceMessage.ConnectionEstablished(hello.sender(), unknownNodeInfo));
         processViewChange(ADD, hello.sender());
         // Initiate topology discovery only for unknown nodes
         unknownNodeInfo.onPresent(_ -> router.route(new NetworkServiceMessage.Send(hello.sender(),

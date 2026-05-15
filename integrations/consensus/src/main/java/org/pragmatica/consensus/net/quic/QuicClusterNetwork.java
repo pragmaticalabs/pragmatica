@@ -651,7 +651,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // handshake is reported upward via processViewChange → peerStateListener →
         // SWIM `recordTransportHint` (PeerReachable). HealthReconciler (sole writer of
         // NodeLifecycleKey) projects the resulting MembershipView for Layer 3.
-        router.route(new NetworkServiceMessage.ConnectionEstablished(peerId));
+        // P1 fix: forward `unknownNodeInfo` so SWIM can learn the peer's full identity
+        // (id + address) without falling back to a stale static-topology lookup. This
+        // closes the QUIC eviction storm under topology-forgot-peer reconnects.
+        router.route(new NetworkServiceMessage.ConnectionEstablished(peerId, unknownNodeInfo));
         processViewChange(ADD, peerId);
 
         // Initiate topology discovery only for unknown nodes
@@ -677,7 +680,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // unknownNodeInfo is retained for diagnostic logging in the surrounding caller; the
         // R4 pre-cursor version called topologyManager.registerPeer here, that mutation has
         // been removed (transport is read-only against TopologyObserver).
-        router.route(new NetworkServiceMessage.ConnectionEstablished(peerId));
+        // P1 fix: propagate `unknownNodeInfo` into the routed `ConnectionEstablished`
+        // so downstream SWIM (AetherNode handler) can learn the peer's full identity
+        // even after topology forgot the peer (CTM scale-down/replace path).
+        router.route(new NetworkServiceMessage.ConnectionEstablished(peerId, unknownNodeInfo));
         processViewChange(RECONNECT, peerId);
         log.debug("Node {} reconnected via QUIC Hello handshake (suppressed duplicate ADD), unknownNodeInfo={}",
                   peerId, unknownNodeInfo);
