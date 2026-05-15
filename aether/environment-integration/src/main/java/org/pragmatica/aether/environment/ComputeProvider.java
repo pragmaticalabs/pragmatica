@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -37,7 +38,7 @@ public interface ComputeProvider {
         return listInstances(selector.requiredTags());
     }
 
-    default void resetProvisionerState(String clusterName) {}
+    @Contract default void resetProvisionerState(String clusterName) {}
 
     private static List<InstanceInfo> filterByTags(List<InstanceInfo> instances, Map<String, String> tagFilter) {
         return instances.stream().filter(instance -> matchesTags(instance, tagFilter))

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -167,7 +168,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
             return bufferedHandles;
         }
 
-        void stopBuffering() {
+        @Contract void stopBuffering() {
             buffering.set(false);
         }
     }
