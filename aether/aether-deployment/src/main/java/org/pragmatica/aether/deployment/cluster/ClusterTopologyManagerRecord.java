@@ -45,6 +45,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.lang.concurrent.CancellableTask;
+import org.pragmatica.utility.IdGenerator;
 
 import java.net.SocketAddress;
 import java.time.Instant;
@@ -1072,50 +1073,102 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Contract private void provisionSingleNode() {
-        var context = buildProvisionContext();
-        if (context.peers().or("").isEmpty()) {
+        var contextBase = buildProvisionContext();
+        if (contextBase.peers().or("").isEmpty()) {
             log.warn("CTM: provisioning deferred — no healthy peers visible in observed topology (peers list empty). "
                      + "Spawning a new node without PEERS would cold-boot it in isolation and corrupt cluster views; "
                      + "next reconcile tick will retry once at least one peer is HEALTHY.");
             recordProvisioningFailure("no healthy peers visible in topology");
             return;
         }
+        var allocatedId = generateProvisioningNodeId();
+        var context = contextBase.withNodeId(allocatedId.id());
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", context).unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
-        var localTag = NodeId.nodeId("ctm-inflight-" + System.nanoTime() + "-" + Math.abs(spec.hashCode())).unwrap();
         var slotKvKey = ProvisioningSlotKey.provisioningSlotKey(java.util.UUID.randomUUID().toString());
-        writeProvisioningSlotAtom(slotKvKey);
-        var promise = lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
+        writeProvisioningSlotAtom(slotKvKey, allocatedId);
+        slotKeyByNodeId.put(allocatedId, slotKvKey);
+        var promise = lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded for nodeId={}",
+                                                                                    allocatedId))
                                                     .onFailure(cause -> recordProvisioningFailure("API rejection: " + cause.message()));
-        inFlightProvisions.put(localTag, promise);
-        promise.onResult(_ -> inFlightProvisions.remove(localTag));
+        inFlightProvisions.put(allocatedId, promise);
+        promise.onResult(_ -> inFlightProvisions.remove(allocatedId));
     }
 
-    @Contract private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey) {
+    /// Allocate a fresh, globally unique NodeId for an upcoming provisioning slot. The id must
+    /// match the value the new container/VM will self-report (it is passed through
+    /// `ProvisionContext.nodeId` → docker `--label aether.node-id` / `-e NODE_ID`), otherwise
+    /// tag-by-NodeId cleanup (`NodeLifecycleManager.lookupAndTerminate`) would fail to match.
+    ///
+    /// KSUIDs are collision-resistant by design; we still consult the live snapshot to skip the
+    /// vanishingly rare case where a previously-decommissioned-but-still-present NodeId would
+    /// collide.
+    private NodeId generateProvisioningNodeId() {
+        for (var attempt = 0;attempt <8;attempt++) {
+            var candidate = NodeId.nodeId(IdGenerator.generate("aether-core-node")).unwrap();
+            if (isNodeIdFree(candidate)) {return candidate;}
+        }
+        // Final fallback: trust KSUID's uniqueness even if our paranoia check kept matching.
+        return NodeId.nodeId(IdGenerator.generate("aether-core-node")).unwrap();
+    }
+
+    private boolean isNodeIdFree(NodeId candidate) {
+        if (observer.topology().contains(candidate)) {return false;}
+        if (lifecycleReader.apply(candidate).isPresent()) {return false;}
+        if (inFlightProvisions.containsKey(candidate)) {return false;}
+        return !slotKeyByNodeId.containsKey(candidate);
+    }
+
+    @Contract private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey, NodeId assignedNodeId) {
         var nowMs = nowMs();
         var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
-        var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs);
+        var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs, assignedNodeId);
         commandApplier.apply(List.of(putSlotCommand(slotKvKey, value))).onFailure(cause -> log.warn("CTM: failed to mirror provisioning slot {} to KV: {}",
                                                                                                     slotKvKey.slotId(),
                                                                                                     cause.message()))
-                            .onSuccess(_ -> log.debug("CTM: mirrored provisioning slot {} to KV (deadlineMs={})",
+                            .onSuccess(_ -> log.debug("CTM: mirrored provisioning slot {} (assignedNodeId={}, deadlineMs={}) to KV",
                                                       slotKvKey.slotId(),
+                                                      assignedNodeId,
                                                       deadlineMs));
     }
 
     @Contract private void deleteExpiredSlotAtoms(long nowMs) {
         var snapshotSlots = slotReader.get();
         if (snapshotSlots.isEmpty()) {return;}
-        var deletes = snapshotSlots.entrySet().stream()
+        var expired = snapshotSlots.entrySet().stream()
                                             .filter(e -> e.getValue().deadlineMs() <nowMs)
+                                            .toList();
+        if (expired.isEmpty()) {return;}
+        expired.forEach(this::tombstoneAssignedNodeOnExpiry);
+        var deletes = expired.stream()
                                             .map(e -> deleteSlotCommand(e.getKey()))
                                             .toList();
-        if (deletes.isEmpty()) {return;}
         commandApplier.apply(deletes).onFailure(cause -> log.warn("CTM: failed to delete {} expired slot atom(s) from KV: {}",
                                                                   deletes.size(),
                                                                   cause.message()))
                             .onSuccess(_ -> log.debug("CTM: deleted {} expired slot atom(s) from KV",
                                                       deletes.size()));
+    }
+
+    /// Structural ownership: when a slot expires unfulfilled, the NodeId it was bound to is
+    /// authoritatively tombstoned (NodeLifecycleKey → DECOMMISSIONED) so that a late-arriving
+    /// node carrying that id cannot silently promote to ON_DUTY. Best-effort cloud-side reap
+    /// via lifecycleManager.terminateNode — if the instance was provisioned it gets reclaimed,
+    /// if it never existed the lookup yields zero matches and we log+continue.
+    @Contract private void tombstoneAssignedNodeOnExpiry(Map.Entry<ProvisioningSlotKey, ProvisioningSlotValue> entry) {
+        entry.getValue().assignedNodeId().onPresent(assignedId -> {
+            log.warn("CTM: provisioning slot {} expired with assignedNodeId={} unfulfilled — tombstoning",
+                     entry.getKey().slotId(),
+                     assignedId);
+            lifecycleWriter.requestDecommission(assignedId).onFailure(cause -> log.warn("CTM: failed to tombstone expired slot owner {}: {}",
+                                                                                         assignedId,
+                                                                                         cause.message()));
+            lifecycleManager.terminateNode(assignedId).onFailure(cause -> log.debug("CTM: best-effort terminate of expired-slot owner {} returned {}",
+                                                                                     assignedId,
+                                                                                     cause.message()));
+            slotKeyByNodeId.remove(assignedId);
+            inFlightProvisions.remove(assignedId);
+        });
     }
 
     @Contract private void cancelInFlightProvisions(String reason) {
