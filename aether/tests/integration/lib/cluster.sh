@@ -1004,6 +1004,16 @@ _docker_container_name() {
     fi
 }
 
+# Resolve container name on TARGET_HOST by aether.node-id label.
+# CTM-provisioned containers carry this label via DockerComputeProvider#buildRunCommand.
+# Compose-deployed containers carry it via labels: block in docker-compose-{a,b}.yml
+# (added in this commit). Returns empty string if no container matches; caller falls
+# back to _docker_container_name for transient cases / pre-label-coverage environments.
+_docker_container_by_node_id_label() {
+    local node_id="$1"
+    remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' --format '{{.Names}}' | head -1"
+}
+
 # Tear down any CTM-provisioned replacement containers on the remote host so the
 # cluster settles back to the fixed compose-node set. Called between disruption
 # tests to avoid phantom-sixth-node inflation.
@@ -1265,12 +1275,17 @@ kill_node() {
         fi
     else
         local name
-        name=$(_docker_container_name "$node_id")
+        name=$(_docker_container_by_node_id_label "$node_id")
+        [ -z "$name" ] && name=$(_docker_container_name "$node_id")
         log_info "  (container=${name})"
-        local out
-        out=$(remote_exec "docker kill ${name} 2>&1" 2>&1)
-        if [ -n "$out" ] && ! echo "$out" | grep -q "^${name}$"; then
-            log_warn "kill_node: docker kill ${name} output: ${out}"
+        local kill_out kill_rc=0
+        kill_out=$(remote_exec "docker kill ${name} 2>&1" 2>&1) || kill_rc=$?
+        if [ "$kill_rc" -ne 0 ]; then
+            log_fail "kill_node: docker kill of '${node_id}' (container=${name}) failed (rc=${kill_rc}): ${kill_out}"
+            return "$kill_rc"
+        fi
+        if [ -n "$kill_out" ] && ! echo "$kill_out" | grep -q "^${name}$"; then
+            log_warn "kill_node: docker kill ${name} output: ${kill_out}"
         fi
     fi
 }
