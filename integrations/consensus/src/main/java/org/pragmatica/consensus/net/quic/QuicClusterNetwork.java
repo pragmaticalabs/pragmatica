@@ -116,6 +116,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final double BACKOFF_JITTER_MIN = 0.5;
     private static final double BACKOFF_JITTER_MAX = 1.5;
     private final Map<NodeId, ReconnectBackoff> reconnectBackoff = new ConcurrentHashMap<>();
+    /// Tracks the wall-clock millis at which each peer was first observed missing from
+    /// `connectedPeers()` despite being in topology. Cleared when the peer reconnects or
+    /// is authoritatively removed. Used to gate the higher-id side's reconciler attempts:
+    /// `ConnectionDirection.shouldInitiate` normally restricts dialing to the lower-id
+    /// side (preventing dual-Hello collapse at cold start). If the peer has been observed
+    /// unreachable for longer than `RECONCILE_BACKOFF_CAP_MS`, the lower-id side has
+    /// already saturated its backoff curve without success — the higher-id side may then
+    /// also attempt, since one side is provably stuck and the cold-boot dual-Hello race
+    /// window has long since passed.
+    private final Map<NodeId, Long> firstObservedMissingMs = new ConcurrentHashMap<>();
     private volatile LongSupplier wallClockMs = System::currentTimeMillis;
 
     /// Periodic missing-peer reconciler tunables. The reconciler runs every
@@ -420,6 +430,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("JBCT-PAT-01") // Peer removal + channel close + view change
     public void departurePermanent(NodeId nodeId) {
         var peer = peers.remove(nodeId);
+        firstObservedMissingMs.remove(nodeId);
         if (peer != null) {
             peer.authoritativeRemove(System.nanoTime())
                 .onPresent(this::closeDroppedConnection);
@@ -931,12 +942,41 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var nowMs = wallClockMs.getAsLong();
         for (var peerId : topologyManager.topology()) {
             if (peerId.equals(self.id())) {continue;}
-            if (connected.contains(peerId)) {continue;}
+            if (connected.contains(peerId)) {
+                // Restored: clear the missing-since marker so a future drop restarts the
+                // grace window. Without this, a peer that briefly disconnected (e.g. SWIM
+                // false positive) would inherit a long stale missing-since on its next
+                // drop and the higher-id reconciler would fire immediately.
+                firstObservedMissingMs.remove(peerId);
+                continue;
+            }
             if (topologyManager.isPassive(peerId)) {continue;}
-            if (!ConnectionDirection.shouldInitiate(self.id(), peerId)) {continue;}
+            // Track when this peer was first observed missing. Subsequent ticks (re-runs
+            // of this method while the peer is still missing) preserve the original
+            // timestamp via putIfAbsent semantics — the grace window is anchored to the
+            // first observation, not the most recent.
+            firstObservedMissingMs.putIfAbsent(peerId, nowMs);
+            // ConnectionDirection: lower-id initiates first; higher-id waits for inbound.
+            // RC1 chaos-recovery fix: when the peer has been observed missing for longer
+            // than RECONCILE_BACKOFF_CAP_MS (60s), the lower-id side has provably failed
+            // to initiate (its backoff is capped at 60s, so by now it has tried many
+            // times). Let the higher-id side also attempt. PeerState.beginConnecting
+            // dedup keeps per-side concurrency safe; the 60s grace window is long enough
+            // that the cold-boot dual-Hello race (the original reason for asymmetric dial)
+            // is no longer relevant — both sides discover each other in <1s on cold boot,
+            // so reaching 60s missing means a real partition was attempted-and-failed.
+            if (!ConnectionDirection.shouldInitiate(self.id(), peerId)
+                && !higherIdGracePeriodElapsed(peerId, nowMs)) {
+                continue;
+            }
             considerPeerForReconcile(peerId, nowMs);
         }
         return unit();
+    }
+
+    private boolean higherIdGracePeriodElapsed(NodeId peerId, long nowMs) {
+        var firstMissed = firstObservedMissingMs.get(peerId);
+        return firstMissed != null && (nowMs - firstMissed) >= RECONCILE_BACKOFF_CAP_MS;
     }
 
     private void considerPeerForReconcile(NodeId peerId, long nowMs) {
@@ -988,6 +1028,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// peer that flaps once does not pay the doubled delay forever.
     @Contract void resetReconnectBackoff(NodeId peerId) {
         reconnectBackoff.remove(peerId);
+        // Connection restored: clear the missing-since marker so a future drop restarts
+        // the higher-id-grace window. See firstObservedMissingMs documentation.
+        firstObservedMissingMs.remove(peerId);
     }
 
     /// Test/diagnostic — inject a deterministic clock to validate backoff windows
