@@ -254,6 +254,24 @@ pick_non_leader() {
         [ -z "$candidate" ] && continue
         if [ "$candidate" = "$leader" ]; then continue; fi
         if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
+        # Docker-mode liveness guard.
+        # /api/status reports `lifecycleState=ON_DUTY` from the leader's derived
+        # MembershipView. A node killed in a previous test file may still appear
+        # ON_DUTY across the boundary into the next file if (a) CTM has not
+        # tombstoned its slot yet, (b) MembershipView has not propagated the
+        # SWIM FAULTY → DECOMMISSIONED transition, or (c) `restore_cluster_baseline`
+        # returned on ON_DUTY count without verifying connected-peer parity.
+        # The cluster-side fix lives upstream; in the meantime we skip dead
+        # candidates so the test can pick a live one — and log the skip so the
+        # underlying staleness stays visible instead of being silently papered over.
+        if [ "${CLOUD_MODE:-false}" != "true" ]; then
+            local _alive_name
+            _alive_name=$(_docker_container_by_node_id_label "$candidate" 2>/dev/null || true)
+            if [ -z "$_alive_name" ]; then
+                log_warn "pick_non_leader: /api/status reports '${candidate}' as ON_DUTY but no live container carries label aether.node-id=${candidate} on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: MembershipView/CTM tombstone propagation)" >&2
+                continue
+            fi
+        fi
         echo "$candidate"
         found=$((found + 1))
         if [ "$found" -ge "$count" ]; then return 0; fi
