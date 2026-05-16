@@ -40,6 +40,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -99,7 +100,15 @@ public final class StatusRoutes implements RouteSource {
         var allNodeIds = new LinkedHashSet<NodeId>();
         topologyNodes.forEach(allNodeIds::add);
         view.snapshot().keySet().forEach(allNodeIds::add);
-        var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view, nodeId, leader))
+        // Transport honesty (RC1 Wave 4 follow-up): cross-reference connectedPeerIds so a
+        // peer reporting ON_DUTY in MembershipView but no longer transport-connected is
+        // surfaced as UNKNOWN immediately, rather than waiting 10-20s for the SWIM Ping
+        // cycle (probe + suspectTimeout + reconciler aggregation) to write DECOMMISSIONED.
+        // Self is exempt — we never connect to ourselves so `connectedPeers.contains(self)`
+        // is false by design.
+        var connectedPeers = node.connectedPeerIds();
+        var selfId = node.self();
+        var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view, nodeId, leader, connectedPeers, selfId))
                                             .toList();
         var quorate = leader.isPresent() && nodeInfos.size() >= quorumOf(nodeInfos.size());
         var cluster = new ClusterInfo(nodeInfos.size(), leaderId, quorate, nodeInfos);
@@ -123,9 +132,21 @@ public final class StatusRoutes implements RouteSource {
                                   BuildInfo.buildInfo().buildVersion());
     }
 
-    private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader) {
+    private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader,
+                                       Set<NodeId> connectedPeers, NodeId selfId) {
         var isLeader = leader.map(l -> l.equals(nodeId)).or(false);
         var status = view.statusOf(nodeId);
+        // Transport-derived honesty: ON_DUTY in MembershipView but not in transport-connected
+        // set means the node has been killed/lost connectivity and SWIM hasn't yet detected
+        // it (Ping interval + suspectTimeout). Downgrade to UNKNOWN so operator-facing reads
+        // (CLI, dashboard, integration test harness) see the cluster's actual state rather
+        // than the SWIM-lagged view.
+        var transportLag = status == MembershipView.MemberStatus.ON_DUTY
+                           && !nodeId.equals(selfId)
+                           && !connectedPeers.contains(nodeId);
+        if (transportLag) {
+            return new NodeInfo(nodeId.id(), isLeader, "UNKNOWN");
+        }
         var lifecycleState = status == MembershipView.MemberStatus.UNTRACKED ? "UNKNOWN" : status.name();
         return new NodeInfo(nodeId.id(), isLeader, lifecycleState);
     }

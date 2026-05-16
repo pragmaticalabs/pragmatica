@@ -12,6 +12,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -35,6 +36,7 @@ import org.pragmatica.lang.Promise;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -134,15 +136,18 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var topologyConfig = node.topologyConfig();
         var topologyManager = node.topologyManager();
         var connectedPeers = node.connectedPeerIds();
+        var selfId = node.self();
         var allNodeIds = topologyManager.topology();
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
                                            .filter(id -> isHealthy(topologyManager, id))
                                            .map(NodeId::id)
                                            .toList();
-        // H.2 (spec §H): coreCount derives from MembershipView (SWIM ∪ KV-overrides). The
-        // legacy `coreNodeIds.size()` counted topology-observer entries with HEALTHY status
-        // — which is similar but the view is the canonical source post-H.
-        var coreCount = node.membershipView().onDutyPeers().size();
+        // H.2 (spec §H): coreCount derives from MembershipView (SWIM ∪ KV-overrides).
+        // Transport honesty (RC1 Wave 4 follow-up): a peer reporting ON_DUTY in MembershipView
+        // but no longer transport-connected (peer killed; SWIM hasn't yet detected) is excluded
+        // so the operator-visible `coreCount` reflects actually-reachable cores rather than the
+        // SWIM-lagged view. Self is always counted (we don't transport-connect to ourselves).
+        var coreCount = transportConnectedOnDutyCount(node.membershipView(), connectedPeers, selfId);
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
         var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
                                                                         id,
@@ -165,6 +170,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var topologyConfig = node.topologyConfig();
         var topologyManager = node.topologyManager();
         var connectedPeers = node.connectedPeerIds();
+        var selfId = node.self();
         var allNodeIds = topologyManager.topology();
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
                                            .filter(id -> isHealthy(topologyManager, id))
@@ -174,7 +180,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
         // helper if the view is empty (e.g., during very-early bootstrap before SWIM has
         // admitted self). The snapshot helper also now honours SWIM-derived ON_DUTY via the
         // healthHint check (no KV ON_DUTY required) so both paths converge.
-        var viewCount = node.membershipView().onDutyPeers().size();
+        // Transport honesty (RC1 Wave 4 follow-up): see assembleFromTopologyManager — same rationale.
+        var viewCount = transportConnectedOnDutyCount(node.membershipView(), connectedPeers, selfId);
         var coreCount = viewCount > 0 ? viewCount : snapshotCoreCount(snapshot);
         var epoch = Option.some(snapshot.epoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
@@ -192,6 +199,22 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  nodeDetails,
                                                  epoch,
                                                  topologyMode(topologyManager));
+    }
+
+    /// Transport-honest ON_DUTY count. Filters `MembershipView.onDutyPeers()` to peers that are
+    /// either self (we don't connect to ourselves) or currently transport-connected. Closes the
+    /// SWIM-detection-lag window where a killed peer remains ON_DUTY in MembershipView for
+    /// ~10-20s after the transport has already lost the connection.
+    private static int transportConnectedOnDutyCount(MembershipView view,
+                                                     Set<NodeId> connectedPeers,
+                                                     NodeId selfId) {
+        int count = 0;
+        for (NodeId peer : view.onDutyPeers()) {
+            if (peer.equals(selfId) || connectedPeers.contains(peer)) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static String topologyMode(TopologyManager tm) {
