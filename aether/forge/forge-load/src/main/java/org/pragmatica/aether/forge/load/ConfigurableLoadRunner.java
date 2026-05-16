@@ -11,6 +11,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -496,30 +497,30 @@ public final class ConfigurableLoadRunner {
             return startTimeRef.get();
         }
 
-        void setStartTime(Instant time) {
+        @Contract void setStartTime(Instant time) {
             startTimeRef.set(time);
         }
 
-        void stop() {
+        @Contract void stop() {
             running.set(false);
         }
 
-        void pause() {
+        @Contract void pause() {
             paused.set(true);
         }
 
-        void resume() {
+        @Contract void resume() {
             paused.set(false);
         }
 
-        void updateLatencyEma(double instantMs) {
+        @Contract void updateLatencyEma(double instantMs) {
             var current = emaAvgLatencyMs.get();
             emaAvgLatencyMs.set(current == 0.0
                                 ? instantMs
                                 : LATENCY_EMA_ALPHA * instantMs + (1 - LATENCY_EMA_ALPHA) * current);
         }
 
-        void run() {
+        @Contract void run() {
             setStartTime(Instant.now());
             var rps = target.rate().requestsPerSecond();
             var intervalMicros = rps > 0

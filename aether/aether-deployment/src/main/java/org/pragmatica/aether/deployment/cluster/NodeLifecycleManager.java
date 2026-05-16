@@ -36,6 +36,13 @@ public interface NodeLifecycleManager {
 record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) implements NodeLifecycleManager {
     private static final Logger log = LoggerFactory.getLogger(NodeLifecycleManagerRecord.class);
 
+    // Upper-layer canonical tag key for binding a cloud instance to its assigned NodeId.
+    // Each ComputeProvider translates this dotted key to its native label/tag convention
+    // at the boundary: DockerComputeProvider sets `aether.node-id` as a Docker label
+    // (dotted form is valid in Docker), HetznerComputeProvider translates to
+    // `aether-node-id` (Hetzner labels use kebab-case per HCloud API). Do not re-introduce
+    // direct hyphenated lookups here — provider translation lives inside each provider's
+    // listInstances/labelsFor pair so this layer stays provider-agnostic.
     private static final String NODE_ID_TAG = "aether.node-id";
 
     @Override public Promise<ActionResult> executeAction(NodeAction action) {
