@@ -231,7 +231,11 @@ pick_non_leader() {
     # "lifecycleState":"ON_DUTY", then extract the "id" value with sed.
     # BSD awk (macOS default) lacks 3-arg match(), so we use grep+sed throughout.
     local current_members
-    current_members=$(_extract_on_duty_ids "$status_payload")
+    current_members=$(printf '%s' "$status_payload" \
+        | tr '{' '\n' \
+        | grep '"lifecycleState"[[:space:]]*:[[:space:]]*"ON_DUTY"' \
+        | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/"id"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
     if [ -z "$current_members" ]; then
         # Fail-closed: if /api/status has no ON_DUTY members, the test premise
         # (a healthy cluster from which we can pick a non-leader) is broken.
@@ -245,95 +249,21 @@ pick_non_leader() {
     fi
 
     local found=0
-    found=$(_emit_candidates "$leader" "$pinned" "$count" "$current_members") || found=0
-    # `_emit_candidates` echoes ids on stdout and emits the final found-count as the
-    # last line. Split: ids first, count last.
-    local found_count emitted_ids
-    found_count=$(printf '%s' "$found" | tail -1)
-    emitted_ids=$(printf '%s' "$found" | sed '$d')
-    if [ -n "$emitted_ids" ]; then printf '%s\n' "$emitted_ids"; fi
-    if [ "${found_count:-0}" -ge "$count" ] 2>/dev/null; then return 0; fi
-
-    # Fallback: per-node /api/status union. Each node renders /api/status with its
-    # OWN connectedPeerIds set (transport honesty added in RC1 Wave 4 follow-up
-    # downgrades ON_DUTY → UNKNOWN when peer not in local transport set). A peer
-    # that the entry-point node hasn't yet QUIC-reconnected to after a chaos kill
-    # would be excluded from the entry-point's /api/status view, but the leader
-    # (or some other node) still sees it as ON_DUTY+connected. Union across all
-    # NODE_COUNT fixed compose mgmt ports = "alive somewhere in the cluster mesh"
-    # — the correct admissibility predicate for chaos kill targets.
-    if [ "${CLOUD_MODE:-false}" = "true" ]; then
-        log_fail "pick_non_leader: only ${found_count:-0}/${count} candidates available from entry-point view (leader=${leader}, pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>}) and cloud-mode skips multi-node union fallback" >&2
-        return 1
-    fi
-    local union_members=""
-    local i resp node_members
-    for i in $(seq 0 $((${NODE_COUNT:-5} - 1))); do
-        resp=$(node_api_get "$i" "/api/status" 2>/dev/null || true)
-        if [ -n "$resp" ]; then
-            node_members=$(_extract_on_duty_ids "$resp")
-            if [ -n "$node_members" ]; then
-                union_members="${union_members}${node_members}"$'\n'
-            fi
-        fi
-    done
-    local union_dedup
-    union_dedup=$(printf '%s' "$union_members" | sort -u | grep -v '^$' || true)
-    if [ -z "$union_dedup" ]; then
-        log_fail "pick_non_leader: per-node /api/status union returned no ON_DUTY members across ${NODE_COUNT:-5} compose ports — cluster may not be fully booted (leader=${leader}, cluster=${CLUSTER_ID:-<none>})" >&2
-        return 1
-    fi
-    # Pass-2 emission. Skip any candidate already emitted in pass-1 to keep
-    # caller-visible output unique. `found_count` starts at the pass-1 total.
-    local pass2_remaining=$((count - ${found_count:-0}))
-    local emitted_pass2 candidate
-    found_count=${found_count:-0}
-    while IFS= read -r candidate; do
-        [ -z "$candidate" ] && continue
-        if [ "$candidate" = "$leader" ]; then continue; fi
-        if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
-        if [ -n "$emitted_ids" ] && printf '%s\n' "$emitted_ids" | grep -qFx "$candidate"; then continue; fi
-        local _alive_name
-        _alive_name=$(_docker_container_by_node_id_label "$candidate" 2>/dev/null || true)
-        if [ -z "$_alive_name" ]; then
-            log_warn "pick_non_leader: per-node union reports '${candidate}' as ON_DUTY but no live container carries label aether.node-id=${candidate} on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: MembershipView/CTM tombstone propagation)" >&2
-            continue
-        fi
-        echo "$candidate"
-        found_count=$((found_count + 1))
-        pass2_remaining=$((pass2_remaining - 1))
-        if [ "$found_count" -ge "$count" ]; then return 0; fi
-    done <<< "$union_dedup"
-
-    log_fail "pick_non_leader: only ${found_count}/${count} candidates available (leader=${leader}, pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>}; entry-point + per-node union exhausted)" >&2
-    return 1
-}
-
-# Parse /api/status payload → list of NodeIds whose lifecycleState=ON_DUTY, one per line.
-# Splits on '{' so each NodeInfo object is one token, filters tokens carrying the
-# lifecycleState marker, extracts the `id` field. Tolerant of Jackson field-order changes
-# (id and lifecycleState live in the same {...} object — order within doesn't matter).
-_extract_on_duty_ids() {
-    local payload="$1"
-    printf '%s' "$payload" \
-        | tr '{' '\n' \
-        | grep '"lifecycleState"[[:space:]]*:[[:space:]]*"ON_DUTY"' \
-        | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | sed 's/"id"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true
-}
-
-# Pass-1 candidate emission. Iterates a sort-stable member list, applies the
-# leader/pinned/liveness filters, and emits up to `count` valid candidates on
-# stdout. The final stdout line is the integer count of emitted candidates so
-# callers can split id-lines from the tally.
-_emit_candidates() {
-    local leader="$1" pinned="$2" count="$3" members="$4"
-    local found=0
     local candidate
     while IFS= read -r candidate; do
         [ -z "$candidate" ] && continue
         if [ "$candidate" = "$leader" ]; then continue; fi
         if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
+        # Docker-mode liveness guard.
+        # /api/status reports `lifecycleState=ON_DUTY` from the leader's derived
+        # MembershipView. A node killed in a previous test file may still appear
+        # ON_DUTY across the boundary into the next file if (a) CTM has not
+        # tombstoned its slot yet, (b) MembershipView has not propagated the
+        # SWIM FAULTY → DECOMMISSIONED transition, or (c) `restore_cluster_baseline`
+        # returned on ON_DUTY count without verifying connected-peer parity.
+        # The cluster-side fix lives upstream; in the meantime we skip dead
+        # candidates so the test can pick a live one — and log the skip so the
+        # underlying staleness stays visible instead of being silently papered over.
         if [ "${CLOUD_MODE:-false}" != "true" ]; then
             local _alive_name
             _alive_name=$(_docker_container_by_node_id_label "$candidate" 2>/dev/null || true)
@@ -344,9 +274,14 @@ _emit_candidates() {
         fi
         echo "$candidate"
         found=$((found + 1))
-        if [ "$found" -ge "$count" ]; then break; fi
-    done <<< "$members"
-    echo "$found"
+        if [ "$found" -ge "$count" ]; then return 0; fi
+    done <<< "$current_members"
+
+    if [ "$found" -lt "$count" ]; then
+        # See note above on stderr redirection — caller consumes stdout.
+        log_fail "pick_non_leader: only ${found}/${count} candidates available (leader=${leader}, pinned=${pinned:-<none>}, cluster=${CLUSTER_ID:-<none>})" >&2
+        return 1
+    fi
 }
 
 # Wait for every node (ports MGMT_PORT..MGMT_PORT+NODE_COUNT-1) to report
@@ -1658,7 +1593,7 @@ restore_cluster_baseline() {
         log_warn "restore_cluster_baseline: scale_cluster ${target} failed (cluster may already be at target — proceeding to wait)"
     fi
 
-    # 5. Hard barrier — at least N ON_DUTY healthy cores. 600s budget covers
+    # 5. Hard barrier — exactly N ON_DUTY healthy cores. 600s budget covers
     # CTM provision (image pull on cold cache) + JVM boot + QUIC mesh + SWIM
     # convergence + JOINING→ON_DUTY commit + generation snapshot publication
     # on the remote host. Raised from 300s after observing that post-chaos
@@ -1666,18 +1601,8 @@ restore_cluster_baseline() {
     # consistently exceeded 300s on TARGET_HOST when the cluster was healing
     # from a multi-kill scenario. Matches the wait_for_node_count_fast timeout
     # above (480s) minus the ~60-120s JVM-boot allowance already accounted for.
-    #
-    # `-ge` not `-eq`: the operational invariant is "the cluster has AT LEAST
-    # target healthy cores". SWIM gossip can transiently overcount during chaos
-    # recovery (a recently-killed node remains ON_DUTY in the SWIM cache for
-    # ~10-20s until Ping cycle + suspectTimeout + reconciler aggregation), and
-    # CTM may briefly carry an extra replacement before its surplus path
-    # decommissions the dead original. The `-eq target` form would block restore
-    # waiting for SWIM convergence we don't actually require for the next test
-    # to proceed. ≥ target is the test ordering invariant; extras are CTM
-    # cleanup concern, not test concern.
     if ! wait_for "${target} ON_DUTY healthy cores" \
-        "[ \$(cluster_node_count_on_duty_healthy) -ge ${target} ]" 600; then
+        "[ \$(cluster_node_count_on_duty_healthy) -eq ${target} ]" 600; then
         log_fail "restore_cluster_baseline: failed to converge to ${target} ON_DUTY healthy cores within 600s (current=$(cluster_node_count_on_duty_healthy))"
         return 1
     fi
