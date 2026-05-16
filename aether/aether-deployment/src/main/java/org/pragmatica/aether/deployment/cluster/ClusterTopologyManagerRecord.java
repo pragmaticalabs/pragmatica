@@ -222,6 +222,23 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                    .or(observer.clusterSize());
     }
 
+    /// Counts un-expired provisioning slot atoms in the KV-Store. A slot is "live" when its
+    /// `deadlineMs` is in the future (using the same expiry rule applied by
+    /// `classifySlotForRehydration` and `deleteExpiredSlotAtoms`). Deficit accounting subtracts
+    /// this count so that an in-flight wave (already written to KV) is not counted as missing
+    /// capacity — preventing the provisioning storm where the leader top-ups against a deficit
+    /// that JOINING / stalled peers are already covering.
+    private int liveProvisioningSlotCount() {
+        var slots = slotReader.get();
+        if (slots.isEmpty()) {return 0;}
+        var nowMs = nowMs();
+        var count = 0;
+        for (var value : slots.values()) {
+            if (value.deadlineMs() >= nowMs) {count++;}
+        }
+        return count;
+    }
+
     @Contract@Override public void onNodeReady(NodeId nodeId) {
         resetProvisioningCircuit("node " + nodeId + " reached ON_DUTY");
         deleteCompletedSlotAtomsForNode(nodeId);
@@ -671,10 +688,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var configured = view.desiredCoreSize();
         if (configured == 0) {return;}
         var actual = snapshotHealthyOnDutyCount();
-        var deficit = configured - actual;
-        log.debug("CTM reconcile: actual={} desired={} deficit={} hints={}",
+        var liveSlots = liveProvisioningSlotCount();
+        var rawDeficit = configured - actual - liveSlots;
+        var deficit = Math.max(rawDeficit, 0);
+        log.debug("CTM reconcile: actual={} desired={} liveSlots={} deficit={} hints={}",
                   actual,
                   configured,
+                  liveSlots,
                   deficit,
                   summarizeHealthHints(view));
         var effectiveState = currentState;
@@ -698,12 +718,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             observeRealActualForStability(actual);
             return;
         }
-        if (effectiveState instanceof NodeReconcilerState.Converged) {log.info("CTM deficit detected: actual={} desired={} deficit={} hints={}",
+        if (effectiveState instanceof NodeReconcilerState.Converged) {log.info("CTM deficit detected: actual={} desired={} liveSlots={} deficit={} hints={}",
                                                                                actual,
                                                                                configured,
+                                                                               liveSlots,
                                                                                deficit,
                                                                                summarizeHealthHints(view));}
-        if (actual <configured) {handleDeficit(actual, configured);} else {handleSurplus(actual, configured);}
+        if (actual <configured) {
+            if (deficit <= 0) {
+                log.debug("CTM: deficit covered by {} live provisioning slot(s); no dispatch (actual={}, configured={})",
+                          liveSlots,
+                          actual,
+                          configured);
+                return;
+            }
+            handleDeficit(actual, configured);
+        } else {handleSurplus(actual, configured);}
     }
 
     @Contract private void observeRealActualForStability(int actual) {
@@ -869,11 +899,23 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract private void handleSurplus(int actual, int configured) {
         var current = stateRef.get();
-        if (current instanceof NodeReconcilerState.Reconciling) {
-            log.debug("CTM: Already reconciling, waiting for in-flight terminations to complete");
-            return;
-        }
         var surplus = actual - configured;
+        if (surplus <= 0) {return;}
+        var liveSlots = liveProvisioningSlotCount();
+        if (current instanceof NodeReconcilerState.Reconciling reconciling) {
+            if (liveSlots > 0) {
+                log.debug("CTM: surplus={} but {} live slot(s) in flight — waiting for completion before terminating",
+                          surplus,
+                          liveSlots);
+                return;
+            }
+            if (!reconciling.terminating().isEmpty()) {
+                log.debug("CTM: surplus={} but {} termination(s) already in flight — waiting for completion",
+                          surplus,
+                          reconciling.terminating().size());
+                return;
+            }
+        }
         if (!lifecycleManager.isCloudManaged()) {
             log.info("CTM: Cluster has {} surplus nodes but no ComputeProvider, cannot auto-terminate", surplus);
             transitionTo(new NodeReconcilerState.Converged());
