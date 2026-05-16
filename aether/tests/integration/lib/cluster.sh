@@ -436,12 +436,24 @@ is_cluster_ready() {
     # cluster has CTM dormant, so blueprint/scale/task ops are no-ops that look like passes
     # via `none == none` matches in `cluster_leader` comparisons. Requiring a non-empty,
     # non-"none" leaderId restores fail-fast behaviour for genuine leader-election regressions.
+    #
+    # RC1 Wave 4 follow-up (task #29 honesty fix companion): also require
+    # `cluster_node_count_on_duty_healthy >= NODE_COUNT`. The generation-snapshot count
+    # (`cluster_node_count`) includes JOINING nodes and SWIM-cached-but-transport-dead
+    # entries; after the /api/cluster/topology honesty fix `coreCount` now reflects the
+    # transport-connected ON_DUTY count. Without this second predicate, `wait_for_cluster`
+    # returns TRUE while only 2 of 5 members are reachable for ops, and downstream chaos
+    # tests fail with "only N/M candidates available". Both predicates together fail-close
+    # until the cluster is genuinely operationally ready.
     local count
     count=$(cluster_node_count)
     [ -n "$count" ] && [ "$count" -ge "${NODE_COUNT:-5}" ] 2>/dev/null || return 1
     local leader
     leader=$(cluster_leader 2>/dev/null)
-    [ -n "$leader" ] && [ "$leader" != "none" ]
+    [ -n "$leader" ] && [ "$leader" != "none" ] || return 1
+    local healthy
+    healthy=$(cluster_node_count_on_duty_healthy 2>/dev/null)
+    [ -n "$healthy" ] && [ "$healthy" -ge "${NODE_COUNT:-5}" ] 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------

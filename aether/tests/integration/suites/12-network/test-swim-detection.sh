@@ -25,8 +25,8 @@ test_cluster_ready() {
     wait_for_phase "NORMAL" 180 || \
         log_warn "Cluster phase did not reach NORMAL within 180s — kill below may be silently absorbed by SWIM cold-boot suppression"
     local count
-    count=$(cluster_node_count)
-    assert_eq "$count" "5" "Initial: 5 nodes"
+    count=$(cluster_node_count_on_duty_healthy)
+    assert_eq "$count" "5" "Initial: 5 ON_DUTY healthy cores"
 }
 
 test_swim_detection_time() {
