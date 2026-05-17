@@ -44,6 +44,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
@@ -455,6 +456,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
+    public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId, M message) {
+        return Promise.success(dispatchPayloadWithOutcome(peerId, message));
+    }
+
+    @Override
     public <M extends ProtocolMessage> Unit broadcast(M message) {
         broadcastPayload(message, !message.deliverToPassive());
         return unit();
@@ -732,7 +738,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         var ch = stream.unwrap();
         for (var bytes : drained) {
-            writeIfWritable(ch, bytes, state.peerId(), StreamType.CONSENSUS);
+            var _ = writeIfWritable(ch, bytes, state.peerId(), StreamType.CONSENSUS);
         }
         log.debug("Drained {} offline messages to newly-connected peer {}", drained.size(), state.peerId());
     }
@@ -748,7 +754,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return;
         }
         var bytes = serializer.encode(message);
-        dispatchSerialized(state, message, bytes);
+        var _ = dispatchSerialized(state, message, bytes);
+    }
+
+    /// Outcome-tracking variant used by `sendOutcome` callers (DHT quorum path). Same
+    /// dispatch flow as `dispatchPayload` but surfaces the synchronous local-transport
+    /// verdict so the caller can fail-fast against unreachable replicas.
+    private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Object message) {
+        var state = peers.get(peerId);
+        if (state == null) {
+            log.debug("No peer state for {} — refusing tracked send", peerId);
+            return new WriteOutcome.NoPeerState(peerId);
+        }
+        var bytes = serializer.encode(message);
+        return dispatchSerialized(state, message, bytes);
     }
 
     /// Broadcast a typed message to all known peers. When `skipPassive` is true, peers whose
@@ -769,14 +788,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
             if (bytes == null) {
                 bytes = serializer.encode(message);
             }
-            dispatchSerialized(state, message, bytes);
+            var _ = dispatchSerialized(state, message, bytes);
         }
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Outcome dispatch with metrics + write
-    private void dispatchSerialized(PeerState state, Object message, byte[] bytes) {
+    private WriteOutcome dispatchSerialized(PeerState state, Object message, byte[] bytes) {
         var outcome = state.offerOutbound(bytes);
-        switch (outcome) {
+        return switch (outcome) {
             case PeerState.OfferOutcome.SendNow(QuicPeerConnection connection) ->
                 writeToStream(state.peerId(), message, bytes, connection);
             case PeerState.OfferOutcome.Queued(boolean oldestEvicted) -> {
@@ -785,40 +804,60 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     quicMetrics.onBackpressureDrop();
                     log.debug("Offline buffer for peer {} at capacity — dropped oldest", state.peerId());
                 }
+                // Queued in the offline buffer — the message has been accepted for eventual
+                // delivery on reconnect. Report as Sent so callers (DHT) treat it as enqueued
+                // success; if the peer never reconnects within the operation deadline the
+                // collector will time out via its existing mechanism.
+                yield new WriteOutcome.Sent(state.peerId());
             }
-            case PeerState.OfferOutcome.Dropped ignored ->
+            case PeerState.OfferOutcome.Dropped ignored -> {
                 log.debug("Message to REMOVED peer {} dropped", state.peerId());
-        }
+                yield new WriteOutcome.NoPeerState(state.peerId());
+            }
+        };
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Stream selection and write
-    private void writeToStream(NodeId peerId, Object message, byte[] bytes, QuicPeerConnection connection) {
+    private WriteOutcome writeToStream(NodeId peerId, Object message, byte[] bytes, QuicPeerConnection connection) {
         if (!connection.isActive()) {
             // Connection went dead between offerOutbound capture and write. Evict and re-dispatch
             // so the bytes land in the offline buffer for the next attach.
             evictStaleConnection(peerId, connection);
             var state = peers.get(peerId);
             if (state != null) {
-                dispatchSerialized(state, message, bytes);
+                var _ = dispatchSerialized(state, message, bytes);
             }
-            return;
+            return new WriteOutcome.ConnectionDead(peerId);
         }
         var streamType = StreamType.forMessage(message);
         var stream = connection.stream(streamType)
                                .fold(() -> connection.stream(StreamType.CONSENSUS), Option::some);
-        stream.onPresent(ch -> writeIfWritable(ch, bytes, peerId, streamType))
-              .onEmpty(() -> log.warn("No stream available for peer {}", peerId));
+        if (stream.isEmpty()) {
+            log.warn("No stream available for peer {}", peerId);
+            return new WriteOutcome.ConnectionDead(peerId);
+        }
+        return writeIfWritable(stream.unwrap(), bytes, peerId, streamType);
     }
 
-    private void writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
+    private WriteOutcome writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
         if (!ch.isWritable()) {
+            // Backpressure refusal — channel is at netty's high-watermark. Previously silently
+            // dropped, which masked the failure from upstream callers (DHT quorum stalls on
+            // unreachable replicas waiting for their per-op 10s timeout instead of failing
+            // fast). The DHT path now consumes this outcome via `ClusterNetwork.sendOutcome`
+            // and calls its `QuorumCollector.onFailure` immediately, allowing fast-fail when
+            // quorum becomes unreachable. Non-tracked callers (`send`) still observe the same
+            // effect because the message is not enqueued — they will retry through their own
+            // retransmit cycle (Rabia, SWIM gossip) without the silent-drop log being load-
+            // bearing for failure detection. See aether/docs/specs/dht-resilience-spec.md.
             quicMetrics.onBackpressureDrop();
-            log.warn("Channel to peer {} not writable on stream {} — dropping message", peerId, streamType);
-            return;
+            log.warn("Channel to peer {} not writable on stream {} — refusing message (backpressure)", peerId, streamType);
+            return new WriteOutcome.BackpressureRefused(peerId);
         }
         quicMetrics.onMessageSent();
         ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
           .addListener(future -> handleWriteResult(future, peerId, streamType));
+        return new WriteOutcome.Sent(peerId);
     }
 
     private void handleWriteResult(Future<? super Void> future, NodeId peerId, StreamType streamType) {

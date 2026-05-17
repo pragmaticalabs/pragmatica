@@ -81,6 +81,25 @@ public interface ClusterNetwork {
     /// logged and silently ignored - the protocol handles message loss.
     <M extends ProtocolMessage> Unit send(NodeId nodeId, M message);
 
+    /// Send a message to a specific node and return the synchronous local-transport
+    /// outcome.
+    ///
+    /// Where [#send(NodeId, ProtocolMessage)] is fire-and-forget (failures handled
+    /// upstream via protocol retransmits / timeouts), this overload reports back
+    /// immediately whether the message was enqueued ([WriteOutcome.Sent]) or refused
+    /// (backpressure / dead connection / unknown peer). Callers that need to react
+    /// faster than per-operation timeouts — currently only the DHT quorum path — use
+    /// this to short-circuit waiting on a clearly-unreachable replica.
+    ///
+    /// Default implementation falls back to `send` and returns [WriteOutcome.Sent] —
+    /// transports without per-write outcome tracking remain backward-compatible.
+    ///
+    /// See `aether/docs/specs/dht-resilience-spec.md` Layer 1.
+    default <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message) {
+        send(nodeId, message);
+        return Promise.success(new WriteOutcome.Sent(nodeId));
+    }
+
     /// Start the network.
     Promise<Unit> start();
 
