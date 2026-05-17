@@ -64,16 +64,20 @@ class BootstrapModuleTest {
         }
 
         @Test
-        void initialCoreSizeAtQuorum_butLifecycleCountTooLow_seedDeferred() {
-            // initialCoreSize == 3, no NodeLifecycle entries — within grace window, seed deferred.
+        void initialCoreSizeAtQuorum_seedEmitted() {
+            // initialCoreSize == 3 (>= quorum) and no existing ClusterConfig — seed is emitted.
+            // The lifecycle-count grace window was intentionally removed (commit 62ae7b19f,
+            // "drop seed grace period"); the seed no longer waits for NodeLifecycleKey
+            // entries to materialize. Spec §8: at-or-above quorum, seed on first leader gain.
             var fixture = newFixture(/* initialCoreSize */ 3);
             fixture.module.onLeaderGained();
 
             var clusterConfigPuts = collectPuts(fixture.cluster.batches).stream()
                                                                           .filter(p -> p.key() instanceof ClusterConfigKey)
                                                                           .toList();
-            // No seed expected — lifecycle count (0) < initialSize (3) and grace window unexpired.
-            assertThat(clusterConfigPuts).isEmpty();
+            assertThat(clusterConfigPuts).hasSize(1);
+            var seeded = (ClusterConfigValue) clusterConfigPuts.getFirst().value();
+            assertThat(seeded.coreCount()).isEqualTo(3);
         }
     }
 
