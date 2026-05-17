@@ -129,29 +129,27 @@ Implementation note: if Docker socket isn't mounted (typical for production), sk
 
 ### 6. Bootstrap CLI scaffolding subcommand
 
-File: `aether/cli/src/main/java/org/pragmatica/aether/cli/AetherCli.java`
+File: `aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/ClusterScaffoldCommand.java`
 
 New subcommand:
 ```
-aether cluster bootstrap --name us-prod --emit-template docker-compose > compose.yml
-aether cluster bootstrap --name us-prod --emit-template kubernetes > deployment.yaml
-aether cluster bootstrap --name us-prod --emit-template hetzner-terraform > main.tf
+aether cluster scaffold --name us-prod --format docker-compose --nodes 5 > compose.yml
 ```
 
-Each template:
+The template:
 - Generates the right `aether.cluster`/`aether.node-id` labels per node.
-- Sets `cluster.name=<name>` in the generated aether.toml.
-- Includes the bootstrap-time peer list / seeds correctly.
+- Sets `AETHER_CLUSTER_NAME=<name>` env so CTM-provisioned replacements label-match too.
+- Includes the bootstrap-time peer list correctly.
 - Is correct-by-construction — operators don't have to remember to set the label.
 
-Implementation: 3 template files in resources, parameterised by `cluster.name` and node count. New `TemplateEngine` for the substitution (no fancy logic needed; simple `${VAR}` replacement).
+Implementation: `DockerComposeTemplate` (plain `StringBuilder`, no template engine — 6 unit tests cover label coverage, peer list, port bases, restart-no contract).
 
 ### 7. Documentation + RFC update
 
 Files:
 - `docs/rfc/RFC-NNNN-cluster-label-scoping.md` — new RFC explaining the orthogonal-label design + non-goal of cluster-scoping NodeId.
 - `aether/docs/operator/multi-cluster-deployment.md` — operator guide for running multiple clusters on shared infrastructure.
-- `aether/docs/reference/cli.md` — document the `bootstrap --emit-template` subcommand.
+- `aether/docs/reference/cli.md` — document the `cluster scaffold` subcommand.
 
 ---
 
@@ -190,7 +188,7 @@ Net: ~25 lines, low risk, contained to deployment-infra layer + 2 unit tests.
 ### RC2:
 1. Unit test for the first-boot consistency check.
 2. Manual: edit `aether.toml` to use a wrong cluster name; restart; observe fail-closed startup with clear error.
-3. Manual: run `aether cluster bootstrap --name testc --emit-template docker-compose` and verify the generated compose file deploys a valid cluster.
+3. Manual: run `aether cluster scaffold --name testc --format docker-compose` and verify the generated compose file deploys a valid cluster.
 
 ---
 
