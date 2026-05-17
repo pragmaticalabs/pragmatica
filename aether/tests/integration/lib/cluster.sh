@@ -2038,8 +2038,15 @@ deploy_cleanup() {
     # Complete or rollback any active deployments via the LB management endpoint.
     local deployments
     deployments=$(deploy_list 2>/dev/null)
-    # Extract deployment IDs that are not in terminal states
-    printf '%s' "$deployments" | grep -o '"deploymentId"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"deploymentId"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//' | while read -r did; do
+    # Extract deployment IDs that are not in terminal states.
+    # The `grep -o ... || true` guard is load-bearing: under `set -euo pipefail`
+    # an empty deploy list (the expected steady state) makes grep exit 1, which
+    # propagates through pipefail and triggers errexit BEFORE the trailing
+    # `return 0` below. Without the guard, every caller starting from a clean
+    # cluster (e.g. test-deploy-blue-green / canary / rolling) aborts silently
+    # with no PASS/FAIL/print_summary — exactly the 06-deployment failure
+    # signature observed across many sessions.
+    (printf '%s' "$deployments" | grep -o '"deploymentId"[[:space:]]*:[[:space:]]*"[^"]*"' || true) | sed 's/.*"deploymentId"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//' | while read -r did; do
         # Skip if in terminal state (check the surrounding context)
         if printf '%s' "$deployments" | grep -q "\"deploymentId\"[[:space:]]*:[[:space:]]*\"${did}\"[^}]*\"state\"[[:space:]]*:[[:space:]]*\"COMPLETED\""; then continue; fi
         if printf '%s' "$deployments" | grep -q "\"deploymentId\"[[:space:]]*:[[:space:]]*\"${did}\"[^}]*\"state\"[[:space:]]*:[[:space:]]*\"ROLLED_BACK\""; then continue; fi

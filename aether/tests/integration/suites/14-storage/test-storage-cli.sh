@@ -34,7 +34,7 @@ test_cli_storage_status() {
 
     local first_name
     # Extract first instance name from instances array
-    first_name=$(echo "$api_result" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    first_name=$(echo "$api_result" | (grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' || true) | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
     if [ -z "$first_name" ]; then
         skip_test "CLI storage status" "No storage instances configured"
