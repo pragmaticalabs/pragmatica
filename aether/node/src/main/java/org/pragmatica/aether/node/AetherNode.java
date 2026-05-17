@@ -1232,15 +1232,19 @@ public interface AetherNode extends ManageableNode {
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                                     dhtTopologyListener::onSelfShutdown));
-        // Transport-disconnect prune: when a peer's QUIC link drops (`processRemove` →
-        // PeerDisconnected), prune it from the DHT ring so writes don't target a dead
-        // replica. Previously this signal was carried by the legacy NodeDown route which
-        // the audit-step-2 refactor (`5fdffe967`) replaced with `MembershipDecision.NodeRemoved` —
-        // but NodeRemoved fires on consensus eviction, NOT on every transport drop. Ring
-        // pruning needs the transport-level signal so 09-artifacts 1MB push (16 chunks) no
-        // longer stalls when one chunk's replica is in EVICTED / unreachable state.
-        aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected.class,
-                                                    dhtTopologyListener::onPeerDisconnected));
+        // PeerDisconnected → DHT-ring prune is intentionally NOT wired. The naive variant
+        // (commit `d3e54717e`, reverted here) pruned aggressively on every transient QUIC
+        // drop, which triggered a rebalance storm under sustained write pressure (16-chunk
+        // 1MB artifact fan-out): each chunk replication targeting a freshly-pruned peer ran
+        // through a re-replication pass that saturated QUIC, which in turn caused
+        // `writeIfWritable` watermark drops, which manifest as the 1MB-push hang we tried
+        // to fix. Consensus-driven `MembershipDecision.NodeRemoved` (wired via
+        // `dhtTopologyListener::onNodeRemoved` above) IS the correct ring-prune trigger:
+        // it fires only after the cluster has agreed the node is gone, not on every QUIC
+        // flap. Future work: bound transport-level pruning by an observation window
+        // (e.g., 30s of unbroken PeerDisconnected with no intervening ConnectionEstablished)
+        // before pruning, so genuinely-dead peers eventually leave the ring without the
+        // every-flap storm.
         @SuppressWarnings({"unchecked", "rawtypes"}) MessageRouter.Entry forwardRequestRoute = MessageRouter.Entry.route(ForwardApplyRequest.class,
                                                                                                                          (ForwardApplyRequest request) -> handleForwardApplyRequest(request,
                                                                                                                                                                                     clusterNode));
