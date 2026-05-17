@@ -18,6 +18,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -100,15 +101,14 @@ public final class StatusRoutes implements RouteSource {
         var allNodeIds = new LinkedHashSet<NodeId>();
         topologyNodes.forEach(allNodeIds::add);
         view.snapshot().keySet().forEach(allNodeIds::add);
-        // Transport honesty (RC1 Wave 4 follow-up): cross-reference connectedPeerIds so a
-        // peer reporting ON_DUTY in MembershipView but no longer transport-connected is
-        // surfaced as UNKNOWN immediately, rather than waiting 10-20s for the SWIM Ping
-        // cycle (probe + suspectTimeout + reconciler aggregation) to write DECOMMISSIONED.
-        // Self is exempt — we never connect to ourselves so `connectedPeers.contains(self)`
-        // is false by design.
-        var connectedPeers = node.connectedPeerIds();
+        // RC1 reachability-aggregator landing: replace per-reader local QUIC view
+        // with cluster-canonical snapshot from the leader. Cold-start fallback
+        // (snapshot Option.none()): no transport downgrade — peers report KV
+        // status directly. See aether/docs/specs/reachability-aggregator-spec.md
+        // Layer 5.
+        var reachabilitySnapshot = node.metricsCollector().lastReachabilitySnapshot();
         var selfId = node.self();
-        var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view, nodeId, leader, connectedPeers, selfId))
+        var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view, nodeId, leader, reachabilitySnapshot, selfId))
                                             .toList();
         var quorate = leader.isPresent() && nodeInfos.size() >= quorumOf(nodeInfos.size());
         var cluster = new ClusterInfo(nodeInfos.size(), leaderId, quorate, nodeInfos);
@@ -133,17 +133,18 @@ public final class StatusRoutes implements RouteSource {
     }
 
     private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader,
-                                       Set<NodeId> connectedPeers, NodeId selfId) {
+                                       Option<AggregatedReachabilitySnapshot> reachabilitySnapshot, NodeId selfId) {
         var isLeader = leader.map(l -> l.equals(nodeId)).or(false);
         var status = view.statusOf(nodeId);
-        // Transport-derived honesty: ON_DUTY in MembershipView but not in transport-connected
-        // set means the node has been killed/lost connectivity and SWIM hasn't yet detected
-        // it (Ping interval + suspectTimeout). Downgrade to UNKNOWN so operator-facing reads
-        // (CLI, dashboard, integration test harness) see the cluster's actual state rather
-        // than the SWIM-lagged view.
+        // Cluster-canonical reachability: ON_DUTY in MembershipView but UNREACHABLE in
+        // the leader-broadcast aggregated snapshot means a quorum of observers has lost
+        // transport to this peer — downgrade to UNKNOWN so operator-facing reads (CLI,
+        // dashboard, integration test harness) see the cluster's actual state rather
+        // than the SWIM-lagged view. Cold-start fallback (snapshot Option.none()): no
+        // downgrade — trust KV directly.
         var transportLag = status == MembershipView.MemberStatus.ON_DUTY
                            && !nodeId.equals(selfId)
-                           && !connectedPeers.contains(nodeId);
+                           && reachabilitySnapshot.fold(() -> false, s -> !s.isReachable(nodeId));
         if (transportLag) {
             return new NodeInfo(nodeId.id(), isLeader, "UNKNOWN");
         }

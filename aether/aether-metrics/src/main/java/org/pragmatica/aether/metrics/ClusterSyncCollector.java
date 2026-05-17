@@ -7,6 +7,7 @@ package org.pragmatica.aether.metrics;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
@@ -15,6 +16,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
 
@@ -73,6 +75,14 @@ public interface ClusterSyncCollector {
     @Contract void setPongSignalFan(ClusterSyncPongSignalFan fan);
     @Contract void setPeerObservationBuffer(PeerObservationBuffer buffer);
 
+    /// Most-recently received `AggregatedReachabilitySnapshot` from an incoming
+    /// `ClusterSyncPing`. `Option.none()` until the first ping with a non-empty
+    /// snapshot lands (cold-start window or pre-extension peers). Followers cache
+    /// this for warm-takeover when they become leader; `/api/status` reads it to
+    /// produce reader-invariant `coreCount`. See
+    /// `aether/docs/specs/reachability-aggregator-spec.md`.
+    Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot();
+
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
@@ -107,6 +117,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicReference<Epoch> observedEpoch = new AtomicReference<>(Epoch.ZERO);
 
     private final AtomicReference<Supplier<String>> lifecycleStateSupplier = new AtomicReference<>(() -> "ON_DUTY");
+
+    private final AtomicReference<Option<AggregatedReachabilitySnapshot>> lastReachabilitySnapshot = new AtomicReference<>(Option.none());
 
     private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
 
@@ -196,6 +208,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
         advanceObservedEpoch(incomingEpoch);
+        // Cache the leader-broadcast reachability snapshot. `/api/status` reads
+        // it to eliminate per-reader QUIC-view variance; on leader-gained, the
+        // new leader seeds its aggregator from this cache to shorten warmup.
+        // Pre-extension peers send Option.none() — leave cache unchanged so
+        // older data isn't lost during a rolling upgrade window.
+        ping.aggregatedReachability().onPresent(snapshot -> lastReachabilitySnapshot.set(Option.some(snapshot)));
         var pong = buildPong();
         log.debug("ClusterSync: sending PONG to {} (epoch={}:{})",
                   ping.sender(),
@@ -253,6 +271,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override@Contract public void addPongListener(Consumer<ClusterSyncPong> listener) {
         pongListeners.add(listener);
+    }
+
+    @Override public Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot() {
+        return lastReachabilitySnapshot.get();
     }
 
     private boolean acceptPingFencing(ClusterSyncPing ping) {

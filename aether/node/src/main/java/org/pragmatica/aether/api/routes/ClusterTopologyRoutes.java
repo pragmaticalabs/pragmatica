@@ -13,6 +13,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -143,11 +144,14 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                            .map(NodeId::id)
                                            .toList();
         // H.2 (spec §H): coreCount derives from MembershipView (SWIM ∪ KV-overrides).
-        // Transport honesty (RC1 Wave 4 follow-up): a peer reporting ON_DUTY in MembershipView
-        // but no longer transport-connected (peer killed; SWIM hasn't yet detected) is excluded
-        // so the operator-visible `coreCount` reflects actually-reachable cores rather than the
-        // SWIM-lagged view. Self is always counted (we don't transport-connect to ourselves).
-        var coreCount = transportConnectedOnDutyCount(node.membershipView(), connectedPeers, selfId);
+        // RC1 reachability-aggregator landing: replace per-reader local QUIC view
+        // (network.connectedPeers()) with the leader-broadcast cluster-canonical
+        // snapshot. Cold-start fallback: when no snapshot is cached yet, use the
+        // KV-only ON_DUTY count (no transport filter). See
+        // aether/docs/specs/reachability-aggregator-spec.md Layer 5.
+        var coreCount = reachableOnDutyCount(node.membershipView(),
+                                             node.metricsCollector().lastReachabilitySnapshot(),
+                                             selfId);
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
         var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
                                                                         id,
@@ -180,8 +184,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
         // helper if the view is empty (e.g., during very-early bootstrap before SWIM has
         // admitted self). The snapshot helper also now honours SWIM-derived ON_DUTY via the
         // healthHint check (no KV ON_DUTY required) so both paths converge.
-        // Transport honesty (RC1 Wave 4 follow-up): see assembleFromTopologyManager — same rationale.
-        var viewCount = transportConnectedOnDutyCount(node.membershipView(), connectedPeers, selfId);
+        // RC1 reachability-aggregator landing: see assembleFromTopologyManager.
+        var viewCount = reachableOnDutyCount(node.membershipView(),
+                                             node.metricsCollector().lastReachabilitySnapshot(),
+                                             selfId);
         var coreCount = viewCount > 0 ? viewCount : snapshotCoreCount(snapshot);
         var epoch = Option.some(snapshot.epoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
@@ -201,20 +207,31 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  topologyMode(topologyManager));
     }
 
-    /// Transport-honest ON_DUTY count. Filters `MembershipView.onDutyPeers()` to peers that are
-    /// either self (we don't connect to ourselves) or currently transport-connected. Closes the
-    /// SWIM-detection-lag window where a killed peer remains ON_DUTY in MembershipView for
-    /// ~10-20s after the transport has already lost the connection.
-    private static int transportConnectedOnDutyCount(MembershipView view,
-                                                     Set<NodeId> connectedPeers,
-                                                     NodeId selfId) {
+    /// Cluster-canonical reachable-and-on-duty count.
+    ///
+    /// Reads `MembershipView.onDutyPeers()` (KV-canonical) intersected with the
+    /// leader-broadcast `AggregatedReachabilitySnapshot` (cluster-canonical
+    /// transport reachability). When the snapshot is `Option.none()` (cold-start
+    /// window or pre-extension peers), falls back to KV-only counting — accepting
+    /// that a recently-killed peer may briefly count until SWIM detection +
+    /// HealthReconciler write catch up (~10-30s worst case during cluster
+    /// formation; bounded by ping-pong cadence at steady state).
+    ///
+    /// Self is always counted (SWIM does not observe self locally).
+    private static int reachableOnDutyCount(MembershipView view,
+                                            Option<AggregatedReachabilitySnapshot> snapshot,
+                                            NodeId selfId) {
         int count = 0;
         for (NodeId peer : view.onDutyPeers()) {
-            if (peer.equals(selfId) || connectedPeers.contains(peer)) {
+            if (peer.equals(selfId) || isReachable(snapshot, peer)) {
                 count++;
             }
         }
         return count;
+    }
+
+    private static boolean isReachable(Option<AggregatedReachabilitySnapshot> snapshot, NodeId peer) {
+        return snapshot.fold(() -> true, s -> s.isReachable(peer));
     }
 
     private static String topologyMode(TopologyManager tm) {

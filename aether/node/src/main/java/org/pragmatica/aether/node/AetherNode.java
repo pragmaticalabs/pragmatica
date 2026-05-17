@@ -943,11 +943,19 @@ public interface AetherNode extends ManageableNode {
                                                                          reachabilityAggregator::snapshot);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
         // Leader-gated aggregator ingest: pong observations from followers feed the
-        // ReachabilityAggregator only when this node is the leader. On role change,
-        // the aggregator is reset; cached snapshots (if any) seed the new leader's
-        // warmup. See reachability-aggregator-spec.md Layers 3-4.
+        // ReachabilityAggregator only when this node is the leader. Leader-transition
+        // detection (poll-on-event): on the not-leader→leader edge, reset and seed
+        // from the cached snapshot received from the prior leader. See
+        // reachability-aggregator-spec.md Layers 3-4.
+        var wasLeaderRef = new java.util.concurrent.atomic.AtomicBoolean(false);
         metricsCollector.addPongListener(pong -> {
-            if (!isLeaderSupplier.getAsBoolean()) {return;}
+            var nowLeader = isLeaderSupplier.getAsBoolean();
+            var prev = wasLeaderRef.getAndSet(nowLeader);
+            if (nowLeader && !prev) {
+                reachabilityAggregator.reset();
+                metricsCollector.lastReachabilitySnapshot().onPresent(reachabilityAggregator::seedFromCache);
+            }
+            if (!nowLeader) {return;}
             reachabilityAggregator.ingest(pong.sender(), pong.peerConnectivity(), pong.peerHealth());
         });
         metricsCollector.setPeerObservationBuffer(peerObservationStore);
