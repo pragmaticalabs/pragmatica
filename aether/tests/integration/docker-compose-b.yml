@@ -26,6 +26,10 @@ x-node-common: &node-common
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
     AETHER_CLUSTER_SECRET: "aether-integration-test-cluster-secret"
     AETHER_DOCKER_NETWORK: "aether-b-network"
+    # Cluster identity for CTM-provisioned replacement containers — DockerComputeProvider.clusterOrDefault
+    # falls back to this env when ProvisionContext.clusterName is empty (pre-bootstrap). Keeps the
+    # `aether.cluster=b` label consistent across compose-fixed nodes and CTM replacements.
+    AETHER_CLUSTER_NAME: "b"
     # Cluster B claims host port range 5160-5169 for CTM-provisioned containers
     # (compose-defined nodes own 5160-5165; auto-heal replacements pick from 5166+).
     # Cluster A uses 5150-5159. Distinct ranges prevent port-bind collisions when

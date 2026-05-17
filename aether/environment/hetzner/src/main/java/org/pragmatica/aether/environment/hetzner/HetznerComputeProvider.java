@@ -189,9 +189,14 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     private String clusterNameOrDefault(ProvisionContext ctx) {
-        return ctx.clusterName().isEmpty()
-              ? config.clusterName().or("unknown")
-              : ctx.clusterName();
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        // Fallback: when ClusterConfigValue isn't yet seeded in KV-Store (pre-bootstrap
+        // path), source the cluster name from AETHER_CLUSTER_NAME env var so
+        // CTM-provisioned Hetzner servers carry a matching `aether-cluster` label.
+        // Mirrors `DockerComputeProvider.clusterOrDefault` — closes spec caveat-c.
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        if (fromEnv != null && !fromEnv.isEmpty()) {return fromEnv;}
+        return config.clusterName().or("unknown");
     }
 
     private static Map<String, String> buildLabels(String clusterLabel, String role, String sourceName) {

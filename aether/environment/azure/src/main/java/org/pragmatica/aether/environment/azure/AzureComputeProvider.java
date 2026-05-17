@@ -132,12 +132,19 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
         var tags = new java.util.HashMap<String, String>();
         tags.put("aether-managed", "true");
-        if (!ctx.clusterName().isEmpty()) {tags.put("aether-cluster", ctx.clusterName());}
+        var clusterName = resolveClusterName(ctx);
+        if (!clusterName.isEmpty()) {tags.put("aether-cluster", clusterName);}
         if (!ctx.role().isEmpty()) {tags.put("aether-role", ctx.role());}
         if (!ctx.sourceName().isEmpty()) {tags.put("aether-source", ctx.sourceName());}
         ctx.nodeId().onPresent(value -> tags.put("aether-node-id", value));
         tags.putAll(ctx.extraTags());
         return Map.copyOf(tags);
+    }
+
+    private static String resolveClusterName(ProvisionContext ctx) {
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        return fromEnv != null && !fromEnv.isEmpty() ? fromEnv : "";
     }
 
     private static List<String> extractZones(Option<PlacementHint> placement) {

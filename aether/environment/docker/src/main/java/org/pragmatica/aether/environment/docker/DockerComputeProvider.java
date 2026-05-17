@@ -361,9 +361,16 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static String clusterOrDefault(ProvisionContext ctx) {
-        return ctx.clusterName().isEmpty()
-              ? "default"
-              : ctx.clusterName();
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        // Fallback: when ClusterConfigValue isn't yet seeded in KV-Store (e.g., compose-only
+        // deployments that never ran `aether cluster bootstrap`), source the cluster name
+        // from the AETHER_CLUSTER_NAME env var so CTM-provisioned replacements still get a
+        // matching `aether.cluster=<name>` label. The integration test compose YAMLs set
+        // this env to `a` / `b` so cluster A/B's CTM replacements carry the same label as
+        // their compose-fixed siblings — closes the spec's caveat-c gap.
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        if (fromEnv != null && !fromEnv.isEmpty()) {return fromEnv;}
+        return "default";
     }
 
     static List<InstanceInfo> parseContainerList(String output) {
