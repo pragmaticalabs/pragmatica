@@ -1048,16 +1048,25 @@ _docker_container_name() {
 # `aether.node-id` label value (the label isn't cluster-scoped). A bare label filter
 # returns whichever container Docker enumerates first, causing cross-cluster kills
 # (e.g., 15-delegation running on cluster A accidentally killing `aether-b-node-2`).
-# `network=aether-<CLUSTER_ID>-network` constrains the match to the current cluster's
-# docker network — CTM-provisioned containers also join this network on provisioning,
-# so KSUID-labelled replacements remain reachable through this filter.
+# Primary scope is the orthogonal `aether.cluster=<id>` label set by compose YAML on
+# fixed nodes and by `DockerComputeProvider.buildRunCommand` on CTM-provisioned
+# replacements (whose ProvisionContext inherits the cluster name from KV-Store).
+# Defence-in-depth: the docker-network filter is retained so a missing or stale
+# label cannot leak a cross-cluster match (e.g., a hand-rolled compose fixture
+# that omits the label).
 _docker_container_by_node_id_label() {
     local node_id="$1"
-    local network_filter=""
+    local cluster_filter=""
     if [ -n "${CLUSTER_ID:-}" ]; then
-        network_filter="--filter network=aether-${CLUSTER_ID}-network"
+        # Primary scope: aether.cluster label set by docker-compose-{a,b}.yml on
+        # compose-fixed nodes and by DockerComputeProvider.buildRunCommand on
+        # CTM-provisioned replacements. Defence-in-depth: ALSO constrain to the
+        # cluster's docker network, so a missing or stale label cannot leak a
+        # cross-cluster match (e.g., when an operator forgets to set the label
+        # on a hand-rolled compose fixture).
+        cluster_filter="--filter label=aether.cluster=${CLUSTER_ID} --filter network=aether-${CLUSTER_ID}-network"
     fi
-    remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' ${network_filter} --format '{{.Names}}' | head -1"
+    remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' ${cluster_filter} --format '{{.Names}}' | head -1"
 }
 
 # Tear down any CTM-provisioned replacement containers on the remote host so the
