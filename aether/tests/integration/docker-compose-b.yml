@@ -123,47 +123,6 @@ services:
       - "5165:8080"
       - "8084:8070"
 
-  # --- Management API sidecar gateway ---
-  # nginx reverse proxy that round-robins /api/* and /health/* requests across
-  # the 5 cores via cluster-internal hostnames (aether-b-node-{1..5}:8080).
-  # proxy_next_upstream skips dead cores. Owns host port 5160 so MGMT_ENTRY_POINT
-  # is decoupled from any single core's lifecycle -- destructive tests can now
-  # kill ANY core (including node-1, including the leader) without losing
-  # management-API access.
-  aether-b-mgmt-gateway:
-    image: nginx:1.27-alpine
-    container_name: aether-b-mgmt-gateway
-    hostname: aether-b-mgmt-gateway
-    networks:
-      - aether-b-network
-    ports:
-      - "5160:8080"   # MGMT_ENTRY_POINT (was node-1 direct)
-    volumes:
-      - ./nginx-mgmt-gateway-b.conf:/etc/nginx/nginx.conf:ro
-    # nginx evaluates `upstream { server foo:port }` at config-load and aborts
-    # with `host not found in upstream` if the hostname has no DNS entry yet.
-    # depends_on with service_started waits for each core's container creation
-    # (which is when Docker registers its embedded DNS record), so nginx's
-    # upstream block resolves cleanly. service_started is enough — service_healthy
-    # would deadlock since cores' healthchecks legitimately take ~60s.
-    depends_on:
-      aether-b-node-1: { condition: service_started }
-      aether-b-node-2: { condition: service_started }
-      aether-b-node-3: { condition: service_started }
-      aether-b-node-4: { condition: service_started }
-      aether-b-node-5: { condition: service_started }
-    healthcheck:
-      # 127.0.0.1 (not localhost): busybox wget resolves localhost to [::1] but
-      # nginx `listen 8080` is IPv4-only, so `wget --spider localhost:8080`
-      # always fails with "Connection refused" → container falsely "unhealthy"
-      # even though /gateway/live returns 200 via IPv4.
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/gateway/live"]
-      interval: 5s
-      timeout: 2s
-      retries: 5
-      start_period: 5s
-    restart: "no"
-
 networks:
   aether-b-network:
     external: true

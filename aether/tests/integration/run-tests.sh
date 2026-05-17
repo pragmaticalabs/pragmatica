@@ -38,11 +38,16 @@ export QUIESCED_TIMINGS_FILE="$TIMINGS_FILE"
 # Cluster A: non-destructive (parallel)
 COMPOSE_A="${SCRIPT_DIR}/docker-compose-a.yml"
 CLUSTER_A_NAME="test-a"
-# 5150 is owned by aether-a-mgmt-gateway (nginx sidecar) which round-robins /api
-# requests across all 5 cores and skips dead upstreams via proxy_next_upstream.
-# MGMT_ENTRY_POINT therefore survives any single-core failure; tests can target
-# this endpoint without pinning to a specific node's lifecycle.
-CLUSTER_A_MGMT="http://${TARGET_HOST:-localhost}:5150"
+# Direct entry point: node-1's host-mapped mgmt port. `_resolve_live_endpoint`
+# (lib/common.sh) handles failover by health-probing MGMT_PORT..MGMT_PORT+N-1
+# and updating the pin to the first live node — structurally equivalent to a
+# round-robin LB with failover, but at the test client. No separate gateway
+# container needed (the old nginx sidecar was removed: it caused 09-artifacts
+# 1MB push 504s via `proxy_request_buffering on` + `proxy_next_upstream` retry
+# loop re-sending the body, plus DNS-at-config-load fragility and two configs
+# to maintain). aether-node's MGMT API enforces auth + leader-forwarding at the
+# handler layer, so the gateway was a redundant proxy.
+CLUSTER_A_MGMT="http://${TARGET_HOST:-localhost}:5151"
 # Direct (LB-less) app-HTTP fallback — node-1's host-mapped app port (see docker-compose-a.yml)
 CLUSTER_A_APP_DIRECT="http://${TARGET_HOST:-localhost}:8070"
 CLUSTER_A_LB_APP=""
@@ -51,11 +56,13 @@ CLUSTER_A_LB_MGMT=""
 # Cluster B: destructive (sequential)
 COMPOSE_B="${SCRIPT_DIR}/docker-compose-b.yml"
 CLUSTER_B_NAME="test-b"
-# 5160 is owned by aether-b-mgmt-gateway (nginx sidecar). The gateway is what
-# decouples MGMT_ENTRY_POINT from any single core's lifecycle on cluster B's
-# `restart: "no"` policy -- destructive tests can now kill ANY core, including
-# node-1 or the current leader, without stranding the harness on a dead port.
-CLUSTER_B_MGMT="http://${TARGET_HOST:-localhost}:5160"
+# Direct entry point: node-1's host-mapped mgmt port. Same rationale as
+# CLUSTER_A_MGMT above. `_resolve_live_endpoint` failover preserves destructive-
+# test resilience: if node-1 (the pinned endpoint) is killed, the resolver
+# rotates through 5161..5165 and updates the pin to the first live node. With
+# cluster B's `restart: "no"` policy the killed container stays dead, so the
+# updated pin remains stable for the remainder of the suite.
+CLUSTER_B_MGMT="http://${TARGET_HOST:-localhost}:5161"
 # Direct (LB-less) app-HTTP fallback — node-1's host-mapped app port (see docker-compose-b.yml)
 CLUSTER_B_APP_DIRECT="http://${TARGET_HOST:-localhost}:8080"
 CLUSTER_B_LB_APP=""
@@ -491,13 +498,7 @@ deploy_docker() {
         docker volume rm -f aether_pgdata 2>/dev/null || true
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
-        # D.1 nginx mgmt-gateway sidecar: clean any stale directory docker may have
-        # created at the mount path on a prior failed compose-up (when the conf
-        # file was missing, docker silently mkdir'd a placeholder). scp will then
-        # fail with "dest open ... Permission denied" because the path is a dir.
-        remote_exec "rm -rf ~/nginx-mgmt-gateway-a.conf ~/nginx-mgmt-gateway-b.conf 2>/dev/null || true"
         remote_scp "$COMPOSE_A" "~/docker-compose-a.yml"
-        remote_scp "${SCRIPT_DIR}/nginx-mgmt-gateway-a.conf" "~/nginx-mgmt-gateway-a.conf"
         remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true; docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
     fi
 
@@ -507,7 +508,6 @@ deploy_docker() {
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
-        remote_scp "${SCRIPT_DIR}/nginx-mgmt-gateway-b.conf" "~/nginx-mgmt-gateway-b.conf"
         remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-core-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true; docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
     fi
 }
