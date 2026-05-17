@@ -45,7 +45,7 @@ public final class StorageFactory {
                                                 StorageInstance instance,
                                                 SnapshotManager snapshotManager,
                                                 StorageReadinessGate readinessGate) {
-            return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate);
+            return new StorageSetup(name, instance, snapshotManager, readinessGate);
         }
     }
 
