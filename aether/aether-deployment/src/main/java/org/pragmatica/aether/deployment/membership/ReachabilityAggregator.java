@@ -78,7 +78,7 @@ public interface ReachabilityAggregator {
     static ReachabilityAggregator reachabilityAggregator(NodeId self,
                                                           IntSupplier onDutyCountSupplier,
                                                           Supplier<Set<NodeId>> selfConnectedSupplier,
-                                                          Supplier<List<NodeId>> topologySupplier,
+                                                          Supplier<Set<NodeId>> topologySupplier,
                                                           LongSupplier clockMs,
                                                           long ttlMs) {
         return new ReachabilityAggregatorRecord(self,
@@ -95,7 +95,7 @@ public interface ReachabilityAggregator {
 record ReachabilityAggregatorRecord(NodeId self,
                                     IntSupplier onDutyCountSupplier,
                                     Supplier<Set<NodeId>> selfConnectedSupplier,
-                                    Supplier<List<NodeId>> topologySupplier,
+                                    Supplier<Set<NodeId>> topologySupplier,
                                     LongSupplier clockMs,
                                     long ttlMs,
                                     Map<NodeId, Map<NodeId, ObservationEntry>> byTarget) implements ReachabilityAggregator {

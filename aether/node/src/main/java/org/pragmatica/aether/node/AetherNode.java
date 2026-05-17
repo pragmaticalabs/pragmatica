@@ -44,6 +44,7 @@ import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
 import org.pragmatica.aether.deployment.delegation.TaskGroupActivator;
+import org.pragmatica.aether.deployment.membership.ReachabilityAggregator;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
@@ -907,6 +908,18 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var peerObservationStore = org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore();
         BooleanSupplier isLeaderSupplier = clusterNode.leaderManager()::isLeader;
+        // ReachabilityAggregator: leader-side TTL+quorum aggregator producing the
+        // cluster-canonical reachability snapshot broadcast in ClusterSyncPing.
+        // Quorum threshold N = current topology size (matches ON_DUTY count at
+        // steady state; adjusts during chaos as topology shrinks). TTL=30s.
+        // See aether/docs/specs/reachability-aggregator-spec.md.
+        var reachabilityAggregator = ReachabilityAggregator.reachabilityAggregator(
+            config.self(),
+            () -> clusterNode.topologyManager().topology().size(),
+            () -> clusterNode.network().connectedPeers(),
+            () -> Set.copyOf(clusterNode.topologyManager().topology()),
+            System::currentTimeMillis,
+            30_000L);
         metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
                                                                                             clusterNode.leaderManager()));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
@@ -926,8 +939,17 @@ public interface AetherNode extends ManageableNode {
                                                                          stableHealthSink,
                                                                          ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                                          leaderEpochSupplier,
-                                                                         peerObservationStore);
+                                                                         peerObservationStore,
+                                                                         reachabilityAggregator::snapshot);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
+        // Leader-gated aggregator ingest: pong observations from followers feed the
+        // ReachabilityAggregator only when this node is the leader. On role change,
+        // the aggregator is reset; cached snapshots (if any) seed the new leader's
+        // warmup. See reachability-aggregator-spec.md Layers 3-4.
+        metricsCollector.addPongListener(pong -> {
+            if (!isLeaderSupplier.getAsBoolean()) {return;}
+            reachabilityAggregator.ingest(pong.sender(), pong.peerConnectivity(), pong.peerHealth());
+        });
         metricsCollector.setPeerObservationBuffer(peerObservationStore);
         Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
                                                                                                 .map(v -> (AetherValue.ClusterConfigValue) v);
