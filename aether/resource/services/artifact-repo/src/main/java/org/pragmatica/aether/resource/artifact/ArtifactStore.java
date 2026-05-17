@@ -178,15 +178,15 @@ class ArtifactStoreImpl implements ArtifactStore {
         var chunks = splitIntoChunks(content);
         var blockIdPromises = chunks.stream().map(storage::put)
                                            .toList();
-        // Aggregate timeout on the parallel chunk fan-out. `DistributedDHTClient.put` has a
-        // per-chunk 10s timeout (`DHTConfig.DEFAULT_TIMEOUT`), so a single stuck quorum
-        // already fails individual chunks — but `Promise.allOf` waits for ALL chunks to
-        // resolve, so the slowest chunk dominates. Without this aggregate bound the deploy
-        // can stack 10s+ tail latencies across both the chunk fan-out AND the downstream
-        // metadata + versions writes (each of which goes through DHT again), producing 30s+
-        // hangs in worst cases. 30s is generous (>2x the per-chunk timeout) and bounds the
-        // HTTP request so the test harness's curl (no `-m` flag) returns rather than hanging.
-        return Promise.allOf(blockIdPromises).timeout(DEPLOY_TIMEOUT)
+        // Aggregate timeout on the FULL deploy pipeline (chunk fan-out + metadata + versions
+        // list writes — the latter two each issue their own DHT puts). The previous timeout
+        // placement only bound the local `storage::put` fan-out, which is fast and never
+        // stalls; the actual DHT operations happen inside `storeMetadataAndVersions`. A
+        // single failing-to-quorum DHT write (e.g. when a peer's QUIC channel is unwritable
+        // due to backpressure and `writeIfWritable` silently drops) blocks the chain
+        // indefinitely. The 30s bound at the outer level guarantees the HTTP handler
+        // resolves with success or failure before the test harness's curl times out.
+        return Promise.allOf(blockIdPromises)
                             .map(results -> results.stream().map(Result::unwrap)
                                                            .toList())
                             .flatMap(blockIds -> storeMetadataAndVersions(artifact,
@@ -194,7 +194,8 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                                           chunks.size(),
                                                                           md5,
                                                                           sha1,
-                                                                          content.length));
+                                                                          content.length))
+                            .timeout(DEPLOY_TIMEOUT);
     }
 
     @Override public Promise<byte[]> resolve(Artifact artifact) {
