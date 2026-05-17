@@ -18,6 +18,10 @@ package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.Promise;
+
+import java.util.Set;
 
 /// Minimal network abstraction for DHT inter-node messaging.
 /// Implemented by both core cluster network (via ClusterNetwork adapter)
@@ -25,4 +29,31 @@ import org.pragmatica.consensus.ProtocolMessage;
 @FunctionalInterface
 public interface DHTNetwork {
     void send(NodeId target, ProtocolMessage message);
+
+    /// Send a message and return the synchronous local-transport outcome.
+    ///
+    /// Default impl falls back to `send` and reports [WriteOutcome.Sent] — adapters that
+    /// can detect immediate refusals (notably the QUIC-backed `ClusterNetwork` adapter)
+    /// override to surface them. DHT quorum collectors use this outcome to fail-fast
+    /// against unreachable replicas instead of waiting the per-op 10s timeout.
+    ///
+    /// See `aether/docs/specs/dht-resilience-spec.md` Layer 3.
+    default Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
+        send(target, message);
+        return Promise.success(new WriteOutcome.Sent(target));
+    }
+
+    /// Currently-reachable peer set. Used by `DistributedDHTClient` to filter the static
+    /// consistent-hash target list down to peers that can actually be addressed right now
+    /// — the ring continues to describe ownership, this set adds runtime reachability.
+    /// When the intersection is below quorum, the operation fails fast with
+    /// `InsufficientReplicas` instead of stalling on unreachable targets.
+    ///
+    /// Default impl returns an empty set, treated by `DistributedDHTClient` as
+    /// "filter disabled" — adapters with real connectivity introspection override.
+    ///
+    /// See `aether/docs/specs/dht-resilience-spec.md` Layer 2.
+    default Set<NodeId> livePeers() {
+        return Set.of();
+    }
 }

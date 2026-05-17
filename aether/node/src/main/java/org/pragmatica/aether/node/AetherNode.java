@@ -416,7 +416,34 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource) {
-        DHTNetwork dhtNetwork = (target, msg) -> clusterNode.network().send(target, msg);
+        // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
+        // it to the QUIC transport's tracked-write API. The default DHTNetwork impl
+        // just calls `send` and reports Sent — but the DHT quorum collectors need the
+        // real synchronous refusal signal to fail-fast against unreachable replicas
+        // (see aether/docs/specs/dht-resilience-spec.md Layer 1/3).
+        DHTNetwork dhtNetwork = new DHTNetwork() {
+            @Override
+            public void send(NodeId target, org.pragmatica.consensus.ProtocolMessage msg) {
+                var _ = clusterNode.network().send(target, msg);
+            }
+
+            @Override
+            public org.pragmatica.lang.Promise<org.pragmatica.consensus.net.WriteOutcome> sendOutcome(NodeId target, org.pragmatica.consensus.ProtocolMessage msg) {
+                return clusterNode.network().sendOutcome(target, msg);
+            }
+
+            @Override
+            public java.util.Set<NodeId> livePeers() {
+                // Includes self and currently-connected peers. EVICTED peers are not
+                // included — they're locally-believed-unreachable, so the DHT routes
+                // around them until they reconcile back to CONNECTED via the SWIM /
+                // reconciler path. The ring still holds them as owners, but quorum is
+                // computed against the live intersection.
+                var live = new java.util.HashSet<>(clusterNode.network().connectedPeers());
+                live.add(config.self());
+                return live;
+            }
+        };
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, dhtNetwork, config.artifactRepo());
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         var cacheDhtClient = dhtClient.scoped(config.cache());
