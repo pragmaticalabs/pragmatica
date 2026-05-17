@@ -267,11 +267,15 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     private void sendPing(NodeId governor, long rabiaTerm) {
         var epoch = Epoch.ZERO;
+        // Tier-2: aggregatedReachability snapshot is not yet plumbed. The
+        // GovernorReachabilityAggregator will hook in here when the spokesman-
+        // side aggregator lands (reachability-aggregator-spec.md Layer 6).
         var ping = new ClusterSyncPing(self,
                                        allMetricsSupplier.get(),
                                        rabiaTerm,
                                        epoch.rabiaTerm(),
-                                       epoch.localCounter());
+                                       epoch.localCounter(),
+                                       Option.none());
         network.send(governor, ping);
     }
 

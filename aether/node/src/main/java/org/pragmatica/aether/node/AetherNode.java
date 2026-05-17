@@ -140,6 +140,10 @@ import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
+import org.pragmatica.cluster.metrics.ConnectivityState;
+import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
+import org.pragmatica.cluster.metrics.PeerObservationBuffer;
+import org.pragmatica.consensus.net.quic.PeerConnectivityReporter;
 import org.pragmatica.cluster.node.ForwardingClusterNode;
 import org.pragmatica.cluster.node.SwitchableClusterNode;
 import org.pragmatica.cluster.node.forward.ForwardApplyRequest;
@@ -1965,15 +1969,27 @@ public interface AetherNode extends ManageableNode {
 
     private static void attachQuicFollowerWiring(ClusterNetwork network,
                                                  BooleanSupplier isLeaderSupplier,
-                                                 org.pragmatica.cluster.metrics.PeerObservationBuffer buffer,
+                                                 PeerObservationBuffer buffer,
                                                  Supplier<Epoch> epochSupplier) {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
-        org.pragmatica.consensus.net.quic.PeerConnectivityReporter reporter = (peerId, term, counter) -> buffer.pushConnectivity(new org.pragmatica.cluster.metrics.PeerConnectivityObservation(peerId,
-                                                                                                                                                                                                org.pragmatica.cluster.metrics.ConnectivityState.DISCONNECTED,
-                                                                                                                                                                                                term,
-                                                                                                                                                                                                counter,
-                                                                                                                                                                                                System.currentTimeMillis()));
-        org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier epochAdapter = new org.pragmatica.consensus.net.quic.QuicClusterNetwork.ObservedEpochSupplier() {
+        PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
+            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter) {
+                buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
+                                                                        ConnectivityState.DISCONNECTED,
+                                                                        term,
+                                                                        counter,
+                                                                        System.currentTimeMillis()));
+            }
+
+            @Override public void onPeerConnected(NodeId peerId, long term, long counter) {
+                buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
+                                                                        ConnectivityState.CONNECTED,
+                                                                        term,
+                                                                        counter,
+                                                                        System.currentTimeMillis()));
+            }
+        };
+        QuicClusterNetwork.ObservedEpochSupplier epochAdapter = new QuicClusterNetwork.ObservedEpochSupplier() {
             @Override public long term() {
                 return epochSupplier.get().rabiaTerm();
             }

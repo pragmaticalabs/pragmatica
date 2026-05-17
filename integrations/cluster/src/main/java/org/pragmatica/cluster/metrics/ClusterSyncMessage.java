@@ -6,6 +6,7 @@ package org.pragmatica.cluster.metrics;
 
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
 import java.util.List;
@@ -28,21 +29,32 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     /// Cluster-sync ping sent by the Rabia leader to core members (Tier 1) or
     /// by a Spokesman core node to its assigned community governors (Tier 2).
     ///
-    /// @param sender          ping originator
-    /// @param allMetrics      existing per-node metrics map (heartbeat payload)
-    /// @param rabiaTerm       current Rabia consensus term — receivers reject stale
-    /// @param epochTerm       epoch's `rabiaTerm` part (duplicated for fencing)
-    /// @param epochCounter    epoch's `localCounter` part
+    /// @param sender                 ping originator
+    /// @param allMetrics             existing per-node metrics map (heartbeat payload)
+    /// @param rabiaTerm              current Rabia consensus term — receivers reject stale
+    /// @param epochTerm              epoch's `rabiaTerm` part (duplicated for fencing)
+    /// @param epochCounter           epoch's `localCounter` part
+    /// @param aggregatedReachability leader-derived cluster-canonical reachability snapshot;
+    ///                               `Option.none()` during cold-start window and pre-extension
+    ///                               peers. Followers cache for warm-takeover; `/api/status`
+    ///                               reads to eliminate per-reader QUIC-view variance. See
+    ///                               `aether/docs/specs/reachability-aggregator-spec.md`.
     record ClusterSyncPing(NodeId sender,
                            Map<NodeId, Map<String, Double>> allMetrics,
                            long rabiaTerm,
                            long epochTerm,
-                           long epochCounter) implements ClusterSyncMessage {
+                           long epochCounter,
+                           Option<AggregatedReachabilitySnapshot> aggregatedReachability) implements ClusterSyncMessage {
+        public ClusterSyncPing {
+            aggregatedReachability = aggregatedReachability == null
+                                    ? Option.none()
+                                    : aggregatedReachability;
+        }
 
         /// Backward-compatible factory for legacy call sites that have no epoch info.
         /// Produces a term/epoch of zero — receivers treat it as a pre-migration heartbeat.
         public static ClusterSyncPing clusterSyncPing(NodeId sender, Map<NodeId, Map<String, Double>> allMetrics) {
-            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L);
+            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Option.none());
         }
     }
 

@@ -9,6 +9,7 @@ import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
@@ -16,6 +17,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.Fsm;
@@ -56,6 +58,7 @@ public final class ClusterSyncContext {
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
 
     private final PeerObservationStore observationStore;
+    private final Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier;
     private final ClusterSyncState dormant;
     private final ClusterSyncState stopped;
 
@@ -69,6 +72,30 @@ public final class ClusterSyncContext {
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
                               PeerObservationStore observationStore) {
+        this(fsm,
+             self,
+             network,
+             collector,
+             interval,
+             rabiaTermSupplier,
+             signalSink,
+             pingTimeoutThreshold,
+             epochSupplier,
+             observationStore,
+             Option::none);
+    }
+
+    public ClusterSyncContext(Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
+                              NodeId self,
+                              ClusterNetwork network,
+                              ClusterSyncCollector collector,
+                              TimeSpan interval,
+                              Supplier<Long> rabiaTermSupplier,
+                              HealthSignalSink signalSink,
+                              int pingTimeoutThreshold,
+                              Supplier<Epoch> epochSupplier,
+                              PeerObservationStore observationStore,
+                              Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier) {
         this.fsm = fsm;
         this.self = self;
         this.network = network;
@@ -79,6 +106,9 @@ public final class ClusterSyncContext {
         this.pingTimeoutThreshold = pingTimeoutThreshold;
         this.epochSupplier = epochSupplier;
         this.observationStore = observationStore;
+        this.reachabilitySnapshotSupplier = reachabilitySnapshotSupplier == null
+                                            ? Option::none
+                                            : reachabilitySnapshotSupplier;
         this.observationStore.setCapSupplier(this::bufferCap);
         this.dormant = new ClusterSyncState.Dormant(this);
         this.stopped = new ClusterSyncState.Stopped(this);
@@ -159,7 +189,8 @@ public final class ClusterSyncContext {
                                        collector.allMetrics(),
                                        rabiaTerm,
                                        currentEpoch.rabiaTerm(),
-                                       currentEpoch.localCounter());
+                                       currentEpoch.localCounter(),
+                                       reachabilitySnapshotSupplier.get());
         log.debug("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",
                   peer,
                   rabiaTerm,
