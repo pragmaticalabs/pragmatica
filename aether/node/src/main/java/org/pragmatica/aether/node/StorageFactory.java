@@ -58,8 +58,23 @@ public final class StorageFactory {
                                                    .onFailure(cause -> log.error("Failed to create storage '{}': {}",
                                                                                  name,
                                                                                  cause.message())));
+        // Every node carries an `artifacts` storage instance — operators expect it without
+        // having to opt-in via `[storage.artifacts]` in aether.toml. If explicit config wasn't
+        // provided, synthesize one using `StorageConfig.storageConfig()` defaults; explicit
+        // config still wins via the loop above. `createOne` reuses the same code path
+        // (`handleDiskTierUnavailable` falls back to memory+DHT when the default disk path
+        // isn't mountable, e.g. inside the aether-node container).
+        if (!result.containsKey(ARTIFACTS_NAME)) {
+            createOne(ARTIFACTS_NAME, StorageConfig.storageConfig(), nodeId, dhtClient).onSuccess(setup -> result.put(ARTIFACTS_NAME,
+                                                                                                                       setup))
+                                       .onFailure(cause -> log.error("Failed to create default '{}' storage: {}",
+                                                                     ARTIFACTS_NAME,
+                                                                     cause.message()));
+        }
         return Map.copyOf(result);
     }
+
+    private static final String ARTIFACTS_NAME = "artifacts";
 
     static StorageInstance defaultArtifactStorage(Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(DEFAULT_MEMORY_BYTES);
