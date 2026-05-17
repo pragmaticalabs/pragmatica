@@ -1496,31 +1496,61 @@ reset_provisioning_circuit() {
 # the integration test harness does not wire the `aether` CLI binary into the
 # cluster.sh helper layer.
 
-# Disable CTM auto-heal. Returns 0 on success, 1 on transport failure.
+# Disable CTM auto-heal. Idempotent and verify-after:
+#   - Short-circuits with success if the cluster already reports auto-heal disabled.
+#   - Issues the disable via the aether CLI (canonical management surface; handles
+#     leader-forwarding internally).
+#   - Re-reads the state and fails if the post-state is not the expected one
+#     (defence-in-depth: CLI may exit 0 while a transient leader change leaves
+#     state unchanged).
+# Returns 0 on success (state is now disabled), 1 on CLI/transport failure or
+# state-not-applied.
 disable_auto_heal() {
-    local result rc
-    result=$(curl -sk -m 15 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                  -d '{}' "${CLUSTER_ENDPOINT}/api/cluster/topology/auto-heal/disable" 2>&1)
+    local pre_state result rc post_state
+    pre_state=$(aether_failover topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
+    if [ "$pre_state" = "false" ]; then
+        log_info "disable_auto_heal: already disabled (idempotent no-op)"
+        return 0
+    fi
+
+    result=$(aether_failover topology auto-heal disable 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
-        log_warn "disable_auto_heal: POST failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
+        log_warn "disable_auto_heal: CLI failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
         return 1
     fi
     log_info "disable_auto_heal: ${result}"
+
+    post_state=$(aether_failover topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
+    if [ "$post_state" != "false" ]; then
+        log_warn "disable_auto_heal: CLI returned success but post-state is '${post_state}' (expected 'false')"
+        return 1
+    fi
     return 0
 }
 
-# Enable CTM auto-heal. Returns 0 on success, 1 on transport failure.
+# Enable CTM auto-heal. Symmetric to disable_auto_heal (idempotent, verify-after).
 enable_auto_heal() {
-    local result rc
-    result=$(curl -sk -m 15 -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                  -d '{}' "${CLUSTER_ENDPOINT}/api/cluster/topology/auto-heal/enable" 2>&1)
+    local pre_state result rc post_state
+    pre_state=$(aether_failover topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
+    if [ "$pre_state" = "true" ]; then
+        log_info "enable_auto_heal: already enabled (idempotent no-op)"
+        return 0
+    fi
+
+    result=$(aether_failover topology auto-heal enable 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
-        log_warn "enable_auto_heal: POST failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
+        log_warn "enable_auto_heal: CLI failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
         return 1
     fi
     log_info "enable_auto_heal: ${result}"
+
+    post_state=$(aether_failover topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
+    if [ "$post_state" != "true" ]; then
+        log_warn "enable_auto_heal: CLI returned success but post-state is '${post_state}' (expected 'true')"
+        return 1
+    fi
     return 0
 }
 
@@ -1529,18 +1559,15 @@ enable_auto_heal() {
 # Designed for use in test predicates like:
 #   if [ "$(auto_heal_enabled)" = "false" ]; then ...
 auto_heal_enabled() {
-    local result rc value
-    result=$(curl -sk -m 15 -H "X-API-Key: ${API_KEY}" \
-                  "${CLUSTER_ENDPOINT}/api/cluster/topology/auto-heal" 2>&1)
+    local value rc
+    value=$(aether_failover topology auto-heal status --format value --field enabled 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
-        log_warn "auto_heal_enabled: GET failed rc=${rc}: $(printf '%s' "$result" | head -c 200)" >&2
+        log_warn "auto_heal_enabled: CLI failed rc=${rc}: $(printf '%s' "$value" | head -c 200)" >&2
         return 1
     fi
-    # Parse "enabled":true|false from the JSON body.
-    value=$(printf '%s' "$result" | grep -oE '"enabled"[[:space:]]*:[[:space:]]*(true|false)' | grep -oE '(true|false)' | head -1)
-    if [ -z "$value" ]; then
-        log_warn "auto_heal_enabled: could not parse enabled field from response: $(printf '%s' "$result" | head -c 200)" >&2
+    if [ "$value" != "true" ] && [ "$value" != "false" ]; then
+        log_warn "auto_heal_enabled: unexpected value '${value}'" >&2
         return 1
     fi
     printf '%s' "$value"
