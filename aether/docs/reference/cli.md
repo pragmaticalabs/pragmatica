@@ -1166,6 +1166,39 @@ aether stream publish user-events "order_created:12345"
 
 ## Cluster Management
 
+### `aether cluster scaffold`
+
+Emit a deployment-manifest template with `aether.cluster` and `aether.node-id` labels pre-set. Operators get a working starting point that's correct-by-construction — no chance of forgetting to label containers, which would otherwise leave cross-cluster tooling unable to distinguish two clusters sharing infrastructure.
+
+```bash
+aether cluster scaffold --name <cluster-name> --format docker-compose [--nodes N] [--image IMG] \
+                        [--mgmt-port-base 5150] [--app-port-base 8070] [--cluster-port 6000] > compose.yml
+```
+
+| Option | Description |
+|--------|-------------|
+| `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
+| `--format` | Output format. Currently `docker-compose` |
+| `--nodes` | Compose-fixed node count (default 5) |
+| `--image` | Container image (default `aether-node:local`) |
+| `--mgmt-port-base` | Host port base for management API (default 5150) |
+| `--app-port-base` | Host port base for application HTTP (default 8070) |
+| `--cluster-port` | QUIC cluster transport port (default 6000) |
+
+Example:
+```bash
+aether cluster scaffold --name us-prod --format docker-compose --nodes 5 > compose.yml
+docker compose -f compose.yml up -d
+```
+
+The generated manifest:
+- Sets `aether.cluster=<name>` on every service (matches what `DockerComputeProvider.buildRunCommand` sets on CTM-provisioned replacements)
+- Sets `aether.node-id=node-N` on each compose-fixed service
+- Uses `restart: "no"` per the CTM auto-heal contract (see `aether/docs/operator/deployment-recovery.md`)
+- Provisions a per-cluster bridge network `aether-<name>-network`
+
+See `aether/docs/operator/multi-cluster-deployment.md` for the full labeling model.
+
 ### `aether cluster scale`
 
 Scale the cluster core node count. Validates quorum safety on the CLI side before sending.
