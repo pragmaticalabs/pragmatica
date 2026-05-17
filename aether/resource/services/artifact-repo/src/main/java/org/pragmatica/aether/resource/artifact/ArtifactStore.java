@@ -17,6 +17,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -146,6 +149,12 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private static final int CHUNK_SIZE = 64 * 1024;
 
+    /// Aggregate timeout for `deploy()` chunk fan-out. `DistributedDHTClient.put` has its
+    /// own 10s per-chunk timeout; this caps the worst-case dominator chunk of `Promise.allOf`
+    /// plus the downstream metadata/versions writes so the HTTP request returns rather than
+    /// stacking 30s+ of tail latency. Calibrated for ~16-chunk 1MB artifacts.
+    private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(30).seconds();
+
     private final DHTClient dht;
     private final StorageInstance storage;
 
@@ -169,8 +178,17 @@ class ArtifactStoreImpl implements ArtifactStore {
         var chunks = splitIntoChunks(content);
         var blockIdPromises = chunks.stream().map(storage::put)
                                            .toList();
-        return Promise.allOf(blockIdPromises).map(results -> results.stream().map(Result::unwrap)
-                                                                           .toList())
+        // Aggregate timeout on the parallel chunk fan-out. `DistributedDHTClient.put` has a
+        // per-chunk 10s timeout (`DHTConfig.DEFAULT_TIMEOUT`), so a single stuck quorum
+        // already fails individual chunks — but `Promise.allOf` waits for ALL chunks to
+        // resolve, so the slowest chunk dominates. Without this aggregate bound the deploy
+        // can stack 10s+ tail latencies across both the chunk fan-out AND the downstream
+        // metadata + versions writes (each of which goes through DHT again), producing 30s+
+        // hangs in worst cases. 30s is generous (>2x the per-chunk timeout) and bounds the
+        // HTTP request so the test harness's curl (no `-m` flag) returns rather than hanging.
+        return Promise.allOf(blockIdPromises).timeout(DEPLOY_TIMEOUT)
+                            .map(results -> results.stream().map(Result::unwrap)
+                                                           .toList())
                             .flatMap(blockIds -> storeMetadataAndVersions(artifact,
                                                                           blockIds,
                                                                           chunks.size(),
