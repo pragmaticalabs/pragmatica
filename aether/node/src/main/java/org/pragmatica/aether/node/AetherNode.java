@@ -942,20 +942,25 @@ public interface AetherNode extends ManageableNode {
                                                                          peerObservationStore,
                                                                          reachabilityAggregator::snapshot);
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
-        // Leader-gated aggregator ingest: pong observations from followers feed the
-        // ReachabilityAggregator only when this node is the leader. Leader-transition
-        // detection (poll-on-event): on the not-leader→leader edge, reset and seed
+        // Leader/spokesman-gated aggregator ingest. Tier-1 pongs (from core members)
+        // arrive when this node is the cluster leader; Tier-2 pongs (from governors)
+        // arrive when this node is an active spokesman. Both feed the same
+        // ReachabilityAggregator. On the not-leader→leader edge, reset and seed
         // from the cached snapshot received from the prior leader. See
-        // reachability-aggregator-spec.md Layers 3-4.
+        // reachability-aggregator-spec.md Layers 3-4 + 6.
+        // SpokesmanPingLoop is constructed later in the wiring; forward-reference
+        // via a settable holder, set after construction.
         var wasLeaderRef = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var spokesmanActiveRef = new java.util.concurrent.atomic.AtomicReference<BooleanSupplier>(() -> false);
         metricsCollector.addPongListener(pong -> {
             var nowLeader = isLeaderSupplier.getAsBoolean();
+            var nowSpokesman = spokesmanActiveRef.get().getAsBoolean();
             var prev = wasLeaderRef.getAndSet(nowLeader);
             if (nowLeader && !prev) {
                 reachabilityAggregator.reset();
                 metricsCollector.lastReachabilitySnapshot().onPresent(reachabilityAggregator::seedFromCache);
             }
-            if (!nowLeader) {return;}
+            if (!nowLeader && !nowSpokesman) {return;}
             reachabilityAggregator.ingest(pong.sender(), pong.peerConnectivity(), pong.peerHealth());
         });
         metricsCollector.setPeerObservationBuffer(peerObservationStore);
@@ -1573,8 +1578,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                          metricsCollector::allMetrics,
                                                                                                          communityId -> lookupGovernor(kvStore,
                                                                                                                                        communityId),
-                                                                                                         org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
+                                                                                                         org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode),
+                                                                                                         reachabilityAggregator::snapshot);
         spokesmanPingLoop.start();
+        // Wire the spokesman-active flag into the reachability-aggregator's
+        // ingest gate so Tier-2 governor pongs feed the same aggregator. See
+        // reachability-aggregator-spec.md Layer 6.
+        spokesmanActiveRef.set(spokesmanPingLoop::isActive);
         metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
         var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
                                                     .onPut(AetherKey.SpokesmanKey.class,
