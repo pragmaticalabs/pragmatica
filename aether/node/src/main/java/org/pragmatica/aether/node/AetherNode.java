@@ -1232,6 +1232,15 @@ public interface AetherNode extends ManageableNode {
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                                     dhtTopologyListener::onSelfShutdown));
+        // Transport-disconnect prune: when a peer's QUIC link drops (`processRemove` →
+        // PeerDisconnected), prune it from the DHT ring so writes don't target a dead
+        // replica. Previously this signal was carried by the legacy NodeDown route which
+        // the audit-step-2 refactor (`5fdffe967`) replaced with `MembershipDecision.NodeRemoved` —
+        // but NodeRemoved fires on consensus eviction, NOT on every transport drop. Ring
+        // pruning needs the transport-level signal so 09-artifacts 1MB push (16 chunks) no
+        // longer stalls when one chunk's replica is in EVICTED / unreachable state.
+        aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected.class,
+                                                    dhtTopologyListener::onPeerDisconnected));
         @SuppressWarnings({"unchecked", "rawtypes"}) MessageRouter.Entry forwardRequestRoute = MessageRouter.Entry.route(ForwardApplyRequest.class,
                                                                                                                          (ForwardApplyRequest request) -> handleForwardApplyRequest(request,
                                                                                                                                                                                     clusterNode));

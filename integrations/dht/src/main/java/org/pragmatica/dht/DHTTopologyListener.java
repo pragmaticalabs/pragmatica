@@ -88,6 +88,29 @@ public final class DHTTopologyListener {
         rebalancer.onPresent(r -> r.onNodeRemoved(downNodeId));
     }
 
+    /// Transport-disconnect cleanup: prune the ring when a peer drops at the transport layer
+    /// (QUIC `processRemove` → `PeerDisconnected`). Without this, the ring keeps a stale
+    /// replica owner whose QUIC link is gone — `DistributedDHTClient.put` then targets a
+    /// dead replica, the message is silently dropped at `network.send`, the `QuorumCollector`
+    /// stalls, and per-chunk DHT puts time out at `DHTConfig.DEFAULT_TIMEOUT` (10s). For
+    /// large artifacts (16+ chunks via `ArtifactStore.deploy`'s 64KB chunking), each stuck
+    /// quorum compounds and the aggregate `Promise.allOf` waits the worst-case slot.
+    ///
+    /// `PeerDisconnected` is the local-transport observation (`ObservationSource.QUIC` / etc.);
+    /// the peer may rejoin via `MembershipDecision.NodeJoined` later and `onNodeJoined`
+    /// re-adds it. Ring re-hash on transient flap costs some locality but is correct: the
+    /// owners reflect actually-routable replicas, which is the invariant `DistributedDHTClient`
+    /// depends on. Previous behaviour (via legacy `TopologyChangeNotification.NodeDown`)
+    /// was lost during the audit-step-2 refactor (`5fdffe967`); this restores it on the
+    /// post-refactor stream.
+    public void onPeerDisconnected(TransportObservation.PeerDisconnected event) {
+        var disconnectedNodeId = event.nodeId();
+        log.info("DHT: Peer disconnected {}, pruning from ring", disconnectedNodeId.id());
+        node.ring()
+            .removeNode(disconnectedNodeId);
+        rebalancer.onPresent(r -> r.onNodeRemoved(disconnectedNodeId));
+    }
+
     private void removeFromRing(NodeId removedNodeId) {
         log.info("DHT: Node removed {}, updating ring", removedNodeId.id());
         node.ring()
