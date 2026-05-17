@@ -91,16 +91,18 @@ Container hostnames like `aether-a-node-1` carry the cluster name structurally. 
 
 ## Implementation status
 
-- `DockerComputeProvider` / `HetznerComputeProvider` / `AwsComputeProvider` / `GcpComputeProvider` / `AzureComputeProvider`: emit `aether-cluster` label from `ProvisionContext.clusterName()` — landed prior to this RFC
-- `docker-compose-{a,b}.yml`: `aether.cluster: a/b` labels on all 10 node services — landed with this RFC
+- `DockerComputeProvider` / `HetznerComputeProvider` / `AwsComputeProvider` / `GcpComputeProvider` / `AzureComputeProvider`: emit `aether-cluster` label from `ProvisionContext.clusterName()` with `AETHER_CLUSTER_NAME` env fallback when context-side is empty — landed with this RFC
+- `docker-compose-{a,b}.yml`: `aether.cluster: a/b` labels on all 10 node services + `AETHER_CLUSTER_NAME: "a"/"b"` in the shared env so CTM replacements carry matching labels — landed with this RFC
 - `aether/tests/integration/lib/cluster.sh`: `_docker_container_by_node_id_label` filters on both label and network — landed with this RFC
 - `aether cluster scaffold --format docker-compose`: generates a correct-by-construction compose template — landed with this RFC
+- `ContainerLabelInspector` + `Main.verifyClusterLabelConsistency`: first-boot consistency check via `/var/run/docker.sock` Unix-socket HTTP (JDK-native `UnixDomainSocketAddress`); fail-closed on `aether.cluster` label vs `AETHER_CLUSTER_NAME` env mismatch — landed with this RFC
 - `aether/docs/operator/multi-cluster-deployment.md`: operator playbook — landed with this RFC
 
 ### Future work (tracked separately)
 
-- **First-boot cluster-label consistency check** — read own container labels (via `/var/run/docker.sock` when mounted, k8s downward API otherwise) and fail-closed when they disagree with `ClusterConfigValue.clusterName`. Requires a `name` field on runtime `ClusterConfig` (39 call sites currently). Spec stub at `aether/docs/specs/cluster-label-scoping-spec.md` item 5.
 - **Kubernetes / Hetzner Terraform scaffolding** — additional `--format` values for `aether cluster scaffold`. The label structure is already correct in the underlying compute providers, the templates are operator convenience. Spec at `aether/docs/specs/cluster-label-scoping-spec.md` item 6.
+- **Runtime `[cluster] name` in TOML** — once a `name` field is added to runtime `ClusterConfig` (currently bootstrap-only), the consistency check can read it from local TOML as a second source alongside `AETHER_CLUSTER_NAME` env. Requires touching 39 existing `ClusterConfig` call sites; deferred to a separate refactor.
+- **Kubernetes Downward API for consistency check** — the current check reads labels via `/var/run/docker.sock`; in k8s the equivalent is the Downward API exposing pod labels as env vars or mounted files. The mechanism is the same (fail-closed on mismatch); the source is different.
 
 ## See also
 
