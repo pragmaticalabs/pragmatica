@@ -1128,6 +1128,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // this for runtime edges via `MembershipDecision`; cluster bootstrap
                 // relies on the synchronous transport emit.
                 peerStateListener.onPeerJoined(peerId);
+                // Connectivity observation feeds ReachabilityAggregator via the
+                // PeerObservationBuffer drain path. Symmetric to REMOVE below.
+                reportPeerConnection(peerId);
                 yield TransportObservation.peerJoined(peerId, currentView(), ObservationSource.QUIC);
             }
             case REMOVE -> {
@@ -1159,6 +1162,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // already counted as active. Subscribers may use `PeerReconnected` to
                 // invalidate disconnect-driven cleanup if appropriate.
                 peerStateListener.onPeerReconnected(peerId);
+                // Connectivity observation feeds ReachabilityAggregator (mirrors ADD).
+                reportPeerConnection(peerId);
                 log.debug("processViewChange RECONNECT for {} — emitting PeerReconnected", peerId);
                 yield TransportObservation.peerReconnected(peerId, currentView(), ObservationSource.QUIC);
             }
@@ -1193,6 +1198,20 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         var epoch = observedEpochSupplier;
         connectivityReporter.onPeerDisconnected(peerId, epoch.term(), epoch.counter());
+    }
+
+    private void reportPeerConnection(NodeId peerId) {
+        // Symmetric to reportPeerRemoval but reports CONNECTED transitions. The
+        // leader-side path has no direct listener equivalent to disconnectListener —
+        // HealthReconciler infers reachability from its own SWIM signals and from
+        // ReachabilityAggregator output (built from connectivity observations folded
+        // through the buffer). Both leader and follower route this signal through
+        // the connectivity reporter; AetherNode's adapter pushes it to the local
+        // PeerObservationBuffer, where it is drained at each cluster-sync tick:
+        // leader-side into the local ReachabilityAggregator, follower-side into
+        // the outbound ClusterSyncPong.
+        var epoch = observedEpochSupplier;
+        connectivityReporter.onPeerConnected(peerId, epoch.term(), epoch.counter());
     }
 
     private List<NodeId> currentView() {

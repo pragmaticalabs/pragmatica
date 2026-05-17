@@ -32,7 +32,17 @@ import org.pragmatica.lang.Contract;
     /// Follower observed the peer as DISCONNECTED at the given epoch.
     void onPeerDisconnected(NodeId peerId, long observedTerm, long observedCounter);
 
+    /// Follower observed the peer as CONNECTED at the given epoch. Fired on
+    /// transitions into `PeerState.Phase.CONNECTED` (initial handshake completion
+    /// or reconnection). Symmetric to `onPeerDisconnected`; the leader-side
+    /// `ReachabilityAggregator` needs both directions to track cluster-canonical
+    /// reachability across observers.
+    void onPeerConnected(NodeId peerId, long observedTerm, long observedCounter);
+
     static PeerConnectivityReporter noop() {
-        return (_, _, _) -> { };
+        return new PeerConnectivityReporter() {
+            @Contract @Override public void onPeerDisconnected(NodeId peerId, long observedTerm, long observedCounter) {}
+            @Contract @Override public void onPeerConnected(NodeId peerId, long observedTerm, long observedCounter) {}
+        };
     }
 }

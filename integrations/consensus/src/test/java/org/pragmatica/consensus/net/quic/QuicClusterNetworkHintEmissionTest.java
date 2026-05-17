@@ -109,8 +109,15 @@ class QuicClusterNetworkHintEmissionTest {
         var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = listenerInvocations::add;
         var reported = new CopyOnWriteArrayList<ReportedDisconnect>();
-        PeerConnectivityReporter reporter = (peerId, term, counter) ->
-            reported.add(new ReportedDisconnect(peerId, term, counter));
+        PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
+            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter) {
+                reported.add(new ReportedDisconnect(peerId, term, counter));
+            }
+            @Override public void onPeerConnected(NodeId peerId, long term, long counter) {
+                // No-op for this test: the disconnect-path assertions don't depend on
+                // connection events.
+            }
+        };
         QuicClusterNetwork.ObservedEpochSupplier epoch = new QuicClusterNetwork.ObservedEpochSupplier() {
             @Override public long term() {return 11L;}
             @Override public long counter() {return 4L;}
@@ -131,8 +138,14 @@ class QuicClusterNetworkHintEmissionTest {
         var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = listenerInvocations::add;
         var reported = new CopyOnWriteArrayList<ReportedDisconnect>();
-        PeerConnectivityReporter reporter = (peerId, term, counter) ->
-            reported.add(new ReportedDisconnect(peerId, term, counter));
+        PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
+            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter) {
+                reported.add(new ReportedDisconnect(peerId, term, counter));
+            }
+            @Override public void onPeerConnected(NodeId peerId, long term, long counter) {
+                // No-op for this test.
+            }
+        };
         var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(), listener);
         network.setFollowerObservationWiring(() -> true, reporter, QuicClusterNetwork.ObservedEpochSupplier.zero());
 
