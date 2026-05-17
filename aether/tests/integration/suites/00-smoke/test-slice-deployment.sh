@@ -34,23 +34,26 @@ test_blueprint_listed() {
 }
 
 test_app_endpoint_reachable() {
-    # Use app_route_wired against a known slice route (EchoSlice exposes /health
-    # via its health() method). app_route_wired distinguishes route-missing 404
-    # (sendNoRouteFound problem+json) from a real handler response, so it proves
-    # the slice route table is populated — not just that the TCP socket accepts.
-    wait_for "EchoSlice /health route wired" \
-        "app_route_wired \"${APP_ENDPOINT}/health\"" 60 || {
-        log_fail "App route /health not wired within timeout"
+    # Probe the EchoSlice route under its actual prefix (/api/echo/health).
+    # Earlier revisions probed bare /health, which hits AppHttpServer's
+    # synthetic liveness intercept (returns 200 regardless of slice deployment)
+    # and therefore did not prove the slice route table was populated.
+    # app_route_wired distinguishes route-missing 404 (sendNoRouteFound
+    # problem+json) from a real handler response.
+    wait_for "EchoSlice /api/echo/health route wired" \
+        "app_route_wired \"${APP_ENDPOINT}/api/echo/health\"" 60 || {
+        log_fail "App route /api/echo/health not wired within timeout"
         return 1
     }
-    log_pass "App HTTP server responding (EchoSlice /health route wired)"
+    log_pass "App HTTP server responding (EchoSlice /api/echo/health route wired)"
 }
 
 test_app_request_succeeds() {
-    # The deployed EchoSlice serves /health → 200 OK with {"status":"healthy"}.
-    # Strict: anything other than 200 (including 404, 401, 503) is a real failure.
-    assert_http_status "${APP_ENDPOINT}/health" "200" \
-        "EchoSlice /health returns 200" \
+    # The deployed EchoSlice serves /api/echo/health → 200 OK with
+    # {"status":"healthy"}. Strict: anything other than 200 (including 404,
+    # 401, 503) is a real failure.
+    assert_http_status "${APP_ENDPOINT}/api/echo/health" "200" \
+        "EchoSlice /api/echo/health returns 200" \
         -H "X-API-Key: ${API_KEY}"
 }
 

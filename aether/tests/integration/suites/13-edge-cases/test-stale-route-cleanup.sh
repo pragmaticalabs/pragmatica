@@ -29,16 +29,20 @@ test_slices_deployed() {
 }
 
 test_app_routes_reachable() {
-    # Probe the actual app-route surface — EchoSlice's /health route. Use
-    # app_route_wired (positive readiness) which distinguishes route-missing 404
-    # from a real handler response. NO management-API fallback: this test exists
-    # to prove the APP route is wired; falling back to /api/status would swap
-    # subjects (mgmt port healthy != app route reachable) and pass falsely.
-    if ! app_route_wired "${APP_ENDPOINT}/health" "${API_KEY}"; then
-        log_fail "App route ${APP_ENDPOINT}/health not wired (expected EchoSlice handler to respond)"
+    # Probe the actual app-route surface — EchoSlice's /api/echo/health route
+    # (under its declared prefix). Bare /health hits AppHttpServer's synthetic
+    # liveness intercept (returns 200 regardless of slice deployment) and
+    # therefore proves nothing about route wiring. The prefixed path goes
+    # through the route table. app_route_wired (positive readiness)
+    # distinguishes route-missing 404 from a real handler response. NO
+    # management-API fallback: this test exists to prove the APP route is
+    # wired; falling back to /api/status would swap subjects (mgmt port
+    # healthy != app route reachable) and pass falsely.
+    if ! app_route_wired "${APP_ENDPOINT}/api/echo/health" "${API_KEY}"; then
+        log_fail "App route ${APP_ENDPOINT}/api/echo/health not wired (expected EchoSlice handler to respond)"
         return 1
     fi
-    log_pass "App route /health wired (positive readiness via app_route_wired)"
+    log_pass "App route /api/echo/health wired (positive readiness via app_route_wired)"
 }
 
 test_kill_node_hosting_routes() {
@@ -77,21 +81,22 @@ test_kill_node_hosting_routes() {
 }
 
 test_no_502_504_after_cleanup() {
-    # The killed node hosted APP routes — probing /api/status (mgmt port) would
-    # measure the management API surface, not the route table that the kill
-    # invalidated. Probe the actual APP route (EchoSlice /health) instead so a
-    # stale-route 502/504 (from sendNoRouteFound or upstream proxy) actually
-    # surfaces. Previous test already waited for generation quiescence.
+    # The killed node hosted APP routes — probing /health hits the synthetic
+    # AppHttpServer liveness intercept (always 200) and would not surface a
+    # stale-route 502/504. Probe the actual APP route (EchoSlice
+    # /api/echo/health) instead so a stale-route 502/504 (from
+    # sendNoRouteFound or upstream proxy) actually surfaces. Previous test
+    # already waited for generation quiescence.
     local bad_status=0
     for i in $(seq 1 10); do
         local status
-        status=$(http_status "${APP_ENDPOINT}/health" -H "X-API-Key: ${API_KEY}")
+        status=$(http_status "${APP_ENDPOINT}/api/echo/health" -H "X-API-Key: ${API_KEY}")
         if [ "$status" = "502" ] || [ "$status" = "504" ]; then
             bad_status=$((bad_status + 1))
         fi
         sleep 1
     done
-    assert_eq "$bad_status" "0" "No 502/504 on APP route /health after cleanup (${bad_status}/10 bad)"
+    assert_eq "$bad_status" "0" "No 502/504 on APP route /api/echo/health after cleanup (${bad_status}/10 bad)"
 }
 
 test_kv_store_routes_clean() {
