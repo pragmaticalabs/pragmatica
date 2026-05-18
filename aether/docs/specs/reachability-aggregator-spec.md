@@ -48,6 +48,44 @@ Aether already has a leader-driven cluster-wide ping-pong cycle:
 
 Both tiers gain a third observation channel: `peerTransport`. The leader builds an aggregated reachability snapshot and broadcasts it back in the next ping. Followers cache the snapshot for warm-takeover.
 
+### Periodic Observation Mode
+
+**Problem with transition-only observations.** The original design emitted `PeerConnectivityObservation` only on transport transitions (QUIC ADD / EVICTED). On a stable cluster with no flaps, observation buffers are empty; the aggregator's per-target observation map ages out; the snapshot decays to the leader's self-fold only (1 observer < quorum threshold). This forced a trade-off:
+
+- **Long TTL (30s)**: stale observations linger through chaos events, allowing 1 stale REACHABLE observation to outvote a fresh UNREACHABLE quorum.
+- **Short TTL (5s)**: observations age out before quorum accumulates from transition events alone; cold-start cluster never reaches quorum.
+
+Neither value satisfies both correctness and timeliness.
+
+**Periodic observation eliminates the trade-off.** Every node, every period (5s), emits a `PeerConnectivityObservation` for every topology peer it considers reachable via local QUIC — `REACHABLE` for connected peers, `UNREACHABLE` for topology peers without a current connection. Transition-only emissions coexist (they provide fast-path for sudden events; periodic provides steady-state ground truth).
+
+**Parameters:**
+- **Period**: 5 seconds (every node, every connected peer)
+- **TTL**: 15 seconds (3× period — ensures observations remain live across 2-3 emission cycles before expiry; eliminates the period=TTL race)
+- **Buffer cap**: `max(64, peers × 4)` — sized to handle one full emission cycle (N-1 observations per node per period) plus per-peer transition burst
+- **Self-fold cadence**: unchanged — leader folds own connectedPeers per snapshot build
+- **Symmetric quorum semantics**: unchanged — REACHABLE requires `≥⌈N/2⌉+1` observers AND 0 UNREACHABLE; UNREACHABLE requires `≥⌈N/2⌉+1` UNREACHABLE observers
+
+**Cold-start fallback.** During the first ~1-2 ping cycles (before periodic observations accumulate), `ReachabilityAggregator.snapshot()` returns `Option.none()`. Consumers (notably `MembershipFsm`'s aggregator gate) fall back: SWIM Faulty cell remains ungated; Transport cells naturally don't fire without a snapshot to source them from.
+
+**Steady-state behavior.** On a stable 5-node cluster:
+- Each node emits 4 observations per 5s
+- Total: 20 observations every 5s across the cluster
+- Leader's aggregator receives all of them via pong
+- For each peer, leader has ≥3 REACHABLE observations + 0 UNREACHABLE → snapshot says REACHABLE
+- All decommission gates remain closed (no false-positive writes)
+
+**Chaos behavior.** When a peer X is killed:
+- Local transport (`processViewChange EVICTED`) fires immediately on the QUIC layer detecting connection close (~100ms)
+- Local emitter stops including X in its periodic observation list
+- Other nodes' transport also detects EVICTED for X (their QUIC connections to X also close)
+- Within 1 period (≤5s), all observers' next periodic emission excludes X
+- Within 1 more period (≤10s total), all REACHABLE observations for X age out under 15s TTL
+- Once 0 REACHABLE remain AND ≥⌈N/2⌉+1 UNREACHABLE accumulate: snapshot says UNREACHABLE for X
+- Aggregator gate opens; `(ON_DUTY, SwimFaulty)` or `(ON_DUTY, TransportUnreachable)` cell fires DECOMMISSIONED
+
+**Why this is the right design.** Periodic emission turns the aggregator from an event-pumped state (where stable cluster equals dead aggregator) into a continuously-confirmed state (where stable cluster equals continuously-confirmed REACHABLE). The symmetric quorum and TTL semantics now work in both regimes: chaos events converge quickly because periodic emission stops emitting REACHABLE for absent peers; stable events stay REACHABLE because emission continues; the gate is partition-safe because a partitioned peer's REACHABLE observations only reach observers on the partitioned side.
+
 ## Layered design (three layers)
 
 ### Layer 1 — Symmetric connectivity reporting (the gap that was hiding)

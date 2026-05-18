@@ -1044,4 +1044,69 @@ The redesign is complete when:
 
 ---
 
+## 16. Realistic Scenarios
+
+This section enumerates the canonical scenarios the FSM + aggregator + self-drain protocol must handle. Each row maps to an acceptance test (unit, integration, or manual). The table is the **contract** subsequent implementation must satisfy.
+
+**Legend:**
+- **SWIM**: H = HEALTHY, S = SUSPECTED, F = FAULTY, U = UNKNOWN
+- **QUIC**: CONN = CONNECTED, EVI = EVICTED, RC = RECONNECTED
+- **Aggregator**: REACH = REACHABLE quorum, UNREACH = UNREACHABLE quorum, UNK = UNKNOWN/insufficient data
+- **`*`**: any value; not relevant for this scenario
+
+| S-ID | Scenario | Trigger | SWIM | QUIC | Aggregator | Expected FSM transition | Expected KV writes | Operator-surface result | Acceptance test |
+|---|---|---|---|---|---|---|---|---|---|
+| S01 | JOINING-window kill | Node killed during JOINING (before SWIM HEALTHY) | U | CONN→EVI | UNK→UNREACH within 5-7s | JOINING → DECOMMISSIONED (via TransportUnreachable, ungated) | Put(DECOMMISSIONED) within ≤8s | `/api/status` excludes peer within ≤8s | `aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh` |
+| S02 | ON_DUTY single non-leader kill | Steady-state non-leader killed | H→F | CONN→EVI | REACH→UNREACH | ON_DUTY → DECOMMISSIONED (via Transport, gated by aggregator UNREACH) | Put(DECOMMISSIONED) within ≤8s | `/api/status` excludes within ≤8s | covered by `test-kill-node.sh` (existing, retimed) |
+| S03 | ON_DUTY two simultaneous non-leader kills | Two non-leaders killed in <1s | H→F (both) | CONN→EVI (both) | REACH→UNREACH (both) | Both ON_DUTY → DECOMMISSIONED in parallel | Put(DECOMMISSIONED) × 2 within ≤8s | `/api/status` excludes both within ≤8s; `pick_non_leader(count=2)` succeeds | covered by `test-kill-multiple.sh` (existing, retimed) |
+| S04 | Brief transport flap < 5s | Transient network blip, peer reconnects within 5s | H (unchanged) | CONN→EVI→RC | REACH→UNK→REACH (within period) | nop (gate blocks transient) | none | no change | covered by FSM unit test `gate_blocks_transient_unreachable` |
+| S05 | 2-vs-3 partition (majority side) | Network partition, this side has 3 nodes | H→F for 2 minority peers | CONN→EVI for 2 | REACH for 3 in-side, UNK for 2 partitioned (no quorum to mark UNREACH from majority's perspective) | nop for partitioned peers (gate blocks) | none | minority peers stay ON_DUTY in `/api/status` until heal | `aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh` |
+| S06 | Partition heal | Connection restored after S05 | F→H | EVI→RC | UNK→REACH | nop (no state change) | none (peers were never decommissioned) | all 5 ON_DUTY within ≤15s of heal | same test as S05 (heal phase) |
+| S07 | Graceful operator drain | `aether cluster drain <node>` | * | * | * | ON_DUTY → DRAINING → DECOMMISSIONED | Put(DRAINING), Put(DECOMMISSIONED) on drain success | `/api/status` reflects DRAINING then DECOMMISSIONED | covered by existing `test-drain-success.sh` |
+| S08 | Drain timeout | Drain doesn't complete within hard deadline | * | * | * | DRAINING → FAILED_DRAIN | Put(FAILED_DRAIN) | `/api/status` shows FAILED_DRAIN | covered by FSM unit test `drain_timeout_fails` |
+| S09 | Drain during partition | Operator drains while node is partitioned | * | * | UNREACH | DRAINING but drain protocol may not complete; FAILED_DRAIN on timeout | Put(DRAINING), Put(FAILED_DRAIN) on timeout | DRAINING then FAILED_DRAIN | covered by FSM unit test `drain_during_partition` |
+| S10 | Operator force-decommission | `aether cluster decommission --force <node>` | * | * | * | * → DECOMMISSIONED (force) | Put(DECOMMISSIONED) | `/api/status` excludes within seconds | covered by existing `test-decommission-force.sh` |
+| S11 | Restart inside revival TTL | Killed node restarts with same NodeId, new incarnation, within TTL window | F→H (new incarnation) | EVI→CONN | UNREACH→REACH | DECOMMISSIONED stays (chaos-revival defense); new incarnation joins as fresh JOINING via CTM | none (DECOMMISSIONED is terminal); new slot via CTM | new KSUID identity in `/api/status`; old DECOMMISSIONED entry persists | covered by FSM unit test `decommissioned_terminal_no_revival` |
+| S12 | Restart outside revival TTL | Same as S11 but after DecommissionedAtomGc removed the entry | * | * | * | UNTRACKED → JOINING → ON_DUTY (fresh path) | Put(JOINING), Put(ON_DUTY) | clean rejoin | covered by FSM unit test `untracked_rejoin_after_gc` |
+| S13 | SWIM-only failure (transport OK) | SWIM marks peer FAULTY but QUIC connection OK | H→F | CONN (unchanged) | REACH (aggregator from QUIC observations) | nop (gate blocks: aggregator says REACH) | none | no change | covered by FSM unit test `gate_blocks_swim_only_failure` |
+| S14 | Transport-only failure | QUIC connection drops but SWIM still HEALTHY (rare, e.g., specific protocol issue) | H (unchanged) | CONN→EVI | REACH→UNREACH (within period) | ON_DUTY → DECOMMISSIONED (Transport cell, gated by aggregator UNREACH) | Put(DECOMMISSIONED) within ≤8s | excluded within ≤8s | covered by S01 family of tests |
+| S15 | Cold-start formation | 5 nodes start simultaneously | U→H | (none)→CONN×4 | UNK→REACH within 2 periods | UNTRACKED → JOINING → ON_DUTY for each peer (driven by SwimHealthy) | Put(JOINING), Put(ON_DUTY) per peer | all 5 ON_DUTY within ≤30s | covered by existing `test-cluster-formation.sh` |
+| S16 | Cold-start + simultaneous kill | One node killed during cold-start (before its SWIM HEALTHY) | U (stays U for killed) | CONN→EVI (killed) | UNK→UNREACH (no SWIM context yet) | UNTRACKED stays UNTRACKED (no JOINING was ever written if SlotClaimed didn't fire); OR JOINING → DECOMMISSIONED if SlotClaimed fired | depends on race; either no writes or Put(DECOMMISSIONED) | killed peer absent from `/api/status` | covered by FSM unit test `coldstart_kill_during_provisioning` |
+| S17 | Aggregator quorum lost | All followers go silent (no pongs reach leader); leader self-fold only | * | * | UNK (insufficient observers) | nop for all transport cells (gate cold-start fallback: no snapshot → trust upstream); SWIM cells unchanged | none | unchanged | covered by FSM unit test `gate_cold_start_fallback` |
+| S18 | Leader kill + re-election | Current leader killed | H→F (from new leader's view) | CONN→EVI (from new leader's view) | UNREACH (eventually, after new leader's aggregator catches up) | New leader writes (OnDuty, SwimFaulty/Transport) → DECOMMISSIONED for old leader | Put(DECOMMISSIONED) for old leader within ≤8s post-election | new leader visible in `/api/status`; old leader excluded | covered by existing `test-kill-leader.sh` |
+| S19 | Quorum-loss → self-drain | Node loses contact with ≥⌈N/2⌉+1 peers for ≥8s | * | EVI for majority | UNK or UNREACH | none from this node's FSM (it self-drains, doesn't write) | none (self-drain bypasses KV) | this node's HTTP returns 503/refused within ~9s; process exits within ~38s | `aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh` |
+| S20 | Self-drain → restart → rejoin | After S19, orchestrator restarts the node | U→H | (none)→CONN×N | UNK→REACH | UNTRACKED → JOINING → ON_DUTY (fresh) | Put(JOINING), Put(ON_DUTY) | `/api/status` shows node ON_DUTY within ≤60s | same test as S19 (rejoin phase) |
+
+---
+
+### 16.1 Self-Drain Protocol
+
+A node self-drains when it cannot reach ⌈N/2⌉+1 peers (counting itself) for ≥ `triggerThreshold` seconds. Self-drain is **uninterruptible once started** — quorum restoration mid-drain does not abort.
+
+**Triggers** (any one):
+- `QuorumStateNotification.DISAPPEARED` from local `TopologyObserver`
+- Rabia `Paused` state from local consensus engine
+- Periodic (1Hz) check: `connectedPeers().size() + 1 < (topologySize / 2) + 1` for `triggerThreshold` consecutive seconds
+
+**Drain procedure** (state machine: `ACTIVE → DRAINING → EXITED`):
+1. CAS transition `ACTIVE → DRAINING` (idempotent; double-trigger no-ops)
+2. `InFlightRequestTracker.setAcceptingNewWork(false)` — HTTP server returns 503 for new requests
+3. Schedule `inflightGrace` timeout (default 30s) — if reached, exit anyway
+4. When tracker reaches zero in-flight, OR timeout fires: `Runtime.halt(2)`
+5. Orchestrator restart policy decides: cluster A `restart: unless-stopped` (auto-restart); cluster B `restart: "no"` (stay exited)
+
+**Key invariants:**
+- No KV writes during self-drain (KV is unreachable anyway in a partition; depending on it would deadlock)
+- No consensus calls during self-drain
+- Restart after drain begins from a clean process state — node rediscovers peers via bootstrap
+
+**Why self-drain instead of decommissioning the partitioned node from the other side?**
+A partitioned node is not "dead" — it's potentially alive on the other side of a partition. If the majority side decommissions it, then partition heals, the node would re-join with a stale DECOMMISSIONED entry in its local KV view, causing inconsistency. Self-drain lets the partitioned node take itself out: the cluster's "membership" view becomes append-only (no false decommission), and the partitioned node returns as a fresh JOINING after restart. The cluster does not need to distinguish "dead" from "partitioned" — both look the same (transport-disconnected, never returns), and that's the correct semantic.
+
+### 16.2 Scenario coverage status
+
+Each scenario row above lists its acceptance test. Steps 7, 8, 9 of the implementation plan introduce new integration tests for S01, S05, S06, S19, S20. Other scenarios are covered by existing tests or FSM unit tests (Step 2, Step 4, Step 6). Step 10 cross-checks that every row maps to a passing test before the refactor is considered complete.
+
+---
+
 **END OF SPECIFICATION**
