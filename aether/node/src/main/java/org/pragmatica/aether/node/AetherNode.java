@@ -930,7 +930,12 @@ public interface AetherNode extends ManageableNode {
         // Wire the leader-side aggregator into metricsCollector so MembershipView's
         // bestSnapshot() reads the leader's OWN aggregator output (since the leader
         // doesn't receive pings, its lastReachabilitySnapshot() is forever none).
-        metricsCollector.setLocalSnapshotSupplier(reachabilityAggregator::snapshot);
+        // Gated on leader role: on followers the aggregator is fed by no pongs (only
+        // leaders/spokesmen ingest), so returning its self-fold-only snapshot would
+        // mislead the consumer — fall back to the cached received snapshot instead.
+        metricsCollector.setLocalSnapshotSupplier(() -> isLeaderSupplier.getAsBoolean()
+                                                        ? reachabilityAggregator.snapshot()
+                                                        : Option.none());
         metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
                                                                                             clusterNode.leaderManager()));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
