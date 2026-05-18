@@ -171,9 +171,17 @@ record ReachabilityAggregatorRecord(NodeId self,
             else if (entry.kind() == ReachabilityKind.UNREACHABLE) {unreachable++;}
             if (entry.observedAtMs() > latestObservedAtMs) {latestObservedAtMs = entry.observedAtMs();}
         }
+        // Asymmetric quorum: REACHABLE upgrades on a single positive observer (any node
+        // saying "I see this peer" is positive evidence and aligns with how local SWIM
+        // HEALTHY works — local detection is sufficient). UNREACHABLE requires the full
+        // ⌈N/2⌉+1 quorum to guard against single-witness false positives that would
+        // misreport a transient local disconnect as cluster-wide unreachable. Without
+        // this asymmetry, the snapshot decays to UNKNOWN once transition-driven follower
+        // observations age past TTL on a stable cluster (no flaps → no buffer pushes →
+        // only the leader's per-tick self-fold remains). See reachability-aggregator-spec.md.
         ReachabilityKind kind;
         int observerCount;
-        if (reachable >= quorumThreshold) {
+        if (reachable >= 1 && unreachable < quorumThreshold) {
             kind = ReachabilityKind.REACHABLE;
             observerCount = reachable;
         } else if (unreachable >= quorumThreshold) {

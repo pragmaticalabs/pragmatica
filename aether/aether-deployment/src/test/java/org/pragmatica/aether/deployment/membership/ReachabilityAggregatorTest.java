@@ -53,9 +53,11 @@ class ReachabilityAggregatorTest {
     }
 
     @Test
-    void selfFold_topologyMinusConnected_isUnreachable() {
-        // 5-node cluster; self sees only N1, N2 as connected. N3 and N4 missing.
-        // Self-fold marks N3, N4 as UNREACHABLE from self's POV.
+    void selfFold_connectedPeers_promoteToReachableOnSingleObserver() {
+        // 5-node cluster; self sees only N1, N2 as connected. With asymmetric quorum,
+        // REACHABLE upgrades on a single positive observer — self alone confirms N1, N2
+        // as REACHABLE. N3, N4 are UNREACHABLE from self's view (1 observer), but
+        // UNREACHABLE quorum=3 isn't met → stays UNKNOWN.
         var clock = new AtomicLong(1_000L);
         var aggregator = ReachabilityAggregator.reachabilityAggregator(
             SELF,
@@ -66,11 +68,9 @@ class ReachabilityAggregatorTest {
             TTL_MS);
         var snapshot = aggregator.snapshot().unwrap();
 
-        // Quorum threshold for N=5 is ⌈5/2⌉+1 = 3. Self alone (1 observer) gives
-        // UNKNOWN below threshold for both REACHABLE and UNREACHABLE counts.
         var n1 = snapshot.states().get(N1);
         var n3 = snapshot.states().get(N3);
-        assertThat(n1.kind()).isEqualTo(ReachabilityKind.UNKNOWN);
+        assertThat(n1.kind()).isEqualTo(ReachabilityKind.REACHABLE);
         assertThat(n1.observerCount()).isEqualTo(1);
         assertThat(n3.kind()).isEqualTo(ReachabilityKind.UNKNOWN);
         assertThat(n3.observerCount()).isEqualTo(1);
