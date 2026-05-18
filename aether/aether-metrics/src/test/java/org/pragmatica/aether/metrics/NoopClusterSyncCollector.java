@@ -46,4 +46,6 @@ public class NoopClusterSyncCollector implements ClusterSyncCollector {
     @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}
     @Override public void setPeerObservationBuffer(PeerObservationBuffer buffer) {}
     @Override public Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot() {return Option.none();}
+    @Override public void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier) {}
+    @Override public Option<AggregatedReachabilitySnapshot> bestSnapshot() {return Option.none();}
 }

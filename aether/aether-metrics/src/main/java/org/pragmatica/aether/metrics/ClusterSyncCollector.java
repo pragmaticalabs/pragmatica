@@ -83,6 +83,20 @@ public interface ClusterSyncCollector {
     /// `aether/docs/specs/reachability-aggregator-spec.md`.
     Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot();
 
+    /// Wires the local `ReachabilityAggregator`'s snapshot supplier. On the leader,
+    /// `lastReachabilitySnapshot()` is forever `none` (the leader sends pings, never
+    /// receives them) so `MembershipView` must read the leader's OWN aggregator
+    /// output directly. The injected supplier is consulted by `bestSnapshot()` and
+    /// takes precedence when present. Followers leave this unset; `bestSnapshot()`
+    /// falls back to the cached received snapshot.
+    @Contract void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier);
+
+    /// Unified accessor: leader's local aggregator output if non-empty, else the
+    /// cached snapshot received from the prior leader. This is the value that
+    /// `MembershipView.strict` consumes via `AetherNode.membershipView()` to
+    /// resolve KV-ON_DUTY peer status when local SWIM hasn't acked HEALTHY.
+    Option<AggregatedReachabilitySnapshot> bestSnapshot();
+
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
@@ -119,6 +133,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicReference<Supplier<String>> lifecycleStateSupplier = new AtomicReference<>(() -> "ON_DUTY");
 
     private final AtomicReference<Option<AggregatedReachabilitySnapshot>> lastReachabilitySnapshot = new AtomicReference<>(Option.none());
+
+    private final AtomicReference<Supplier<Option<AggregatedReachabilitySnapshot>>> localSnapshotSupplier = new AtomicReference<>(Option::none);
 
     private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
 
@@ -275,6 +291,15 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override public Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot() {
         return lastReachabilitySnapshot.get();
+    }
+
+    @Override@Contract public void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier) {
+        localSnapshotSupplier.set(supplier == null ? Option::none : supplier);
+    }
+
+    @Override public Option<AggregatedReachabilitySnapshot> bestSnapshot() {
+        var local = localSnapshotSupplier.get().get();
+        return local.isPresent() ? local : lastReachabilitySnapshot.get();
     }
 
     private boolean acceptPingFencing(ClusterSyncPing ping) {

@@ -824,7 +824,7 @@ public interface AetherNode extends ManageableNode {
                                                      AetherValue.NodeLifecycleValue.class,
                                                      consumer),
                         ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
-                        metricsCollector::lastReachabilitySnapshot);
+                        metricsCollector::bestSnapshot);
             }
         }
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode);
@@ -927,6 +927,10 @@ public interface AetherNode extends ManageableNode {
             () -> Set.copyOf(clusterNode.topologyManager().topology()),
             System::currentTimeMillis,
             30_000L);
+        // Wire the leader-side aggregator into metricsCollector so MembershipView's
+        // bestSnapshot() reads the leader's OWN aggregator output (since the leader
+        // doesn't receive pings, its lastReachabilitySnapshot() is forever none).
+        metricsCollector.setLocalSnapshotSupplier(reachabilityAggregator::snapshot);
         metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
                                                                                             clusterNode.leaderManager()));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
