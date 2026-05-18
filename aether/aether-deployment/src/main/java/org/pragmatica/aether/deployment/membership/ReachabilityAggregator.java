@@ -171,17 +171,22 @@ record ReachabilityAggregatorRecord(NodeId self,
             else if (entry.kind() == ReachabilityKind.UNREACHABLE) {unreachable++;}
             if (entry.observedAtMs() > latestObservedAtMs) {latestObservedAtMs = entry.observedAtMs();}
         }
-        // Asymmetric quorum: REACHABLE upgrades on a single positive observer (any node
-        // saying "I see this peer" is positive evidence and aligns with how local SWIM
-        // HEALTHY works — local detection is sufficient). UNREACHABLE requires the full
-        // ⌈N/2⌉+1 quorum to guard against single-witness false positives that would
-        // misreport a transient local disconnect as cluster-wide unreachable. Without
-        // this asymmetry, the snapshot decays to UNKNOWN once transition-driven follower
-        // observations age past TTL on a stable cluster (no flaps → no buffer pushes →
-        // only the leader's per-tick self-fold remains). See reachability-aggregator-spec.md.
+        // Symmetric quorum: BOTH REACHABLE and UNREACHABLE require ⌈N/2⌉+1 observers.
+        // REACHABLE additionally requires zero dissenting UNREACHABLE observations within
+        // TTL — a single live UNREACHABLE blocks the upgrade. Otherwise UNKNOWN.
+        //
+        // Supersedes the prior asymmetric scheme (REACHABLE on >=1 positive observer):
+        // during cluster B chaos a single stale CONNECTED observation buffered through
+        // RECONNECT flaps was outvoting an ⌈N/2⌉+1 UNREACHABLE quorum, marking dead peers
+        // alive and breaking the 12-network suite. On a stable cluster the snapshot may
+        // degrade to all-UNKNOWN (self-fold only = 1 observer < threshold); this is OK
+        // because `MembershipView.resolveOnDutyStatus` takes the SWIM-HEALTHY fast path
+        // and never consults the snapshot when SWIM has converged. The snapshot only
+        // matters when SWIM is NOT HEALTHY — exactly the chaos scenario we just fixed.
+        // See reachability-aggregator-spec.md (§ supersession note).
         ReachabilityKind kind;
         int observerCount;
-        if (reachable >= 1 && unreachable < quorumThreshold) {
+        if (reachable >= quorumThreshold && unreachable == 0) {
             kind = ReachabilityKind.REACHABLE;
             observerCount = reachable;
         } else if (unreachable >= quorumThreshold) {

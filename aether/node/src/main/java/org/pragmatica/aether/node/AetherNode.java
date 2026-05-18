@@ -918,7 +918,11 @@ public interface AetherNode extends ManageableNode {
         // ReachabilityAggregator: leader-side TTL+quorum aggregator producing the
         // cluster-canonical reachability snapshot broadcast in ClusterSyncPing.
         // Quorum threshold N = current topology size (matches ON_DUTY count at
-        // steady state; adjusts during chaos as topology shrinks). TTL=30s.
+        // steady state; adjusts during chaos as topology shrinks). TTL=5s — within
+        // SWIM detection window (15s soft / 60s hard) and well below the chaos test
+        // convergence budget (180s). A 30s TTL kept stale CONNECTED observations
+        // alive across the entire SWIM detection cycle, preventing the snapshot
+        // from converging on chaos events (12-network regression).
         // See aether/docs/specs/reachability-aggregator-spec.md.
         var reachabilityAggregator = ReachabilityAggregator.reachabilityAggregator(
             config.self(),
@@ -926,7 +930,7 @@ public interface AetherNode extends ManageableNode {
             () -> clusterNode.network().connectedPeers(),
             () -> Set.copyOf(clusterNode.topologyManager().topology()),
             System::currentTimeMillis,
-            30_000L);
+            5_000L);
         // Wire the leader-side aggregator into metricsCollector so MembershipView's
         // bestSnapshot() reads the leader's OWN aggregator output (since the leader
         // doesn't receive pings, its lastReachabilitySnapshot() is forever none).

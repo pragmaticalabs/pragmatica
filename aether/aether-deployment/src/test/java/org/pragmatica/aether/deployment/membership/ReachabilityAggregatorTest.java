@@ -53,11 +53,13 @@ class ReachabilityAggregatorTest {
     }
 
     @Test
-    void selfFold_connectedPeers_promoteToReachableOnSingleObserver() {
-        // 5-node cluster; self sees only N1, N2 as connected. With asymmetric quorum,
-        // REACHABLE upgrades on a single positive observer — self alone confirms N1, N2
-        // as REACHABLE. N3, N4 are UNREACHABLE from self's view (1 observer), but
-        // UNREACHABLE quorum=3 isn't met → stays UNKNOWN.
+    void selfFold_connectedPeers_stayUnknownBelowQuorum() {
+        // 5-node cluster (quorum threshold = 3); self sees only N1, N2 as connected. With
+        // SYMMETRIC quorum, a single positive self observation is NOT enough to upgrade
+        // to REACHABLE — quorum=3 required AND zero dissent. N1, N2 → UNKNOWN (1 positive
+        // observer, below threshold). N3, N4 → UNKNOWN (1 UNREACHABLE observer, below
+        // threshold). This is by design: on a stable cluster SWIM HEALTHY drives the
+        // resolveOnDutyStatus fast path; the snapshot only matters when SWIM is NOT HEALTHY.
         var clock = new AtomicLong(1_000L);
         var aggregator = ReachabilityAggregator.reachabilityAggregator(
             SELF,
@@ -70,7 +72,7 @@ class ReachabilityAggregatorTest {
 
         var n1 = snapshot.states().get(N1);
         var n3 = snapshot.states().get(N3);
-        assertThat(n1.kind()).isEqualTo(ReachabilityKind.REACHABLE);
+        assertThat(n1.kind()).isEqualTo(ReachabilityKind.UNKNOWN);
         assertThat(n1.observerCount()).isEqualTo(1);
         assertThat(n3.kind()).isEqualTo(ReachabilityKind.UNKNOWN);
         assertThat(n3.observerCount()).isEqualTo(1);
@@ -254,6 +256,95 @@ class ReachabilityAggregatorTest {
         // No state for SELF should be in the snapshot (self-targeting filtered + self-fold
         // skips self).
         assertThat(snapshot.states().containsKey(SELF)).isFalse();
+    }
+
+    @Test
+    void symmetricQuorum_staleReachableDoesNotOutvoteUnreachableQuorum() {
+        // 12-network regression: under the prior asymmetric scheme a single stale CONNECTED
+        // observation (buffered through an EVICTED→CONNECTED flap) outvoted ⌈N/2⌉+1 UNREACHABLE
+        // observations and marked dead peers alive.
+        //
+        // Scenario: 5-node cluster, target = N4. Self + N1 + N2 each observe N4 as UNREACHABLE
+        // (3 observers, meets quorum=3). N3 has a stale CONNECTED observation from a flap.
+        // Symmetric quorum rule: REACHABLE requires quorum AND zero dissent. UNREACHABLE
+        // requires quorum, dissent allowed. Expectation: UNREACHABLE wins.
+        var clock = new AtomicLong(10_000L);
+        var aggregator = ReachabilityAggregator.reachabilityAggregator(
+            SELF,
+            () -> 5,
+            () -> Set.of(N1, N2, N3),  // self does NOT see N4 → self contributes UNREACHABLE
+            () -> Set.of(SELF, N1, N2, N3, N4),
+            clock::get,
+            TTL_MS);
+        // N1, N2 report N4 as DISCONNECTED. N3 has a stale CONNECTED observation.
+        aggregator.ingest(N1, List.of(conn(N4, ConnectivityState.DISCONNECTED, 10_000L)), List.of());
+        aggregator.ingest(N2, List.of(conn(N4, ConnectivityState.DISCONNECTED, 10_000L)), List.of());
+        aggregator.ingest(N3, List.of(conn(N4, ConnectivityState.CONNECTED, 9_500L)), List.of());
+
+        var snapshot = aggregator.snapshot().unwrap();
+        var n4 = snapshot.states().get(N4);
+        // Under asymmetric rule this would have been REACHABLE (1 positive, unreachable=3
+        // didn't matter because the asymmetric branch fired first). Under symmetric rule
+        // the 3 UNREACHABLE observers (self + N1 + N2) win.
+        assertThat(n4.kind()).isEqualTo(ReachabilityKind.UNREACHABLE);
+        assertThat(n4.observerCount()).isEqualTo(3);
+    }
+
+    @Test
+    void symmetricQuorum_reachableRequiresZeroDissent() {
+        // Even when REACHABLE observers reach quorum, a single UNREACHABLE observer blocks
+        // the upgrade — the snapshot stays UNKNOWN until the dissent ages out via TTL.
+        // 5-node cluster, threshold=3. Self+N1+N2 say REACHABLE; N3 dissents UNREACHABLE.
+        var clock = new AtomicLong(1_000L);
+        var aggregator = ReachabilityAggregator.reachabilityAggregator(
+            SELF,
+            () -> 5,
+            () -> Set.of(N1, N2, N3, N4),   // self contributes REACHABLE for N4
+            () -> Set.of(SELF, N1, N2, N3, N4),
+            clock::get,
+            TTL_MS);
+        aggregator.ingest(N1, List.of(conn(N4, ConnectivityState.CONNECTED, 1_000L)), List.of());
+        aggregator.ingest(N2, List.of(conn(N4, ConnectivityState.CONNECTED, 1_000L)), List.of());
+        aggregator.ingest(N3, List.of(conn(N4, ConnectivityState.DISCONNECTED, 1_000L)), List.of());
+
+        var snapshot = aggregator.snapshot().unwrap();
+        var n4 = snapshot.states().get(N4);
+        // 3 REACHABLE >= threshold=3, but unreachable=1 != 0 → no REACHABLE upgrade.
+        // 1 UNREACHABLE < threshold=3 → no UNREACHABLE upgrade. → UNKNOWN.
+        assertThat(n4.kind()).isEqualTo(ReachabilityKind.UNKNOWN);
+    }
+
+    @Test
+    void ttl_fiveSecondTtl_evictsStaleObservationsWithinSwimWindow() {
+        // Production TTL is 5s (down from 30s) — within SWIM's 15s soft detection window
+        // and well below the chaos test convergence budget. This test simulates the
+        // production TTL value and verifies stale observations are evicted promptly so
+        // the snapshot can converge during chaos events.
+        var productionTtlMs = 5_000L;
+        var clock = new AtomicLong(1_000L);
+        var aggregator = ReachabilityAggregator.reachabilityAggregator(
+            SELF,
+            () -> 5,
+            () -> Set.of(N1),  // self stable view: only N1 connected
+            () -> Set.of(SELF, N1, N2, N3, N4),
+            clock::get,
+            productionTtlMs);
+        // Stale CONNECTED flap from N2 at t=1000.
+        aggregator.ingest(N2, List.of(conn(N4, ConnectivityState.CONNECTED, 1_000L)), List.of());
+        // Advance 6 seconds — past 5s TTL.
+        clock.set(7_000L);
+        // Real UNREACHABLE quorum arrives now from N1+N2+N3 + self self-fold.
+        aggregator.ingest(N1, List.of(conn(N4, ConnectivityState.DISCONNECTED, 7_000L)), List.of());
+        aggregator.ingest(N2, List.of(conn(N4, ConnectivityState.DISCONNECTED, 7_000L)), List.of());
+        aggregator.ingest(N3, List.of(conn(N4, ConnectivityState.DISCONNECTED, 7_000L)), List.of());
+
+        var snapshot = aggregator.snapshot().unwrap();
+        var n4 = snapshot.states().get(N4);
+        // The original CONNECTED from N2 at t=1000 is past TTL and replaced by N2's later
+        // DISCONNECTED at t=7000 (latest-wins overwrites in-place). Self + N1 + N2 + N3
+        // all UNREACHABLE → 4 observers, >= quorum=3 → UNREACHABLE.
+        assertThat(n4.kind()).isEqualTo(ReachabilityKind.UNREACHABLE);
+        assertThat(n4.observerCount()).isEqualTo(4);
     }
 
     private static PeerConnectivityObservation conn(NodeId target, ConnectivityState state, long producedAtMs) {

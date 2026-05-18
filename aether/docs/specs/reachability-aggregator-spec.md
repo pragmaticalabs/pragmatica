@@ -228,3 +228,21 @@ Tier-2 single-writer rule: only the spokesman aggregates for its assigned commun
 | Stale snapshot in cold-start window mis-counts ON_DUTY | KV-only fallback; window is bounded (1-2s) |
 | Tier-2 untested in RC1 deployments | Documented as preemptive correctness; will validate when governors are exercised post-RC1 |
 | Wire-format additions break older nodes during rolling upgrade | Defensive null-handling in constructors; aggregatedReachability Option-wrapped; pre-extension nodes treat as `none()` |
+
+## Supersession note (2026-05-18): symmetric quorum + 5s TTL + RECONNECT no-emit
+
+The original spec specified **asymmetric quorum**: REACHABLE upgrades on a single positive observer; UNREACHABLE requires ⌈N/2⌉+1. Field validation against the `12-network` integration suite on cluster B exposed three interacting failures that broke the suite (2P/1F → 0P/3F regression):
+
+1. **Asymmetric quorum let stale single observations win.** During noisy cluster-B startup after a destructive predecessor suite, a single stale `CONNECTED` observation from a transient `RECONNECT` flap outvoted ⌈N/2⌉+1 `UNREACHABLE` observations. Dead peers were marked alive.
+2. **30s TTL was longer than the SWIM detection window.** Stale CONNECTED entries persisted across an entire SWIM detection cycle (15s soft / 60s hard) and well into the chaos test's convergence budget.
+3. **`RECONNECT` emitted a fresh `CONNECTED` observation.** Each EVICTED→CONNECTED flap pushed a new positive observation into the buffer, multiplying the stale-positive problem.
+
+**Resolution (supersedes the asymmetric-quorum decision in §"Layer 3 — Leader-side ReachabilityAggregator"):**
+
+- **Symmetric quorum.** `REACHABLE` requires `reachable >= ⌈N/2⌉+1` AND `unreachable == 0` (zero dissent). `UNREACHABLE` requires `unreachable >= ⌈N/2⌉+1`. Otherwise `UNKNOWN`.
+- **5s TTL** (was 30s) — within SWIM's 15s soft window and well below the chaos convergence budget (180s).
+- **`RECONNECT` no longer emits a `PeerConnectivityObservation`.** `ADD` still emits (first attach is a genuinely fresh REACHABLE signal). `RECONNECT` is a re-attach after EVICTED — we already considered the peer connected before the flap, so there's no new "freshly observed REACHABLE" signal.
+
+**Why all-UNKNOWN snapshots on stable clusters are OK:** under symmetric quorum, a stable cluster with no chaos has only the leader's self-fold contributing per target (1 observer < threshold), so the snapshot can degrade to all-`UNKNOWN`. This is benign because `MembershipView.resolveOnDutyStatus` consults the snapshot only when SWIM is **not** `HEALTHY` — on a stable cluster SWIM converges to HEALTHY and the fast path returns `ON_DUTY` without touching the snapshot. The snapshot is only load-bearing during the exact chaos window we just fixed.
+
+Trade-off: we lose the original "stable cluster reads `REACHABLE`" property, but that property was buying us nothing operationally (SWIM HEALTHY already covers it) while costing us correctness during chaos.

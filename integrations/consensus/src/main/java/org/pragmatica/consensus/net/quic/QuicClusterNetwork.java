@@ -1161,10 +1161,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // (canonical source). Quorum is unaffected because EVICTED peers were
                 // already counted as active. Subscribers may use `PeerReconnected` to
                 // invalidate disconnect-driven cleanup if appropriate.
+                //
+                // We intentionally do NOT emit a fresh `PeerConnectivityObservation` here:
+                // the peer was already considered connected before the EVICTED→CONNECTED
+                // flap, so RECONNECT is not a "freshly observed REACHABLE" signal. During
+                // noisy cluster B startup after a destructive predecessor suite, repeated
+                // EVICTED→CONNECTED flaps would otherwise emit per-flap CONNECTED
+                // observations that buffer for the full TTL and dominate the snapshot,
+                // outvoting real UNREACHABLE quorum (12-network regression).
                 peerStateListener.onPeerReconnected(peerId);
-                // Connectivity observation feeds ReachabilityAggregator (mirrors ADD).
-                reportPeerConnection(peerId);
-                log.debug("processViewChange RECONNECT for {} — emitting PeerReconnected", peerId);
+                log.debug("processViewChange RECONNECT for {} — emitting PeerReconnected (no connectivity observation)", peerId);
                 yield TransportObservation.peerReconnected(peerId, currentView(), ObservationSource.QUIC);
             }
         };
