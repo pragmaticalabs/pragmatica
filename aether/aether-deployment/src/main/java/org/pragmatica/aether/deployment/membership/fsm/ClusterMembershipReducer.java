@@ -20,6 +20,8 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SlotCl
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimDeparted;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimHealthy;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportReachable;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportUnreachable;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Draining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.FailedDrain;
@@ -42,7 +44,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-/// Pure per-peer cluster-membership reducer (spec §5, 7 states × 8 events = 56 cells).
+/// Pure per-peer cluster-membership reducer (spec §5, 7 states × 10 events = 70 cells).
 ///
 /// `apply(state, event)` is a total function: every cell is explicit. `err`-marked cells
 /// (unreachable by construction) throw `IllegalStateException` to surface bugs rather than
@@ -108,6 +110,10 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case OperatorDecommission e -> untrackedOperatorDecommission(state, e);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
+            // Topology-observation refactor Step 2: transport events have no effect on an
+            // untracked peer (we have no lifecycle state to advance/withdraw).
+            case TransportReachable _ -> Outcome.nop(state);
+            case TransportUnreachable _ -> Outcome.nop(state);
         };
     }
 
@@ -123,6 +129,11 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case OperatorDecommission _ -> illegal(state, event);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
+            // Topology-observation refactor Step 2: provisioning is a leader-side bookkeeping
+            // phase before any peer has actually started — transport observations of the
+            // not-yet-online slot are noise; the slot lifecycle (SlotClaimed / timeout) owns it.
+            case TransportReachable _ -> Outcome.nop(state);
+            case TransportUnreachable _ -> Outcome.nop(state);
         };
     }
 
@@ -139,6 +150,13 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case OperatorDecommission e -> joiningOperatorDecommission(state, e);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired e -> joiningToDecommissioned(state, e.at(), REASON_JOIN_TIMEOUT);
+            // Topology-observation refactor Step 2: a transport-reachable observation during
+            // JOINING is confirmation only — the SwimHealthy cell drives the promotion.
+            case TransportReachable _ -> Outcome.nop(state);
+            // S01 (JOINING-window kill): transport disconnect is the fast detection path;
+            // SWIM may take 10-15s to converge. Reuse `joiningToDecommissioned` so the
+            // slot is cleared atomically with the lifecycle write.
+            case TransportUnreachable e -> joiningToDecommissioned(state, e.at(), REASON_TRANSPORT_FAILURE);
         };
     }
 
@@ -157,9 +175,22 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case OperatorDecommission e -> onDutyOperatorDecommission(state, e);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
+            // Topology-observation refactor Step 2: TransportReachable on an ON_DUTY peer
+            // re-confirms the existing state — no write needed (mirrors SwimHealthy nop).
+            case TransportReachable _ -> Outcome.nop(state);
+            // S02 / S14: transport disconnect on an ON_DUTY peer is the fast path to
+            // DECOMMISSIONED (~1s vs SWIM ~10-15s). Step 4 will add aggregator-quorum
+            // gating; Step 2 fires unconditionally per plan contract.
+            case TransportUnreachable e -> onDutyToDecommissioned(state, e.at(), REASON_TRANSPORT_FAILURE);
         };
     }
 
+    /// `@SuppressWarnings("JBCT-SEQ-01")`: the sealed-event switch has 10 arms after the
+    /// topology-observation refactor (Step 2). The JBCT-SEQ-01 method-chain heuristic flags
+    /// switches with many arms; here the count is dictated by the sealed-interface
+    /// exhaustiveness contract (10 events × 7 states). Cannot be reduced without sacrificing
+    /// per-cell explicitness.
+    @SuppressWarnings("JBCT-SEQ-01")
     private Outcome applyDraining(Draining state, MembershipFsmEvent event) {
         return switch (event){
             case SwimHealthy _ -> Outcome.nop(state);
@@ -170,6 +201,12 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case OperatorDecommission e -> drainingOperatorDecommission(state, e);
             case DrainOutcome e -> drainingDrainOutcome(state, e);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
+            // Topology-observation refactor Step 2: Draining is operator-owned and runs to
+            // a terminal `DrainOutcome` (success → DECOMMISSIONED, failure → FAILED_DRAIN)
+            // or hard-departs on `SwimDeparted`. Transport observations during drain are
+            // ignored — the DrainCoordinator owns the timeline.
+            case TransportReachable _ -> Outcome.nop(state);
+            case TransportUnreachable _ -> Outcome.nop(state);
         };
     }
 
@@ -189,6 +226,12 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case OperatorDecommission _ -> Outcome.nop(state);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
+            // Topology-observation refactor Step 2: DECOMMISSIONED is terminal. Both
+            // transport-reachable and transport-unreachable are nop to preserve the chaos-
+            // revival defense (mirror of `SwimHealthy → nop` here). A peer's container that
+            // briefly accepts QUIC again must NOT revive its lifecycle entry.
+            case TransportReachable _ -> Outcome.nop(state);
+            case TransportUnreachable _ -> Outcome.nop(state);
         };
     }
 
@@ -196,6 +239,9 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     // is now authoritative for "alive"; a `DECOMMISSIONED` KV entry is an operator-declared
     // override that does not get auto-revived by SWIM gossip.
 
+    /// `@SuppressWarnings("JBCT-SEQ-01")`: see `applyDraining` rationale — 10-arm exhaustive
+    /// switch is required by the sealed `MembershipFsmEvent` contract.
+    @SuppressWarnings("JBCT-SEQ-01")
     private Outcome applyFailedDrain(FailedDrain state, MembershipFsmEvent event) {
         return switch (event){
             case SwimHealthy _ -> Outcome.nop(state);
@@ -206,6 +252,11 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case OperatorDecommission e -> failedDrainToDecommissioned(state, e.at(), REASON_OPERATOR_OVERRIDE);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
+            // Topology-observation refactor Step 2: FAILED_DRAIN is operator-owned cleanup —
+            // only `OperatorDecommission` or `SwimDeparted` move it forward. Transport
+            // observations are ignored.
+            case TransportReachable _ -> Outcome.nop(state);
+            case TransportUnreachable _ -> Outcome.nop(state);
         };
     }
 
@@ -401,6 +452,11 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     private static final String REASON_OPERATOR_OVERRIDE = "operator-override";
 
     private static final String REASON_DRAIN_HARD_DEADLINE = "drain-hard-deadline";
+
+    /// Topology-observation refactor Step 2: reason carried on `NodeLifecycleValue` writes
+    /// triggered by `TransportUnreachable` events (JOINING and ON_DUTY cells). Not a SWIM
+    /// reason — does NOT activate `decommissionedSwimRefractory` (see `isSwimReason`).
+    private static final String REASON_TRANSPORT_FAILURE = "transport-failure";
 
     private static final String REASON_REVIVAL = "revival";
 }

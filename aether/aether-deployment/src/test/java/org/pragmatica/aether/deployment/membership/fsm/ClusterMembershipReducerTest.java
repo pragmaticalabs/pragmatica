@@ -25,6 +25,8 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SlotCl
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimDeparted;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimHealthy;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportReachable;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportUnreachable;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Draining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.FailedDrain;
@@ -42,6 +44,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -580,6 +584,110 @@ class ClusterMembershipReducerTest {
             // A second, different observer (also the leader, different incarnation) is nop on OnDuty.
             var reapply = reducer.apply(MembershipFsmState.onDuty(PEER, ms(T1)), new SwimHealthy(LEADER, 2L, T2));
             assertThat(reapply.writes()).isEmpty();
+        }
+    }
+
+    // =================================================================================
+    // Topology-observation refactor (Step 2): 14 transport-event cells.
+    //
+    // 7 states × 2 events (TransportReachable, TransportUnreachable) = 14 explicit cells.
+    // Step 2 has NO conditional gating — gating arrives in Step 4. Two cells produce
+    // transitions today: (Joining, TransportUnreachable) and (OnDuty, TransportUnreachable);
+    // the other 12 are `nop`. The `(Decommissioned, TransportUnreachable) → nop` row is the
+    // chaos-revival defense — preserve it.
+    // =================================================================================
+
+    @Nested @DisplayName("Transport events (Step 2): 14-cell table")
+    class TransportEventsTable {
+        /// Single record per (state, event) row — keeps the table dense and the assertion loop
+        /// readable. JUnit 5 parameterized-test infrastructure (junit-jupiter-params) is not on
+        /// this module's test classpath, so we walk an explicit list with a per-row failure label.
+        record Row(String label, MembershipFsmState state, MembershipFsmEvent event, Outcome expected) {}
+
+        @Test void transportEventsByStateTable_matchesSpecSection16() {
+            for (var row : table()) {
+                var actual = reducer.apply(row.state(), row.event());
+                assertThat(actual.newState()).as("newState for %s", row.label()).isEqualTo(row.expected().newState());
+                assertThat(actual.writes()).as("writes for %s", row.label()).containsExactlyElementsOf(row.expected().writes());
+                assertThat(actual.effects()).as("effects for %s", row.label()).containsExactlyElementsOf(row.expected().effects());
+            }
+        }
+
+        private static List<Row> table() {
+            var untracked = MembershipFsmState.untracked(PEER);
+            var provisioning = MembershipFsmState.provisioning(PEER, SLOT_ID);
+            var joining = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
+            var onDuty = MembershipFsmState.onDuty(PEER, ms(T0));
+            var draining = MembershipFsmState.draining(PEER, ms(T0), DrainReason.OPERATOR_DRAIN);
+            var decommissioned = MembershipFsmState.decommissioned(PEER, ms(T0));
+            var failedDrain = MembershipFsmState.failedDrain(PEER, ms(T0));
+
+            var reachable = new TransportReachable(PEER, T1);
+            var unreachable = new TransportUnreachable(PEER, T1);
+
+            return List.of(
+                new Row("Untracked × TransportReachable → nop", untracked, reachable, Outcome.nop(untracked)),
+                new Row("Untracked × TransportUnreachable → nop", untracked, unreachable, Outcome.nop(untracked)),
+                new Row("Provisioning × TransportReachable → nop", provisioning, reachable, Outcome.nop(provisioning)),
+                new Row("Provisioning × TransportUnreachable → nop", provisioning, unreachable, Outcome.nop(provisioning)),
+                new Row("Joining × TransportReachable → nop", joining, reachable, Outcome.nop(joining)),
+                new Row("Joining × TransportUnreachable → DECOMMISSIONED(transport-failure)",
+                        joining, unreachable, joiningToDecommissionedTransport(T1)),
+                new Row("OnDuty × TransportReachable → nop", onDuty, reachable, Outcome.nop(onDuty)),
+                new Row("OnDuty × TransportUnreachable → DECOMMISSIONED(transport-failure)",
+                        onDuty, unreachable, onDutyToDecommissionedTransport(T1)),
+                new Row("Draining × TransportReachable → nop", draining, reachable, Outcome.nop(draining)),
+                new Row("Draining × TransportUnreachable → nop", draining, unreachable, Outcome.nop(draining)),
+                // Chaos-revival defense — DO NOT modify. If a future change accidentally
+                // adds a revival path, these two rows fail first.
+                new Row("Decommissioned × TransportReachable → nop (chaos-revival defense)",
+                        decommissioned, reachable, Outcome.nop(decommissioned)),
+                new Row("Decommissioned × TransportUnreachable → nop (chaos-revival defense)",
+                        decommissioned, unreachable, Outcome.nop(decommissioned)),
+                new Row("FailedDrain × TransportReachable → nop", failedDrain, reachable, Outcome.nop(failedDrain)),
+                new Row("FailedDrain × TransportUnreachable → nop", failedDrain, unreachable, Outcome.nop(failedDrain))
+            );
+        }
+
+        /// Mirrors `ClusterMembershipReducer.joiningToDecommissioned` output: lifecycle write +
+        /// slot removal + cancel-join-deadline effect + NODE_FAILED domain event with the
+        /// transport-failure reason. `swimDriven=false` (transport-failure is NOT a SWIM reason).
+        private static Outcome joiningToDecommissionedTransport(HlcTimestamp at) {
+            var newState = MembershipFsmState.decommissioned(PEER, ms(at), false);
+            return Outcome.outcome(newState,
+                                   List.of(putLifecycle(NodeLifecycleState.DECOMMISSIONED, at),
+                                           removeSlot(SLOT_ID)),
+                                   List.of(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE),
+                                           new EmitDomainEvent(PEER,
+                                                               MembershipDomainEvent.NODE_FAILED,
+                                                               "transport-failure")));
+        }
+
+        /// Mirrors `ClusterMembershipReducer.onDutyToDecommissioned` output: single lifecycle
+        /// write + NODE_FAILED domain event. No slot removal (OnDuty has no slot). `swimDriven=false`.
+        private static Outcome onDutyToDecommissionedTransport(HlcTimestamp at) {
+            var newState = MembershipFsmState.decommissioned(PEER, ms(at), false);
+            return Outcome.outcome(newState,
+                                   List.of(putLifecycle(NodeLifecycleState.DECOMMISSIONED, at)),
+                                   List.of(new EmitDomainEvent(PEER,
+                                                               MembershipDomainEvent.NODE_FAILED,
+                                                               "transport-failure")));
+        }
+
+        @Test void decommissioned_transportUnreachable_isNop_chaosRevivalDefense() {
+            // Standalone assertion of the chaos-revival defense for the (Decommissioned,
+            // TransportUnreachable) cell. Duplicates a table row by design — this test is
+            // named for code-search visibility and is the canary for future regressions.
+            var state = MembershipFsmState.decommissioned(PEER, ms(T0));
+            var outcome = reducer.apply(state, new TransportUnreachable(PEER, T1));
+            assertNop(outcome, state);
+        }
+
+        @Test void decommissioned_transportReachable_isNop_chaosRevivalDefense() {
+            // Mirror canary for the reachable side — no revival, no writes.
+            var state = MembershipFsmState.decommissioned(PEER, ms(T0));
+            var outcome = reducer.apply(state, new TransportReachable(PEER, T1));
+            assertNop(outcome, state);
         }
     }
 

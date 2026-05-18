@@ -11,7 +11,7 @@ import org.pragmatica.hlc.HlcTimestamp;
 
 /// Cluster-membership FSM input event vocabulary (spec §4, Q3=C decision: no `Tick`).
 ///
-/// Eight event types feed the reducer. Each carries the `peer` it targets and an
+/// Ten event types feed the reducer. Each carries the `peer` it targets and an
 /// `HlcTimestamp at` captured at event-creation time (RC1 Step 4 — replaces the
 /// pre-RC1 `long nowMs`). The HLC value is sourced from a per-node `HlcClock` and is
 /// used both for KV-write metadata (`NodeLifecycleValue.transitionedAt`) and for cross-
@@ -22,6 +22,13 @@ import org.pragmatica.hlc.HlcTimestamp;
 /// the leader's slot-to-peer mapping. `SuspectObserved` and `UnknownObserved` are also absent —
 /// SWIM-internal transient states fold into `SwimFaulty` via the existing suspect-timeout
 /// machinery in `SwimProtocol`.
+///
+/// **Topology-observation refactor (Step 2).** `TransportReachable` / `TransportUnreachable`
+/// are sourced from the `ReachabilityAggregator` quorum snapshot (see
+/// `reachability-aggregator-spec.md` "Periodic Observation Mode"). They provide a faster
+/// detection path (~1s transport disconnect) than SWIM (~10-15s) and target the JOINING-window
+/// kill scenario S01. Conditional aggregator-quorum gating arrives in Step 4; this step adds
+/// the events + 14 reducer cells with no gate, per spec §16.
 public sealed interface MembershipFsmEvent {
     NodeId peer();
 
@@ -42,4 +49,8 @@ public sealed interface MembershipFsmEvent {
     record DrainOutcome(NodeId peer, boolean success, HlcTimestamp at) implements MembershipFsmEvent{}
 
     record JoinDeadlineExpired(NodeId peer, HlcTimestamp at) implements MembershipFsmEvent{}
+
+    record TransportReachable(NodeId peer, HlcTimestamp at) implements MembershipFsmEvent{}
+
+    record TransportUnreachable(NodeId peer, HlcTimestamp at) implements MembershipFsmEvent{}
 }
