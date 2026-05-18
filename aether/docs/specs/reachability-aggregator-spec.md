@@ -116,7 +116,10 @@ Aggregation contract:
 - Per-target state: `Map<NodeId, Map<NodeId, ObservationEntry>>` where outer key is target, inner key is observer.
 - `ObservationEntry(kind, observedAtMs)`. Latest-wins per (target, observer) pair, where `kind` derives from `ConnectivityState` (CONNECTED → REACHABLE, DISCONNECTED → UNREACHABLE, STALE → UNREACHABLE for aggregation purposes). Health observations contribute via `HealthHintWire` (HEALTHY → REACHABLE, SUSPECT/FAULTY → UNREACHABLE).
 - TTL eviction (passive, on-snapshot-build): observations older than `TTL` (default 30s, configurable) are dropped from the quorum count.
-- Quorum threshold for a `ReachabilityKind` transition: `⌈healthyOnDutyCount / 2⌉ + 1` observers reporting the same kind within TTL. Source for `healthyOnDutyCount`: `MembershipView.onDutyPeers().size()` (KV-canonical).
+- **Asymmetric quorum:**
+  - `REACHABLE` upgrades on a single positive observer. Aligns with how local SWIM HEALTHY works — any node saying "I see this peer" is sufficient positive evidence. Required because transition-only observations (PeerJoined/PeerDisconnected/PeerReconnected fire from `processViewChange` only) mean follower buffers go empty in steady-state; without this asymmetry, the snapshot decays past TTL to just the leader's self-fold and never reaches multi-observer quorum on stable clusters.
+  - `UNREACHABLE` requires `⌈healthyOnDutyCount / 2⌉ + 1` observers reporting UNREACHABLE within TTL. Guards against single-witness false positives (a local transient disconnect on one observer doesn't immediately mark the peer dead cluster-wide).
+- Source for `healthyOnDutyCount`: `MembershipView.onDutyPeers().size()` (KV-canonical).
 - Single-writer rule: aggregator does NOT write KV directly. When sustained quorum crosses a threshold corresponding to a meaningful `NodeLifecycleKey` transition, the aggregator emits a request to `HealthReconciler`, which proposes the KV write via Rabia (existing single-writer path).
 
 The aggregator emits the snapshot for broadcast in every tick. The snapshot is read-only for followers — they cache it for warm-takeover.
