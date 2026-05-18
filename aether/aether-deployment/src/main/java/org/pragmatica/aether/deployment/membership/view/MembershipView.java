@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.membership.view;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.HealthSnapshot;
@@ -147,7 +148,22 @@ public interface MembershipView {
     static MembershipView strict(SwimHealthProvider swimHealth,
                                  LifecycleKvReader lifecycleKv,
                                  BooleanSupplier inQuorum) {
-        return new MembershipViewImpl(swimHealth, lifecycleKv, inQuorum);
+        return new MembershipViewImpl(swimHealth, lifecycleKv, inQuorum, Option::none);
+    }
+
+    /// Strict factory extended with a cluster-canonical reachability snapshot supplier.
+    /// The snapshot acts as a SECOND confirmation source for `kvState == ON_DUTY` peers
+    /// whose local SWIM hasn't yet reported HEALTHY: if a quorum of cluster observers
+    /// (⌈N/2⌉+1) sees the peer as REACHABLE, the effective status is `ON_DUTY` despite
+    /// local SWIM lag. Snapshot is consulted ONLY for the ON_DUTY case — non-ON_DUTY
+    /// lifecycle states (JOINING/DRAINING/etc.) are unaffected. Snapshot `UNREACHABLE`
+    /// downgrades to `UNTRACKED` (transport-honesty). See
+    /// `aether/docs/specs/reachability-aggregator-spec.md` Layer 5.
+    static MembershipView strict(SwimHealthProvider swimHealth,
+                                 LifecycleKvReader lifecycleKv,
+                                 BooleanSupplier inQuorum,
+                                 Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshot) {
+        return new MembershipViewImpl(swimHealth, lifecycleKv, inQuorum, reachabilitySnapshot);
     }
 
     /// **Bootstrap-aware factory — internal use only.**
@@ -160,7 +176,7 @@ public interface MembershipView {
     /// caller. Grep for `bootstrapAware(` to audit every site that opts out of quorum
     /// gating.
     static MembershipView bootstrapAware(SwimHealthProvider swimHealth, LifecycleKvReader lifecycleKv) {
-        return new MembershipViewImpl(swimHealth, lifecycleKv, ALWAYS_IN_QUORUM);
+        return new MembershipViewImpl(swimHealth, lifecycleKv, ALWAYS_IN_QUORUM, Option::none);
     }
 
     /// Legacy factory preserved for pure-function tests and the H.2b-era
@@ -183,22 +199,26 @@ public interface MembershipView {
         private final SwimHealthProvider swimHealth;
         private final LifecycleKvReader lifecycleKv;
         private final BooleanSupplier inQuorum;
+        private final Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshot;
 
         private MembershipViewImpl(SwimHealthProvider swimHealth,
                                    LifecycleKvReader lifecycleKv,
-                                   BooleanSupplier inQuorum) {
+                                   BooleanSupplier inQuorum,
+                                   Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshot) {
             this.swimHealth = swimHealth;
             this.lifecycleKv = lifecycleKv;
             this.inQuorum = inQuorum;
+            this.reachabilitySnapshot = reachabilitySnapshot;
         }
 
         @Override
         public Map<NodeId, MemberView> snapshot() {
             var quorate = inQuorum.getAsBoolean();
+            var snapshot = reachabilitySnapshot.get();
             var lifecycleByPeer = collectLifecycleEntries();
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var view = new HashMap<NodeId, MemberView>();
-            lifecycleByPeer.forEach((peer, lifecycle) -> view.put(peer, deriveFromKv(peer, lifecycle, swim, quorate)));
+            lifecycleByPeer.forEach((peer, lifecycle) -> view.put(peer, deriveFromKv(peer, lifecycle, swim, quorate, snapshot)));
             swim.peerHealth().forEach((peer, swimState) -> view.computeIfAbsent(peer,
                                                                                  _ -> deriveFromSwimOnly(peer, swimState, quorate)));
             return Map.copyOf(view);
@@ -207,10 +227,11 @@ public interface MembershipView {
         @Override
         public Option<MemberView> get(NodeId peer) {
             var quorate = inQuorum.getAsBoolean();
+            var snapshot = reachabilitySnapshot.get();
             var lifecycle = readLifecycleFor(peer);
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
-            return lifecycle.map(value -> deriveFromKv(peer, value, swim, quorate))
+            return lifecycle.map(value -> deriveFromKv(peer, value, swim, quorate, snapshot))
                             .orElse(() -> swimOnlyEntry(peer, swimState, quorate));
         }
 
@@ -241,9 +262,10 @@ public interface MembershipView {
         private static MemberView deriveFromKv(NodeId peer,
                                                NodeLifecycleValue lifecycle,
                                                HealthSnapshot swim,
-                                               boolean quorate) {
+                                               boolean quorate,
+                                               Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
             var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
-            var status = mapKvState(lifecycle.state(), swimState, quorate);
+            var status = mapKvState(peer, lifecycle.state(), swimState, quorate, reachabilitySnapshot);
             return new MemberView(peer, status, swimState, Option.some(lifecycle));
         }
 
@@ -254,16 +276,40 @@ public interface MembershipView {
             return new MemberView(peer, status, swimState, Option.none());
         }
 
-        private static MemberStatus mapKvState(NodeLifecycleState kvState, SwimHealth swimState, boolean quorate) {
+        private static MemberStatus mapKvState(NodeId peer,
+                                               NodeLifecycleState kvState,
+                                               SwimHealth swimState,
+                                               boolean quorate,
+                                               Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
             return switch (kvState) {
                 case JOINING -> MemberStatus.JOINING;
                 case DRAINING, SHUTTING_DOWN -> MemberStatus.DRAINING;
                 case DECOMMISSIONED -> MemberStatus.DECOMMISSIONED;
                 case FAILED_DRAIN -> MemberStatus.FAILED_DRAIN;
-                case ON_DUTY -> swimState == SwimHealth.HEALTHY && quorate
-                                ? MemberStatus.ON_DUTY
-                                : MemberStatus.UNTRACKED;
+                case ON_DUTY -> resolveOnDutyStatus(peer, swimState, quorate, reachabilitySnapshot);
             };
+        }
+
+        /// `kvState == ON_DUTY` requires confirmation. Three confirmation sources, in order:
+        ///
+        /// 1. Local SWIM HEALTHY + quorate → `ON_DUTY` (fast path).
+        /// 2. Cluster-canonical reachability snapshot REACHABLE + quorate → `ON_DUTY`
+        ///    (eliminates per-reader variance during SWIM lag).
+        /// 3. Snapshot UNREACHABLE → `UNTRACKED` (transport-honest downgrade).
+        /// 4. No snapshot yet / non-quorate / local SWIM not HEALTHY → `UNTRACKED`
+        ///    (legacy strict behaviour preserved).
+        ///
+        /// See `aether/docs/specs/reachability-aggregator-spec.md`.
+        private static MemberStatus resolveOnDutyStatus(NodeId peer,
+                                                        SwimHealth swimState,
+                                                        boolean quorate,
+                                                        Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
+            if (!quorate) {return MemberStatus.UNTRACKED;}
+            if (swimState == SwimHealth.HEALTHY) {return MemberStatus.ON_DUTY;}
+            return reachabilitySnapshot.fold(() -> MemberStatus.UNTRACKED,
+                                              snap -> snap.isReachable(peer)
+                                                      ? MemberStatus.ON_DUTY
+                                                      : MemberStatus.UNTRACKED);
         }
     }
 }

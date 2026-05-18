@@ -806,6 +806,12 @@ public interface AetherNode extends ManageableNode {
                 // node reports empty `onDutyPeers()` instead of leaking local-SWIM-derived
                 // claims that the majority has likely re-routed past. Quorum source is the
                 // TopologyObserver's `quorumEstablished` AtomicBoolean — single truth.
+                //
+                // RC1 reachability-aggregator landing: the strict view also consults the
+                // leader-broadcast cluster-canonical reachability snapshot to confirm
+                // ON_DUTY status when local SWIM hasn't yet acked HEALTHY (closes the
+                // per-reader-variance window without breaking the SWIM-faulty downgrade).
+                // See aether/docs/specs/reachability-aggregator-spec.md Layer 5.
                 return org.pragmatica.aether.deployment.membership.view.MembershipView.strict(
                         () -> {
                             var swim = swimHealthDetector.currentHealth()
@@ -817,7 +823,8 @@ public interface AetherNode extends ManageableNode {
                         consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                                      AetherValue.NodeLifecycleValue.class,
                                                      consumer),
-                        ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum());
+                        ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
+                        metricsCollector::lastReachabilitySnapshot);
             }
         }
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode);
