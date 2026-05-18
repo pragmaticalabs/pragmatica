@@ -28,7 +28,7 @@ import picocli.CommandLine.Option;
 class ClusterScaffoldCommand implements Callable<Integer> {
     @Option(names = "--name", required = true, description = "Cluster name (regex: ^[a-z][a-z0-9-]{0,62}$)") private String name;
 
-    @Option(names = "--format", required = true, description = "Output format: docker-compose") private String format;
+    @Option(names = "--template", required = true, description = "Output template: docker-compose") private String format;
 
     @Option(names = "--nodes", defaultValue = "5", description = "Number of compose-fixed nodes (default 5)") private int nodes;
 

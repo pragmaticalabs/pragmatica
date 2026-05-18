@@ -1578,7 +1578,7 @@ import static org.pragmatica.lang.Option.some;
         @Command(name = "inject", description = "Inject a synthetic trace entry (operator-driven; visible via 'aether traces list')") static class InjectCommand implements Callable<Integer> {
             @CommandLine.ParentCommand private TracesCommand tracesParent;
 
-            @CommandLine.Option(names = {"-o", "--operation"}, description = "Operation/callee name for the trace (required)", required = true) private String operation;
+            @CommandLine.Option(names = {"--operation"}, description = "Operation/callee name for the trace (required)", required = true) private String operation;
 
             @CommandLine.Option(names = {"-d", "--duration-ms"}, description = "Duration in milliseconds (default 10)") private Long durationMs;
 
