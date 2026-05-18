@@ -35,9 +35,11 @@ test_scale_up_to_7() {
 }
 
 test_scale_down_under_load() {
-    # Start load against the local health endpoint on each node directly
-    # (LOCAL routes are served on every node — no LB forwarding required)
-    APP_ENDPOINT="${CLUSTER_ENDPOINT}" start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/health/live"
+    # Production-like load: hit an app-port slice endpoint (test-echo blueprint
+    # deployed by suite harness) rather than the synthetic /health/live. Exercises
+    # the slice routing table that gets republished on every generation advance
+    # during a scale-down — masked by /health/live which is a node-local probe.
+    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health"
     sleep 5
 
     # Scale down to 5

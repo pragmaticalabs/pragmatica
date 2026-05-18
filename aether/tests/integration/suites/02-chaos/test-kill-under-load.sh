@@ -24,8 +24,13 @@ test_initial_state() {
 }
 
 test_kill_during_load() {
-    # Start background load against management health endpoint
-    start_mgmt_load "$LOAD_RPS" "$LOAD_DURATION" "/health/live"
+    # Production-like load: hit an app-port slice endpoint instead of the
+    # management /health/live. This exercises the full request path (HTTP →
+    # slice routing table → slice invocation → response) which is what
+    # chaos actually affects during a kill. Management /health/live is a
+    # node-local synthetic and doesn't traverse the routing table that
+    # gets republished on every cluster generation change.
+    start_load "$LOAD_RPS" "$LOAD_DURATION" GET "/api/echo/health"
 
     # Load establishment is genuinely time-based (load.sh ramps RPS via sleep);
     # this is not a chaos-timing sleep, so it stays.
