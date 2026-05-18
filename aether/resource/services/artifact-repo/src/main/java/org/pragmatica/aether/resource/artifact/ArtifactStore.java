@@ -8,6 +8,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.dht.DHTError;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.dht.DHTClient;
@@ -18,6 +19,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -155,6 +157,21 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// stacking 30s+ of tail latency. Calibrated for ~16-chunk 1MB artifacts.
     private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(30).seconds();
 
+    /// Bounded retry for the two metadata/versions-list DHT writes inside `deploy`.
+    /// The DHT-resilience layer (`dht-resilience-spec.md`) converts a transient QUIC
+    /// backpressure refusal into a synchronous `QuorumCollector.onFailure`, which is
+    /// correct for Rabia/consensus (built-in retransmit) but wrong for one-shot
+    /// `ArtifactStore.deploy` — the deploy path has no retransmit cycle of its own.
+    /// Without this retry, a single backpressured replica on the metadata key
+    /// surfaces as HTTP 500 on the test harness's PUT.
+    ///
+    /// Selective retry: only retries on `DHTError.PeerUnreachable` and
+    /// `DHTError.QuorumNotReached`. Other causes (NO_AVAILABLE_NODES, corruption)
+    /// propagate immediately so genuine failures aren't masked.
+    private static final int MAX_DHT_PUT_ATTEMPTS = 3;
+
+    private static final long[] DHT_PUT_BACKOFF_MS = {100L, 250L, 500L};
+
     private final DHTClient dht;
     private final StorageInstance storage;
 
@@ -235,8 +252,8 @@ class ArtifactStoreImpl implements ArtifactStore {
         var hexIds = blockIds.stream().map(BlockId::hexString)
                                     .toList();
         var metadata = new ArtifactMetadata(contentLength, chunkCount, md5, sha1, System.currentTimeMillis(), hexIds);
-        return dht.put(metaKey(artifact),
-                       metadata.toBytes()).flatMap(_ -> updateVersionsList(artifact))
+        return dhtPutWithRetry(metaKey(artifact),
+                               metadata.toBytes()).flatMap(_ -> updateVersionsList(artifact))
                       .map(_ -> recordDeployMetrics(artifact, contentLength, chunkCount, md5, sha1));
     }
 
@@ -278,8 +295,39 @@ class ArtifactStoreImpl implements ArtifactStore {
         var versionsKey = versionsKey(artifact.groupId(), artifact.artifactId());
         return dht.get(versionsKey).map(opt -> addVersionIfAbsent(opt,
                                                                   artifact.version()))
-                      .flatMap(versions -> dht.put(versionsKey,
-                                                   serializeVersionsList(versions)));
+                      .flatMap(versions -> dhtPutWithRetry(versionsKey,
+                                                           serializeVersionsList(versions)));
+    }
+
+    private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value) {
+        return dhtPutWithRetry(key, value, 0);
+    }
+
+    private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value, int attempt) {
+        var result = Promise.<Unit>promise();
+        dht.put(key, value).onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                                            .onFailure(cause -> handlePutFailure(key, value, attempt, cause, result)));
+        return result;
+    }
+
+    private void handlePutFailure(byte[] key, byte[] value, int attempt, Cause cause, Promise<Unit> result) {
+        var nextAttempt = attempt + 1;
+        if (!isTransientDhtFailure(cause) || nextAttempt >= MAX_DHT_PUT_ATTEMPTS) {
+            result.fail(cause);
+            return;
+        }
+        var backoffMs = DHT_PUT_BACKOFF_MS[Math.min(attempt, DHT_PUT_BACKOFF_MS.length - 1)];
+        log.warn("DHT put attempt {} of {} failed (transient): {}; retrying after {}ms",
+                 nextAttempt,
+                 MAX_DHT_PUT_ATTEMPTS,
+                 cause.message(),
+                 backoffMs);
+        SharedScheduler.schedule(() -> dhtPutWithRetry(key, value, nextAttempt).onResult(result::resolve),
+                                 timeSpan(backoffMs).millis());
+    }
+
+    private static boolean isTransientDhtFailure(Cause cause) {
+        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached;
     }
 
     private List<Version> addVersionIfAbsent(Option<byte[]> existingData, Version version) {
