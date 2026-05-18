@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.ClusterMembershipReducer.Outcome;
+import org.pragmatica.aether.deployment.membership.fsm.ReachabilityGate;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelDrain;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelTimer;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.EmitDomainEvent;
@@ -96,35 +97,35 @@ class ClusterMembershipReducerTest {
             // legacy consumers reading `NodeLifecycleKey` directly continue to function.
             // `MembershipView` is the canonical reader; the KV write is redundant with the
             // view's SWIM-derived ON_DUTY but is preserved for back-compat.
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
             assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
         }
 
         @Test void untracked_swimFaulty_isNop_bootstrapSafe() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void untracked_swimDeparted_isNop() {
-            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void untracked_slotClaimed_entersJoining() {
-            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1));
+            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertEntersJoining(outcome, Option.some(SLOT_ID), T1);
         }
 
         @Test void untracked_operatorDrain_isNop_unknownPeer() {
-            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1)), state);
+            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void untracked_operatorDecommissionGraceful_isNop() {
-            assertNop(reducer.apply(state, new OperatorDecommission(PEER, false, T1)), state);
+            assertNop(reducer.apply(state, new OperatorDecommission(PEER, false, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void untracked_operatorDecommissionForce_writesDecommissioned() {
-            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "operator-forced");
         }
 
@@ -133,7 +134,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void untracked_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
     }
 
@@ -154,7 +155,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void provisioning_slotClaimed_entersJoining() {
-            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1));
+            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertEntersJoining(outcome, Option.some(SLOT_ID), T1);
         }
 
@@ -171,7 +172,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void provisioning_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
     }
 
@@ -180,7 +181,7 @@ class ClusterMembershipReducerTest {
         private final Joining state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
 
         @Test void joining_swimHealthy_promotesToOnDuty_leaderInitiated() {
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertOnDuty(outcome, T1);
             assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
@@ -189,41 +190,41 @@ class ClusterMembershipReducerTest {
 
         @Test void joining_swimHealthy_withoutSlot_writesLifecycleOnly() {
             var slotless = MembershipFsmState.joining(PEER, ms(T0), Option.none());
-            var outcome = reducer.apply(slotless, new SwimHealthy(PEER, 1L, T1));
+            var outcome = reducer.apply(slotless, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertOnDuty(outcome, T1);
             assertThat(outcome.writes()).hasSize(1);
             assertThat(outcome.writes()).noneMatch(c -> c instanceof KVCommand.Remove<?>);
         }
 
         @Test void joining_swimFaulty_isNop_transientDuringBoot() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void joining_swimDeparted_writesDecommissioned() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "swim-departed");
         }
 
         @Test void joining_slotClaimed_isNop_idempotentReDelivery() {
-            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1)), state);
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void joining_operatorDrain_entersDraining() {
-            var outcome = reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1));
+            var outcome = reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDraining(outcome, T1, DrainReason.OPERATOR_DRAIN);
             assertThat(outcome.effects()).contains(new InvokeDrain(PEER, DrainReason.OPERATOR_DRAIN));
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
         }
 
         @Test void joining_operatorDecommissionGraceful_writesDecommissioned() {
-            var outcome = reducer.apply(state, new OperatorDecommission(PEER, false, T1));
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, false, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "operator-decommission");
             assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
         }
 
         @Test void joining_operatorDecommissionForce_writesDecommissioned() {
-            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "operator-forced");
         }
 
@@ -232,7 +233,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void joining_joinDeadlineExpired_writesDecommissioned_joinTimeout() {
-            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1));
+            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "join-timeout");
             assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
@@ -244,17 +245,17 @@ class ClusterMembershipReducerTest {
         private final OnDuty state = MembershipFsmState.onDuty(PEER, ms(T0));
 
         @Test void onDuty_swimHealthy_isNop_reConfirmation() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void onDuty_swimFaulty_writesDecommissioned_smokingGun() {
-            var outcome = reducer.apply(state, new SwimFaulty(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SwimFaulty(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "swim-faulty");
             assertThat(outcome.writes()).hasSize(1);
         }
 
         @Test void onDuty_swimDeparted_writesDecommissioned() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "swim-departed");
         }
 
@@ -263,13 +264,13 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void onDuty_operatorDrain_entersDraining() {
-            var outcome = reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1));
+            var outcome = reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDraining(outcome, T1, DrainReason.OPERATOR_DRAIN);
             assertThat(outcome.effects()).contains(new InvokeDrain(PEER, DrainReason.OPERATOR_DRAIN));
         }
 
         @Test void onDuty_operatorDecommissionForce_directToDecommissioned_noDrainCoordinator() {
-            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "operator-forced");
             // Q2=A: force is a direct transition; no DrainCoordinator effect.
             assertThat(outcome.effects()).noneMatch(e -> e instanceof InvokeDrain);
@@ -277,7 +278,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void onDuty_operatorDecommissionGraceful_routesThroughDraining() {
-            var outcome = reducer.apply(state, new OperatorDecommission(PEER, false, T1));
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, false, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDraining(outcome, T1, DrainReason.OPERATOR_DRAIN);
             assertThat(outcome.effects()).contains(new InvokeDrain(PEER, DrainReason.OPERATOR_DRAIN));
         }
@@ -287,7 +288,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void onDuty_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
     }
 
@@ -296,15 +297,15 @@ class ClusterMembershipReducerTest {
         private final Draining state = MembershipFsmState.draining(PEER, ms(T0), DrainReason.OPERATOR_DRAIN);
 
         @Test void draining_swimHealthy_isNop_drainOwnsOutcome() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void draining_swimFaulty_isNop_drainOwnsOutcome() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void draining_swimDeparted_writesDecommissioned_hardOverridesDrain() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "swim-departed");
             assertThat(outcome.effects()).contains(new CancelDrain(PEER));
         }
@@ -314,34 +315,34 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void draining_operatorDrain_isNop_alreadyDraining() {
-            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1)), state);
+            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void draining_operatorDecommissionForce_cancelsDrainAndDecommissions() {
-            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "operator-forced");
             assertThat(outcome.effects()).contains(new CancelDrain(PEER));
         }
 
         @Test void draining_operatorDecommissionGraceful_isNop_alreadyDraining() {
-            assertNop(reducer.apply(state, new OperatorDecommission(PEER, false, T1)), state);
+            assertNop(reducer.apply(state, new OperatorDecommission(PEER, false, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void draining_drainOutcomeSuccess_writesDecommissioned_emitsNodeDrained() {
-            var outcome = reducer.apply(state, new DrainOutcome(PEER, true, T1));
+            var outcome = reducer.apply(state, new DrainOutcome(PEER, true, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, null);  // null reason check — see assertion below
             assertEmitted(outcome, MembershipDomainEvent.NODE_DRAINED);
         }
 
         @Test void draining_drainOutcomeFailure_writesFailedDrain_emitsNodeDrainFailed() {
-            var outcome = reducer.apply(state, new DrainOutcome(PEER, false, T1));
+            var outcome = reducer.apply(state, new DrainOutcome(PEER, false, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.failedDrain(PEER, ms(T1)));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.FAILED_DRAIN, T1));
             assertEmitted(outcome, MembershipDomainEvent.NODE_DRAIN_FAILED);
         }
 
         @Test void draining_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
     }
 
@@ -355,15 +356,15 @@ class ClusterMembershipReducerTest {
         private final Decommissioned state = MembershipFsmState.decommissioned(PEER, T_AGED);
 
         @Test void decommissioned_swimHealthy_isNop_zombie_pastTtl() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T_LATE)), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T_LATE), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void decommissioned_swimFaulty_isNop() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void decommissioned_swimDeparted_isNop() {
-            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void decommissioned_slotClaimed_isErr() {
@@ -371,12 +372,12 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void decommissioned_operatorDrain_isNop() {
-            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1)), state);
+            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void decommissioned_operatorDecommission_isNop_idempotent() {
-            assertNop(reducer.apply(state, new OperatorDecommission(PEER, false, T1)), state);
-            assertNop(reducer.apply(state, new OperatorDecommission(PEER, true, T1)), state);
+            assertNop(reducer.apply(state, new OperatorDecommission(PEER, false, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
+            assertNop(reducer.apply(state, new OperatorDecommission(PEER, true, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void decommissioned_drainOutcome_isErr() {
@@ -384,7 +385,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void decommissioned_joinDeadlineExpired_isNop_waitingForGc() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
     }
 
@@ -401,12 +402,12 @@ class ClusterMembershipReducerTest {
 
         @Test void decommissioned_swimHealthy_isNop_hSeriesNoRevival() {
             var state = MembershipFsmState.decommissioned(PEER, NOW - 30_000L);
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC)), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void decommissioned_swimHealthy_pastRetention_isNop_hSeriesNoRevival() {
             var state = MembershipFsmState.decommissioned(PEER, NOW - 600_000L);
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC)), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, NOW_HLC), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
     }
 
@@ -415,15 +416,15 @@ class ClusterMembershipReducerTest {
         private final FailedDrain state = MembershipFsmState.failedDrain(PEER, ms(T0));
 
         @Test void failedDrain_swimHealthy_isNop() {
-            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void failedDrain_swimFaulty_isNop() {
-            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1)), state);
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void failedDrain_swimDeparted_writesDecommissioned() {
-            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SwimDeparted(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "swim-departed");
         }
 
@@ -432,11 +433,11 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void failedDrain_operatorDrain_isNop_operatorRecoveryRequired() {
-            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1)), state);
+            assertNop(reducer.apply(state, new OperatorDrain(PEER, DrainReason.OPERATOR_DRAIN, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void failedDrain_operatorDecommission_clearsFailedDrainMarker() {
-            var outcome = reducer.apply(state, new OperatorDecommission(PEER, false, T1));
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, false, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "operator-override");
         }
 
@@ -445,7 +446,7 @@ class ClusterMembershipReducerTest {
         }
 
         @Test void failedDrain_joinDeadlineExpired_isNop() {
-            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1)), state);
+            assertNop(reducer.apply(state, new JoinDeadlineExpired(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
     }
 
@@ -457,16 +458,16 @@ class ClusterMembershipReducerTest {
         @Test void apply_isPure_sameInputsYieldEqualOutcomes() {
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
             var event = new SwimFaulty(PEER, 1L, T1);
-            var first = reducer.apply(state, event);
-            var second = reducer.apply(state, event);
+            var first = reducer.apply(state, event, ReachabilityGate.ALWAYS_CONFIRMED);
+            var second = reducer.apply(state, event, ReachabilityGate.ALWAYS_CONFIRMED);
             assertThat(first).isEqualTo(second);
         }
 
         @Test void onDutyToDecommissioned_thenSwimFaulty_isNopFromTerminalState() {
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
             var event = new SwimFaulty(PEER, 1L, T1);
-            var first = reducer.apply(state, event);
-            var second = reducer.apply(first.newState(), event);
+            var first = reducer.apply(state, event, ReachabilityGate.ALWAYS_CONFIRMED);
+            var second = reducer.apply(first.newState(), event, ReachabilityGate.ALWAYS_CONFIRMED);
             assertThat(second.writes()).isEmpty();
             assertThat(second.effects()).isEmpty();
             assertThat(second.newState()).isEqualTo(first.newState());
@@ -475,8 +476,8 @@ class ClusterMembershipReducerTest {
         @Test void joiningToOnDuty_thenSwimHealthy_isNopFromOnDuty() {
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
             var event = new SwimHealthy(PEER, 1L, T1);
-            var first = reducer.apply(state, event);
-            var second = reducer.apply(first.newState(), event);
+            var first = reducer.apply(state, event, ReachabilityGate.ALWAYS_CONFIRMED);
+            var second = reducer.apply(first.newState(), event, ReachabilityGate.ALWAYS_CONFIRMED);
             assertThat(second.writes()).isEmpty();
             assertThat(second.effects()).isEmpty();
         }
@@ -485,8 +486,8 @@ class ClusterMembershipReducerTest {
             // DrainOutcome is at-most-once per spec §4.1 row 4 — re-apply on Decommissioned is err.
             var state = MembershipFsmState.draining(PEER, ms(T0), DrainReason.OPERATOR_DRAIN);
             var event = new DrainOutcome(PEER, true, T1);
-            var first = reducer.apply(state, event);
-            assertThatThrownBy(() -> reducer.apply(first.newState(), event)).isInstanceOf(IllegalStateException.class);
+            var first = reducer.apply(state, event, ReachabilityGate.ALWAYS_CONFIRMED);
+            assertThatThrownBy(() -> reducer.apply(first.newState(), event, ReachabilityGate.ALWAYS_CONFIRMED)).isInstanceOf(IllegalStateException.class);
         }
     }
 
@@ -498,12 +499,12 @@ class ClusterMembershipReducerTest {
     class SmokingGunReplay {
         @Test void onDutyVictim_singleFaultyObservation_writesDecommissioned() {
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
-            var outcome = reducer.apply(state, new SwimFaulty(PEER, 7L, T1));
+            var outcome = reducer.apply(state, new SwimFaulty(PEER, 7L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DECOMMISSIONED, T1));
             assertEmitted(outcome, MembershipDomainEvent.NODE_FAILED);
             // H.4 cure: subsequent SwimHealthy on the Decommissioned state is nop forever
             // (revival path eliminated). Re-apply SwimFaulty: also nop (already decommissioned).
-            var reapply = reducer.apply(outcome.newState(), new SwimFaulty(PEER, 7L, T2));
+            var reapply = reducer.apply(outcome.newState(), new SwimFaulty(PEER, 7L, T2), ReachabilityGate.ALWAYS_CONFIRMED);
             assertThat(reapply.writes()).isEmpty();
         }
     }
@@ -512,7 +513,7 @@ class ClusterMembershipReducerTest {
     class ForceDecommissionDirect {
         @Test void onDuty_operatorDecommissionForce_singleAtomicWrite_noDrainCoordinator() {
             var state = MembershipFsmState.onDuty(PEER, ms(T0));
-            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1));
+            var outcome = reducer.apply(state, new OperatorDecommission(PEER, true, T1), ReachabilityGate.ALWAYS_CONFIRMED);
 
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, ms(T1)));
             assertThat(outcome.writes()).containsExactly(putLifecycle(NodeLifecycleState.DECOMMISSIONED, T1));
@@ -529,7 +530,7 @@ class ClusterMembershipReducerTest {
             // Post-bootstrap-correction 2026-05-12: JOINING is only reachable via SlotClaimed
             // (the slot-provisioning path), not via SwimHealthy from UNTRACKED.
             var state = MembershipFsmState.untracked(PEER);
-            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1));
+            var outcome = reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), ReachabilityGate.ALWAYS_CONFIRMED);
 
             var expectedDelay = MembershipFsmConfig.DEFAULT_JOIN_DEADLINE;
             assertThat(outcome.effects()).contains(new ScheduleTimer(PEER, TimerKind.JOIN_DEADLINE, expectedDelay));
@@ -537,7 +538,7 @@ class ClusterMembershipReducerTest {
 
         @Test void joinDeadlineExpired_inJoining_transitionsToDecommissioned() {
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
-            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1));
+            var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED);
 
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, ms(T1)));
             assertEmittedWithReason(outcome, MembershipDomainEvent.NODE_FAILED, "join-timeout");
@@ -547,17 +548,17 @@ class ClusterMembershipReducerTest {
         @Test void joiningExit_emitsCancelTimer_preventingStaleFire() {
             // Any exit from Joining must cancel the join-deadline timer (spec R4).
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
         }
 
         @Test void joinDeadlineExpired_outsideJoining_isHarmlessNop() {
             // Stale-fire after Joining exit must be a no-op against every non-Joining state.
             var onDuty = MembershipFsmState.onDuty(PEER, ms(T0));
-            assertNop(reducer.apply(onDuty, new JoinDeadlineExpired(PEER, T2)), onDuty);
+            assertNop(reducer.apply(onDuty, new JoinDeadlineExpired(PEER, T2), ReachabilityGate.ALWAYS_CONFIRMED), onDuty);
 
             var decommissioned = MembershipFsmState.decommissioned(PEER, ms(T0));
-            assertNop(reducer.apply(decommissioned, new JoinDeadlineExpired(PEER, T2)), decommissioned);
+            assertNop(reducer.apply(decommissioned, new JoinDeadlineExpired(PEER, T2), ReachabilityGate.ALWAYS_CONFIRMED), decommissioned);
         }
     }
 
@@ -567,7 +568,7 @@ class ClusterMembershipReducerTest {
             // No self-write event exists in MembershipFsmEvent vocabulary — verified at compile time
             // by the sealed hierarchy. This test asserts the leader-observed SwimHealthy fires the promotion.
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.some(SLOT_ID));
-            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1));
+            var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
 
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
@@ -580,9 +581,9 @@ class ClusterMembershipReducerTest {
             // produced by the leader's local SWIM. This test documents that semantic.
             var state = MembershipFsmState.joining(PEER, ms(T0), Option.none());
             var leaderObservation = new SwimHealthy(PEER, 1L, T1);  // observer identity is implicit
-            assertThat(reducer.apply(state, leaderObservation).newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
+            assertThat(reducer.apply(state, leaderObservation, ReachabilityGate.ALWAYS_CONFIRMED).newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             // A second, different observer (also the leader, different incarnation) is nop on OnDuty.
-            var reapply = reducer.apply(MembershipFsmState.onDuty(PEER, ms(T1)), new SwimHealthy(LEADER, 2L, T2));
+            var reapply = reducer.apply(MembershipFsmState.onDuty(PEER, ms(T1)), new SwimHealthy(LEADER, 2L, T2), ReachabilityGate.ALWAYS_CONFIRMED);
             assertThat(reapply.writes()).isEmpty();
         }
     }
@@ -606,7 +607,7 @@ class ClusterMembershipReducerTest {
 
         @Test void transportEventsByStateTable_matchesSpecSection16() {
             for (var row : table()) {
-                var actual = reducer.apply(row.state(), row.event());
+                var actual = reducer.apply(row.state(), row.event(), ReachabilityGate.ALWAYS_CONFIRMED);
                 assertThat(actual.newState()).as("newState for %s", row.label()).isEqualTo(row.expected().newState());
                 assertThat(actual.writes()).as("writes for %s", row.label()).containsExactlyElementsOf(row.expected().writes());
                 assertThat(actual.effects()).as("effects for %s", row.label()).containsExactlyElementsOf(row.expected().effects());
@@ -679,14 +680,14 @@ class ClusterMembershipReducerTest {
             // TransportUnreachable) cell. Duplicates a table row by design — this test is
             // named for code-search visibility and is the canary for future regressions.
             var state = MembershipFsmState.decommissioned(PEER, ms(T0));
-            var outcome = reducer.apply(state, new TransportUnreachable(PEER, T1));
+            var outcome = reducer.apply(state, new TransportUnreachable(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertNop(outcome, state);
         }
 
         @Test void decommissioned_transportReachable_isNop_chaosRevivalDefense() {
             // Mirror canary for the reachable side — no revival, no writes.
             var state = MembershipFsmState.decommissioned(PEER, ms(T0));
-            var outcome = reducer.apply(state, new TransportReachable(PEER, T1));
+            var outcome = reducer.apply(state, new TransportReachable(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertNop(outcome, state);
         }
     }
@@ -740,7 +741,7 @@ class ClusterMembershipReducerTest {
     }
 
     private void assertIllegal(MembershipFsmState state, MembershipFsmEvent event) {
-        assertThatThrownBy(() -> reducer.apply(state, event)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> reducer.apply(state, event, ReachabilityGate.ALWAYS_CONFIRMED)).isInstanceOf(IllegalStateException.class);
     }
 
     private static KVCommand<AetherKey> putLifecycle(NodeLifecycleState newState, HlcTimestamp at) {

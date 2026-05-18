@@ -1073,12 +1073,15 @@ public interface AetherNode extends ManageableNode {
                 .consensusDrainCoordinator(ctmLifecycleWriter, lifecycleReader::apply, inFlightProbe);
         // MembershipFsm wiring (spec §9 — post-E.8 always active). Constructed AFTER
         // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
+        // Step 4: also wired with `reachabilityAggregator::snapshot` so the reducer can apply
+        // the aggregator-quorum gate at the two ON_DUTY decommission cells (S04/S05/S13/S17).
         var membershipFsm = buildMembershipFsm(config.self(),
                                                 kvStore,
                                                 clusterCommandApplier,
                                                 drainCoordinator,
                                                 isLeaderSupplier,
-                                                hlcClock);
+                                                hlcClock,
+                                                reachabilityAggregator);
         membershipFsm.start();
         // Topology-observation refactor Step 3: wire the leader-side aggregator's snapshot
         // stream into the FSM. The aggregator invokes this listener synchronously after each
@@ -1882,12 +1885,19 @@ public interface AetherNode extends ManageableNode {
     /// - routes operator-initiated drain/decommission events to consensus via
     ///   `commandApplier` and invokes `drainCoordinator` for the drain protocol;
     /// - routes SWIM observations through the leader-gated reducer (`isLeaderSupplier`).
+    ///
+    /// **Topology-observation refactor Step 4.** The aggregator snapshot supplier is passed
+    /// to the FSM so the reducer can apply the aggregator-quorum gate at the two ON_DUTY
+    /// decommission cells (`SwimFaulty`, `TransportUnreachable`). Cold-start fallback: when
+    /// `reachabilityAggregator.snapshot()` returns `Option.none()`, the gate is permissive
+    /// (pre-Step-4 behavior).
     private static MembershipFsm buildMembershipFsm(NodeId self,
                                                      KVStore<AetherKey, AetherValue> kvStore,
                                                      java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                      org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
                                                      BooleanSupplier isLeaderSupplier,
-                                                     HlcClock hlcClock) {
+                                                     HlcClock hlcClock,
+                                                     org.pragmatica.aether.deployment.membership.ReachabilityAggregator reachabilityAggregator) {
         var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
         MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                                                                                                 AetherValue.NodeLifecycleValue.class,
@@ -1904,7 +1914,8 @@ public interface AetherNode extends ManageableNode {
                                             drainCoordinator,
                                             scheduler,
                                             isLeaderSupplier,
-                                            hlcClock);
+                                            hlcClock,
+                                            reachabilityAggregator::snapshot);
     }
 
     /// Self-bootstrap (Bootstrap-correction 2026-05-12; spec §6 step 7). SWIM does not observe

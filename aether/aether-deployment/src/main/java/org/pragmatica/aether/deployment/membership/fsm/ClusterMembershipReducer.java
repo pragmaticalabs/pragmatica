@@ -80,12 +80,16 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         return new ClusterMembershipReducer(config);
     }
 
-    public Outcome apply(MembershipFsmState state, MembershipFsmEvent event) {
+    /// Topology-observation refactor Step 4 — `gate` is consulted only by the two ON_DUTY
+    /// decommission cells (`SwimFaulty` and `TransportUnreachable`). All other cells ignore
+    /// `gate` and behave identically to the pre-Step-4 reducer. Callers that do not need
+    /// aggregator-quorum gating may pass `ReachabilityGate.ALWAYS_CONFIRMED`.
+    public Outcome apply(MembershipFsmState state, MembershipFsmEvent event, ReachabilityGate gate) {
         return switch (state){
             case Untracked s -> applyUntracked(s, event);
             case Provisioning s -> applyProvisioning(s, event);
             case Joining s -> applyJoining(s, event);
-            case OnDuty s -> applyOnDuty(s, event);
+            case OnDuty s -> applyOnDuty(s, event, gate);
             case Draining s -> applyDraining(s, event);
             case Decommissioned s -> applyDecommissioned(s, event);
             case FailedDrain s -> applyFailedDrain(s, event);
@@ -160,7 +164,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         };
     }
 
-    private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event) {
+    private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event, ReachabilityGate gate) {
         return switch (event){
             case SwimHealthy _ -> Outcome.nop(state);
             // H.3 partial revert (2026-05-13): restored `(OnDuty, SwimFaulty) → DECOMMISSIONED`
@@ -168,7 +172,14 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             // consumers reading KV directly continue to see the failed peer drop out. The
             // chaos revival storm cure stays — it lives in `(DECOMMISSIONED, SwimHealthy)`
             // being nop (no revival), not in suppressing the initial decommission write.
-            case SwimFaulty e -> onDutyToDecommissioned(state, e.at(), REASON_SWIM_FAULTY);
+            //
+            // Step 4 (spec §16 S04/S13/S17): aggregator-quorum gate. A SWIM-faulty observation
+            // on an ON_DUTY peer is NOT sufficient to decommission unless the cluster-wide
+            // ReachabilityAggregator also reports UNREACHABLE with quorum. Cold-start fallback
+            // (no snapshot yet) returns `true` to preserve pre-Step-4 behavior.
+            case SwimFaulty e -> gate.isConfirmedUnreachable(state.peer())
+                                 ? onDutyToDecommissioned(state, e.at(), REASON_SWIM_FAULTY)
+                                 : Outcome.nop(state);
             case SwimDeparted e -> onDutyToDecommissioned(state, e.at(), REASON_SWIM_DEPARTED);
             case SlotClaimed _ -> illegal(state, event);
             case OperatorDrain e -> enterDraining(state.peer(), e.reason(), e.at());
@@ -179,9 +190,15 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             // re-confirms the existing state — no write needed (mirrors SwimHealthy nop).
             case TransportReachable _ -> Outcome.nop(state);
             // S02 / S14: transport disconnect on an ON_DUTY peer is the fast path to
-            // DECOMMISSIONED (~1s vs SWIM ~10-15s). Step 4 will add aggregator-quorum
-            // gating; Step 2 fires unconditionally per plan contract.
-            case TransportUnreachable e -> onDutyToDecommissioned(state, e.at(), REASON_TRANSPORT_FAILURE);
+            // DECOMMISSIONED (~1s vs SWIM ~10-15s).
+            //
+            // Step 4 (spec §16 S05/S17): aggregator-quorum gate. A single transport-unreachable
+            // observation is NOT sufficient — confirmed by quorum or it's a partition seen by
+            // a single observer (S05) and must be suppressed. Cold-start fallback returns
+            // `true` (but transport events don't fire without a snapshot in practice).
+            case TransportUnreachable e -> gate.isConfirmedUnreachable(state.peer())
+                                           ? onDutyToDecommissioned(state, e.at(), REASON_TRANSPORT_FAILURE)
+                                           : Outcome.nop(state);
         };
     }
 

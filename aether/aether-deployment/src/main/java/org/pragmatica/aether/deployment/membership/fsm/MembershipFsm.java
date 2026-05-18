@@ -63,6 +63,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -124,6 +125,14 @@ public final class MembershipFsm {
     /// drift policy.
     private final HlcClock hlcClock;
 
+    /// Topology-observation refactor Step 4 — aggregator-snapshot supplier. Consulted at every
+    /// `reducer.apply(...)` call site to build a per-event `ReachabilityGate`. The supplier is
+    /// expected to be cheap (the aggregator returns a pre-built snapshot reference); the gate
+    /// itself reads `snapshot.states().get(peer)` once per consultation. Cold-start fallback:
+    /// when the supplier returns `Option.none()`, the gate returns `true` (permissive) so the
+    /// pre-Step-4 behavior is preserved before the first snapshot is produced.
+    private final Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier;
+
     private final ReentrantLock fsmLock = new ReentrantLock();
 
     private final Map<NodeId, MembershipFsmState> fsmStates = new ConcurrentHashMap<>();
@@ -168,7 +177,8 @@ public final class MembershipFsm {
                           DrainCoordinator drainCoordinator,
                           TimerScheduler scheduler,
                           BooleanSupplier isLeader,
-                          HlcClock hlcClock) {
+                          HlcClock hlcClock,
+                          Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier) {
         this.self = self;
         this.config = config;
         this.reducer = reducer;
@@ -179,6 +189,7 @@ public final class MembershipFsm {
         this.scheduler = scheduler;
         this.isLeader = isLeader;
         this.hlcClock = hlcClock;
+        this.aggregatorSnapshotSupplier = aggregatorSnapshotSupplier;
     }
 
     /// Read-only factory (no-op writes). Useful for tests that only exercise the reducer +
@@ -195,7 +206,8 @@ public final class MembershipFsm {
                              NO_OP_DRAIN_COORDINATOR,
                              defaultScheduler(),
                              NEVER_LEADER,
-                             defaultHlcClock(self));
+                             defaultHlcClock(self),
+                             NO_AGGREGATOR_SNAPSHOT);
     }
 
     /// Write-capable factory. When `isLeader.getAsBoolean()` returns `true`, operator events
@@ -217,13 +229,15 @@ public final class MembershipFsm {
                              drainCoordinator,
                              scheduler,
                              isLeader,
-                             defaultHlcClock(self));
+                             defaultHlcClock(self),
+                             NO_AGGREGATOR_SNAPSHOT);
     }
 
-    /// RC1 Step 4 — full production factory. Accepts an explicit `HlcClock` so the FSM
-    /// shares the node-wide HLC instance with other subsystems (generation snapshots,
-    /// governor announcer, etc.) — every emitted FSM event is causally ordered against
-    /// every other HLC-stamped action of this node.
+    /// RC1 Step 4 — production factory with explicit `HlcClock`. The FSM shares the node-wide
+    /// HLC instance with other subsystems (generation snapshots, governor announcer, etc.) —
+    /// every emitted FSM event is causally ordered against every other HLC-stamped action of
+    /// this node. Defaults the aggregator-snapshot supplier to a cold-start (`Option.none()`)
+    /// stub — call the supplier-accepting overload from production wiring.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -233,6 +247,32 @@ public final class MembershipFsm {
                                               TimerScheduler scheduler,
                                               BooleanSupplier isLeader,
                                               HlcClock hlcClock) {
+        return membershipFsm(self,
+                             config,
+                             lifecycleSnapshotReader,
+                             slotSnapshotReader,
+                             commandApplier,
+                             drainCoordinator,
+                             scheduler,
+                             isLeader,
+                             hlcClock,
+                             NO_AGGREGATOR_SNAPSHOT);
+    }
+
+    /// Topology-observation refactor Step 4 — full production factory accepting an aggregator-
+    /// snapshot supplier. Each reducer call site builds a per-event `ReachabilityGate` from the
+    /// current snapshot (cold-start fallback returns a permissive gate). Production wiring
+    /// (`AetherNode.buildMembershipFsm`) passes `reachabilityAggregator::snapshot`.
+    public static MembershipFsm membershipFsm(NodeId self,
+                                              MembershipFsmConfig config,
+                                              LifecycleSnapshotReader lifecycleSnapshotReader,
+                                              SlotSnapshotReader slotSnapshotReader,
+                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                              DrainCoordinator drainCoordinator,
+                                              TimerScheduler scheduler,
+                                              BooleanSupplier isLeader,
+                                              HlcClock hlcClock,
+                                              Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier) {
         var reducer = ClusterMembershipReducer.clusterMembershipReducer(config);
         return new MembershipFsm(self,
                                  config,
@@ -243,7 +283,8 @@ public final class MembershipFsm {
                                  drainCoordinator,
                                  scheduler,
                                  isLeader,
-                                 hlcClock);
+                                 hlcClock,
+                                 aggregatorSnapshotSupplier);
     }
 
     /// Custom-reducer factory (test-only — lets callers inject a reducer with deterministic
@@ -262,7 +303,8 @@ public final class MembershipFsm {
                                  NO_OP_DRAIN_COORDINATOR,
                                  defaultScheduler(),
                                  NEVER_LEADER,
-                                 defaultHlcClock(self));
+                                 defaultHlcClock(self),
+                                 NO_AGGREGATOR_SNAPSHOT);
     }
 
     /// Custom-reducer + custom-clock factory (test-only — lets adversarial tests inject a
@@ -282,7 +324,8 @@ public final class MembershipFsm {
                                  NO_OP_DRAIN_COORDINATOR,
                                  defaultScheduler(),
                                  NEVER_LEADER,
-                                 hlcClock);
+                                 hlcClock,
+                                 NO_AGGREGATOR_SNAPSHOT);
     }
 
     public Promise<Unit> start() {
@@ -745,7 +788,7 @@ public final class MembershipFsm {
     private void processFsmEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
         var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
-        var outcome = reducer.apply(current, event);
+        var outcome = reducer.apply(current, event, currentReachabilityGate());
         fsmStates.put(peer, outcome.newState());
         logFsmOutcome(event, current, outcome);
     }
@@ -769,7 +812,7 @@ public final class MembershipFsm {
     private void processOperatorEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
         var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
-        var outcome = reducer.apply(current, event);
+        var outcome = reducer.apply(current, event, currentReachabilityGate());
         if (outcome.writes().isEmpty()) {
             applyEffectsLocked(outcome.effects());
             logOperatorOutcome(event, current, outcome, true);
@@ -1172,6 +1215,27 @@ public final class MembershipFsm {
     };
 
     private static final BooleanSupplier NEVER_LEADER = () -> false;
+
+    /// Cold-start default for test factories: no aggregator snapshot available. The reducer's
+    /// `(ON_DUTY, SwimFaulty)` and `(ON_DUTY, TransportUnreachable)` cells fall back to the
+    /// permissive (pre-Step-4) behavior when the supplier returns `Option.none()`.
+    private static final Supplier<Option<AggregatedReachabilitySnapshot>> NO_AGGREGATOR_SNAPSHOT = Option::none;
+
+    /// Topology-observation refactor Step 4 — build a per-event `ReachabilityGate` from the
+    /// current aggregator snapshot. Returns a permissive gate (always `true`) when the supplier
+    /// reports `Option.none()` (cold start, no snapshot yet — preserves pre-Step-4 behavior).
+    /// Otherwise returns `true` only when the snapshot entry for `peer` is UNREACHABLE; REACHABLE
+    /// and UNKNOWN both gate to `false` (a confirmed cluster-wide failure is required).
+    private ReachabilityGate currentReachabilityGate() {
+        var snapshotOpt = aggregatorSnapshotSupplier.get();
+        return snapshotOpt.fold(() -> ReachabilityGate.ALWAYS_CONFIRMED,
+                                 snapshot -> peer -> isUnreachableInSnapshot(snapshot, peer));
+    }
+
+    private static boolean isUnreachableInSnapshot(AggregatedReachabilitySnapshot snapshot, NodeId peer) {
+        var entry = snapshot.states().get(peer);
+        return entry != null && entry.kind() == ReachabilityKind.UNREACHABLE;
+    }
 
     /// RC1 Step 4 — default per-node `HlcClock` for test-only factories that do not accept an
     /// explicit clock. Production wiring (`AetherNode.buildMembershipFsm`) MUST pass the node's
