@@ -51,7 +51,7 @@ services:
 A correct-by-construction template is available via:
 
 ```sh
-aether cluster scaffold --name us-prod --format docker-compose --nodes 5 > compose.yml
+aether cluster scaffold --name us-prod --template docker-compose --nodes 5 > compose.yml
 ```
 
 ### Kubernetes

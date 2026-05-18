@@ -133,7 +133,7 @@ File: `aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/ClusterScaffol
 
 New subcommand:
 ```
-aether cluster scaffold --name us-prod --format docker-compose --nodes 5 > compose.yml
+aether cluster scaffold --name us-prod --template docker-compose --nodes 5 > compose.yml
 ```
 
 The template:
@@ -188,7 +188,7 @@ Net: ~25 lines, low risk, contained to deployment-infra layer + 2 unit tests.
 ### RC2:
 1. Unit test for the first-boot consistency check.
 2. Manual: edit `aether.toml` to use a wrong cluster name; restart; observe fail-closed startup with clear error.
-3. Manual: run `aether cluster scaffold --name testc --format docker-compose` and verify the generated compose file deploys a valid cluster.
+3. Manual: run `aether cluster scaffold --name testc --template docker-compose` and verify the generated compose file deploys a valid cluster.
 
 ---
 
