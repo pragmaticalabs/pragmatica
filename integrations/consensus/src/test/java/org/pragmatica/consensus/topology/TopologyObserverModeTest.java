@@ -33,9 +33,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Verifies the explicit `BOOTING` / `NORMAL` `TopologyMode` semantics introduced by the
-/// 2026-05-07 membership-state-tracker audit (Steps 5+6). Replaces the implicit
-/// snapshot-vs-legacy fallback with an observable, one-way mode flip.
+/// Verifies the explicit `BOOTING` / `NORMAL` `TopologyMode` semantics after the
+/// 2026-05-18 nodeStatesById-fallback removal: `mode` is purely informational and
+/// no longer gates read sources. The snapshot-backed `MembershipView` is the SOLE
+/// source for `healthyActiveNodeCount`, `readyNodeCount`, and `coreNodes`. When the
+/// snapshot is absent — even during BOOTING — reads return conservative zeros
+/// rather than the constructor-seeded in-memory map.
 class TopologyObserverModeTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
@@ -101,20 +104,32 @@ class TopologyObserverModeTest {
     @Nested
     class BootingFallback {
         @Test
-        void bootingMode_noSnapshot_healthyActiveNodeCount_usesLegacy() {
-            // Constructor seeds 5 non-passive members from coreNodes (all HEALTHY by default).
+        void bootingMode_noSnapshot_healthyActiveNodeCount_returnsZero() {
+            // 2026-05-18: nodeStatesById is no longer a read source. Even though the
+            // constructor seeds 5 non-passive members from coreNodes, BOOTING with an
+            // absent snapshot must report 0 — the per-reader-variance bug class that
+            // chaos suites surfaced is exactly the dual read path this assertion
+            // pins down.
             var observer = observerWith(clusterOf5(), GenerationSnapshotSource.noop());
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.BOOTING);
-            assertThat(observer.healthyActiveNodeCount()).isEqualTo(5);
+            assertThat(observer.healthyActiveNodeCount()).isZero();
         }
 
         @Test
-        void bootingMode_noSnapshot_readyNodeCount_usesLegacy() {
+        void bootingMode_noSnapshot_readyNodeCount_returnsZero() {
             var observer = observerWith(clusterOf5(), GenerationSnapshotSource.noop());
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyMode.BOOTING);
-            assertThat(observer.readyNodeCount()).isEqualTo(5);
+            assertThat(observer.readyNodeCount()).isZero();
+        }
+
+        @Test
+        void bootingMode_noSnapshot_coreNodes_returnsEmpty() {
+            var observer = observerWith(clusterOf5(), GenerationSnapshotSource.noop());
+
+            assertThat(observer.topologyMode()).isEqualTo(TopologyMode.BOOTING);
+            assertThat(observer.coreNodes()).isEmpty();
         }
     }
 

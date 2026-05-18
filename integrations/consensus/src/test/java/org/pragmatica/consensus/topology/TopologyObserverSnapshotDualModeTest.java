@@ -32,9 +32,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Verifies `TopologyObserver`'s dual-mode read paths switch between the snapshot-backed
-/// `MembershipView` and the legacy in-memory `nodeStatesById` map based on whether the
-/// injected `GenerationSnapshotSource` currently exposes a view.
+/// Verifies `TopologyObserver`'s snapshot-only read paths (2026-05-18
+/// nodeStatesById-fallback removal): the KV-derived `MembershipView` is the SOLE
+/// source for cluster-membership questions. When the snapshot is absent the
+/// observer returns conservative zero/empty values — it no longer leaks the
+/// constructor-seeded in-memory `nodeStatesById` map as a fallback.
 class TopologyObserverSnapshotDualModeTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
@@ -87,16 +89,16 @@ class TopologyObserverSnapshotDualModeTest {
     @Nested
     class HealthyActiveCount {
         @Test
-        void healthyActiveNodeCount_bootingMode_noSnapshot_usesLegacyFallback() {
-            // Audit Step 5/6 (2026-05-07 explicit BOOTING/NORMAL): the observer starts
-            // in BOOTING and falls back to the in-memory `nodeStatesById` count when
-            // no snapshot is available, so `/health/ready` does not stall waiting on a
-            // snapshot that itself requires quorum to be published. Constructor seeds
-            // self + PEER_A + PEER_B (all HEALTHY by `addNode` default).
+        void healthyActiveNodeCount_bootingMode_noSnapshot_returnsZero() {
+            // 2026-05-18 nodeStatesById-fallback removal: even though the constructor
+            // seeds self + PEER_A + PEER_B, an absent snapshot in BOOTING reports 0.
+            // The per-reader-variance bug class is fixed by making the snapshot the
+            // sole source — `/health/ready` waits for the snapshot rather than racing
+            // a transport-derived count.
             var observer = observerWith(GenerationSnapshotSource.noop());
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyObserver.TopologyMode.BOOTING);
-            assertThat(observer.healthyActiveNodeCount()).isEqualTo(3);
+            assertThat(observer.healthyActiveNodeCount()).isZero();
         }
 
         @Test
@@ -126,10 +128,13 @@ class TopologyObserverSnapshotDualModeTest {
     @Nested
     class CoreNodes {
         @Test
-        void coreNodeIds_noSnapshot_usesLegacy() {
+        void coreNodeIds_noSnapshot_returnsEmpty() {
+            // 2026-05-18: snapshot is the sole membership source. When absent, the
+            // observer returns an empty set rather than leaking the constructor-seeded
+            // `coreNodeIds` (which mirrors `nodeStatesById`).
             var observer = observerWith(GenerationSnapshotSource.noop());
 
-            assertThat(observer.coreNodes()).containsExactlyInAnyOrder(SELF, PEER_A, PEER_B);
+            assertThat(observer.coreNodes()).isEmpty();
         }
 
         @Test
@@ -138,8 +143,8 @@ class TopologyObserverSnapshotDualModeTest {
             source.set(new StubView(Set.of(PEER_A, PEER_C), Set.of(PEER_A), 1, 3));
             var observer = observerWith(source);
 
-            // Snapshot disagrees with the static config — observer should return the
-            // snapshot-projected set, not the constructor-seeded core map.
+            // Snapshot disagrees with the static config — observer returns the
+            // snapshot-projected set.
             assertThat(observer.coreNodes()).containsExactlyInAnyOrder(PEER_A, PEER_C);
         }
     }
@@ -160,16 +165,15 @@ class TopologyObserverSnapshotDualModeTest {
         }
 
         @Test
-        void readyNodes_bootingMode_noSnapshot_usesLegacyFallback() {
-            // Audit Step 5/6 (2026-05-07 explicit BOOTING/NORMAL): in BOOTING mode the
-            // observer falls back to the in-memory `nodeStatesById` non-passive count
-            // (constructor seeds self + PEER_A + PEER_B = 3) so the bootstrap path can
-            // advance before the first quorum-projected snapshot is published.
+        void readyNodes_bootingMode_noSnapshot_returnsZero() {
+            // 2026-05-18 nodeStatesById-fallback removal: BOOTING with an absent
+            // snapshot returns 0; the constructor-seeded membership is no longer
+            // a read source.
             var source = new StubSource(); // empty view
             var observer = observerWith(source);
 
             assertThat(observer.topologyMode()).isEqualTo(TopologyObserver.TopologyMode.BOOTING);
-            assertThat(observer.readyNodeCount()).isEqualTo(3);
+            assertThat(observer.readyNodeCount()).isZero();
         }
     }
 
@@ -180,10 +184,9 @@ class TopologyObserverSnapshotDualModeTest {
             var source = new StubSource();
             var observer = observerWith(source);
 
-            // No snapshot present -> LEGACY.
+            // No snapshot present -> LEGACY (meaning "snapshot absent"); empty set.
             assertThat(observer.effectiveMembership().source()).isEqualTo(EffectiveMembership.Source.LEGACY);
-            assertThat(observer.effectiveMembership().coreMemberIds())
-                .containsExactlyInAnyOrder(SELF, PEER_A, PEER_B);
+            assertThat(observer.effectiveMembership().coreMemberIds()).isEmpty();
 
             source.set(new StubView(Set.of(PEER_A, PEER_C), Set.of(PEER_A, PEER_C), 2, 3));
 
@@ -194,8 +197,9 @@ class TopologyObserverSnapshotDualModeTest {
 
             source.clear();
 
-            // Snapshot cleared -> back to LEGACY (dual-mode fallback).
+            // Snapshot cleared -> back to LEGACY with an empty set (no fallback).
             assertThat(observer.effectiveMembership().source()).isEqualTo(EffectiveMembership.Source.LEGACY);
+            assertThat(observer.effectiveMembership().coreMemberIds()).isEmpty();
         }
     }
 

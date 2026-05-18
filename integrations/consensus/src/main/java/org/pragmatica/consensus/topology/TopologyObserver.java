@@ -22,7 +22,6 @@ import org.pragmatica.net.tcp.TlsConfig;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Instant;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -62,24 +61,25 @@ public interface TopologyObserver extends TopologyManager {
         }
     }
 
-    /// Explicit mode that drives `BOOTING`-vs-`NORMAL` semantics for the legacy
-    /// `nodeStatesById` fallback paths.
+    /// Purely informational topology mode (2026-05-18 nodeStatesById-fallback removal).
     ///
-    /// `BOOTING` — the cluster has never observed a `MembershipView` whose projected
-    /// `coreMemberIds` reaches quorum (`clusterSize/2 + 1`). During this window
-    /// `healthyActiveNodeCount`, `readyNodeCount`, and the private quorum-eval
-    /// `healthyActivePeerCount` fall back to the in-memory `nodeStatesById` map so
-    /// `/health/ready` does not stall waiting on a snapshot that itself requires
-    /// quorum to be published.
+    /// Prior to the refactor, `BOOTING` enabled an in-memory `nodeStatesById` read
+    /// fallback for `healthyActiveNodeCount`, `readyNodeCount`, and the private
+    /// quorum-eval `healthyActivePeerCount` while the cluster had never observed a
+    /// `MembershipView` reaching quorum. That dual read path turned out to be a
+    /// per-reader-variance source during chaos suites (02-chaos / 13-edge-cases)
+    /// because different callers saw different counts depending on snapshot
+    /// availability at the instant of the read.
     ///
-    /// `NORMAL` — quorum has been observed at least once via the snapshot. From this
-    /// point all reads are snapshot-only; if the snapshot ever becomes empty again
-    /// the observer reports `0` rather than leaking a transport-derived count that
-    /// disagrees with the leader's view.
+    /// Today the `MembershipView` projected by `snapshotSource.currentMembershipView()`
+    /// is the SOLE source for these reads. When the snapshot is absent the observer
+    /// returns conservative zeros — it never falls back to `nodeStatesById`.
     ///
-    /// Transition is one-way: `BOOTING -> NORMAL` triggers on the FIRST snapshot whose
-    /// `coreMemberIds.size() >= clusterSize/2 + 1`. Subsequent smaller snapshots do
-    /// not flip back to `BOOTING`.
+    /// `mode` is preserved as a diagnostic signal:
+    ///   - `BOOTING` — no quorum-reaching snapshot has ever been observed.
+    ///   - `NORMAL` — quorum has been observed at least once via the snapshot.
+    /// Transition is still one-way (the first snapshot with
+    /// `coreMemberIds.size() >= quorum`), but it no longer gates read sources.
     enum TopologyMode {
         BOOTING, NORMAL
     }
@@ -424,17 +424,24 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public Set<NodeId> coreNodes() {
+                // Snapshot-only: when the KV-derived view is absent return an empty set
+                // rather than leaking the constructor-seeded `coreNodeIds`. The in-memory
+                // set still drives transport bookkeeping (addNode/removeNode keep it in
+                // sync with `nodeStatesById`), but it is no longer a read source for
+                // cluster-membership questions.
                 return snapshotSource.currentMembershipView()
                                      .map(MembershipView::coreMemberIds)
-                                     .or(() -> Collections.unmodifiableSet(coreNodeIds));
+                                     .or(Set.of());
             }
 
             @Override
             public EffectiveMembership effectiveMembership() {
+                // Source.LEGACY now indicates "snapshot absent" — the returned set is
+                // empty rather than leaking nodeStatesById-derived membership.
                 return snapshotSource.currentMembershipView()
                                      .map(view -> new EffectiveMembership(view.coreMemberIds(),
                                                                            EffectiveMembership.Source.SNAPSHOT))
-                                     .or(() -> new EffectiveMembership(Collections.unmodifiableSet(coreNodeIds),
+                                     .or(() -> new EffectiveMembership(Set.of(),
                                                                         EffectiveMembership.Source.LEGACY));
             }
 
@@ -466,46 +473,43 @@ public interface TopologyObserver extends TopologyManager {
 
             @Override
             public int readyNodeCount() {
-                // BOOTING vs NORMAL semantics (audit Step 5, R1):
-                //   BOOTING — snapshot may be absent because quorum has never been
-                //     observed; fall back to legacy in-memory `nodeStatesById` size of
-                //     non-passive peers + self so `/health/ready` does not stall waiting
-                //     on a snapshot that itself requires quorum.
-                //   NORMAL — snapshot is the SOLE source. If absent (publisher hiccup
-                //     during steady state), report 0 rather than leak a transport-derived
-                //     count that disagrees with the leader's view.
-                var view = snapshotSource.currentMembershipView();
-                if (view.isPresent()) {
-                    maybeTransitionToNormal(view.unwrap());
-                    return view.unwrap().onDutyMemberIds().size();
-                }
-                if (mode.get() == TopologyMode.BOOTING) {
-                    return legacyActiveNodeCount();
-                }
-                return 0;
+                // Snapshot-only (2026-05-18 nodeStatesById-fallback removal):
+                //   present  — return `onDutyMemberIds().size()`.
+                //   absent   — return 0. We no longer read `nodeStatesById` as a
+                //              membership fallback; per-reader variance during chaos
+                //              is the bug class this removes.
+                // Mode is updated for diagnostics but no longer gates the read path.
+                return snapshotSource.currentMembershipView()
+                                     .map(this::onDutyCountFromView)
+                                     .or(0);
             }
 
             @Override
             public int healthyActiveNodeCount() {
-                // BOOTING vs NORMAL semantics (audit Step 5, R1):
-                //   BOOTING — fall back to legacy in-memory map (defaults to HEALTHY on
-                //     add) so the bootstrap path can advance before the first snapshot.
-                //   NORMAL — snapshot is the SOLE source. If absent, report 0.
-                var view = snapshotSource.currentMembershipView();
-                if (view.isPresent()) {
-                    maybeTransitionToNormal(view.unwrap());
-                    return view.unwrap().healthyOnDutyCount();
-                }
-                if (mode.get() == TopologyMode.BOOTING) {
-                    return legacyHealthyActiveNodeCount();
-                }
-                return 0;
+                // Snapshot-only (2026-05-18 nodeStatesById-fallback removal):
+                //   present  — return `healthyOnDutyCount()`.
+                //   absent   — return 0.
+                return snapshotSource.currentMembershipView()
+                                     .map(this::healthyOnDutyCountFromView)
+                                     .or(0);
+            }
+
+            private int onDutyCountFromView(MembershipView view) {
+                maybeTransitionToNormal(view);
+                return view.onDutyMemberIds().size();
+            }
+
+            private int healthyOnDutyCountFromView(MembershipView view) {
+                maybeTransitionToNormal(view);
+                return view.healthyOnDutyCount();
             }
 
             /// One-way transition `BOOTING -> NORMAL` triggered by the FIRST observation
             /// of a `MembershipView` whose projected `coreMemberIds` reaches quorum
-            /// (`clusterSize/2 + 1`). After flip, all `*Count` reads stop consulting the
-            /// legacy `nodeStatesById` fallback and become snapshot-only.
+            /// (`clusterSize/2 + 1`). After the 2026-05-18 fallback-removal this is
+            /// purely a diagnostic signal — read paths are snapshot-only in both modes.
+            /// The transition is preserved for observability of "did the cluster ever
+            /// reach quorum on this observer" and for tests that assert the boot edge.
             ///
             /// Idempotent: subsequent snapshots (smaller or larger) do not flip back.
             private void maybeTransitionToNormal(MembershipView view) {
@@ -518,28 +522,6 @@ public interface TopologyObserver extends TopologyManager {
                     log.info("Topology mode transitioned BOOTING -> NORMAL (snapshot coreMemberIds={} >= quorum={})",
                              view.coreMemberIds().size(), quorum);
                 }
-            }
-
-            /// Legacy active-node count for `readyNodeCount` BOOTING fallback. Counts
-            /// non-passive entries in `nodeStatesById` regardless of `NodeHealth` because
-            /// the early-bootstrap path needs to count provisionally-joined peers before
-            /// any successful Ack establishes their HEALTHY edge.
-            private int legacyActiveNodeCount() {
-                return (int) nodeStatesById.values()
-                                           .stream()
-                                           .filter(state -> state.info().role() != NodeRole.PASSIVE)
-                                           .count();
-            }
-
-            /// Legacy healthy-active-node count for `healthyActiveNodeCount` BOOTING
-            /// fallback. INCLUDES self (matching the snapshot-derived
-            /// `healthyOnDutyCount` shape used by `NORMAL`-mode callers).
-            private int legacyHealthyActiveNodeCount() {
-                return (int) nodeStatesById.values()
-                                           .stream()
-                                           .filter(state -> state.info().role() != NodeRole.PASSIVE)
-                                           .filter(state -> state.health() == NodeHealth.HEALTHY)
-                                           .count();
             }
 
             /// Canonical edge-transition publisher for `QuorumStateNotification`.
@@ -728,34 +710,34 @@ public interface TopologyObserver extends TopologyManager {
             /// Healthy active peers, excluding self. Used by the canonical quorum-state
             /// publisher: `+ 1` is added back to include self, matching the formula
             /// formerly used by the QUIC/Netty transports.
-            /// BOOTING vs NORMAL semantics:
-            ///   BOOTING — snapshot is published only after Rabia commits, which itself
-            ///     requires quorum to be established. Falling back to the legacy
-            ///     `nodeStatesById` count avoids the catch-22 where `/health/ready` never
-            ///     flips and bootstrap times out.
-            ///   NORMAL — count peers that are (a) in the snapshot's `coreMemberIds` AND
-            ///     (b) HEALTHY in the live SWIM `nodeStatesById` map. Using `coreMemberIds`
-            ///     (not `onDutyMemberIds`) bridges the auto-heal lag window: replacement
-            ///     nodes start as JOINING in the snapshot (not yet ON_DUTY) but SWIM has
-            ///     already verified their connectivity. Peers outside `coreMemberIds` are
-            ///     NOT counted even if SWIM-healthy, preserving the minority-partition
-            ///     safety invariant — a truly-partitioned node is absent from the
-            ///     authoritative snapshot's coreMemberIds.
+            ///
+            /// Snapshot-only (2026-05-18 nodeStatesById-fallback removal):
+            ///   present  — count peers that are (a) in the snapshot's `coreMemberIds`
+            ///              AND (b) HEALTHY in the live SWIM `nodeStatesById` map. Using
+            ///              `coreMemberIds` (not `onDutyMemberIds`) bridges the auto-heal
+            ///              lag window: replacement nodes start as JOINING in the snapshot
+            ///              (not yet ON_DUTY) but SWIM has already verified their
+            ///              connectivity. The `nodeStatesById` read here is a SWIM-health
+            ///              intersection filter on a snapshot-authoritative set — it is
+            ///              NOT a membership read source. Peers outside `coreMemberIds`
+            ///              are NOT counted even if SWIM-healthy, preserving the
+            ///              minority-partition safety invariant.
+            ///   absent   — return 0. The cluster has not yet projected a snapshot;
+            ///              `evaluateQuorumState` reports "no quorum" until one arrives.
             private int healthyActivePeerCount() {
-                var view = snapshotSource.currentMembershipView();
-                if (view.isPresent()) {
-                    maybeTransitionToNormal(view.unwrap());
-                    return swimHealthyCorePeerCount(view.unwrap().coreMemberIds());
-                }
-                if (mode.get() == TopologyMode.BOOTING) {
-                    return legacyHealthyActivePeerCount();
-                }
-                return 0;
+                return snapshotSource.currentMembershipView()
+                                     .map(this::swimHealthyCorePeerCountFromView)
+                                     .or(0);
+            }
+
+            private int swimHealthyCorePeerCountFromView(MembershipView view) {
+                maybeTransitionToNormal(view);
+                return swimHealthyCorePeerCount(view.coreMemberIds());
             }
 
             /// Count peers that are both in the authoritative core-member set (from the
             /// snapshot) and HEALTHY in the live SWIM `nodeStatesById` map, excluding self.
-            /// This is the NORMAL-mode quorum count that bridges the JOINING lag window
+            /// This is the snapshot-gated quorum count that bridges the JOINING lag window
             /// while respecting minority-partition safety.
             private int swimHealthyCorePeerCount(Set<NodeId> coreMembers) {
                 return (int) nodeStatesById.values()
@@ -772,20 +754,6 @@ public interface TopologyObserver extends TopologyManager {
             private int peerHealthyOnDutyCount(MembershipView view) {
                 var selfHealthy = view.onDutyMemberIds().contains(config.self()) ? 1 : 0;
                 return Math.max(0, view.healthyOnDutyCount() - selfHealthy);
-            }
-
-            /// Pre-snapshot fallback — counts peers in `nodeStatesById` whose initial
-            /// `NodeHealth` is HEALTHY (this defaults to true on `addNode`). This
-            /// path is used ONLY by `healthyActivePeerCount` for the bootstrap quorum
-            /// publish; the public `healthyActiveNodeCount` (used by CTM and operator
-            /// status) remains snapshot-only.
-            private int legacyHealthyActivePeerCount() {
-                return (int) nodeStatesById.values()
-                                          .stream()
-                                          .filter(state -> !state.info().id().equals(config.self()))
-                                          .filter(state -> state.info().role() != NodeRole.PASSIVE)
-                                          .filter(state -> state.health() == NodeHealth.HEALTHY)
-                                          .count();
             }
 
             @Override
