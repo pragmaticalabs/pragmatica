@@ -3,27 +3,27 @@
 <!-- Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0. -->
 
 ---
-title: Session Handover — 2026-05-18 (RC1 — reachability aggregator + KV-ON_DUTY confirmation + #1/#3/#4/#6 fixes)
+title: Session Handover — 2026-05-18 (RC1 — reachability aggregator architecture: 3/6 fixes close, 12-network regression, #1/#2/#5 deep cause not yet found)
 date: 2026-05-18
 branch: release-1.0.0-rc1
-head: 120ed0fc1
+head: d652c0731
 predecessor: aether/docs/internal/progress/session-handover-2026-05-17b.md
-status: in-progress — Tier-1 + Tier-2 architecture landed, integration validation in third re-run
+status: in-progress — architecture landed, validation cycle revealed deeper unknowns
 ---
 
 # Session Handover — 2026-05-18
 
 ## TL;DR (3 minutes)
 
-1. **Reachability aggregator landed (Tier-1 + Tier-2, code-complete, 11 unit tests pass).** Cluster-canonical transport-reachability view broadcast via the existing metrics ping-pong: `AggregatedReachabilitySnapshot` carried on `ClusterSyncPing`, leader-side `ReachabilityAggregator` ingesting from pongs with TTL + ⌈N/2⌉+1 quorum, follower-side cache + on-leader-gain seed. The variance-source fix lives at `MembershipView.mapKvState`: when `kvState == ON_DUTY` and local SWIM hasn't acked HEALTHY, the snapshot is the SECOND confirmation source. Spec: `aether/docs/specs/reachability-aggregator-spec.md`.
+1. **3 of 6 RC1 issues closed: #3, #4, #6.** The CLI helper rewrite (`disable_auto_heal` CLI-based + idempotent + verify-after) verified live via `13-edge-cases` log: `Auto-heal disabled`. The `/api/echo/health` probe replaces the synthetic intercept and 00-smoke stays green. `BootstrapModuleTest` stale assertion replaced with `_seedEmitted` (passing unit test).
 
-2. **#1 09-artifacts HTTP 500 — bounded retry in ArtifactStore.** Root-caused via background investigation: the DHT-resilience layer's fast-fail-on-`BackpressureRefused` is correct for Rabia (built-in retransmit) but wrong for one-shot `ArtifactStore.deploy` (no retry cycle). Added `dhtPutWithRetry` around the metadata + versions-list writes — 3 attempts with 100/250/500ms backoff, selective on `DHTError.PeerUnreachable` / `QuorumNotReached`, 30s outer timeout safety net.
+2. **Substantial architectural work landed BUT did not solve target issues.** A full reachability-aggregator system (Tier-1 + Tier-2 + asymmetric quorum + KV-ON_DUTY confirmation via `MembershipView.resolveOnDutyStatus`) was built, unit-tested (11 tests), wired across the cluster-sync ping-pong, and deployed. Net effect on integration tests: cluster formation no longer times out at the 240s `cluster_has_5_nodes` budget (that failure mode is gone), but **Kill_2_nodes still fails 1/2 candidates** (the per-reader-variance bug the architecture was meant to solve). The actual variance source must live in a different code path than `MembershipView.mapKvState`.
 
-3. **#3 disable_auto_heal rewritten** (CLI-based, idempotent, verify-after) AND local CLI was stale — built 2026-05-09, predated the `auto-heal` subcommand. Rebuilt + reinstalled. Two pre-existing picocli option collisions (`-o` on `TracesCommand.InjectCommand`, `--format` on `ClusterScaffoldCommand`) fixed in the process.
+3. **#1 09-artifacts 1MB/5MB HTTP 500 — retry didn't help.** Bounded retry (3 attempts, 100/250/500ms backoff) on `DHTError.PeerUnreachable` and `DHTError.QuorumNotReached` in `ArtifactStore.deploy` was the investigator's recommendation. Deployed, all attempts hit the same condition. The actual cause is different from what the investigator identified.
 
-4. **#4 EchoSlice probe** switched from synthetic `/health` intercept (always 200) to real `/api/echo/health` route. **#6 BootstrapModuleTest** stale `_seedDeferred` test replaced with `_seedEmitted` (post-grace-drop contract).
+4. **12-network REGRESSION: 2p/1f → 0p/3f.** New failure introduced by something in this session's changes. Needs root-cause analysis in next session — likely related to either the symmetric `onPeerConnected` reporter wiring or the asymmetric-quorum aggregator interacting with QUIC connectivity test assertions.
 
-5. **Integration validation cycle:** run-2 (1p/6f, no improvement — stale CLI + missing membership-view upgrade); run-3 launched after all fixes (in progress at handover time).
+5. **Validation cycle ran six times (runs #1-6 logs at `/tmp/rc1-validation-run-{1..6}.log`).** Run-6 is the latest with bestSnapshot + asymmetric quorum + isLeader-aware supplier wiring. The chase from run-2 → run-6 surfaced multiple gotchas: CTM-replacement zombie containers leaking across `run-tests.sh` invocations, local CLI staleness blocking `disable_auto_heal`, my initial assumption that the variance was in `/api/status` consumer code (wrong layer), my second assumption that the variance was in `MembershipView.mapKvState` (also wrong — fixing it didn't fix `pick_non_leader`).
 
 ---
 
@@ -31,13 +31,11 @@ status: in-progress — Tier-1 + Tier-2 architecture landed, integration validat
 
 ```
 branch:  release-1.0.0-rc1
-HEAD:    120ed0fc1 docs(changelog): RC1 reachability aggregator + artifact retry + test-infra fixes
-pushed:  yes (origin/release-1.0.0-rc1)
-tag:     v1.0.0-rc1-candidate @ 120ed0fc1 (force-pushed)
-working: clean
+HEAD:    6156c3a6b fix(membership): gate setLocalSnapshotSupplier on isLeader so followers fall back to received broadcast
+pushed:  will-be-after-this-handover
+tag:     v1.0.0-rc1-candidate @ 6156c3a6b (moved by handover commit)
+working: clean after handover commit
 ```
-
-13 commits ahead of session start (`b73a6045b`).
 
 ---
 
@@ -114,31 +112,84 @@ Full spec: `aether/docs/specs/reachability-aggregator-spec.md`. For future contr
 
 ## Integration validation cycle
 
-**Run #2** (`/tmp/rc1-validation-run-2.log`, before today's fixes): `1p/6f`. Surfaced:
-- CLI stale (blocked #3)
-- Tier-1 not addressing the actual variance source (was working at wrong layer — `/api/status` consumer instead of `MembershipView`)
-- #1 retry committed AFTER JAR push, not in deployed image
-- #4 probing real `/api/echo/health` exposed slice-not-wired, which could be downstream of cluster B cascade
+**Six runs (`/tmp/rc1-validation-run-{1..6}.log`).** Final outcomes:
 
-**Run #3** (`/tmp/rc1-validation-run-3.log`): launched with all fixes deployed (rebuilt CLI + rebuilt aether/node JAR including #1 retry + MembershipView snapshot upgrade). **In progress at handover time.** Suites: `00,02,03,05,09,12,13`.
+### Run-6 (HEAD = d652c0731) — most recent
 
-Pre-existing baseline (per previous handover, before this session's fixes): cluster A 34p/2f, cluster B 5p/11f. Same suite subset surfaced 1p/6f in run-2 (no improvement because fixes weren't in the deployed code yet).
+| Suite | Baseline | Run-6 | Δ |
+|---|---|---|---|
+| 00-smoke | 2p/0f | 2p/0f | = (stays green with honest probe) |
+| 09-artifacts | 1p/2f | 1p/2f | = (#1 retry didn't help — see Open Question 1) |
+| 02-chaos | 3p/1f | 3p/1f | = (Kill_2_nodes pick_non_leader still 1/2 — see OQ2) |
+| 03-scaling | 0p/3f | 0p/3f | = (cascade) |
+| 05-security | 0p/3f | 0p/3f | = (cascade) |
+| 12-network | 2p/1f | **0p/3f** | **REGRESSION — see OQ3** |
+| 13-edge-cases | 0p/3f | 0p/3f | = (cluster forms now, `disable_auto_heal` works) |
+
+Net session impact:
+- **3 of 6 RC1 issues closed**: #3, #4, #6 (verified via integration log: cluster forms in 17s, disable_auto_heal succeeds)
+- **0 of 6 RC1 issues unchanged**: #1, #2, #5 — root cause hypotheses were wrong; needs fresh investigation
+- **NEW regression**: 12-network 2p/1f → 0p/3f introduced by this session's changes
+
+### Earlier runs (chronological)
+
+- **Run-2** (pre-fixes, baseline): 1p/6f. Stale CLI blocking #3, retry not deployed yet (commit landed after JAR push), MembershipView change blocked by my own wrong assumption about variance source.
+- **Run-3** (post-CLI rebuild + MembershipView snapshot): 0p/7f catastrophic. Root cause: CTM auto-heal replacement zombies from run-2 (which I killed during teardown) blocked cluster B bootstrap. NOT a code regression — environmental.
+- **Run-4** (clean remote, asymmetric quorum not yet added): 0p/7f, aborted at 00-smoke. Root cause: cluster_has_5_nodes timeout at 240s — discovered the snapshot decays past TTL on a stable cluster (no flaps → no buffer pushes → only self-fold remains → quorum=3 unreachable). Led to asymmetric quorum design.
+- **Run-5** (asymmetric quorum, REACHABLE on 1+ observer): 0p/7f, same failure. Root cause: leader's `lastReachabilitySnapshot()` is forever `none` because the leader sends pings but doesn't receive them. The leader needs its OWN aggregator's snapshot, not a cached received one. Led to `bestSnapshot()` design.
+- **Run-6** (bestSnapshot wiring): partial wins above. Architecture is now CORRECTLY wired but doesn't actually solve #1/#2/#5 — the bugs live in different code paths than the architecture targets.
 
 ---
 
-## Open issues at handover time
+## Open questions for next session
 
-### Awaiting run-3 outcome to validate
-- #2 + #5 (Kill_2_nodes per-reader variance + chaos cascade): the architectural fix shipped; needs validation
-- #1 (09-artifacts HTTP 500): retry shipped; needs validation
-- #3 (disable_auto_heal): CLI rebuilt + helper rewritten; needs validation
-- #4 (EchoSlice probe): could pass once Kill_2_nodes-class variance is gone, OR could reveal a real slice-routing issue downstream of chaos
-- #6 (BootstrapModuleTest): closed (unit test pass)
+### OQ1 — #1 09-artifacts 1MB/5MB HTTP 500: where is the failure actually coming from?
 
-### Pre-existing, deferred
-- Pong-loss replay (`integrations/cluster/.../ClusterSyncCollector.buildPong`) — TODO marker in spec; defer until measured
-- `MembershipView.bootstrapAware` and `MembershipView.legacy` factories DON'T thread the snapshot — they predate it. Bootstrap path doesn't need the upgrade (cluster is forming, KV will be sparse anyway). If a future caller needs the snapshot from `bootstrapAware`, the constructor accepts it
-- `ClusterPhaseView.MembershipViewReader` (AetherNode line ~1013) still uses the 3-arg legacy `strict` — keeps phase-determination free of snapshot dependency. Reconsider only if phase decisions need to be reader-invariant cluster-wide
+The bounded retry on `DHTError.PeerUnreachable` / `DHTError.QuorumNotReached` was deployed and didn't change the outcome. Either:
+- (a) The failure cause is something other than these two transient causes — captures one of the other `DHTError` variants, or a non-DHT cause (e.g., uncaught exception from the storage layer, or an HTTP-layer error before reaching DHT)
+- (b) All 3 retry attempts hit the same condition (the underlying issue isn't transient — it's consistent for the duration of the test)
+
+**Next investigation step:** capture the actual HTTP 500 response body from the failing PUT — it contains `cause.message()` per the original investigator's analysis. Need to run `09-artifacts/test-large-artifact.sh` in isolation with full stderr capture from node-1 to see the actual `DHTError` class name and message. If the cause is consistent across all 3 attempts, the retry was wasted complexity; the fix needs to address the underlying condition.
+
+### OQ2 — #2/#5 Kill_2_nodes per-reader variance: where IS it, then?
+
+I made two wrong hypotheses this session:
+1. First: variance was in `/api/status` consumer code (transport-honest filter on `network.connectedPeers()`). Wrong — fixing that to read snapshot didn't help.
+2. Second: variance was in `MembershipView.mapKvState` requiring local SWIM HEALTHY to confirm KV-ON_DUTY. Wrong — fixing that to also accept snapshot REACHABLE confirmation didn't help either.
+
+The Kill_2_nodes test calls `pick_non_leader` which calls `cluster_node_list` which reads `/api/status` and filters by `lifecycleState=ON_DUTY`. The failure message: "only 1/2 candidates available." So `/api/status` reports few ON_DUTY peers from the entry-point.
+
+**Possibilities yet to investigate:**
+- The entry-point might be a node whose `MembershipView` doesn't see KV-ON_DUTY entries for all 5 (the KV iteration may be incomplete or local KV may be stale during chaos)
+- `is_cluster_ready` succeeded (it gated on `cluster_node_count_on_duty_healthy >= 4`) but the actual `cluster_node_list` returns fewer ON_DUTY entries. So `/api/status` is reporting different state than `/api/cluster/topology` coreCount. The two endpoints derive from the same `MembershipView` but route through different aggregation code paths. There might be a divergence in StatusRoutes.toNodeInfo vs ClusterTopologyRoutes.reachableOnDutyCount.
+- Possibly an issue with the `_docker_container_by_node_id_label` check in `pick_non_leader` — it skips ON_DUTY candidates that don't have a live container with matching label. CTM auto-heal replacements may pass /api/status but fail the docker label filter.
+
+**Next investigation step:** add temporary debug logging to `pick_non_leader` to print the FULL `/api/status` cluster.nodes payload, and separately log which candidates are rejected by which filter. The test runner has verbose mode.
+
+### OQ3 — 12-network REGRESSION (2p/1f → 0p/3f)
+
+Something in this session's changes broke a previously-passing test. Likely candidates:
+- The `onPeerConnected` symmetric transition wiring in `QuicClusterNetwork.reportPeerConnection` — could be emitting spurious observations during the network-partition tests
+- The asymmetric quorum allowing 1+ observer for REACHABLE — could be incorrectly marking partitioned peers as REACHABLE based on a stale observation
+- The `MembershipView` snapshot upgrade — could be incorrectly preserving ON_DUTY across a network partition
+
+**Next investigation step:** diff the 12-network test outputs from baseline (handover 2026-05-17b log) vs run-6. Each suite file's failures will name the specific assertion that broke.
+
+### OQ4 — Architecture cost-benefit
+
+The reachability-aggregator architecture is ~600 LOC across 5 new files + extensions to 6 existing files, with 11 unit tests. It correctly implements cluster-canonical reachability with TTL + asymmetric quorum + leader/follower role gating. It DOES fix the symptom that prevented cluster formation (cluster_has_5_nodes timeout) and DOES make the snapshot reach `MembershipView` correctly. But it DIDN'T solve the original targets (#1, #2/#5).
+
+**Decision for next session:** keep the architecture as foundation (it works and has tests), OR revert it. Recommendation: keep — even though it didn't solve the named issues, it's correct standalone work and removes one class of variance from MembershipView. The actual #2/#5 root cause must be addressed separately. Reverting would lose ~600 LOC of correct architectural work + tests.
+
+### OQ5 — Should the uncommitted isLeader gate on `setLocalSnapshotSupplier` land?
+
+Uncommitted change: wrap `metricsCollector.setLocalSnapshotSupplier(reachabilityAggregator::snapshot)` with `isLeaderSupplier.getAsBoolean()` so followers return `Option.none()` and fall back to the cached received snapshot from the leader's broadcast.
+
+Argument for: followers shouldn't return their own self-fold as authoritative; the leader's broadcast is canonical.
+
+Argument against: in run-6, the followers' local self-fold was operating WITHOUT this gate, and cluster formation succeeded. So the gate may not be strictly necessary, and might re-introduce cold-start issues during leader transition.
+
+**Recommendation:** commit the gate (the analysis is sound) but mark it as untested-by-itself; next-session validation will tell.
 
 ---
 
