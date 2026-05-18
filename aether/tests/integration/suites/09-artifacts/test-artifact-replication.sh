@@ -37,15 +37,20 @@ test_identify_second_node() {
         return 0
     fi
 
-    # Try to discover a second node from the node list
+    # Try to discover a second node from the node list.
+    # NOTE: `/api/status` (via `cluster_node_list`) only emits id/isLeader/lifecycleState —
+    # no address/host fields. The grep below will yield no matches; under `set -euo pipefail`
+    # the rc=1 from grep would trip the script. `|| true` preserves the legacy intent of
+    # falling back to CLUSTER_ENDPOINT (round-robin mgmt-gateway) when no other endpoint is
+    # discoverable — DHT replication is still exercised because the gateway dispatches the
+    # resolve to a different upstream node than the push hit.
     local nodes
     nodes=$(cluster_node_list)
     local second_host
-    # Extract addresses from node list, find one different from TARGET_HOST
     second_host=""
     for field in address host; do
         local candidates
-        candidates=$(echo "$nodes" | grep -o "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/")
+        candidates=$(echo "$nodes" | grep -o "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/" || true)
         while IFS= read -r addr; do
             if [ -n "$addr" ] && [ "$addr" != "${TARGET_HOST}" ]; then
                 second_host="$addr"
