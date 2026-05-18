@@ -13,6 +13,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberStatus;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
@@ -139,8 +140,15 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var connectedPeers = node.connectedPeerIds();
         var selfId = node.self();
         var allNodeIds = topologyManager.topology();
+        var membershipView = node.membershipView();
+        // Filter out DECOMMISSIONED / UNTRACKED / FAILED_DRAIN entries — these are peers
+        // whose containers no longer exist but whose KV topology entry hasn't been GC'd
+        // yet. Without this filter, killed-then-replaced peers leak into the topology
+        // response as ACTIVE/HEALTHY, breaking `pick_non_leader` and any consumer that
+        // counts on-duty cores from the topology projection (12-network, 02-chaos).
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
                                            .filter(id -> isHealthy(topologyManager, id))
+                                           .filter(id -> isLiveLifecycle(membershipView, id))
                                            .map(NodeId::id)
                                            .toList();
         // H.2 (spec §H): coreCount derives from MembershipView (SWIM ∪ KV-overrides).
@@ -153,7 +161,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                              node.metricsCollector().lastReachabilitySnapshot(),
                                              selfId);
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
-        var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
+        var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id))
+                                           .map(id -> buildNodeDetail(topologyManager,
                                                                         id,
                                                                         connectedPeers.contains(id)))
                                            .toList();
@@ -176,8 +185,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var connectedPeers = node.connectedPeerIds();
         var selfId = node.self();
         var allNodeIds = topologyManager.topology();
+        var membershipView = node.membershipView();
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
                                            .filter(id -> isHealthy(topologyManager, id))
+                                           .filter(id -> isLiveLifecycle(membershipView, id))
                                            .map(NodeId::id)
                                            .toList();
         // H.2 (spec §H): prefer the MembershipView-derived count; fall back to the snapshot
@@ -191,7 +202,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var coreCount = viewCount > 0 ? viewCount : snapshotCoreCount(snapshot);
         var epoch = Option.some(snapshot.epoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
-        var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
+        var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id))
+                                           .map(id -> buildNodeDetail(topologyManager,
                                                                         id,
                                                                         connectedPeers.contains(id)))
                                            .toList();
@@ -265,6 +277,18 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private static boolean isHealthy(TopologyManager tm, NodeId id) {
         return tm.getState(id).map(state -> state.health() == NodeHealth.HEALTHY)
                           .or(false);
+    }
+
+    /// True when the peer's effective lifecycle keeps it in the operational topology.
+    /// Excludes DECOMMISSIONED / FAILED_DRAIN / UNTRACKED — KV entries for peers whose
+    /// containers no longer exist but whose topology row hasn't yet been GC'd.
+    /// JOINING / ON_DUTY / DRAINING all count as "live" — they remain valid `pick_non_leader`
+    /// targets, valid CTM provisioning slots, and valid `/api/cluster/topology` rows.
+    private static boolean isLiveLifecycle(MembershipView membershipView, NodeId id) {
+        var status = membershipView.statusOf(id);
+        return status == MemberStatus.JOINING
+            || status == MemberStatus.ON_DUTY
+            || status == MemberStatus.DRAINING;
     }
 
     private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected) {
