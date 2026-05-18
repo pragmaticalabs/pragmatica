@@ -1008,6 +1008,22 @@ public interface AetherNode extends ManageableNode {
         // Drain infrastructure: tracker is shared with NodeLifecycleRoutes (/api/node/inflight).
         // ConsensusDrainCoordinator is constructed below once ctmLifecycleWriter exists.
         var inFlightTrackerForDrain = org.pragmatica.aether.deployment.drain.InFlightRequestTracker.inFlightRequestTracker();
+        // Topology-observation refactor Step 5: node-side self-drain coordinator. Watches three
+        // independent triggers (periodic 1Hz connectivity check, QuorumStateNotification.DISAPPEARED,
+        // Rabia paused) and on the first one to fire kicks off an uninterruptible drain that
+        // gates the in-flight tracker, awaits ≤ inflightGrace, then `Runtime.halt(2)`.
+        // membership-architecture-spec.md §16.1 (S19/S20). No KV/consensus dependency — a
+        // partition victim cannot use either anyway.
+        var selfDrainCoordinator = org.pragmatica.aether.deployment.drain.SelfDrainCoordinator.selfDrainCoordinator(
+                config.self(),
+                () -> clusterNode.network().connectedPeers(),
+                () -> clusterNode.topologyManager().topology().size(),
+                inFlightTrackerForDrain,
+                org.pragmatica.aether.deployment.drain.SelfDrainConfig.selfDrainConfig());
+        org.pragmatica.lang.utils.SharedScheduler.scheduleAtFixedRate(
+                selfDrainCoordinator::onConnectivityChange,
+                org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds(),
+                org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds());
         java.util.function.Supplier<java.util.Map<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>> slotReader = () -> {
             var collected = new java.util.LinkedHashMap<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>();
             kvStore.forEach(AetherKey.ProvisioningSlotKey.class, AetherValue.ProvisioningSlotValue.class, collected::put);
@@ -1299,6 +1315,7 @@ public interface AetherNode extends ManageableNode {
                                                 consumerGroupCoordinator,
                                                 consumerGroupRegistry,
                                                 membershipFsm,
+                                                selfDrainCoordinator,
                                                 managementServerRef);
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
@@ -1958,6 +1975,18 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// Topology-observation refactor Step 5: bridge `QuorumStateNotification.DISAPPEARED` into
+    /// the local `SelfDrainCoordinator`. Both `onQuorumDisappeared` and `onRabiaPaused` are
+    /// invoked because Rabia's `EngineState.Paused` fires on the same DISAPPEARED signal and the
+    /// coordinator surface keeps the two trigger paths distinct for forward compatibility with
+    /// a future Rabia-direct paused listener.
+    @Contract private static void routeQuorumDisappearedToSelfDrain(QuorumStateNotification notification,
+                                                                     org.pragmatica.aether.deployment.drain.SelfDrainCoordinator selfDrainCoordinator) {
+        if (notification.state() != QuorumStateNotification.State.DISAPPEARED) {return;}
+        selfDrainCoordinator.onQuorumDisappeared();
+        selfDrainCoordinator.onRabiaPaused();
+    }
+
     @SuppressWarnings("unchecked") private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
                                                                        ClusterTopologyManager ctm) {
         if (put.cause().value() instanceof AetherValue.NodeLifecycleValue lifecycleValue && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {ctm.onNodeReady(put.cause().key()
@@ -2447,6 +2476,7 @@ public interface AetherNode extends ManageableNode {
                                                                     ConsumerGroupCoordinator consumerGroupCoordinator,
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
                                                                     MembershipFsm membershipFsm,
+                                                                    org.pragmatica.aether.deployment.drain.SelfDrainCoordinator selfDrainCoordinator,
                                                                     java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
@@ -2576,6 +2606,14 @@ public interface AetherNode extends ManageableNode {
                                               deploymentMetricsScheduler::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, scheduledTaskManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, appHttpServer::onQuorumStateChange));
+        // Topology-observation refactor Step 5: self-drain is wired to both branches of the
+        // QuorumStateNotification stream. `DISAPPEARED` triggers the immediate hard drain path
+        // (`onQuorumDisappeared`); Rabia's `Paused` state fires on the same DISAPPEARED signal,
+        // so `onRabiaPaused` is invoked from the same handler to keep the surface symmetric
+        // with the spec §16.1 trigger list (a future Rabia-direct paused listener can route to
+        // `onRabiaPaused` without changing the FSM).
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
+                                              notification -> routeQuorumDisappearedToSelfDrain(notification, selfDrainCoordinator)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               taskAssignmentCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
