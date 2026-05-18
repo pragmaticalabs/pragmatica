@@ -11,6 +11,8 @@ import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
+import org.pragmatica.cluster.metrics.ConnectivityState;
+import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
@@ -26,6 +28,7 @@ import java.lang.management.OperatingSystemMXBean;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
@@ -74,6 +77,15 @@ public interface ClusterSyncCollector {
 
     @Contract void setPongSignalFan(ClusterSyncPongSignalFan fan);
     @Contract void setPeerObservationBuffer(PeerObservationBuffer buffer);
+
+    /// Emit one `PeerConnectivityObservation` per topology peer (excluding `self`)
+    /// into the wired `PeerObservationBuffer`. Peers in `connected` get state
+    /// `CONNECTED`; peers in `topology` but absent from `connected` get state
+    /// `DISCONNECTED`. Invoked periodically by `ClusterSyncScheduler` to keep
+    /// the leader-side aggregator continuously fed (eliminates the
+    /// transition-only buffer-decay race). See
+    /// `reachability-aggregator-spec.md` "Periodic Observation Mode".
+    @Contract void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs);
 
     /// Most-recently received `AggregatedReachabilitySnapshot` from an incoming
     /// `ClusterSyncPing`. `Option.none()` until the first ping with a non-empty
@@ -259,6 +271,23 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         peerObservationBuffer.set(buffer == null
                                   ? PeerObservationBuffer.NOOP
                                   : buffer);
+    }
+
+    @Override@Contract public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
+        var buffer = peerObservationBuffer.get();
+        var epoch = observedEpoch.get();
+        var epochTerm = epoch.rabiaTerm();
+        var epochCounter = epoch.localCounter();
+        topology.stream()
+                .filter(peer -> !peer.equals(self))
+                .map(peer -> new PeerConnectivityObservation(peer,
+                                                             connected.contains(peer)
+                                                                 ? ConnectivityState.CONNECTED
+                                                                 : ConnectivityState.DISCONNECTED,
+                                                             epochTerm,
+                                                             epochCounter,
+                                                             nowMs))
+                .forEach(buffer::pushConnectivity);
     }
 
     @Override public long observedRabiaTerm() {

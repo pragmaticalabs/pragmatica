@@ -63,17 +63,19 @@ class ClusterSyncSchedulerBufferTest {
     void healthBuffer_enforcesCap_dropsOldest() {
         var scheduler = newScheduler();
         // Topology has SELF + 1 peer (PEER_A); cap = (topologySize - 1) * 4 = 4,
-        // but MIN_BUFFER_CAP = 8, so effective cap is 8.
+        // but PeriodicObservationConfig.capFloor (default 64) provides the floor.
+        // The effective cap is 64 — push 80 entries to overflow and assert the
+        // most-recent are retained.
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
 
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < 80; i++) {
             scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, i, 0L));
         }
 
         var drained = scheduler.drainHealth();
-        assertThat(drained).hasSizeLessThanOrEqualTo(8);
-        // Oldest entries dropped, most-recent retained.
-        assertThat(drained.getLast().observedEpochCounter()).isEqualTo(11L);
+        assertThat(drained).hasSize(64);
+        // Oldest 16 entries dropped; counters 16..79 retained.
+        assertThat(drained.getLast().observedEpochCounter()).isEqualTo(79L);
     }
 
     @Test

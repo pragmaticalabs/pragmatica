@@ -15,10 +15,10 @@ import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -45,6 +45,7 @@ public class NoopClusterSyncCollector implements ClusterSyncCollector {
     @Override public void addPongListener(Consumer<ClusterSyncPong> listener) {}
     @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}
     @Override public void setPeerObservationBuffer(PeerObservationBuffer buffer) {}
+    @Override public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {}
     @Override public Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot() {return Option.none();}
     @Override public void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier) {}
     @Override public Option<AggregatedReachabilitySnapshot> bestSnapshot() {return Option.none();}

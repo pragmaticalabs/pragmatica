@@ -49,6 +49,10 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
     Map<NodeId, Epoch> observedEpochs();
     @Contract void onPongReceived(NodeId nodeId);
     @Contract void sendPingsNow();
+    /// Drive one periodic `PeerConnectivityObservation` emission synchronously.
+    /// Wired by the scheduled task at `PeriodicObservationConfig.period()` cadence
+    /// and exposed for deterministic testing. NOT leader-gated.
+    @Contract void emitPeriodicConnectivityNow();
     @Contract@Override void pushHealth(PeerHealthObservation observation);
     @Contract@Override void pushConnectivity(PeerConnectivityObservation observation);
     @Override List<PeerHealthObservation> drainHealth();
@@ -135,6 +139,30 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                                      Supplier<Epoch> epochSupplier,
                                                      PeerObservationStore observationStore,
                                                      Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier) {
+        return clusterSyncScheduler(self,
+                                    network,
+                                    clusterSyncCollector,
+                                    interval,
+                                    rabiaTermSupplier,
+                                    signalSink,
+                                    pingTimeoutThreshold,
+                                    epochSupplier,
+                                    observationStore,
+                                    reachabilitySnapshotSupplier,
+                                    PeriodicObservationConfig.defaultConfig());
+    }
+
+    static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
+                                                     ClusterNetwork network,
+                                                     ClusterSyncCollector clusterSyncCollector,
+                                                     TimeSpan interval,
+                                                     Supplier<Long> rabiaTermSupplier,
+                                                     HealthSignalSink signalSink,
+                                                     int pingTimeoutThreshold,
+                                                     Supplier<Epoch> epochSupplier,
+                                                     PeerObservationStore observationStore,
+                                                     Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
+                                                     PeriodicObservationConfig periodicConfig) {
         var ctxHolder = new AtomicReference<ClusterSyncContext>();
         Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
                                                                                                                                ctxHolder,
@@ -147,7 +175,8 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                                                                                                                pingTimeoutThreshold,
                                                                                                                                epochSupplier,
                                                                                                                                observationStore,
-                                                                                                                               reachabilitySnapshotSupplier);
+                                                                                                                               reachabilitySnapshotSupplier,
+                                                                                                                               periodicConfig);
         var _fsm = Fsm.fsm("cluster-sync", self.id(), initialStateFactory);
         return new ClusterSyncSchedulerAdapter(ctxHolder.get());
     }
@@ -172,7 +201,8 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                                            int pingTimeoutThreshold,
                                                            Supplier<Epoch> epochSupplier,
                                                            PeerObservationStore observationStore,
-                                                           Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier) {
+                                                           Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
+                                                           PeriodicObservationConfig periodicConfig) {
         var ctx = new ClusterSyncContext(fsm,
                                          self,
                                          network,
@@ -183,7 +213,8 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                          pingTimeoutThreshold,
                                          epochSupplier,
                                          observationStore,
-                                         reachabilitySnapshotSupplier);
+                                         reachabilitySnapshotSupplier,
+                                         periodicConfig);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }
@@ -262,6 +293,10 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
 
     @Override@Contract public void sendPingsNow() {
         context.dispatch(new ClusterSyncEvents.PingTick(context.epochSupplier().get()));
+    }
+
+    @Override@Contract public void emitPeriodicConnectivityNow() {
+        context.emitPeriodicConnectivityNow();
     }
 
     @Override@Contract public void pushHealth(PeerHealthObservation observation) {

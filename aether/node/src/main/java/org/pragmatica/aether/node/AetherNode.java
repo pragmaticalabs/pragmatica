@@ -914,25 +914,28 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var peerObservationStore = org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore();
+        // Step 1: periodic-observation config (5s emission cadence, 15s aggregator
+        // TTL, cap floor 64). The store's cap supplier is wired by ClusterSyncContext
+        // and computes `max(capFloor, peers × 4)` per push — sized to handle one
+        // full emission cycle (N-1 observations per node per period) plus per-peer
+        // transition burst.
+        var periodicConfig = org.pragmatica.aether.metrics.PeriodicObservationConfig.defaultConfig();
         BooleanSupplier isLeaderSupplier = clusterNode.leaderManager()::isLeader;
         // ReachabilityAggregator: leader-side TTL+quorum aggregator producing the
         // cluster-canonical reachability snapshot broadcast in ClusterSyncPing.
         // Quorum threshold N = current topology size (matches ON_DUTY count at
-        // steady state; adjusts during chaos as topology shrinks). TTL=30s — long
-        // enough to span 1-2 SWIM ping cycles during cold-start so transition-only
-        // observations accumulate to symmetric quorum before aging out. A shorter
-        // 5s TTL caused `reachableOnDutyCount` to return 1 (self only) during
-        // bootstrap, blocking `is_cluster_ready` until the test timeout. The
-        // symmetric-quorum math (set in ReachabilityAggregator.derive) prevents
-        // a single stale observation from outvoting quorum regardless of TTL.
-        // See aether/docs/specs/reachability-aggregator-spec.md.
+        // steady state; adjusts during chaos as topology shrinks). TTL=15s — 3×
+        // the 5s periodic emission cadence, ensures observations remain live
+        // across 2-3 emission cycles before expiry. See
+        // aether/docs/specs/reachability-aggregator-spec.md "Periodic Observation
+        // Mode" subsection.
         var reachabilityAggregator = ReachabilityAggregator.reachabilityAggregator(
             config.self(),
             () -> clusterNode.topologyManager().topology().size(),
             () -> clusterNode.network().connectedPeers(),
             () -> Set.copyOf(clusterNode.topologyManager().topology()),
             System::currentTimeMillis,
-            30_000L);
+            15_000L);
         // Wire the leader-side aggregator into metricsCollector so MembershipView's
         // bestSnapshot() reads the leader's OWN aggregator output (since the leader
         // doesn't receive pings, its lastReachabilitySnapshot() is forever none).
@@ -962,7 +965,17 @@ public interface AetherNode extends ManageableNode {
                                                                          ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                                          leaderEpochSupplier,
                                                                          peerObservationStore,
-                                                                         reachabilityAggregator::snapshot);
+                                                                         reachabilityAggregator::snapshot,
+                                                                         periodicConfig);
+        // Step 1 (Periodic Observation Mode): cap supplier honored externally so
+        // the buffer absorbs one full emission cycle (N-1 observations per 5s tick)
+        // plus per-peer transition burst. Floor of 64 from periodicConfig accommodates
+        // small clusters; topology × 4 scales with peer count. Set AFTER the scheduler
+        // is constructed because ClusterSyncContext's own constructor pre-wires the
+        // store's cap supplier to its internal `bufferCap()` formula — this call wins
+        // and gives AetherNode the canonical sizing surface.
+        peerObservationStore.setCapSupplier(() -> Math.max(periodicConfig.capFloor().getAsInt(),
+                                                            clusterNode.topologyManager().topology().size() * 4));
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
         // Leader/spokesman-gated aggregator ingest. Tier-1 pongs (from core members)
         // arrive when this node is the cluster leader; Tier-2 pongs (from governors)

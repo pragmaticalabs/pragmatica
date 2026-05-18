@@ -56,7 +56,8 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
     record Pinging(ClusterSyncContext ctx,
                    Map<NodeId, Epoch> lastSentEpoch,
                    Map<NodeId, Integer> missedPings,
-                   ScheduledFuture<?> pingTimer) implements ClusterSyncState {
+                   ScheduledFuture<?> pingTimer,
+                   ScheduledFuture<?> periodicEmissionTimer) implements ClusterSyncState {
         public static Pinging fresh(ClusterSyncContext ctx) {
             return with(ctx, Map.of(), Map.of());
         }
@@ -67,7 +68,8 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             return new Pinging(ctx,
                                lastSentEpoch,
                                missedPings,
-                               ctx.schedulePingTimer(() -> ctx.dispatch(new PingTick(ctx.epochSupplier().get()))));
+                               ctx.schedulePingTimer(() -> ctx.dispatch(new PingTick(ctx.epochSupplier().get()))),
+                               ctx.schedulePeriodicEmission());
         }
 
         @Contract@Override public void onEntry() {
@@ -76,10 +78,12 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
 
         @Contract@Override public void onExit() {
             pingTimer.cancel(false);
+            periodicEmissionTimer.cancel(false);
         }
 
         @Contract@Override public void onCasLost() {
             pingTimer.cancel(false);
+            periodicEmissionTimer.cancel(false);
         }
 
         @Contract@Override public void handle(ClusterFsmEvent event,
