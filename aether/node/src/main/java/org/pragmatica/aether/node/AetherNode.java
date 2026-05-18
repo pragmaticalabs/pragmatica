@@ -1080,6 +1080,14 @@ public interface AetherNode extends ManageableNode {
                                                 isLeaderSupplier,
                                                 hlcClock);
         membershipFsm.start();
+        // Topology-observation refactor Step 3: wire the leader-side aggregator's snapshot
+        // stream into the FSM. The aggregator invokes this listener synchronously after each
+        // non-empty `snapshot()` build (driven by the periodic ping-build path). MembershipFsm
+        // re-leader-gates internally and translates the snapshot into per-peer
+        // TransportReachable / TransportUnreachable events. Registered AFTER both the
+        // aggregator and FSM are constructed (and the FSM started) so the wiring is complete
+        // before the first snapshot can fire.
+        reachabilityAggregator.addSnapshotListener(membershipFsm::onTransportSnapshot);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),

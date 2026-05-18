@@ -20,9 +20,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// Leader-side aggregator that folds per-observer transport observations into a
@@ -75,6 +80,18 @@ public interface ReachabilityAggregator {
     /// entries (self) until real observations from pongs refine them.
     @Contract void seedFromCache(AggregatedReachabilitySnapshot cached);
 
+    /// Topology-observation refactor Step 3: register a listener invoked synchronously
+    /// from the snapshot-builder thread after each successful `snapshot()` build (i.e.
+    /// when `snapshot()` returns `Option.some(...)`). Used to feed the aggregated
+    /// snapshot into downstream consumers (currently `MembershipFsm.onTransportSnapshot`
+    /// for `TransportReachable` / `TransportUnreachable` event derivation).
+    ///
+    /// Listeners are invoked in registration order. A listener that throws does NOT
+    /// interrupt subsequent listeners — the exception is logged and other listeners
+    /// still receive the snapshot. The aggregator itself never propagates listener
+    /// failures.
+    @Contract void addSnapshotListener(Consumer<AggregatedReachabilitySnapshot> listener);
+
     static ReachabilityAggregator reachabilityAggregator(NodeId self,
                                                           IntSupplier onDutyCountSupplier,
                                                           Supplier<Set<NodeId>> selfConnectedSupplier,
@@ -87,7 +104,8 @@ public interface ReachabilityAggregator {
                                                 topologySupplier,
                                                 clockMs,
                                                 ttlMs,
-                                                new HashMap<>());
+                                                new HashMap<>(),
+                                                new CopyOnWriteArrayList<>());
     }
 }
 
@@ -98,7 +116,10 @@ record ReachabilityAggregatorRecord(NodeId self,
                                     Supplier<Set<NodeId>> topologySupplier,
                                     LongSupplier clockMs,
                                     long ttlMs,
-                                    Map<NodeId, Map<NodeId, ObservationEntry>> byTarget) implements ReachabilityAggregator {
+                                    Map<NodeId, Map<NodeId, ObservationEntry>> byTarget,
+                                    List<Consumer<AggregatedReachabilitySnapshot>> snapshotListeners) implements ReachabilityAggregator {
+
+    private static final Logger log = LoggerFactory.getLogger(ReachabilityAggregatorRecord.class);
 
     record ObservationEntry(ReachabilityKind kind, long observedAtMs) {}
 
@@ -121,6 +142,10 @@ record ReachabilityAggregatorRecord(NodeId self,
         });
     }
 
+    @Contract @Override public void addSnapshotListener(Consumer<AggregatedReachabilitySnapshot> listener) {
+        snapshotListeners.add(listener);
+    }
+
     @Override public Option<AggregatedReachabilitySnapshot> snapshot() {
         var now = clockMs.getAsLong();
         foldSelfObservations(now);
@@ -132,7 +157,25 @@ record ReachabilityAggregatorRecord(NodeId self,
             states.put(target, derive(target, live, quorumThreshold));
         });
         if (states.isEmpty()) {return Option.none();}
-        return Option.some(new AggregatedReachabilitySnapshot(now, states));
+        var snapshot = new AggregatedReachabilitySnapshot(now, states);
+        dispatchSnapshotToListeners(snapshot);
+        return Option.some(snapshot);
+    }
+
+    private void dispatchSnapshotToListeners(AggregatedReachabilitySnapshot snapshot) {
+        for (var listener : snapshotListeners) {
+            invokeListenerIsolated(listener, snapshot);
+        }
+    }
+
+    private void invokeListenerIsolated(Consumer<AggregatedReachabilitySnapshot> listener,
+                                         AggregatedReachabilitySnapshot snapshot) {
+        try {
+            listener.accept(snapshot);
+        } catch (RuntimeException ex) {
+            log.warn("ReachabilityAggregator: snapshot listener threw {} — continuing with remaining listeners",
+                     ex.toString());
+        }
     }
 
     private void foldSelfObservations(long nowMs) {

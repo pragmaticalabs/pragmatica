@@ -21,12 +21,16 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SlotCl
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimDeparted;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimHealthy;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportReachable;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportUnreachable;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityKind;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -343,6 +347,44 @@ public final class MembershipFsm {
         translate(observation).onPresent(this::processOperatorOrFsmEvent);
     }
 
+    /// Topology-observation refactor Step 3: ingest a `ReachabilityAggregator` snapshot and
+    /// fan it out as per-peer `TransportReachable` / `TransportUnreachable` events.
+    ///
+    /// **Idempotence.** No edge-dedup cache is maintained here. Duplicate snapshots produce
+    /// duplicate events; the reducer absorbs them as nop cells (see Step 2 reducer for the
+    /// 14 transport cells — most are explicit `nop`, ON_DUTY+TransportUnreachable produces
+    /// the same `DECOMMISSIONED` write each time but consensus is naturally idempotent on
+    /// an already-DECOMMISSIONED lifecycle).
+    ///
+    /// **Leader gate (single-writer rule).** Only the leader's FSM dispatches transport
+    /// events; followers drop the snapshot (TRACE log) — they receive the resulting
+    /// lifecycle transitions via the `NodeLifecycleKey` KV notification path. This mirrors
+    /// `onSwimObservation`'s leader gate.
+    ///
+    /// **UNKNOWN suppression.** Peers with `ReachabilityKind.UNKNOWN` are intentionally not
+    /// translated to events — UNKNOWN means "no quorum either way" and must not produce a
+    /// state transition. Step 4 will refine REACHABLE/UNREACHABLE gating with aggregator-
+    /// quorum semantics; Step 3 fires the events unconditionally on quorum-derived kinds.
+    @Contract public void onTransportSnapshot(AggregatedReachabilitySnapshot snapshot) {
+        if (!started.get()) {
+            return;
+        }
+        if (!isLeader.getAsBoolean()) {
+            logTransportDropOnFollower(snapshot);
+            return;
+        }
+        var now = hlcClock.now();
+        snapshot.states().forEach((peer, state) -> dispatchTransportEvent(peer, state.kind(), now));
+    }
+
+    private void dispatchTransportEvent(NodeId peer, ReachabilityKind kind, HlcTimestamp now) {
+        switch (kind) {
+            case REACHABLE -> enqueueOperatorEvent(new TransportReachable(peer, now));
+            case UNREACHABLE -> enqueueOperatorEvent(new TransportUnreachable(peer, now));
+            case UNKNOWN -> { /* suppress — quorum-undecided, no event */ }
+        }
+    }
+
     /// RC1 Step 3 — monotone-incarnation gate (topology-rc1-spec §3.2). Returns `true`
     /// to admit, `false` to drop the observation.
     ///
@@ -475,6 +517,14 @@ public final class MembershipFsm {
         }
     }
 
+    private void logTransportDropOnFollower(AggregatedReachabilitySnapshot snapshot) {
+        if (log.isTraceEnabled()) {
+            log.trace("MembershipFsm: transport snapshot (states={}) dropped on follower {} (spec §6.1 — single-writer; followers learn via KV notifications)",
+                      snapshot.states().size(),
+                      self.id());
+        }
+    }
+
     /// Event entry point for operator commands and leader-issued protocol feedback.
     /// `OperatorDrain` / `OperatorDecommission` / `DrainOutcome` / `JoinDeadlineExpired`
     /// events are applied on the leader (writes proposed via `commandApplier`, drain
@@ -572,6 +622,14 @@ public final class MembershipFsm {
     /// re-confirmation) flow through this path; the reducer returns an empty `writes` list
     /// and `proposeWritesAndApply` short-circuits without proposing anything.
     ///
+    /// **Topology-observation refactor Step 3 (transport events):** `TransportUnreachable`
+    /// can produce consensus writes (`(JOINING, TransportUnreachable) → DECOMMISSIONED`,
+    /// `(ON_DUTY, TransportUnreachable) → DECOMMISSIONED`) so it MUST flow through the
+    /// leader-writing path. `TransportReachable` is intentionally absent — all of its 7
+    /// reducer cells are `Outcome.nop` in Step 2, so it requires no leader gate and is
+    /// classified as shadow-only. If Step 4/5 introduces a `TransportReachable` write cell,
+    /// add it here.
+    ///
     /// `SlotClaimed` remains a shadow-only event (no consensus write — the slot key was
     /// already written by another actor; this event drives a derived JOINING transition).
     private static boolean isLeaderWritingEvent(MembershipFsmEvent event) {
@@ -581,7 +639,8 @@ public final class MembershipFsm {
                || event instanceof JoinDeadlineExpired
                || event instanceof SwimFaulty
                || event instanceof SwimDeparted
-               || event instanceof SwimHealthy;
+               || event instanceof SwimHealthy
+               || event instanceof TransportUnreachable;
     }
 
     private void applyExternalLifecyclePut(NodeId peer, NodeLifecycleValue value) {
