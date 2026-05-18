@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.HealthSnapshot;
@@ -290,26 +291,72 @@ public interface MembershipView {
             };
         }
 
-        /// `kvState == ON_DUTY` requires confirmation. Three confirmation sources, in order:
+        /// `kvState == ON_DUTY` requires confirmation. Resolution order:
         ///
-        /// 1. Local SWIM HEALTHY + quorate → `ON_DUTY` (fast path).
-        /// 2. Cluster-canonical reachability snapshot REACHABLE + quorate → `ON_DUTY`
-        ///    (eliminates per-reader variance during SWIM lag).
-        /// 3. Snapshot UNREACHABLE → `UNTRACKED` (transport-honest downgrade).
-        /// 4. No snapshot yet / non-quorate / local SWIM not HEALTHY → `UNTRACKED`
-        ///    (legacy strict behaviour preserved).
+        /// 1. **Non-quorate** → `UNTRACKED`. A minority-side reader MUST NOT advertise
+        ///    ON_DUTY peers; the majority may have re-routed work past them.
+        /// 2. **Local SWIM HEALTHY + quorate** → `ON_DUTY` (fast path; snapshot not consulted).
+        /// 3. **Snapshot absent** (`Option.none()`) → `UNTRACKED`. Cold-start before the
+        ///    first aggregator snapshot has been received; conservative.
+        /// 4. **Snapshot present** → branch explicitly on the per-peer `ReachabilityKind`:
+        ///    - `REACHABLE` → `ON_DUTY` (cluster-canonical quorum promotes despite SWIM lag).
+        ///    - `UNREACHABLE` → `UNTRACKED` (transport-honest downgrade).
+        ///    - `UNKNOWN` → `UNTRACKED` (see semantic note below).
+        ///    - Peer absent from `states()` map → `UNTRACKED`.
         ///
-        /// See `aether/docs/specs/reachability-aggregator-spec.md`.
+        /// **UNKNOWN semantic — post-periodic-emission.** Prior to the periodic-observation
+        /// refactor (reachability-aggregator-spec.md "Periodic Observation Mode"), observations
+        /// were emitted only on QUIC transport transitions (ADD/EVICTED). On a steady-state
+        /// cluster with no flaps, the aggregator's per-target observation buffers aged out and
+        /// `UNKNOWN` simply meant "no transitions, no data" — it could equally describe a
+        /// healthy stable cluster or an isolated peer. Downgrading UNKNOWN to UNTRACKED was
+        /// therefore over-aggressive and only justified in conjunction with `Option.none()`.
+        ///
+        /// After the periodic-observation refactor, every node emits a `PeerConnectivityObservation`
+        /// every 5s for every topology peer it considers reachable; observations live for 15s
+        /// (3× period). A peer that produces `UNKNOWN` in the aggregated snapshot has therefore
+        /// failed to attract a REACHABLE quorum across ≥3 emission cycles AND has not attracted
+        /// an UNREACHABLE quorum either — i.e. it is **genuinely isolated** from this leader's
+        /// observation set (cluster partition / network island / one-sided routing failure).
+        /// Downgrading UNKNOWN to UNTRACKED is now the semantically correct projection, not a
+        /// conservative guess. The combined effect is that UNKNOWN and `Option.none()` both
+        /// reduce to UNTRACKED for the same operational reason: this reader has no positive
+        /// evidence the peer is currently reachable.
+        ///
+        /// See `aether/docs/specs/membership-architecture-spec.md` §16 (S05/S06) and
+        /// `aether/docs/specs/reachability-aggregator-spec.md` "Periodic Observation Mode".
         private static MemberStatus resolveOnDutyStatus(NodeId peer,
                                                         SwimHealth swimState,
                                                         boolean quorate,
                                                         Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
-            if (!quorate) {return MemberStatus.UNTRACKED;}
-            if (swimState == SwimHealth.HEALTHY) {return MemberStatus.ON_DUTY;}
+            if (!quorate) {
+                return MemberStatus.UNTRACKED;
+            }
+            if (swimState == SwimHealth.HEALTHY) {
+                return MemberStatus.ON_DUTY;
+            }
             return reachabilitySnapshot.fold(() -> MemberStatus.UNTRACKED,
-                                              snap -> snap.isReachable(peer)
-                                                      ? MemberStatus.ON_DUTY
-                                                      : MemberStatus.UNTRACKED);
+                                              snap -> kindFromSnapshot(snap, peer));
+        }
+
+        /// Explicit projection of a per-peer `ReachabilityKind` into `MemberStatus`. Kept as a
+        /// separate function so the three-way branch (REACHABLE / UNREACHABLE / UNKNOWN) is
+        /// visible to readers rather than implicit in `snap.isReachable(peer)` returning false
+        /// for both UNREACHABLE and UNKNOWN.
+        private static MemberStatus kindFromSnapshot(AggregatedReachabilitySnapshot snap, NodeId peer) {
+            var entry = snap.states().get(peer);
+            if (entry == null) {
+                return MemberStatus.UNTRACKED;
+            }
+            return projectKind(entry);
+        }
+
+        private static MemberStatus projectKind(ReachabilityState entry) {
+            return switch (entry.kind()) {
+                case REACHABLE -> MemberStatus.ON_DUTY;
+                case UNREACHABLE -> MemberStatus.UNTRACKED;
+                case UNKNOWN -> MemberStatus.UNTRACKED;
+            };
         }
     }
 }
