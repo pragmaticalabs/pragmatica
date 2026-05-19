@@ -1492,6 +1492,12 @@ public interface AetherNode extends ManageableNode {
                                                                                swimIsBootingSupplier,
                                                                                faultyLeaderEvictor);
         swimDetectorRefForPhase.set(swimHealthDetector);
+        // RC1 (S01 fix) — wire the SWIM-backed liveness check for owner-broadcast eviction
+        // hints. Followers REFUSE to act on the owner's `ClusterSyncPing.evictionHints` for
+        // peers SWIM observes as HEALTHY; the owner's hint is a SUGGESTION, not authority.
+        // SWIM HEALTHY requires actual probe-ack within `suspectTimeout`, so this gate is
+        // robust against owner partial-network errors. See `ClusterSyncCollector.processEvictionHints`.
+        metricsCollector.setPeerLocallyAlive(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         var announceTopology = config.topology();

@@ -79,6 +79,13 @@ public interface ClusterSyncCollector {
 
     @Contract void setPongSignalFan(ClusterSyncPongSignalFan fan);
     @Contract void setPeerObservationBuffer(PeerObservationBuffer buffer);
+    /// RC1 (S01 fix) — wire the SWIM-backed predicate that answers "is this peer
+    /// observed as ALIVE in our local SWIM membership view?". Used to verify owner-
+    /// broadcast eviction hints (`ClusterSyncPing.evictionHints`) — when SWIM says
+    /// ALIVE, the follower REFUSES the owner's hint, preserving the independent-
+    /// observers property. Default no-op (test doubles inherit; production wires
+    /// in `AetherNode` to consult `CoreSwimHealthDetector.healthOf`).
+    @Contract default void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {}
 
     /// Emit one `PeerConnectivityObservation` per topology peer (excluding `self`)
     /// into the wired `PeerObservationBuffer`. Peers in `connected` get state
@@ -157,6 +164,14 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicReference<ClusterSyncPongSignalFan> pongSignalFan = new AtomicReference<>(_ -> {});
 
     private final AtomicReference<PeerObservationBuffer> peerObservationBuffer = new AtomicReference<>(PeerObservationBuffer.NOOP);
+
+    /// RC1 (S01 fix) — SWIM-backed predicate "is this peer observed ALIVE locally". Used
+    /// to verify owner-broadcast eviction hints (`ClusterSyncPing.evictionHints`). Default
+    /// is "always alive" (safe — refuses all hints) until the wiring layer plugs in a real
+    /// SWIM accessor. Set by `AetherNode` to `nodeId -> swimProtocol.healthOf(nodeId) ==
+    /// SwimHealth.HEALTHY`. When this predicate returns TRUE for a peer, the follower
+    /// IGNORES the owner's eviction hint for that peer — independence preserved.
+    private final AtomicReference<java.util.function.Predicate<NodeId>> peerLocallyAlive = new AtomicReference<>(_ -> true);
 
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
@@ -261,33 +276,25 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         network.send(ping.sender(), pong);
     }
 
-    /// RC1 (S01 fix) — verification threshold for acting on owner-broadcast eviction hints.
-    /// If we've received traffic from the suggested-evicted peer within this window, we
-    /// REFUSE the eviction (preserves the "independent observers" property; owner's view
-    /// may be wrong due to partial-network conditions). Set to 12s: longer than the
-    /// expected SWIM-gossip cadence between any specific peer pair (random per-round
-    /// selection at period=1s averages ~4s in N=5, but with jitter can stretch to 8-10s
-    /// in steady state). Genuinely dead peers go fully silent (zero direct traffic),
-    /// so their lastReceived ages out within ~3-5s — followers still agree quickly in
-    /// the true-dead case. Avoids cluster A regressions where transient owner ping-timeout
-    /// blips (CPU spike, brief GC pause) would otherwise cascade into spurious follower
-    /// disconnects of healthy peers.
-    private static final TimeSpan EVICTION_HINT_VERIFY_WINDOW = TimeSpan.timeSpan(12).seconds();
-
+    /// RC1 (S01 fix) — when SWIM says the suggested-evicted peer is observed locally as
+    /// ALIVE, the follower REFUSES the owner's eviction hint (preserves independent-
+    /// observers property). When SWIM has no direct evidence (SUSPECT/FAULTY/UNKNOWN/
+    /// never-seen), the follower agrees with owner and disconnects locally. SWIM's
+    /// ALIVE state requires actual probe-ack within the last `suspectTimeout` window
+    /// — strong enough evidence that the peer is genuinely reachable.
     private void processEvictionHints(ClusterSyncPing ping) {
         var hints = ping.evictionHints();
         if (hints.isEmpty()) {return;}
-        var thresholdNanos = EVICTION_HINT_VERIFY_WINDOW.nanos();
+        var aliveCheck = peerLocallyAlive.get();
         for (var peer : hints) {
             if (peer.equals(self)) {continue;}
-            var silenceNanos = network.sinceLastInboundNanos(peer);
-            if (silenceNanos < thresholdNanos) {
-                log.debug("ClusterSync: ignored eviction hint for {} from {} — local lastReceived is {}ms ago (< {}ms threshold)",
-                          peer, ping.sender(), silenceNanos / 1_000_000L, thresholdNanos / 1_000_000L);
+            if (aliveCheck.test(peer)) {
+                log.debug("ClusterSync: ignored eviction hint for {} from {} — SWIM says ALIVE",
+                          peer, ping.sender());
                 continue;
             }
-            log.info("ClusterSync: acting on eviction hint for {} from {} (local silence={}ms)",
-                     peer, ping.sender(), silenceNanos / 1_000_000L);
+            log.info("ClusterSync: acting on eviction hint for {} from {} (SWIM not ALIVE)",
+                     peer, ping.sender());
             network.disconnect(new NetworkServiceMessage.DisconnectNode(peer));
         }
     }
@@ -313,6 +320,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         peerObservationBuffer.set(buffer == null
                                   ? PeerObservationBuffer.NOOP
                                   : buffer);
+    }
+
+    @Override@Contract public void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {
+        peerLocallyAlive.set(predicate == null
+                             ? _ -> true
+                             : predicate);
     }
 
     @Override@Contract public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {

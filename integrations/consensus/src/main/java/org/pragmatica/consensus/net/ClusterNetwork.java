@@ -131,15 +131,4 @@ public interface ClusterNetwork {
     default Map<String, Number> transportMetrics() {
         return Map.of();
     }
-
-    /// Nanos since the most recent inbound message from `peer`, or `Long.MAX_VALUE`
-    /// if the transport has no record of inbound traffic from that peer (never-heard-from
-    /// treated as silent forever). Used by the cluster-sync layer to verify ownership-broadcast
-    /// eviction hints (`ClusterSyncPing.evictionHints`) against local liveness evidence
-    /// before acting — owner's eviction is a SUGGESTION, the follower confirms via this
-    /// before applying. Default is `Long.MAX_VALUE` for transports that don't track inbound
-    /// times (legacy / non-QUIC backends).
-    default long sinceLastInboundNanos(NodeId peer) {
-        return Long.MAX_VALUE;
-    }
 }

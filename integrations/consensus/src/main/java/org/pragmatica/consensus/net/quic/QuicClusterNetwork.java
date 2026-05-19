@@ -484,13 +484,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
-    public long sinceLastInboundNanos(NodeId peer) {
-        var state = peers.get(peer);
-        if (state == null) {return Long.MAX_VALUE;}
-        return state.sinceLastInboundNanos(System.nanoTime());
-    }
-
-    @Override
     public Set<NodeId> activePeers() {
         // Mirror `activeConnectedCount` semantics: include EVICTED (transient stale-link
         // awaiting reconcile) so external counts do not flicker on momentary evictions.
@@ -572,14 +565,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("JBCT-PAT-01") // Message routing dispatch
     private void onMessageReceived(NodeId sender, Object message) {
         quicMetrics.onMessageReceived();
-        // RC1 (S01 fix): record inbound timestamp per peer so the follower-side
-        // verification of `ClusterSyncPing.evictionHints` can confirm "I haven't
-        // heard from this peer recently" before acting on the owner's suggestion.
-        // Updated on ANY inbound message (Wired or otherwise) regardless of phase.
-        var senderState = peers.get(sender);
-        if (senderState != null) {
-            senderState.recordInbound(System.nanoTime());
-        }
         if (message instanceof Message.Wired wired) {
             router.route(wired);
         } else {
