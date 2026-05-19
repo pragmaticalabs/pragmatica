@@ -331,30 +331,73 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                 return resultPromise;
             }
 
+            // RC1 fix (06-deployment regression): re-resolve task-group ownership on each retry
+            // attempt and re-check QUIC connectedness. The prior fast-fail behavior burned the
+            // entire retry budget against a single stale snapshot of (owner, connectedPeers) —
+            // every retry hit the same wrong or disconnected node and returned 503. Two
+            // independent failure modes both produced "Request failed after all retries":
+            // (1) owner-disconnected race: KV TaskAssignmentKey update reached the forwarder
+            //     before the QUIC `connectedPeers()` set caught up;
+            // (2) stale ownership after blue-green promote: task-group reassignment via consensus
+            //     reaches each node independently, so the forwarder may point at the old owner
+            //     while the new owner has not yet activate()d.
+            // Both classes are addressed by re-querying the resolver and connectedness on each
+            // retry, with a small delay between attempts to let propagation converge.
             private Promise<HttpResponseData> forwardToTaskGroupOwner(TaskGroup group,
                                                                       HttpRequestContext requestContext,
                                                                       String requestId) {
-                return taskGroupOwnerResolver.apply(group)
-                                                   .fold(cause -> {
-                                                             log.debug("Task group {} has no owner for management forward [{}]",
-                                                                       group,
-                                                                       requestId);
-                                                             return cause.<HttpResponseData>promise();
-                                                         },
-                                                         owner -> {
-                                                             if (!clusterNetwork.connectedPeers().contains(owner)) {
-                                                                 log.warn("Task group {} owner {} is not connected [{}]",
-                                                                          group,
-                                                                          owner,
-                                                                          requestId);
-                                                                 return ManagementRouteError.ownerDisconnected(group,
-                                                                                                               owner.id())
-                .<HttpResponseData>promise();
-                                                             }
-                                                             return forwardToSpecificNode(requestContext,
-                                                                                          owner,
-                                                                                          requestId);
-                                                         });
+                var resultPromise = Promise.<HttpResponseData>promise();
+                attemptTaskGroupForward(group, requestContext, requestId, resultPromise, maxForwardRetries);
+                return resultPromise;
+            }
+
+            private void attemptTaskGroupForward(TaskGroup group,
+                                                 HttpRequestContext requestContext,
+                                                 String requestId,
+                                                 Promise<HttpResponseData> resultPromise,
+                                                 int retriesRemaining) {
+                var ownerResult = taskGroupOwnerResolver.apply(group);
+                if (ownerResult.isFailure()) {
+                    log.debug("Task group {} has no owner (retries={}) [{}]",
+                              group, retriesRemaining, requestId);
+                    retryTaskGroupOrFail(group, requestContext, requestId, resultPromise, retriesRemaining,
+                                         () -> Causes.cause("Task group " + group + " has no owner after retries"));
+                    return;
+                }
+                var owner = ownerResult.unwrap();
+                if (!clusterNetwork.connectedPeers().contains(owner)) {
+                    log.debug("Task group {} owner {} disconnected (retries={}) [{}]",
+                              group, owner, retriesRemaining, requestId);
+                    retryTaskGroupOrFail(group, requestContext, requestId, resultPromise, retriesRemaining,
+                                         () -> ManagementRouteError.ownerDisconnected(group, owner.id()));
+                    return;
+                }
+                forwardToSpecificNode(requestContext, owner, requestId)
+                        .onSuccess(resultPromise::succeed)
+                        .onFailure(cause -> {
+                            log.debug("Forward to owner {} failed: {} (retries={}) [{}]",
+                                      owner, cause.message(), retriesRemaining, requestId);
+                            retryTaskGroupOrFail(group, requestContext, requestId, resultPromise, retriesRemaining, () -> cause);
+                        });
+            }
+
+            private void retryTaskGroupOrFail(TaskGroup group,
+                                              HttpRequestContext requestContext,
+                                              String requestId,
+                                              Promise<HttpResponseData> resultPromise,
+                                              int retriesRemaining,
+                                              Supplier<Cause> exhaustionCause) {
+                if (retriesRemaining <= 0) {
+                    resultPromise.fail(exhaustionCause.get());
+                    return;
+                }
+                Promise.<Unit>promise()
+                       .timeout(timeSpan(retryDelayMs).millis())
+                       .onResult(_ -> attemptTaskGroupForward(group,
+                                                              requestContext,
+                                                              requestId,
+                                                              resultPromise,
+                                                              retriesRemaining - 1));
             }
 
             private Promise<HttpResponseData> forwardToSpecificNode(HttpRequestContext requestContext,
