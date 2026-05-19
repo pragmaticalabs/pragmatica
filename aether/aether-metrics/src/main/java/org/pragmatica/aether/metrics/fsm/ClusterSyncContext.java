@@ -63,6 +63,14 @@ public final class ClusterSyncContext {
 
     private final PeerObservationStore observationStore;
     private final Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier;
+
+    /// RC1 (S01 fix) — peers this node has locally evicted via ping-timeout, with the
+    /// nanos timestamp at which the eviction was recorded. Snapshotted into each outbound
+    /// `ClusterSyncPing.evictionHints` as a suggestion to followers. Entries older than
+    /// `EVICTION_HINT_TTL` are pruned on read. ConcurrentHashMap so the periodic
+    /// ping tick (read) and `emitPingTimeoutIfExceeded` (write) don't race.
+    private final Map<NodeId, Long> evictionHints = new ConcurrentHashMap<>();
+    private static final TimeSpan EVICTION_HINT_TTL = TimeSpan.timeSpan(15).seconds();
     private final PeriodicObservationConfig periodicConfig;
     private final ClusterSyncState dormant;
     private final ClusterSyncState stopped;
@@ -250,7 +258,8 @@ public final class ClusterSyncContext {
                                        rabiaTerm,
                                        currentEpoch.rabiaTerm(),
                                        currentEpoch.localCounter(),
-                                       reachabilitySnapshotSupplier.get());
+                                       reachabilitySnapshotSupplier.get(),
+                                       currentEvictionHints());
         log.debug("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",
                   peer,
                   rabiaTerm,
@@ -258,6 +267,18 @@ public final class ClusterSyncContext {
                   currentEpoch.localCounter());
         network.send(peer, ping);
         return currentEpoch;
+    }
+
+    /// RC1 (S01 fix) — snapshot of peers this node has locally evicted via
+    /// `emitPingTimeoutIfExceeded` recently. Included in each outbound `ClusterSyncPing`
+    /// as a SUGGESTION to followers ("I think these peers are dead — verify and act").
+    /// Followers reconcile against their own `lastReceivedNanos` before evicting locally;
+    /// owner is not authoritative. Entries age out after `evictionHintTtlNanos`.
+    private Set<NodeId> currentEvictionHints() {
+        var now = System.nanoTime();
+        var ttl = EVICTION_HINT_TTL.nanos();
+        evictionHints.entrySet().removeIf(e -> (now - e.getValue()) > ttl);
+        return Set.copyOf(evictionHints.keySet());
     }
 
     public long currentRabiaTerm() {
@@ -281,6 +302,10 @@ public final class ClusterSyncContext {
         // idempotent (peer.evict() guards against double-eviction). See spec §16 S01/S02
         // and the QuicClusterClient.java:139 / QuicClusterServer.java:136 idle-timeout note.
         network.disconnect(new NetworkServiceMessage.DisconnectNode(peer));
+        // Track this eviction so the next `ClusterSyncPing` broadcasts it as a
+        // SUGGESTION to followers. Followers verify against their own `lastReceivedNanos`
+        // before acting — owner's eviction is informational, not authoritative.
+        evictionHints.put(peer, System.nanoTime());
     }
 
     public int bufferCap() {

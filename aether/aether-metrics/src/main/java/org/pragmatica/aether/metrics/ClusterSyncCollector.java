@@ -15,10 +15,12 @@ import org.pragmatica.cluster.metrics.ConnectivityState;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
 
@@ -242,12 +244,48 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         // Pre-extension peers send Option.none() — leave cache unchanged so
         // older data isn't lost during a rolling upgrade window.
         ping.aggregatedReachability().onPresent(snapshot -> lastReachabilitySnapshot.set(Option.some(snapshot)));
+        // RC1 (S01 fix): owner's eviction hints are SUGGESTIONS — verify against local
+        // liveness evidence before acting. If we've received traffic from the peer
+        // recently (within `EVICTION_HINT_VERIFY_NANOS`), the owner's view is likely
+        // stale or wrong (asymmetric routing / NIC issue on owner side) — ignore.
+        // If silent locally too, agree with owner and disconnect the peer ourselves,
+        // which strips our REACHABLE vote from the next pong and lets the aggregator
+        // converge faster. Preserves the "independent observers" property by adding
+        // a LOCAL veto on the owner's suggestion.
+        processEvictionHints(ping);
         var pong = buildPong();
         log.debug("ClusterSync: sending PONG to {} (epoch={}:{})",
                   ping.sender(),
                   pong.observedEpochTerm(),
                   pong.observedEpochCounter());
         network.send(ping.sender(), pong);
+    }
+
+    /// RC1 (S01 fix) — verification threshold for acting on owner-broadcast eviction hints.
+    /// If we've received traffic from the suggested-evicted peer within this window, we
+    /// REFUSE the eviction (preserves the "independent observers" property; owner's view
+    /// may be wrong due to partial-network conditions). Chosen 5s as a compromise between
+    /// fast S01 detection and tolerance for sparse follower-to-follower direct traffic via
+    /// SWIM gossip (random per-round selection at period=1s in N=5 cluster averages ~4s
+    /// between direct messages from any given peer).
+    private static final TimeSpan EVICTION_HINT_VERIFY_WINDOW = TimeSpan.timeSpan(5).seconds();
+
+    private void processEvictionHints(ClusterSyncPing ping) {
+        var hints = ping.evictionHints();
+        if (hints.isEmpty()) {return;}
+        var thresholdNanos = EVICTION_HINT_VERIFY_WINDOW.nanos();
+        for (var peer : hints) {
+            if (peer.equals(self)) {continue;}
+            var silenceNanos = network.sinceLastInboundNanos(peer);
+            if (silenceNanos < thresholdNanos) {
+                log.debug("ClusterSync: ignored eviction hint for {} from {} — local lastReceived is {}ms ago (< {}ms threshold)",
+                          peer, ping.sender(), silenceNanos / 1_000_000L, thresholdNanos / 1_000_000L);
+                continue;
+            }
+            log.info("ClusterSync: acting on eviction hint for {} from {} (local silence={}ms)",
+                     peer, ping.sender(), silenceNanos / 1_000_000L);
+            network.disconnect(new NetworkServiceMessage.DisconnectNode(peer));
+        }
     }
 
     @Override@Contract public void onClusterSyncPong(ClusterSyncPong pong) {

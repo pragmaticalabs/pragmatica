@@ -11,6 +11,7 @@ import org.pragmatica.serialization.Codec;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /// Tier 1 cluster-sync wire protocol — the ping/pong chain carrying lifecycle,
 /// metrics, and peer observations between the Rabia leader and core members.
@@ -44,17 +45,32 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                            long rabiaTerm,
                            long epochTerm,
                            long epochCounter,
-                           Option<AggregatedReachabilitySnapshot> aggregatedReachability) implements ClusterSyncMessage {
+                           Option<AggregatedReachabilitySnapshot> aggregatedReachability,
+                           Set<NodeId> evictionHints) implements ClusterSyncMessage {
         public ClusterSyncPing {
             aggregatedReachability = aggregatedReachability == null
                                     ? Option.none()
                                     : aggregatedReachability;
+            evictionHints = evictionHints == null
+                           ? Set.of()
+                           : Set.copyOf(evictionHints);
+        }
+
+        /// Backward-compatible 6-arg constructor for call sites that pre-date the
+        /// `evictionHints` extension (RC1 S01 fix). Defaults the hint set to empty.
+        public ClusterSyncPing(NodeId sender,
+                               Map<NodeId, Map<String, Double>> allMetrics,
+                               long rabiaTerm,
+                               long epochTerm,
+                               long epochCounter,
+                               Option<AggregatedReachabilitySnapshot> aggregatedReachability) {
+            this(sender, allMetrics, rabiaTerm, epochTerm, epochCounter, aggregatedReachability, Set.of());
         }
 
         /// Backward-compatible factory for legacy call sites that have no epoch info.
         /// Produces a term/epoch of zero — receivers treat it as a pre-migration heartbeat.
         public static ClusterSyncPing clusterSyncPing(NodeId sender, Map<NodeId, Map<String, Double>> allMetrics) {
-            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Option.none());
+            return new ClusterSyncPing(sender, allMetrics, 0L, 0L, 0L, Option.none(), Set.of());
         }
     }
 

@@ -124,6 +124,15 @@ public final class PeerState {
     /// successful attach.
     private long reconcileCurrentDelayMs;
 
+    /// Wall-clock nanos of the most recent inbound message received from this peer.
+    /// Updated by `QuicClusterNetwork.onMessageReceived` on every datagram. Consumed
+    /// by the follower-side verification of `ClusterSyncPing.evictionHints` — owner's
+    /// eviction is treated as a SUGGESTION; the follower acts only when its own local
+    /// "have I heard from this peer recently?" check ALSO says silent. Distinct from
+    /// `phaseChangedAtNanos` (lifecycle phase age) — `lastReceivedNanos` tracks actual
+    /// traffic, agnostic to QUIC's CONNECTED/EVICTED phase. See spec §16 S01.
+    private long lastReceivedNanos;
+
     private PeerState(NodeId peerId, long nowNanos) {
         this.peerId = peerId;
         this.phaseChangedAtNanos = nowNanos;
@@ -308,6 +317,20 @@ public final class PeerState {
     /// Current reconcile-backoff delay in ms; intended for tests/diagnostics.
     public synchronized long reconcileCurrentDelayMs() {
         return reconcileCurrentDelayMs;
+    }
+
+    /// Record an inbound message timestamp. Called by `QuicClusterNetwork.onMessageReceived`
+    /// on every datagram received from this peer, regardless of message type or phase. Used
+    /// by `lastReceivedNanos()` for the follower-side eviction-hint verification.
+    public synchronized void recordInbound(long nowNanos) {
+        this.lastReceivedNanos = nowNanos;
+    }
+
+    /// Nanos since the most recent inbound message from this peer, or `nowNanos` itself
+    /// if no inbound has been observed yet (never-heard-from = treated as silent forever).
+    public synchronized long sinceLastInboundNanos(long nowNanos) {
+        if (lastReceivedNanos == 0L) {return Long.MAX_VALUE;}
+        return nowNanos - lastReceivedNanos;
     }
 
     private void changePhase(Phase next, long nowNanos) {
