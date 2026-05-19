@@ -134,7 +134,12 @@ class QuicClusterNetworkHintEmissionTest {
     }
 
     @Test
-    void disconnect_leaderPath_stillInvokesDisconnectListener_noUpstreamReport() {
+    void disconnect_leaderPath_invokesBothDisconnectListenerAndReporter() {
+        // Topology-observation refactor Step 4: leader MUST also fire the connectivity
+        // reporter on QUIC drops so the AetherNode-level adapter can ingest the
+        // observation synchronously into ReachabilityAggregator. The disconnect listener
+        // (HealthReconciler fast path) still fires too — these consumers are
+        // complementary, not exclusive.
         var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
         QuicDisconnectListener listener = listenerInvocations::add;
         var reported = new CopyOnWriteArrayList<ReportedDisconnect>();
@@ -146,14 +151,20 @@ class QuicClusterNetworkHintEmissionTest {
                 // No-op for this test.
             }
         };
+        QuicClusterNetwork.ObservedEpochSupplier epoch = new QuicClusterNetwork.ObservedEpochSupplier() {
+            @Override public long term() {return 7L;}
+            @Override public long counter() {return 2L;}
+        };
         var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(), listener);
-        network.setFollowerObservationWiring(() -> true, reporter, QuicClusterNetwork.ObservedEpochSupplier.zero());
+        network.setFollowerObservationWiring(() -> true, reporter, epoch);
 
         var missing = new NodeId("missing");
         network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
 
-        assertThat(listenerInvocations).containsExactly(missing);
-        assertThat(reported).as("leader does not duplicate into the upstream buffer").isEmpty();
+        assertThat(listenerInvocations).as("leader disconnect listener fires")
+                                       .containsExactly(missing);
+        assertThat(reported).as("leader also emits via reporter for direct aggregator ingest")
+                            .containsExactly(new ReportedDisconnect(missing, 7L, 2L));
     }
 
     private record ReportedDisconnect(NodeId peerId, long term, long counter) {}

@@ -1198,9 +1198,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private void reportPeerRemoval(NodeId peerId) {
+        // Leader path: route to the local disconnect listener (HealthReconciler fast path)
+        // for liveness bookkeeping. Symmetric to follower-side reporting, ALSO emit a
+        // connectivity transition via the reporter so the leader's local adapter can fold
+        // the observation directly into ReachabilityAggregator (Step 4 of the topology-
+        // observation refactor — eliminates the 5s self-fold tick latency on leader-side
+        // QUIC drops). Followers skip the disconnectListener (leader-only consumer) and
+        // only emit through the reporter, which buffers the observation for the next
+        // outbound ClusterSyncPong → leader.
         if (isLeaderSupplier.getAsBoolean()) {
             disconnectListener.onDisconnect(peerId);
-            return;
         }
         var epoch = observedEpochSupplier;
         connectivityReporter.onPeerDisconnected(peerId, epoch.term(), epoch.counter());

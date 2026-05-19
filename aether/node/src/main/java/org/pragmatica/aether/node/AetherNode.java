@@ -143,6 +143,7 @@ import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.WorkerConfig;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityKind;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.cluster.metrics.ConnectivityState;
@@ -1568,7 +1569,11 @@ public interface AetherNode extends ManageableNode {
                                                   1,
                                                   java.util.concurrent.TimeUnit.SECONDS);
         attachQuicDisconnectListener(clusterNode.network(), stableHealthSink, leaderEpochSupplier);
-        attachQuicFollowerWiring(clusterNode.network(), isLeaderSupplier, peerObservationStore, leaderEpochSupplier);
+        attachQuicConnectivityReporter(clusterNode.network(),
+                                       isLeaderSupplier,
+                                       peerObservationStore,
+                                       leaderEpochSupplier,
+                                       reachabilityAggregator);
         attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
@@ -2096,26 +2101,49 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    private static void attachQuicFollowerWiring(ClusterNetwork network,
-                                                 BooleanSupplier isLeaderSupplier,
-                                                 PeerObservationBuffer buffer,
-                                                 Supplier<Epoch> epochSupplier) {
+    /// Installs a single `PeerConnectivityReporter` on EVERY node (leader + followers).
+    /// On EVERY transition observation:
+    ///   * Push into local `PeerObservationBuffer` so the next outbound `ClusterSyncPong`
+    ///     carries the observation (follower→leader relay path; benign on the leader, the
+    ///     leader does not pong itself).
+    ///   * If this node IS leader AT REPORT TIME (runtime check, not install-time), ALSO
+    ///     ingest directly into the local `ReachabilityAggregator`, bypassing the 5s
+    ///     self-fold tick and skipping the follower→leader pong roundtrip. Leadership
+    ///     flips during a node's lifetime; the runtime check makes a freshly-elected
+    ///     leader's QUIC drops feed the aggregator without re-installing the reporter.
+    /// Step 4 of the topology-observation refactor — fixes the ~16s UNREACHABLE
+    /// confirmation latency when an ON_DUTY peer is killed (was: leader learns only via
+    /// the next self-fold tick or via follower pong relay; now: synchronous one-hop).
+    /// See `aether/docs/specs/reachability-aggregator-spec.md`.
+    private static void attachQuicConnectivityReporter(ClusterNetwork network,
+                                                       BooleanSupplier isLeaderSupplier,
+                                                       PeerObservationBuffer buffer,
+                                                       Supplier<Epoch> epochSupplier,
+                                                       ReachabilityAggregator reachabilityAggregator) {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
             @Override public void onPeerDisconnected(NodeId peerId, long term, long counter) {
+                var now = System.currentTimeMillis();
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.DISCONNECTED,
                                                                         term,
                                                                         counter,
-                                                                        System.currentTimeMillis()));
+                                                                        now));
+                if (isLeaderSupplier.getAsBoolean()) {
+                    reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.UNREACHABLE, now);
+                }
             }
 
             @Override public void onPeerConnected(NodeId peerId, long term, long counter) {
+                var now = System.currentTimeMillis();
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.CONNECTED,
                                                                         term,
                                                                         counter,
-                                                                        System.currentTimeMillis()));
+                                                                        now));
+                if (isLeaderSupplier.getAsBoolean()) {
+                    reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.REACHABLE, now);
+                }
             }
         };
         QuicClusterNetwork.ObservedEpochSupplier epochAdapter = new QuicClusterNetwork.ObservedEpochSupplier() {

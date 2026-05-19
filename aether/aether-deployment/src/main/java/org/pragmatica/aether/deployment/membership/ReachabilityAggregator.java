@@ -92,6 +92,21 @@ public interface ReachabilityAggregator {
     /// failures.
     @Contract void addSnapshotListener(Consumer<AggregatedReachabilitySnapshot> listener);
 
+    /// Topology-observation refactor Step 4: leader's own QUIC layer fires a transition
+    /// observation directly into the aggregator, bypassing the 5-second self-fold tick
+    /// AND the follower→leader pong-relay roundtrip. The leader is its own observer for
+    /// the `(self, target)` cell — calling this records a fresh observation with the
+    /// given timestamp under latest-wins semantics (`recordObservation` retains the
+    /// entry with the greatest `producedAtMs`).
+    ///
+    /// Symmetric for CONNECTED and DISCONNECTED transitions; expected to be invoked
+    /// only when this node is leader. On followers the same transitions flow through
+    /// the local `PeerObservationBuffer` and arrive at the leader via the next pong.
+    /// Safe to call regardless of role — the aggregator is leader-side-only by design,
+    /// so a misrouted call simply mutates state that the next `reset()` (on leader loss)
+    /// will discard.
+    @Contract void ingestSelfTransition(NodeId peer, ReachabilityKind kind, long producedAtMs);
+
     static ReachabilityAggregator reachabilityAggregator(NodeId self,
                                                           IntSupplier onDutyCountSupplier,
                                                           Supplier<Set<NodeId>> selfConnectedSupplier,
@@ -144,6 +159,10 @@ record ReachabilityAggregatorRecord(NodeId self,
 
     @Contract @Override public void addSnapshotListener(Consumer<AggregatedReachabilitySnapshot> listener) {
         snapshotListeners.add(listener);
+    }
+
+    @Contract @Override public void ingestSelfTransition(NodeId peer, ReachabilityKind kind, long producedAtMs) {
+        recordObservation(self, peer, kind, producedAtMs);
     }
 
     @Override public Option<AggregatedReachabilitySnapshot> snapshot() {
