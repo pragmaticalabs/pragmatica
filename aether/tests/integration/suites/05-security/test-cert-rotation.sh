@@ -31,7 +31,7 @@ test_rotation_under_load() {
 
     # Check if TLS is configured before attempting rotation
     local cert_info
-    cert_info=$(api_get "/api/certificate" 2>/dev/null)
+    cert_info=$(api_get "/api/certificates" 2>/dev/null)
     local renewal_status
     renewal_status=$(json_value "$cert_info" "renewalStatus")
     local rotation_triggered=false

@@ -46,18 +46,18 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 
 | Endpoint Category | Minimum Role | Examples |
 |-------------------|-------------|----------|
-| Blueprint management | ADMIN | `POST /api/blueprint`, `DELETE /api/blueprint/{id}` |
-| Node shutdown | ADMIN | `POST /api/node/shutdown/{id}` |
-| Backup restore | ADMIN | `POST /api/backup/restore/{id}` |
+| Blueprint management | ADMIN | `POST /api/blueprints`, `DELETE /api/blueprints/{id}` |
+| Node shutdown | ADMIN | `POST /api/nodes/shutdown/{id}` |
+| Backup restore | ADMIN | `POST /api/backups/restore/{id}` |
 | Log level changes | ADMIN | `PUT /api/logging/levels` |
 | Observability depth | ADMIN | `PUT /api/observability/depth` |
-| Blueprint deploy (from artifact) | OPERATOR | `POST /api/blueprint/deploy` |
-| Blueprint validate | VIEWER | `POST /api/blueprint/validate` |
-| Node drain/activate | OPERATOR | `POST /api/node/drain/{id}`, `POST /api/node/activate/{id}` |
+| Blueprint deploy (from artifact) | OPERATOR | `POST /api/blueprints/deploy` |
+| Blueprint validate | VIEWER | `POST /api/blueprints/validate` |
+| Node drain/activate | OPERATOR | `POST /api/nodes/drain/{id}`, `POST /api/nodes/activate/{id}` |
 | Scaling | OPERATOR | `POST /api/scale` |
 | Schema operations | OPERATOR | `POST /api/schema/*` |
-| Deployment strategies | OPERATOR | `POST /api/deploy`, `POST /api/deploy/*/promote`, `POST /api/deploy/*/rollback`, `POST /api/deploy/*/complete`, `POST /api/ab-test/*` |
-| Backup trigger | OPERATOR | `POST /api/backup` |
+| Deployment strategies | OPERATOR | `POST /api/deploy`, `POST /api/deploy/*/promote`, `POST /api/deploy/*/rollback`, `POST /api/deploy/*/complete`, `POST /api/ab-tests/*` |
+| Backup trigger | OPERATOR | `POST /api/backups` |
 | Config overrides | OPERATOR | `PUT /api/config/*` |
 | Alert management | OPERATOR | `POST /api/alerts/clear` |
 | Scheduled tasks | OPERATOR | `POST /api/scheduled-tasks/*` |
@@ -112,7 +112,7 @@ This is distinct from the authentication 403 (invalid API key). The authorizatio
 
 ## Cluster Status
 
-### GET /api/status
+### GET /api/nodes/status
 
 Get overall cluster status including uptime, cluster info, slice count, and metrics summary.
 
@@ -267,7 +267,7 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 
 > **Blueprint-only deployment model:** Slices are deployed and undeployed exclusively through blueprints.
 > Individual deploy/undeploy endpoints have been removed to enforce dependency validation.
-> Use `POST /api/blueprint` to deploy slices and `DELETE /api/blueprint/{id}` to undeploy them.
+> Use `POST /api/blueprints` to deploy slices and `DELETE /api/blueprints/{id}` to undeploy them.
 
 ### GET /api/slices
 
@@ -292,7 +292,7 @@ Returns cluster-wide slice data including per-node instances, target counts, and
 }
 ```
 
-### GET /api/node/slices
+### GET /api/nodes/slices
 
 Returns a flat list of slice artifact identifiers loaded on the connected node (the previous behavior of `GET /api/slices`).
 
@@ -326,7 +326,7 @@ Get detailed slice status including per-node state and health.
 }
 ```
 
-### GET /api/node/routes
+### GET /api/nodes/routes
 
 List HTTP routes registered on the connected node.
 
@@ -401,7 +401,7 @@ Scale a blueprint-deployed slice to a new instance count. The slice must be part
 
 ## Blueprint Management
 
-### POST /api/blueprint
+### POST /api/blueprints
 
 Publish (apply) a blueprint definition. The request body is the raw blueprint YAML/JSON string.
 
@@ -430,7 +430,7 @@ List all published blueprints.
 }
 ```
 
-### GET /api/blueprint/{id}
+### GET /api/blueprints/{id}
 
 Get blueprint details including slices and dependencies.
 
@@ -450,7 +450,7 @@ Get blueprint details including slices and dependencies.
 }
 ```
 
-### GET /api/blueprint/{id}/status
+### GET /api/blueprints/{id}/status
 
 Get deployment status of a blueprint and each of its slices.
 
@@ -472,7 +472,7 @@ Get deployment status of a blueprint and each of its slices.
 
 Status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`.
 
-### DELETE /api/blueprint/{id}
+### DELETE /api/blueprints/{id}
 
 Delete a published blueprint.
 
@@ -484,7 +484,7 @@ Delete a published blueprint.
 }
 ```
 
-### POST /api/blueprint/deploy
+### POST /api/blueprints/deploy
 
 Deploy a blueprint from an artifact in the cluster's artifact repository.
 
@@ -504,7 +504,7 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 }
 ```
 
-### POST /api/blueprint/validate
+### POST /api/blueprints/validate
 
 Validate a blueprint without applying it.
 
@@ -685,7 +685,7 @@ curl "http://localhost:8080/api/metrics/history?range=15m"
 }
 ```
 
-### GET /api/node-metrics
+### GET /api/nodes/metrics
 
 Get per-node CPU and heap metrics.
 
@@ -701,7 +701,7 @@ Get per-node CPU and heap metrics.
 ]
 ```
 
-### GET /api/artifact-metrics
+### GET /api/artifacts/metrics
 
 Get artifact storage and deployment metrics.
 
@@ -720,7 +720,7 @@ Get artifact storage and deployment metrics.
 }
 ```
 
-### GET /api/invocation-metrics
+### GET /api/invocations/metrics
 
 Get per-method invocation metrics.
 
@@ -731,13 +731,13 @@ Get per-method invocation metrics.
 **Examples:**
 ```bash
 # All metrics
-curl http://localhost:8080/api/invocation-metrics
+curl http://localhost:8080/api/invocations/metrics
 
 # Filter by artifact
-curl "http://localhost:8080/api/invocation-metrics?artifact=order-service"
+curl "http://localhost:8080/api/invocations/metrics?artifact=order-service"
 
 # Filter by method
-curl "http://localhost:8080/api/invocation-metrics?method=processOrder"
+curl "http://localhost:8080/api/invocations/metrics?method=processOrder"
 ```
 
 **Response:**
@@ -760,7 +760,7 @@ curl "http://localhost:8080/api/invocation-metrics?method=processOrder"
 }
 ```
 
-### GET /api/invocation-metrics/slow
+### GET /api/invocations/metrics/slow
 
 Get slow invocation details.
 
@@ -781,7 +781,7 @@ Get slow invocation details.
 }
 ```
 
-### GET /api/invocation-metrics/strategy
+### GET /api/invocations/metrics/strategy
 
 Get current slow invocation threshold strategy.
 
@@ -805,7 +805,7 @@ Get current slow invocation threshold strategy.
 {"type": "composite"}
 ```
 
-### POST /api/invocation-metrics/strategy
+### POST /api/invocations/metrics/strategy
 
 Strategy changes are not currently supported. This endpoint always returns an error.
 
@@ -1155,7 +1155,7 @@ curl "http://localhost:8080/api/traces?limit=50&method=processOrder"
 }
 ```
 
-### GET /api/traces/{requestId}
+### GET /api/traces/{id}
 
 Get all trace nodes for a specific request ID.
 
@@ -1433,7 +1433,7 @@ curl -X DELETE http://localhost:8080/api/config/database.port
 }
 ```
 
-### DELETE /api/config/node/{nodeId}/{key}
+### DELETE /api/config/node/{id}/{key}
 
 Remove a node-specific configuration override.
 
@@ -1479,7 +1479,7 @@ List all active deployments across all strategies.
 }
 ```
 
-### GET /api/deploy/{deploymentId}
+### GET /api/deploy/{id}
 
 Get a single deployment by ID. Use `current` as the ID to resolve to the first active deployment.
 
@@ -1504,7 +1504,7 @@ Strategy-specific fields vary:
 - **CANARY**: includes `currentStage`, `trafficPercent`, `stages`
 - **BLUE_GREEN**: includes `activeSlot` (`BLUE` or `GREEN`)
 
-### GET /api/deploy/{deploymentId}/health
+### GET /api/deploy/{id}/health
 
 Get version health metrics for a deployment.
 
@@ -1557,9 +1557,9 @@ Start a new deployment. Requires leader node.
 | `requireManualApproval` | boolean | No | Require manual approval (default: false) |
 | `cleanupPolicy` | string | No | `IMMEDIATE`, `GRACE_PERIOD` (default), `MANUAL` |
 
-**Response:** Same as `GET /api/deploy/{deploymentId}`.
+**Response:** Same as `GET /api/deploy/{id}`.
 
-### POST /api/deploy/{deploymentId}/promote
+### POST /api/deploy/{id}/promote
 
 Advance a deployment to its next stage. The behavior depends on the strategy:
 - **ROLLING**: Shifts traffic to the next routing ratio
@@ -1568,19 +1568,19 @@ Advance a deployment to its next stage. The behavior depends on the strategy:
 
 Requires leader node.
 
-**Response:** Same as `GET /api/deploy/{deploymentId}`.
+**Response:** Same as `GET /api/deploy/{id}`.
 
-### POST /api/deploy/{deploymentId}/rollback
+### POST /api/deploy/{id}/rollback
 
 Rollback to old version. Requires leader node.
 
-**Response:** Same as `GET /api/deploy/{deploymentId}`.
+**Response:** Same as `GET /api/deploy/{id}`.
 
-### POST /api/deploy/{deploymentId}/complete
+### POST /api/deploy/{id}/complete
 
 Complete the deployment (finalize new version, decommission old). Requires leader node.
 
-**Response:** Same as `GET /api/deploy/{deploymentId}`.
+**Response:** Same as `GET /api/deploy/{id}`.
 
 ---
 
@@ -1992,7 +1992,7 @@ List all API keys with status.
 }
 ```
 
-### POST /api/cluster/keys/{keyId}/revoke
+### POST /api/cluster/keys/{id}/revoke
 
 Revoke an API key. The key remains valid during its grace period.
 
@@ -2038,7 +2038,7 @@ List API key audit trail (create, rotate, revoke, expire events).
 
 ## Topology
 
-### GET /api/topology
+### GET /api/slices/topology
 
 Get the cluster-wide topology graph showing data flow between endpoints, slices, resources, and pub-sub topics. Nodes are grouped per-slice with `sliceArtifact` for swim-lane layout. Topic connectors carry `topicConfig` for cross-slice pub-sub matching.
 
@@ -2345,7 +2345,7 @@ List all active A/B tests.
 }
 ```
 
-### GET /api/ab-test/{testId}
+### GET /api/ab-tests/{id}
 
 Get A/B test status.
 
@@ -2365,7 +2365,7 @@ Get A/B test status.
 }
 ```
 
-### GET /api/ab-test/{testId}/metrics
+### GET /api/ab-tests/{id}/metrics
 
 Get per-variant metrics for an A/B test.
 
@@ -2391,7 +2391,7 @@ Get per-variant metrics for an A/B test.
 }
 ```
 
-### POST /api/ab-test/create
+### POST /api/ab-tests/create
 
 Create a new A/B test. Requires leader node.
 
@@ -2415,9 +2415,9 @@ Create a new A/B test. Requires leader node.
 | `splitStrategy` | string | No | `HEADER_HASH`, `COOKIE_HASH`, `HEADER_MATCH`, `PERCENTAGE` (default: `PERCENTAGE`) |
 | `instances` | integer | No | Instances per variant (default: 1) |
 
-**Response:** Same as `GET /api/ab-test/{testId}`.
+**Response:** Same as `GET /api/ab-tests/{id}`.
 
-### POST /api/ab-test/{testId}/conclude
+### POST /api/ab-tests/{id}/conclude
 
 Conclude the A/B test and promote the winning variant. Requires leader node.
 
@@ -2428,7 +2428,7 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 }
 ```
 
-**Response:** Same as `GET /api/ab-test/{testId}`.
+**Response:** Same as `GET /api/ab-tests/{id}`.
 
 ---
 
@@ -2438,34 +2438,34 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 |--------|------|---------|
 | GET | `/health/live` | Health Probes |
 | GET | `/health/ready` | Health Probes |
-| GET | `/api/status` | Cluster Status |
+| GET | `/api/nodes/status` | Cluster Status |
 | GET | `/api/health` | Cluster Status |
 | GET | `/api/nodes` | Cluster Status |
 | GET | `/api/events` | Cluster Status |
 | GET | `/api/slices` | Slice Management (cluster-wide) |
-| GET | `/api/node/slices` | Slice Management (per-node) |
+| GET | `/api/nodes/slices` | Slice Management (per-node) |
 | GET | `/api/slices/status` | Slice Management |
-| GET | `/api/node/routes` | Slice Management (per-node) |
+| GET | `/api/nodes/routes` | Slice Management (per-node) |
 | GET | `/api/routes` | Slice Management (cluster-wide) |
 | POST | `/api/scale` | Slice Management |
-| POST | `/api/blueprint` | Blueprint Management |
+| POST | `/api/blueprints` | Blueprint Management |
 | GET | `/api/blueprints` | Blueprint Management |
-| GET | `/api/blueprint/{id}` | Blueprint Management |
-| GET | `/api/blueprint/{id}/status` | Blueprint Management |
-| DELETE | `/api/blueprint/{id}` | Blueprint Management |
-| POST | `/api/blueprint/deploy` | Blueprint Management |
-| POST | `/api/blueprint/validate` | Blueprint Management |
+| GET | `/api/blueprints/{id}` | Blueprint Management |
+| GET | `/api/blueprints/{id}/status` | Blueprint Management |
+| DELETE | `/api/blueprints/{id}` | Blueprint Management |
+| POST | `/api/blueprints/deploy` | Blueprint Management |
+| POST | `/api/blueprints/validate` | Blueprint Management |
 | GET | `/api/metrics` | Metrics |
 | GET | `/api/metrics/comprehensive` | Metrics |
 | GET | `/api/metrics/derived` | Metrics |
 | GET | `/api/metrics/prometheus` | Metrics |
 | GET | `/api/metrics/history` | Metrics |
-| GET | `/api/node-metrics` | Metrics |
-| GET | `/api/artifact-metrics` | Metrics |
-| GET | `/api/invocation-metrics` | Metrics |
-| GET | `/api/invocation-metrics/slow` | Metrics |
-| GET | `/api/invocation-metrics/strategy` | Metrics |
-| POST | `/api/invocation-metrics/strategy` | Metrics |
+| GET | `/api/nodes/metrics` | Metrics |
+| GET | `/api/artifacts/metrics` | Metrics |
+| GET | `/api/invocations/metrics` | Metrics |
+| GET | `/api/invocations/metrics/slow` | Metrics |
+| GET | `/api/invocations/metrics/strategy` | Metrics |
+| POST | `/api/invocations/metrics/strategy` | Metrics |
 | GET | `/api/controller/config` | Controller |
 | POST | `/api/controller/config` | Controller |
 | GET | `/api/controller/status` | Controller |
@@ -2483,7 +2483,7 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | POST | `/api/aspects` | Dynamic Aspects |
 | DELETE | `/api/aspects/{artifact}/{method}` | Dynamic Aspects |
 | GET | `/api/traces` | Traces |
-| GET | `/api/traces/{requestId}` | Traces |
+| GET | `/api/traces/{id}` | Traces |
 | GET | `/api/traces/stats` | Traces |
 | GET | `/api/observability/depth` | Observability Depth |
 | POST | `/api/observability/depth` | Observability Depth |
@@ -2495,21 +2495,21 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/config/overrides` | Dynamic Configuration |
 | POST | `/api/config` | Dynamic Configuration |
 | DELETE | `/api/config/{key}` | Dynamic Configuration |
-| DELETE | `/api/config/node/{nodeId}/{key}` | Dynamic Configuration |
+| DELETE | `/api/config/node/{id}/{key}` | Dynamic Configuration |
 | GET | `/api/deploy` | Deployments |
-| GET | `/api/deploy/{deploymentId}` | Deployments |
-| GET | `/api/deploy/{deploymentId}/health` | Deployments |
+| GET | `/api/deploy/{id}` | Deployments |
+| GET | `/api/deploy/{id}/health` | Deployments |
 | POST | `/api/deploy` | Deployments |
-| POST | `/api/deploy/{deploymentId}/promote` | Deployments |
-| POST | `/api/deploy/{deploymentId}/rollback` | Deployments |
-| POST | `/api/deploy/{deploymentId}/complete` | Deployments |
+| POST | `/api/deploy/{id}/promote` | Deployments |
+| POST | `/api/deploy/{id}/rollback` | Deployments |
+| POST | `/api/deploy/{id}/complete` | Deployments |
 | GET | `/api/ab-tests` | A/B Testing |
-| GET | `/api/ab-test/{testId}` | A/B Testing |
-| GET | `/api/ab-test/{testId}/metrics` | A/B Testing |
-| POST | `/api/ab-test/create` | A/B Testing |
-| POST | `/api/ab-test/{testId}/conclude` | A/B Testing |
+| GET | `/api/ab-tests/{id}` | A/B Testing |
+| GET | `/api/ab-tests/{id}/metrics` | A/B Testing |
+| POST | `/api/ab-tests/create` | A/B Testing |
+| POST | `/api/ab-tests/{id}/conclude` | A/B Testing |
 <!-- Rolling update endpoints replaced by unified /api/deploy above -->
-| GET | `/api/topology` | Topology |
+| GET | `/api/slices/topology` | Topology |
 | GET | `/repository/info/{group}/{artifact}/{version}` | Artifact Repository |
 | GET | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
 | PUT | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
@@ -2520,10 +2520,10 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | WS | `/ws/events` | WebSocket |
 
 | GET | `/api/nodes/lifecycle` | Node Lifecycle |
-| GET | `/api/node/lifecycle/{nodeId}` | Node Lifecycle |
-| POST | `/api/node/drain/{nodeId}` | Node Lifecycle |
-| POST | `/api/node/activate/{nodeId}` | Node Lifecycle |
-| POST | `/api/node/shutdown/{nodeId}` | Node Lifecycle |
+| GET | `/api/nodes/lifecycle/{id}` | Node Lifecycle |
+| POST | `/api/nodes/drain/{id}` | Node Lifecycle |
+| POST | `/api/nodes/activate/{id}` | Node Lifecycle |
+| POST | `/api/nodes/shutdown/{id}` | Node Lifecycle |
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
 | POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
@@ -2569,7 +2569,7 @@ Get lifecycle state for all nodes.
 ]
 ```
 
-### GET /api/node/lifecycle/{nodeId}
+### GET /api/nodes/lifecycle/{id}
 
 Get lifecycle state for a specific node.
 
@@ -2582,7 +2582,7 @@ Get lifecycle state for a specific node.
 }
 ```
 
-### POST /api/node/drain/{nodeId}
+### POST /api/nodes/drain/{id}
 
 Transition a node from `ON_DUTY` to `DRAINING`. The CDM will evacuate slices respecting the disruption budget.
 
@@ -2596,7 +2596,7 @@ Transition a node from `ON_DUTY` to `DRAINING`. The CDM will evacuate slices res
 }
 ```
 
-### POST /api/node/activate/{nodeId}
+### POST /api/nodes/activate/{id}
 
 Transition a node from `DRAINING` or `DECOMMISSIONED` back to `ON_DUTY`.
 
@@ -2610,7 +2610,7 @@ Transition a node from `DRAINING` or `DECOMMISSIONED` back to `ON_DUTY`.
 }
 ```
 
-### POST /api/node/shutdown/{nodeId}
+### POST /api/nodes/shutdown/{id}
 
 Transition a node from any state to `SHUTTING_DOWN`.
 
@@ -2735,7 +2735,7 @@ Get detailed execution state for a specific scheduled task.
 
 ## Backup Management
 
-### POST /api/backup
+### POST /api/backups
 
 Trigger a manual backup of the KV-Store state.
 
@@ -2762,7 +2762,7 @@ List available backups.
 ]
 ```
 
-### POST /api/backup/restore
+### POST /api/backups/restore
 
 Restore from a specific backup.
 

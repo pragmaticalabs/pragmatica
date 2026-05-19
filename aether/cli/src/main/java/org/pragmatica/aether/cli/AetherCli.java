@@ -464,7 +464,7 @@ import static org.pragmatica.lang.Option.some;
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
-            var response = parent.fetch(CLUSTER_STATUS);
+            var response = parent.fetch(NODE_STATUS);
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -617,7 +617,7 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "artifact", description = "Artifact repository management", subcommands = {ArtifactCommand.DeployArtifactCommand.class, ArtifactCommand.PushArtifactCommand.class, ArtifactCommand.ListArtifactsCommand.class, ArtifactCommand.VersionsCommand.class, ArtifactCommand.InfoCommand.class, ArtifactCommand.DeleteCommand.class, ArtifactCommand.MetricsCommand.class}) static class ArtifactCommand implements Runnable {
+    @Command(name = "artifacts", description = "Artifact repository management", subcommands = {ArtifactCommand.DeployArtifactCommand.class, ArtifactCommand.PushArtifactCommand.class, ArtifactCommand.ListArtifactsCommand.class, ArtifactCommand.VersionsCommand.class, ArtifactCommand.InfoCommand.class, ArtifactCommand.DeleteCommand.class, ArtifactCommand.MetricsCommand.class}) static class ArtifactCommand implements Runnable {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
@@ -915,7 +915,7 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "blueprint", description = "Blueprint management", subcommands = {BlueprintCommand.ApplyCommand.class, BlueprintCommand.ListCommand.class, BlueprintCommand.GetCommand.class, BlueprintCommand.DeleteCommand.class, BlueprintCommand.StatusCommand.class, BlueprintCommand.ValidateCommand.class, BlueprintCommand.DeployArtifactCommand.class, BlueprintCommand.UploadCommand.class}) static class BlueprintCommand implements Runnable {
+    @Command(name = "blueprints", description = "Blueprint management", subcommands = {BlueprintCommand.ApplyCommand.class, BlueprintCommand.ListCommand.class, BlueprintCommand.GetCommand.class, BlueprintCommand.DeleteCommand.class, BlueprintCommand.StatusCommand.class, BlueprintCommand.ValidateCommand.class, BlueprintCommand.DeployArtifactCommand.class, BlueprintCommand.UploadCommand.class}) static class BlueprintCommand implements Runnable {
         @CommandLine.ParentCommand private AetherCli parent;
 
         private static final OutputFormatter.TableSpec BLUEPRINT_LIST_TABLE = new OutputFormatter.TableSpec("Blueprints",
@@ -1902,7 +1902,7 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "node", description = "Node lifecycle management", subcommands = {NodeCommand.LifecycleCommand.class, NodeCommand.DrainCommand.class, NodeCommand.ActivateCommand.class, NodeCommand.ShutdownCommand.class}) static class NodeCommand implements Runnable {
+    @Command(name = "nodes", description = "Node lifecycle management", subcommands = {NodeCommand.LifecycleCommand.class, NodeCommand.DrainCommand.class, NodeCommand.ActivateCommand.class, NodeCommand.ShutdownCommand.class}) static class NodeCommand implements Runnable {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
@@ -2048,7 +2048,7 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "backup", description = "Manage cluster backups", subcommands = {BackupCommand.TriggerCommand.class, BackupCommand.ListCommand.class, BackupCommand.RestoreCommand.class}) static class BackupCommand implements Runnable {
+    @Command(name = "backups", description = "Manage cluster backups", subcommands = {BackupCommand.TriggerCommand.class, BackupCommand.ListCommand.class, BackupCommand.RestoreCommand.class}) static class BackupCommand implements Runnable {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
@@ -2213,7 +2213,7 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "ab-test", description = "Manage A/B test deployments", subcommands = {AbTestCommand.CreateCommand.class, AbTestCommand.ListCommand.class, AbTestCommand.StatusCommand.class, AbTestCommand.MetricsCommand.class, AbTestCommand.ConcludeCommand.class}) static class AbTestCommand implements Runnable {
+    @Command(name = "ab-tests", description = "Manage A/B test deployments", subcommands = {AbTestCommand.CreateCommand.class, AbTestCommand.ListCommand.class, AbTestCommand.StatusCommand.class, AbTestCommand.MetricsCommand.class, AbTestCommand.ConcludeCommand.class}) static class AbTestCommand implements Runnable {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
@@ -2292,7 +2292,7 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "stream", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class}) static class StreamCommand implements Runnable {
+    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class}) static class StreamCommand implements Runnable {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
@@ -2337,11 +2337,11 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "cert", description = "Certificate management", subcommands = {CertCommand.StatusCommand.class}) static class CertCommand implements Runnable {
+    @Command(name = "certs", description = "Certificate management", subcommands = {CertCommand.StatusCommand.class}) static class CertCommand implements Runnable {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Contract@Override public void run() {
-            var response = parent.fetch(CERTIFICATE);
+            var response = parent.fetch(CERTIFICATES_LIST);
             OutputFormatter.printQuery(response, parent.outputOptions());
         }
 
@@ -2349,7 +2349,7 @@ import static org.pragmatica.lang.Option.some;
             @CommandLine.ParentCommand private CertCommand certParent;
 
             @Override public Integer call() {
-                var response = certParent.parent.fetch(CERTIFICATE);
+                var response = certParent.parent.fetch(CERTIFICATES_LIST);
                 return OutputFormatter.printQuery(response, certParent.parent.outputOptions());
             }
         }

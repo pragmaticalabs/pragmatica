@@ -77,7 +77,7 @@ import org.slf4j.LoggerFactory;
         return Stream.of(ManagementRoutes.<ClusterConfigResponse>route(ManagementRoute.CLUSTER_CONFIG_GET)
                                          .to(_ -> buildConfigResponse())
                                          .asJson(),
-                         ManagementRoutes.<ClusterStatusResponse>route(ManagementRoute.CLUSTER_CONFIG_STATUS)
+                         ManagementRoutes.<ClusterStatusResponse>route(ManagementRoute.CLUSTER_STATUS)
                                          .to(_ -> buildStatusResponse())
                                          .asJson(),
                          ManagementRoutes.<Object>route(ManagementRoute.CLUSTER_CONFIG_APPLY)

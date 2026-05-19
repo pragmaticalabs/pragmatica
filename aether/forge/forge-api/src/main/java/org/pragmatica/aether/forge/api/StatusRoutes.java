@@ -37,12 +37,12 @@ public final class StatusRoutes {
                                                          ForgeMetrics metrics,
                                                          long startTime,
                                                          ConfigurableLoadRunner loadRunner) {
-        return Route.<FullStatusResponse>get("/api/status")
+        return Route.<FullStatusResponse>get("/api/nodes/status")
                     .toJson(() -> buildFullStatus(cluster, metrics, startTime, loadRunner));
     }
 
     private static Route<List<NodeMetricsResponse>> nodeMetricsRoute(EmberCluster cluster) {
-        return Route.<List<NodeMetricsResponse>>get("/api/node-metrics").toJson(() -> buildNodeMetrics(cluster));
+        return Route.<List<NodeMetricsResponse>>get("/api/nodes/metrics").toJson(() -> buildNodeMetrics(cluster));
     }
 
     private static Route<List<ForgeEvent>> eventsRoute(Deque<ForgeEvent> events) {

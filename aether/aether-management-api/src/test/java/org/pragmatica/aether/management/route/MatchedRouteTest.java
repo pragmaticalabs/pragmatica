@@ -24,13 +24,13 @@ class MatchedRouteTest {
     void matchedRoute_withSingleValue_storesByName() {
         var matched = MatchedRoute.matchedRoute(ManagementRoute.DEPLOY_STATUS, List.of("dep-42"));
         assertThat(matched.params()).hasSize(1);
-        assertThat(matched.param("deploymentId").or((String) null)).isEqualTo("dep-42");
+        assertThat(matched.param("id").or((String) null)).isEqualTo("dep-42");
     }
 
     @Test
     void matchedRoute_withMultipleValues_preservesOrder() {
         var matched = MatchedRoute.matchedRoute(ManagementRoute.STREAM_READ, List.of("orders", "5"));
-        assertThat(matched.param("streamName").or((String) null)).isEqualTo("orders");
+        assertThat(matched.param("name").or((String) null)).isEqualTo("orders");
         assertThat(matched.param("partition").or((String) null)).isEqualTo("5");
     }
 

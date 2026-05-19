@@ -38,7 +38,7 @@ test_identify_second_node() {
     fi
 
     # Try to discover a second node from the node list.
-    # NOTE: `/api/status` (via `cluster_node_list`) only emits id/isLeader/lifecycleState —
+    # NOTE: `/api/nodes/status` (via `cluster_node_list`) only emits id/isLeader/lifecycleState —
     # no address/host fields. The grep below will yield no matches; under `set -euo pipefail`
     # the rc=1 from grep would trip the script. `|| true` preserves the legacy intent of
     # falling back to CLUSTER_ENDPOINT (round-robin mgmt-gateway) when no other endpoint is

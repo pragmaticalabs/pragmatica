@@ -54,7 +54,7 @@ public sealed interface DeploymentError extends Cause {
         }
 
         @Override public String message() {
-            return "Cannot deploy version " + version + " — already active. Use /api/blueprint/deploy for redeployment.";
+            return "Cannot deploy version " + version + " — already active. Use /api/blueprints/deploy for redeployment.";
         }
     }
 

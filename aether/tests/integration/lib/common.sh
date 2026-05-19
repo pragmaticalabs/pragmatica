@@ -463,7 +463,7 @@ MGMT_SCHEME="${MGMT_SCHEME:-http}"
 # the bootstrap source prefix: `node-1` → `${CLOUD_SOURCE_NAME}-core-0`, etc.
 #
 # Use this whenever a test calls a management endpoint that takes a node-id path
-# parameter (e.g. /api/node/drain/<id>, /api/node/lifecycle/<id>). Test helpers
+# parameter (e.g. /api/nodes/drain/<id>, /api/node/lifecycle/<id>). Test helpers
 # that go through SSH (cloud_ssh / kill_node) already translate internally; use
 # this only when the node id reaches the runtime as-is.
 to_node_id() {

@@ -230,7 +230,7 @@ public sealed interface ClusterHttpClient {
     }
 
     static Result<Unit> drainNode(String address, int managementPort, String nodeId) {
-        var url = "http://" + address + ":" + managementPort + "/api/node/drain/" + nodeId;
+        var url = "http://" + address + ":" + managementPort + "/api/nodes/drain/" + nodeId;
         return postDirect(url, "{}").mapToUnit();
     }
 
@@ -250,7 +250,7 @@ public sealed interface ClusterHttpClient {
     }
 
     static Result<Unit> waitForDrainComplete(String address, int managementPort, String nodeId, long timeoutMs) {
-        var url = "http://" + address + ":" + managementPort + "/api/node/lifecycle/" + nodeId;
+        var url = "http://" + address + ":" + managementPort + "/api/nodes/lifecycle/" + nodeId;
         var deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() <deadline) {
             var stateResult = getDirect(url);

@@ -61,7 +61,7 @@ public final class StatusRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<StatusResponse>route(ManagementRoute.CLUSTER_STATUS)
+        return Stream.of(ManagementRoutes.<StatusResponse>route(ManagementRoute.NODE_STATUS)
                                          .toJson(this::buildStatusResponse),
                          ManagementRoutes.<NodesResponse>route(ManagementRoute.NODES_LIST)
                                          .toJson(this::buildNodesResponse),
@@ -75,7 +75,7 @@ public final class StatusRoutes implements RouteSource {
                                          .withQuery(QueryParameter.aLong("sinceEpoch"), QueryParameter.aLong("sinceSeq"))
                                          .toValue(this::buildEventsResponse)
                                          .asJson(),
-                         ManagementRoutes.<CertificateStatusResponse>route(ManagementRoute.CERTIFICATE)
+                         ManagementRoutes.<CertificateStatusResponse>route(ManagementRoute.CERTIFICATES_LIST)
                                          .toJson(this::buildCertificateStatusResponse));
     }
 

@@ -20,12 +20,12 @@ This guide covers upgrading an Aether cluster with zero downtime using the rolli
 
 The script upgrades one node at a time through the Management API:
 
-1. **Drain** — evacuates slices from the node (`POST /api/node/drain/{nodeId}`)
+1. **Drain** — evacuates slices from the node (`POST /api/nodes/drain/{id}`)
 2. **Wait** — until the node reaches DECOMMISSIONED state
-3. **Shutdown** — initiates graceful shutdown (`POST /api/node/shutdown/{nodeId}`)
+3. **Shutdown** — initiates graceful shutdown (`POST /api/nodes/shutdown/{id}`)
 4. **Restart** — prompts the operator to restart the node with the new binary
 5. **Ready** — waits for the node to rejoin the cluster
-6. **Activate** — puts the node back on duty (`POST /api/node/activate/{nodeId}`)
+6. **Activate** — puts the node back on duty (`POST /api/nodes/activate/{id}`)
 7. **Canary** — observes the node for a configurable period to verify health
 
 If any node fails its canary check, the upgrade halts. The cluster remains in a valid mixed-version state (envelope versioning handles version compatibility).
@@ -76,7 +76,7 @@ If the upgrade halts:
 
 1. Check the failed node's logs
 2. Fix the issue and restart the node
-3. Activate it manually: `curl -X POST http://<cluster>/api/node/activate/<nodeId>`
+3. Activate it manually: `curl -X POST http://<cluster>/api/nodes/activate/<id>`
 4. Re-run the script — already-upgraded nodes will be processed again (safe, idempotent drain/activate)
 
 ## Mixed-Version Clusters

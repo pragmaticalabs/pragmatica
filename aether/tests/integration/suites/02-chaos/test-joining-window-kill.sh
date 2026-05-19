@@ -17,7 +17,7 @@
 #   Put(DECOMMISSIONED) directly without waiting on the SWIM gate.
 #
 # Acceptance contract (spec §16 row S01):
-#   "Put(DECOMMISSIONED) within ≤15s" of kill, observable via /api/status
+#   "Put(DECOMMISSIONED) within ≤15s" of kill, observable via /api/nodes/status
 #   excluding the peer within the same 15s budget. The 15s figure sits at the
 #   below the SWIM detection floor (~10-15s) so a passing test PROVES the
 #   TransportUnreachable path fired — there is no other code path that can
@@ -32,7 +32,7 @@
 #   4. Kill R immediately (target: within ~2-3s of its container start, well
 #      before SWIM would have marked it HEALTHY).
 #   5. Record kill timestamp; assert R reaches DECOMMISSIONED (or is absent from
-#      /api/status cluster.nodes[]) within ≤15s.
+#      /api/nodes/status cluster.nodes[]) within ≤15s.
 #   6. Verify the surviving node logs carry a `reason=transport-failure`
 #      domain-event line for R's NodeId — the smoking gun that the new path
 #      (not SWIM) drove the decommission. The MembershipFsm only writes the
@@ -50,7 +50,7 @@
 #     regression): same symptom — gate blocks the write, SWIM eventually wins.
 #   * If aggregator → FSM wiring breaks (Step 3 regression): no FSM event
 #     fires at all; R lingers in JOINING/UNKNOWN past 15s.
-#   * If MembershipView simplification (Step 6) regresses the /api/status
+#   * If MembershipView simplification (Step 6) regresses the /api/nodes/status
 #     projection: R stays visible in cluster.nodes[] past 15s.
 
 set -euo pipefail
@@ -102,9 +102,9 @@ snapshot_node_id_labels() {
 # FAILED_DRAIN / SHUTTING_DOWN, or empty string if the KV atom is absent
 # (404 from the endpoint).
 #
-# WHY KV-DIRECT (not /api/status): /api/status cluster.nodes[] is derived from
+# WHY KV-DIRECT (not /api/nodes/status): /api/nodes/status cluster.nodes[] is derived from
 # MembershipView's SWIM ∪ KV overlay, where the SWIM half is filtered to
-# HEALTHY peers. A JOINING-window node R may NEVER appear in /api/status
+# HEALTHY peers. A JOINING-window node R may NEVER appear in /api/nodes/status
 # because R is killed before SWIM transitions it to HEALTHY. The KV-direct
 # endpoint `/api/nodes/lifecycle/<id>` reads the NodeLifecycleKey atom
 # straight out of KV-Store, so any FSM write (JOINING via SlotClaimed,
@@ -340,7 +340,7 @@ test_catch_replacement_in_joining_window() {
     # The KV-backed endpoint `/api/nodes/lifecycle/<R>` reads NodeLifecycleKey
     # directly — bypassing MembershipView's SWIM filter. This is critical for
     # S01 because R is killed before SWIM HEALTHY, so R may never surface in
-    # /api/status cluster.nodes[] regardless of whether the FSM wrote JOINING.
+    # /api/nodes/status cluster.nodes[] regardless of whether the FSM wrote JOINING.
     # The KV atom is the authoritative consensus-replicated state we want to
     # assert against.
     local pre_kill_state

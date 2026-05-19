@@ -124,10 +124,10 @@ fi
 
 # ── Criterion 5: SWIM FAULTY Events ─────────────────────────────────────────
 # Query management API for cluster status — check all nodes are ALIVE
-# The /api/status endpoint returns cluster node states
+# The /api/nodes/status endpoint returns cluster node states
 
 faulty_count=0
-status_json=$(curl -sf "${MGMT_URL}/api/status" 2>/dev/null || echo '{}')
+status_json=$(curl -sf "${MGMT_URL}/api/nodes/status" 2>/dev/null || echo '{}')
 faulty_count=$(echo "$status_json" | jq '[.cluster.nodes[]? | select(.state? == "FAULTY")] | length' 2>/dev/null || echo "0")
 
 # Also check Prometheus for any target that went down during the recovery hour

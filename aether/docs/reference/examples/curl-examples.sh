@@ -5,7 +5,7 @@
 BASE_URL="${BASE_URL:-http://localhost:8080}"
 
 echo "=== Cluster Status ==="
-curl -s "$BASE_URL/api/status" | jq .
+curl -s "$BASE_URL/api/nodes/status" | jq .
 echo
 
 echo "=== Health Check ==="
@@ -21,7 +21,7 @@ curl -s "$BASE_URL/api/slices" | jq .
 echo
 
 echo "=== Apply Blueprint ==="
-curl -s -X POST "$BASE_URL/api/blueprint" \
+curl -s -X POST "$BASE_URL/api/blueprints" \
   -H "Content-Type: application/json" \
   -d 'id = "my-blueprint"
 
@@ -41,11 +41,11 @@ curl -s "$BASE_URL/api/metrics" | jq .
 echo
 
 echo "=== Get Invocation Metrics ==="
-curl -s "$BASE_URL/api/invocation-metrics" | jq .
+curl -s "$BASE_URL/api/invocations/metrics" | jq .
 echo
 
 echo "=== Get Slow Invocations ==="
-curl -s "$BASE_URL/api/invocation-metrics/slow" | jq .
+curl -s "$BASE_URL/api/invocations/metrics/slow" | jq .
 echo
 
 echo "=== Get Controller Config ==="

@@ -59,7 +59,7 @@ test_drain_first_node_allowed() {
     body_file=$(mktemp)
     status=$(curl -sk -o "$body_file" -w "%{http_code}" -m 10 \
              -X POST -H "X-API-Key: ${API_KEY}" \
-             "${CLUSTER_ENDPOINT}/api/node/drain/${node1}")
+             "${CLUSTER_ENDPOINT}/api/nodes/drain/${node1}")
 
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "First drain accepted (${status})"
@@ -83,7 +83,7 @@ test_drain_second_node_allowed() {
     node2=$(to_node_id "node-4")
     log_info "Draining second node: ${node2}"
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/nodes/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
     log_info "Second drain response: ${status}"
     # Race-tolerant: 200 = within budget; 409 = budget rejected because CTM auto-heal
     # transitioned node-5 through DECOMMISSIONED and the replacement is still JOINING,
@@ -108,7 +108,7 @@ test_drain_beyond_budget_rejected() {
     # is non-2xx (note 409 is non-2xx → its body will be surfaced too, which is what
     # we want here).
     local status
-    status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/node/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
+    status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/nodes/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
     log_info "Third drain response: ${status}"
 
     # Auto-heal is disabled (see test_cluster_ready). With two nodes already DRAINING

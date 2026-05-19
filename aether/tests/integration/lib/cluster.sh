@@ -188,9 +188,9 @@ mgmt_entry_point_node() {
 # docker/remote runs since the mgmt-gateway sidecar removed the need for
 # client-side node pinning). Fails loudly if no candidate remains.
 #
-# Source of truth: `/api/status` cluster.nodes[] filtered to lifecycleState=ON_DUTY.
+# Source of truth: `/api/nodes/status` cluster.nodes[] filtered to lifecycleState=ON_DUTY.
 # H-series MembershipView derives ON_DUTY at read-time from SWIM health, so
-# /api/nodes/lifecycle no longer carries explicit ON_DUTY atoms. /api/status
+# /api/nodes/lifecycle no longer carries explicit ON_DUTY atoms. /api/nodes/status
 # reflects the same derived view and carries per-node id + lifecycleState.
 # Nodes that were drained / killed / decommissioned are NOT valid kill targets:
 #  (a) their derived state will be DECOMMISSIONED or UNKNOWN (not ON_DUTY),
@@ -213,15 +213,15 @@ pick_non_leader() {
         return 1
     fi
 
-    # Single /api/status fetch: enumerate ON_DUTY members AND re-derive the leader
+    # Single /api/nodes/status fetch: enumerate ON_DUTY members AND re-derive the leader
     # from the SAME payload. Previously the caller passed `leader` and we re-read
-    # `/api/status` independently; under MGMT_ENTRY_POINT round-robin those two
+    # `/api/nodes/status` independently; under MGMT_ENTRY_POINT round-robin those two
     # reads could hit different backends and disagree, so we'd happily echo the
     # *current* leader as a victim. Now: one payload, one truth.
     local status_payload
-    status_payload=$(api_get "/api/status" 2>/dev/null || true)
+    status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
     if [ -z "$status_payload" ]; then
-        log_fail "pick_non_leader: /api/status returned empty body — cannot select victim" >&2
+        log_fail "pick_non_leader: /api/nodes/status returned empty body — cannot select victim" >&2
         return 1
     fi
     # Re-derived leader from the same payload. cluster.leaderId is a string field
@@ -235,7 +235,7 @@ pick_non_leader() {
         leader="$derived_leader"
     fi
 
-    # Extract node IDs with lifecycleState=ON_DUTY from /api/status cluster.nodes[].
+    # Extract node IDs with lifecycleState=ON_DUTY from /api/nodes/status cluster.nodes[].
     # NodeInfo JSON field order (Jackson record serialization): id, isLeader, lifecycleState.
     # We split on '{' so each token is one candidate object, keep only tokens that carry
     # "lifecycleState":"ON_DUTY", then extract the "id" value with sed.
@@ -247,14 +247,14 @@ pick_non_leader() {
         | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | sed 's/"id"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
     if [ -z "$current_members" ]; then
-        # Fail-closed: if /api/status has no ON_DUTY members, the test premise
+        # Fail-closed: if /api/nodes/status has no ON_DUTY members, the test premise
         # (a healthy cluster from which we can pick a non-leader) is broken.
         #
         # log_fail goes to stderr — pick_non_leader is consumed via `$(...)`, so any
         # stdout output is interpreted by the caller as a node-id. Sending the error
         # to stderr lets callers see the FAIL banner while `$(...)` captures the empty
         # string and the caller's `if [ -z ... ]` check fires correctly.
-        log_fail "pick_non_leader: /api/status returned no ON_DUTY members — cannot select victim" >&2
+        log_fail "pick_non_leader: /api/nodes/status returned no ON_DUTY members — cannot select victim" >&2
         return 1
     fi
 
@@ -265,7 +265,7 @@ pick_non_leader() {
         if [ "$candidate" = "$leader" ]; then continue; fi
         if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
         # Docker-mode liveness guard.
-        # /api/status reports `lifecycleState=ON_DUTY` from the leader's derived
+        # /api/nodes/status reports `lifecycleState=ON_DUTY` from the leader's derived
         # MembershipView. A node killed in a previous test file may still appear
         # ON_DUTY across the boundary into the next file if (a) CTM has not
         # tombstoned its slot yet, (b) MembershipView has not propagated the
@@ -278,7 +278,7 @@ pick_non_leader() {
             local _alive_name
             _alive_name=$(_docker_container_by_node_id_label "$candidate" 2>/dev/null || true)
             if [ -z "$_alive_name" ]; then
-                log_warn "pick_non_leader: /api/status reports '${candidate}' as ON_DUTY but no live container carries label aether.node-id=${candidate} on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: MembershipView/CTM tombstone propagation)" >&2
+                log_warn "pick_non_leader: /api/nodes/status reports '${candidate}' as ON_DUTY but no live container carries label aether.node-id=${candidate} on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: MembershipView/CTM tombstone propagation)" >&2
                 continue
             fi
         fi
@@ -935,7 +935,7 @@ push_blueprint() {
     while [ "$i" -le "$attempts" ]; do
         log_info "Pushing blueprint artifacts: ${coords} (attempt ${i}/${attempts})" >&2
         local out
-        if out=$(aether_failover artifact push "$coords" 2>"$errfile"); then
+        if out=$(aether_failover artifacts push "$coords" 2>"$errfile"); then
             printf '%s' "$out"
             rm -f "$errfile"
             return 0
@@ -972,8 +972,8 @@ deploy_blueprint() {
     # Single-shot: preceding await_generation_quiesced (in the test/runner) guarantees
     # the cluster is settled. Retries hid the actual race; the ClusterGeneration gate
     # replaces the compensation loop with a deterministic barrier.
-    aether_failover blueprint deploy "$artifact" 2>/dev/null \
-        || api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}"
+    aether_failover blueprints deploy "$artifact" 2>/dev/null \
+        || api_post "/api/blueprints/deploy" "{\"artifact\":\"${artifact}\"}"
 }
 
 publish_blueprint() {
@@ -984,7 +984,7 @@ publish_blueprint() {
     local artifact="$1"
     log_info "Publishing blueprint (no instances): ${artifact}" >&2
     local result
-    result=$(api_post "/api/blueprint/publish" "{\"artifact\":\"${artifact}\"}")
+    result=$(api_post "/api/blueprints/publish" "{\"artifact\":\"${artifact}\"}")
     local rc=$?
     printf '%s' "$result"
     [ $rc -ne 0 ] && return $rc
@@ -1012,11 +1012,11 @@ deploy_blueprint_file() {
     local content
     content=$(cat "$filepath")
     curl -sfk -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/toml" \
-        -d "$content" "${CLUSTER_ENDPOINT}/api/blueprint"
+        -d "$content" "${CLUSTER_ENDPOINT}/api/blueprints"
 }
 
 list_blueprints() {
-    aether_json blueprint list 2>/dev/null || api_get "/api/blueprints"
+    aether_json blueprints list 2>/dev/null || api_get "/api/blueprints"
 }
 
 # ---------------------------------------------------------------------------
@@ -1470,19 +1470,19 @@ start_node() {
 drain_node() {
     local node_id="$1"
     log_info "Draining node: ${node_id}"
-    api_post "/api/node/drain" "{\"nodeId\":\"${node_id}\"}"
+    api_post "/api/nodes/drain" "{\"nodeId\":\"${node_id}\"}"
 }
 
 activate_node() {
     local node_id="$1"
     log_info "Activating node: ${node_id}"
-    api_post "/api/node/activate" "{\"nodeId\":\"${node_id}\"}"
+    api_post "/api/nodes/activate" "{\"nodeId\":\"${node_id}\"}"
 }
 
 shutdown_node() {
     local node_id="$1"
     log_info "Shutting down node: ${node_id}"
-    api_post "/api/node/shutdown" "{\"nodeId\":\"${node_id}\"}"
+    api_post "/api/nodes/shutdown" "{\"nodeId\":\"${node_id}\"}"
 }
 
 get_node_lifecycle() {
@@ -1491,12 +1491,12 @@ get_node_lifecycle() {
 
 drain_node() {
     local node_id="$1"
-    api_post "/api/node/drain/${node_id}" "{}"
+    api_post "/api/nodes/drain/${node_id}" "{}"
 }
 
 activate_node() {
     local node_id="$1"
-    api_post "/api/node/activate/${node_id}" "{}"
+    api_post "/api/nodes/activate/${node_id}" "{}"
 }
 
 # ---------------------------------------------------------------------------
@@ -2196,14 +2196,14 @@ wait_for_leader_on() {
     local endpoint="$1"
     local timeout="${2:-30}"
 
-    # Check `leaderId` field on /api/status — the prior `role:ACTIVE` check matched any
+    # Check `leaderId` field on /api/nodes/status — the prior `role:ACTIVE` check matched any
     # topology entry with `role=ACTIVE` (a per-node attribute), so the predicate was
     # satisfied whenever ANY node reported its own role as ACTIVE, NOT when a leader
-    # was elected. `/api/status` returns `cluster.leaderId` populated from the elected
+    # was elected. `/api/nodes/status` returns `cluster.leaderId` populated from the elected
     # consensus leader (`ClusterConfigRoutes` is the model). The grep targets a
     # quoted non-empty value, so `"leaderId":null` and `"leaderId":""` both correctly
     # fail the predicate; `"leaderId":"node-3"` passes.
     wait_for "leader elected on ${endpoint}" \
-        "curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/status 2>/dev/null | grep -qE '\"leaderId\"[[:space:]]*:[[:space:]]*\"[^\"]+\"'" \
+        "curl -sfk -H 'X-API-Key: ${API_KEY}' ${endpoint}/api/nodes/status 2>/dev/null | grep -qE '\"leaderId\"[[:space:]]*:[[:space:]]*\"[^\"]+\"'" \
         "$timeout"
 }

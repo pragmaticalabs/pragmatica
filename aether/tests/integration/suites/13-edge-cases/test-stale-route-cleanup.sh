@@ -36,7 +36,7 @@ test_app_routes_reachable() {
     # through the route table. app_route_wired (positive readiness)
     # distinguishes route-missing 404 from a real handler response. NO
     # management-API fallback: this test exists to prove the APP route is
-    # wired; falling back to /api/status would swap subjects (mgmt port
+    # wired; falling back to /api/nodes/status would swap subjects (mgmt port
     # healthy != app route reachable) and pass falsely.
     if ! app_route_wired "${APP_ENDPOINT}/api/echo/health" "${API_KEY}"; then
         log_fail "App route ${APP_ENDPOINT}/api/echo/health not wired (expected EchoSlice handler to respond)"

@@ -19,7 +19,7 @@ import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
-import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_STATUS;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STATUS;
 
 
 @Command(name = "export", description = "Export cluster configuration as TOML") @SuppressWarnings("JBCT-RET-01") class ClusterExportCommand implements Callable<Integer> {
@@ -56,7 +56,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
     }
 
     @Contract private void enrichWithLiveStatus() {
-        ClusterHttpClient.fetch(CLUSTER_CONFIG_STATUS).flatMap(MAPPER::readTree)
+        ClusterHttpClient.fetch(CLUSTER_STATUS).flatMap(MAPPER::readTree)
                                .onSuccess(ClusterExportCommand::printLiveStatusComments);
     }
 

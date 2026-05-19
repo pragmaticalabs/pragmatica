@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 # anything else → strict assertions on real cert fields).
 _cert_renewal_status() {
     local cert
-    cert=$(api_get "/api/certificate") || return 1
+    cert=$(api_get "/api/certificates") || return 1
     local renewal
     renewal=$(json_value "$cert" "renewalStatus")
     [ -z "$renewal" ] && renewal=$(json_value "$cert" "renewal")
@@ -28,8 +28,8 @@ test_cluster_ready() {
 # returns `renewalStatus: NOT_CONFIGURED`. Empty = endpoint broken.
 test_certificate_endpoint() {
     local cert
-    if ! cert=$(api_get "/api/certificate"); then
-        log_fail "GET /api/certificate failed (api_get returned non-zero)"
+    if ! cert=$(api_get "/api/certificates"); then
+        log_fail "GET /api/certificates failed (api_get returned non-zero)"
         return 1
     fi
     assert_ne "$cert" "" "Certificate endpoint returns non-empty body"
@@ -40,7 +40,7 @@ test_certificate_endpoint() {
 # the field is correctly absent — that's a pass.
 test_expires_at_field() {
     local cert
-    cert=$(api_get "/api/certificate") || { log_fail "cert endpoint failed"; return 1; }
+    cert=$(api_get "/api/certificates") || { log_fail "cert endpoint failed"; return 1; }
     local renewal
     renewal=$(_cert_renewal_status)
     local expires_at
@@ -56,7 +56,7 @@ test_expires_at_field() {
         return 1
     fi
     if [ -z "$expires_at" ]; then
-        log_fail "expiresAt field missing from /api/certificate when TLS configured (renewal=${renewal:-unknown})"
+        log_fail "expiresAt field missing from /api/certificates when TLS configured (renewal=${renewal:-unknown})"
         return 1
     fi
     # Cheap parseability check: ISO-8601 starts with 4 digits and contains 'T'.
@@ -72,7 +72,7 @@ test_expires_at_field() {
 # is a real failure). NOT_CONFIGURED → 0 is acceptable.
 test_seconds_until_expiry() {
     local cert
-    cert=$(api_get "/api/certificate") || { log_fail "cert endpoint failed"; return 1; }
+    cert=$(api_get "/api/certificates") || { log_fail "cert endpoint failed"; return 1; }
     local seconds
     seconds=$(json_value "$cert" "secondsUntilExpiry")
     [ -z "$seconds" ] && seconds=$(json_value "$cert" "ttlSeconds")
@@ -104,7 +104,7 @@ test_renewal_status_field() {
     local renewal
     renewal=$(_cert_renewal_status)
     if [ -z "$renewal" ]; then
-        log_fail "renewalStatus / renewal / autoRenew field missing from /api/certificate"
+        log_fail "renewalStatus / renewal / autoRenew field missing from /api/certificates"
         return 1
     fi
     case "$renewal" in
@@ -120,7 +120,7 @@ test_renewal_status_field() {
 # Strict: cert must not be in the expired state when TLS is configured.
 test_certificate_not_expired() {
     local cert
-    cert=$(api_get "/api/certificate") || { log_fail "cert endpoint failed"; return 1; }
+    cert=$(api_get "/api/certificates") || { log_fail "cert endpoint failed"; return 1; }
     local renewal
     renewal=$(_cert_renewal_status)
     if [ "$renewal" = "NOT_CONFIGURED" ]; then

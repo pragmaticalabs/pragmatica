@@ -96,7 +96,7 @@ instances = 5
 Apply with one command:
 
 ```bash
-aether blueprint apply commerce.toml
+aether blueprints apply commerce.toml
 ```
 
 The runtime resolves artifacts, loads slices, distributes instances across nodes, registers routes, and starts serving traffic. To update, change the blueprint and re-apply.
@@ -425,7 +425,7 @@ Open `http://localhost:8888` for the dashboard. Deploy the URL Shortener example
 java -jar aether-node.jar --peers node1:6000,node2:6000,node3:6000
 
 # Deploy your application
-aether blueprint apply my-app.toml
+aether blueprints apply my-app.toml
 
 # Monitor
 aether status

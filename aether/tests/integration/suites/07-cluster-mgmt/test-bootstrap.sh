@@ -65,7 +65,7 @@ test_health_probes() {
 
 test_management_api_accessible() {
     local status
-    status=$(api_get "/api/status")
+    status=$(api_get "/api/nodes/status")
     assert_ne "$status" "" "Management API returns status"
 }
 

@@ -162,7 +162,7 @@ document.addEventListener('alpine:init', function() {
             },
 
             async pollStatus() {
-                var data = await RestClient.get('/api/status');
+                var data = await RestClient.get('/api/nodes/status');
                 if (data) {
                     Alpine.store('cluster').updateFromStatus(data);
                     Alpine.store('metrics').updateFromStatus(data);
@@ -171,7 +171,7 @@ document.addEventListener('alpine:init', function() {
                     Alpine.store('metrics').updateNodeHistory(Alpine.store('cluster').nodes);
                     this.updateCharts();
                 }
-                // Fetch slice details for node→slice mapping (REST /api/status only has sliceCount)
+                // Fetch slice details for node→slice mapping (REST /api/nodes/status only has sliceCount)
                 var slices = await RestClient.get('/api/slices');
                 if (slices) {
                     Alpine.store('cluster').updateSlices(slices);

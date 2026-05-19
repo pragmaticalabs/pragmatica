@@ -108,7 +108,7 @@ public final class SliceRoutes implements RouteSource {
                          ManagementRoutes.<BlueprintValidationResponse>route(ManagementRoute.BLUEPRINT_VALIDATE)
                                          .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
                                          .asJson(),
-                         ManagementRoutes.<TopologyResponse>route(ManagementRoute.TOPOLOGY)
+                         ManagementRoutes.<TopologyResponse>route(ManagementRoute.SLICE_TOPOLOGY)
                                          .toJson(this::buildTopologyResponse));
     }
 

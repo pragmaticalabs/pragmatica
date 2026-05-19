@@ -280,25 +280,25 @@ Artifact repository operations:
 
 ```bash
 # Deploy JAR to repository
-aether artifact deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
+aether artifacts deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
 
 # Push blueprint and all its slices from local Maven repository to cluster
-aether artifact push <group:artifact:version>
+aether artifacts push <group:artifact:version>
 
 # List artifacts
-aether artifact list
+aether artifacts list
 
 # List versions
-aether artifact versions <group:artifact>
+aether artifacts versions <group:artifact>
 
 # Show artifact metadata
-aether artifact info <group:artifact:version>
+aether artifacts info <group:artifact:version>
 
 # Delete an artifact
-aether artifact delete <group:artifact:version>
+aether artifacts delete <group:artifact:version>
 
 # Show artifact storage metrics
-aether artifact metrics
+aether artifacts metrics
 ```
 
 The `push` command takes blueprint coordinates and automatically pushes the blueprint JAR
@@ -309,10 +309,10 @@ to discover slice references, then pushes each artifact to the cluster repositor
 Examples:
 ```bash
 # Deploy a JAR file directly
-aether artifact deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
+aether artifacts deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
 
 # Push blueprint + all slices from local Maven repository
-aether artifact push org.pragmatica.aether.example:url-shortener:1.0.0-rc1
+aether artifacts push org.pragmatica.aether.example:url-shortener:1.0.0-rc1
 
 # Example output:
 # Pushing url-shortener blueprint (3 artifacts):
@@ -322,10 +322,10 @@ aether artifact push org.pragmatica.aether.example:url-shortener:1.0.0-rc1
 # All artifacts pushed successfully.
 
 # View artifact details
-aether artifact info com.example:my-slice:1.0.0
+aether artifacts info com.example:my-slice:1.0.0
 
 # Remove an artifact
-aether artifact delete com.example:my-slice:1.0.0
+aether artifacts delete com.example:my-slice:1.0.0
 ```
 
 #### blueprint
@@ -334,28 +334,28 @@ Blueprint management:
 
 ```bash
 # Apply a blueprint file
-aether blueprint apply <file.toml>
+aether blueprints apply <file.toml>
 
 # List all deployed blueprints
-aether blueprint list [--format table|json]
+aether blueprints list [--format table|json]
 
 # Get blueprint details
-aether blueprint get <blueprintId> [--format table|json]
+aether blueprints get <blueprintId> [--format table|json]
 
 # Show deployment status of a blueprint
-aether blueprint status <blueprintId> [--format table|json]
+aether blueprints status <blueprintId> [--format table|json]
 
 # Validate a blueprint file without deploying
-aether blueprint validate <file.toml>
+aether blueprints validate <file.toml>
 
 # Delete a blueprint
-aether blueprint delete <blueprintId> [-f|--force]
+aether blueprints delete <blueprintId> [-f|--force]
 
 # Deploy a blueprint from an artifact in the cluster repository
-aether blueprint deploy <coords>
+aether blueprints deploy <coords>
 
 # Upload a blueprint JAR file and deploy it
-aether blueprint upload <file> -g <groupId> -a <artifactId> -v <version>
+aether blueprints upload <file> -g <groupId> -a <artifactId> -v <version>
 ```
 
 Example blueprint file (`order-system.toml`):
@@ -374,28 +374,28 @@ instances = 2
 Example workflow:
 ```bash
 # Validate before deploying
-aether blueprint validate order-system.toml
+aether blueprints validate order-system.toml
 
 # Apply the blueprint
-aether blueprint apply order-system.toml
+aether blueprints apply order-system.toml
 
 # Check deployment status
-aether blueprint status order-system:1.0.0
+aether blueprints status order-system:1.0.0
 
 # List all blueprints
-aether blueprint list
+aether blueprints list
 
 # Get details for a specific blueprint
-aether blueprint get order-system:1.0.0
+aether blueprints get order-system:1.0.0
 
 # Delete a blueprint (with force to skip confirmation)
-aether blueprint delete order-system:1.0.0 -f
+aether blueprints delete order-system:1.0.0 -f
 
 # Deploy from artifact coordinates
-aether blueprint deploy org.example:my-app:1.0.0
+aether blueprints deploy org.example:my-app:1.0.0
 
 # Upload a blueprint JAR and deploy it
-aether blueprint upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
+aether blueprints upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
 
 #### deploy
@@ -507,19 +507,19 @@ A/B testing management:
 
 ```bash
 # Create an A/B test with variant definitions
-aether ab-test create -a <artifact> --variants <v1=ver1,v2=ver2>
+aether ab-tests create -a <artifact> --variants <v1=ver1,v2=ver2>
 
 # List active A/B tests
-aether ab-test list
+aether ab-tests list
 
 # Show test status
-aether ab-test status <testId>
+aether ab-tests status <testId>
 
 # Show per-variant metrics
-aether ab-test metrics <testId>
+aether ab-tests metrics <testId>
 
 # Conclude test and promote winner
-aether ab-test conclude <testId> --winner <variant>
+aether ab-tests conclude <testId> --winner <variant>
 ```
 
 | Subcommand | Description |
@@ -533,13 +533,13 @@ aether ab-test conclude <testId> --winner <variant>
 Example workflow:
 ```bash
 # Create A/B test: 50/50 split between v1.0.0 and v2.0.0
-aether ab-test create -a org.example:my-service --variants control=1.0.0,experiment=2.0.0
+aether ab-tests create -a org.example:my-service --variants control=1.0.0,experiment=2.0.0
 
 # Monitor per-variant metrics
-aether ab-test metrics ab-001
+aether ab-tests metrics ab-001
 
 # Conclude test and promote winner
-aether ab-test conclude ab-001 --winner experiment
+aether ab-tests conclude ab-001 --winner experiment
 ```
 
 #### invocation-metrics
@@ -943,37 +943,37 @@ Manage node lifecycle states:
 
 ```bash
 # List all node lifecycle states
-aether node lifecycle
+aether nodes lifecycle
 
 # Get lifecycle state for a specific node
-aether node lifecycle <nodeId>
+aether nodes lifecycle <nodeId>
 
 # Drain a node (ON_DUTY → DRAINING, CDM evacuates slices respecting budget)
-aether node drain <nodeId>
+aether nodes drain <nodeId>
 
 # Activate a node (DRAINING/DECOMMISSIONED → ON_DUTY)
-aether node activate <nodeId>
+aether nodes activate <nodeId>
 
 # Shut down a node (any → SHUTTING_DOWN)
-aether node shutdown <nodeId>
+aether nodes shutdown <nodeId>
 ```
 
 Example workflow:
 ```bash
 # Check current lifecycle states
-aether node lifecycle
+aether nodes lifecycle
 
 # Drain a node before maintenance
-aether node drain node-2
+aether nodes drain node-2
 
 # Verify it's draining
-aether node lifecycle node-2
+aether nodes lifecycle node-2
 
 # Cancel drain and return to active duty
-aether node activate node-2
+aether nodes activate node-2
 
 # Initiate shutdown
-aether node shutdown node-3
+aether nodes shutdown node-3
 ```
 
 #### workers
@@ -1051,13 +1051,13 @@ Manage cluster backups.
 
 ```bash
 # Trigger a manual backup
-aether backup trigger
+aether backups trigger
 
 # List available backups
-aether backup list
+aether backups list
 
 # Restore from a specific backup commit
-aether backup restore <commit-id>
+aether backups restore <commit-id>
 ```
 
 | Subcommand | Description |
@@ -1125,41 +1125,41 @@ aether schema baseline orders_db -v 3
 
 ## Stream Management
 
-### `aether stream list`
+### `aether streams list`
 
 List all event streams with metadata.
 
 ```bash
-aether stream list
+aether streams list
 ```
 
-### `aether stream status <name>`
+### `aether streams status <name>`
 
 Show detailed stream info including per-partition details.
 
 ```bash
-aether stream status my-events
+aether streams status my-events
 ```
 
-### `aether stream publish <name> <message>`
+### `aether streams publish <name> <message>`
 
 Publish a text message to a stream. The message is base64-encoded automatically.
 
 ```bash
-aether stream publish my-events "Hello, world!"
+aether streams publish my-events "Hello, world!"
 ```
 
 ### Examples
 
 ```bash
 # List all streams
-aether stream list
+aether streams list
 
 # Check stream details
-aether stream status user-events
+aether streams status user-events
 
 # Publish a message
-aether stream publish user-events "order_created:12345"
+aether streams publish user-events "order_created:12345"
 ```
 
 ---

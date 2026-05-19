@@ -25,27 +25,27 @@ public sealed interface RoutePermissionRegistry {
     @SuppressWarnings("unused") final class Prefixes {
         private Prefixes() {}
 
-        static final List<String> ADMIN = List.of("/api/blueprint",
-                                                  "/api/node/shutdown",
-                                                  "/api/backup/restore",
+        static final List<String> ADMIN = List.of("/api/blueprints",
+                                                  "/api/nodes/shutdown",
+                                                  "/api/backups/restore",
                                                   "/api/logging/levels",
                                                   "/api/observability/depth");
 
-        static final List<String> OPERATOR = List.of("/api/node/drain",
-                                                     "/api/node/activate",
+        static final List<String> OPERATOR = List.of("/api/nodes/drain",
+                                                     "/api/nodes/activate",
                                                      "/api/schema",
                                                      "/api/canary",
                                                      "/api/blue-green",
                                                      "/api/rolling-update",
-                                                     "/api/ab-test",
-                                                     "/api/backup",
+                                                     "/api/ab-tests",
+                                                     "/api/backups",
                                                      "/api/scale",
                                                      "/api/scheduled-tasks",
                                                      "/api/controller",
                                                      "/api/thresholds",
                                                      "/api/alerts/clear",
                                                      "/api/config",
-                                                     "/api/invocation-metrics/strategy",
+                                                     "/api/invocations/metrics/strategy",
                                                      "/api/streams",
                                                      "/repository/");
 
@@ -56,8 +56,8 @@ public sealed interface RoutePermissionRegistry {
         }
 
         static RoutePermission resolveAdminOverrides(String path) {
-            if (path.startsWith("/api/blueprint/deploy")) {return OPERATOR_AND_ABOVE;}
-            if (path.startsWith("/api/blueprint/validate")) {return ALL_AUTHENTICATED;}
+            if (path.startsWith("/api/blueprints/deploy")) {return OPERATOR_AND_ABOVE;}
+            if (path.startsWith("/api/blueprints/validate")) {return ALL_AUTHENTICATED;}
             return ADMIN_ONLY;
         }
 

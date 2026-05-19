@@ -56,7 +56,7 @@
 #     allow) leaked into the steady-state path, the gate would permit
 #     decommission on every UNREACHABLE event regardless of quorum.
 #     S05 catches.
-#   * Step 6 (MembershipView): if /api/status projected DECOMMISSIONED
+#   * Step 6 (MembershipView): if /api/nodes/status projected DECOMMISSIONED
 #     from a transient SWIM-only signal that hadn't reached KV, the
 #     downstream count would drift. S06 catches via the post-heal
 #     ON_DUTY count assertion.
@@ -90,10 +90,10 @@ LEADER_FILE="/tmp/s05-leader.$$"
 # DECOMMISSIONED / FAILED_DRAIN / SHUTTING_DOWN, or empty when the KV
 # atom is absent (404).
 #
-# WHY KV-DIRECT (not /api/status): /api/status cluster.nodes[] derives
+# WHY KV-DIRECT (not /api/nodes/status): /api/nodes/status cluster.nodes[] derives
 # from MembershipView's SWIM ∪ KV overlay, where the SWIM half is
 # filtered to HEALTHY peers. During a partition the minority's SWIM
-# state on the majority side decays to FAULTY/UNKNOWN, so /api/status
+# state on the majority side decays to FAULTY/UNKNOWN, so /api/nodes/status
 # may drop them from the view before any KV write happens. The
 # KV-direct endpoint reads NodeLifecycleKey straight out of consensus —
 # the authoritative replicated record of FSM state. If the gate is

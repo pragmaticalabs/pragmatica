@@ -48,19 +48,19 @@ remote = ""
 
 ### Via CLI
 ```bash
-aether backup trigger
+aether backups trigger
 ```
 
 ### Via API
 ```bash
-curl -X POST http://localhost:8080/api/backup
+curl -X POST http://localhost:8080/api/backups
 ```
 
 ## Listing Backups
 
 ### Via CLI
 ```bash
-aether backup list
+aether backups list
 ```
 
 ### Via API
@@ -79,7 +79,7 @@ curl http://localhost:8080/api/backups
 
 ### Restoring a Specific Backup
 ```bash
-aether backup restore <commit-id>
+aether backups restore <commit-id>
 ```
 
 ## Inspecting Backup History
