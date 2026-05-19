@@ -61,7 +61,17 @@ cluster_node_count() {
 }
 
 cluster_leader() {
-    aether_field status cluster.leaderId
+    # Fail-fast: distinguish "no leader elected" (field=="none") from "API returned valid
+    # data" (field==<NodeId>). Empty stdout + non-zero exit code lets callers branch on the
+    # difference, rather than silently using "" as the leader and producing misleading
+    # "(leader: )" log lines that mask cluster-down conditions.
+    local result rc
+    result=$(aether_field status cluster.leaderId 2>/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$result" ] || [ "$result" = "none" ]; then
+        return 1
+    fi
+    printf '%s\n' "$result"
 }
 
 # Single-shot count assertion: blocks until the leader publishes a snapshot at the
@@ -1654,6 +1664,16 @@ auto_heal_enabled() {
 restore_cluster_baseline() {
     local target="${NODE_COUNT:-5}"
     log_info "Restoring cluster to baseline (semantic): ${target} ON_DUTY healthy cores"
+
+    # 0. API-reachability gate. Cluster B uses `restart: "no"` so a prior failed test
+    # may have left the entry-point's reach-set without a healthy leader. The cleanup
+    # helpers below all assume the management API responds; if it doesn't, we'd burn
+    # the 600s step-5 budget waiting for nodes that will never come back. Fail-fast
+    # so the harness can decide to recreate the compose stack instead of cascading.
+    if ! cluster_leader >/dev/null 2>&1; then
+        log_warn "restore_cluster_baseline: no leader reachable via management API; skipping restore (cluster may need forced compose restart)"
+        return 1
+    fi
 
     # 1. Auto-heal — tests that ran disruption-budget or manual-only-recovery
     # scenarios may have disabled it. Idempotent: enabling an already-enabled
