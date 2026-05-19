@@ -812,29 +812,16 @@ detect_capabilities "$ENV_TYPE"
 # A_SUITES / B_SUITES already computed above (before Step 2) so per-cluster
 # bootstrap can be skipped when only one side's suites are selected.
 
-# --- Step 6.5: Drop ghost CTM-provisioned containers from previous runs ---
-# Bash dynamic-scoping bug + Wave 3 changes have historically allowed CTM
-# to auto-provision phantom replacement containers (named aether-core-node-N-XXX)
-# that flap-loop in the topology, starve QUIC backpressure, and stall consensus.
-# A clean run must start with the docker-compose-defined nodes ONLY.
-if [ "$SKIP_DEPLOY" = false ] && [ "$ENV_TYPE" != "cloud" ]; then
-    log_step "Cleaning up ghost CTM-provisioned containers"
-    # Sweep legacy (aether-core-node-) AND current cluster-scoped (aether-<cluster>-<pool>-node-)
-    # shapes. Listed clusters: default (no bootstrap), a (CLUSTER_A_NAME), b (CLUSTER_B_NAME),
-    # test-cluster (suites using ProvisionContext "test-cluster"). Cluster-scoped sweeping
-    # protects against cross-cluster eviction in mixed environments.
-    if [ "$ENV_TYPE" = "docker" ]; then
-        docker rm -f $(docker ps -aq --filter "name=aether-core-node-") 2>/dev/null || true
-        docker rm -f $(docker ps -aq --filter "name=aether-default-core-node-") 2>/dev/null || true
-        docker rm -f $(docker ps -aq --filter "name=aether-a-core-node-") 2>/dev/null || true
-        docker rm -f $(docker ps -aq --filter "name=aether-b-core-node-") 2>/dev/null || true
-    else
-        remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
-        remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
-        remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
-        remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-b-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
-    fi
-fi
+# Step 6.5 (post-bring-up "Cleaning up ghost CTM-provisioned containers") was
+# REMOVED 2026-05-19c. It was over-eager: when CTM legitimately provisions
+# a replacement during cluster bring-up (e.g., a transient compose-node
+# registration race), this step would `docker rm -f` it, leaving a stale
+# ON_DUTY NodeLifecycleKey in KV with no live container. The label-scoped
+# `cleanup_cluster_zombies` invoked from `deploy_docker` BEFORE `up -d`
+# (lib/cluster.sh) is the correct replacement: it scopes to stale containers
+# from prior runs (label `aether.cluster=<id>` with non-allowlisted name)
+# and runs before the new compose stack starts, so it never kills a
+# legitimate runtime CTM container.
 
 # --- Step 7: Deploy blueprints ---
 BLUEPRINT_START=$(date +%s)
