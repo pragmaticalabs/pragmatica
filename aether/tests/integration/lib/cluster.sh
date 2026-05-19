@@ -1097,6 +1097,54 @@ drop_ctm_replacements() {
     return 0
 }
 
+# Label-scoped zombie sweep. Identifies any container carrying
+# `aether.cluster=<cluster_id>` whose name is NOT in the compose-fixed allowlist
+# (`aether-<cluster_id>-node-{1..5}`, plus `forge-postgres` for cluster A) and
+# removes it. Idempotent — no-op when the host is already clean.
+#
+# Trap-safe: any SSH/docker failure is logged at WARN and swallowed; the runner
+# proceeds to `up -d` regardless. The fixed-name allowlist is intentionally
+# hardcoded against compose YAML rather than parsed at runtime — the compose
+# files are authoritative and seldom-changed, and runtime parsing on the remote
+# would itself add a failure surface.
+cleanup_cluster_zombies() {
+    local cluster_id="$1"
+    if [ -z "$cluster_id" ]; then
+        log_warn "cleanup_cluster_zombies: cluster_id is required"
+        return 0
+    fi
+    local allowlist="aether-${cluster_id}-node-1|aether-${cluster_id}-node-2|aether-${cluster_id}-node-3|aether-${cluster_id}-node-4|aether-${cluster_id}-node-5|aether-${cluster_id}-mgmt-gateway|forge-postgres"
+    local err_file rc names_out
+    err_file=$(mktemp -t zombies.XXXXXX)
+    names_out=$(remote_exec "docker ps -a --filter 'label=aether.cluster=${cluster_id}' --format '{{.Names}}' | grep -Ev '^(${allowlist})\$' || true" 2>"$err_file")
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_warn "cleanup_cluster_zombies(${cluster_id}): list rc=${rc}: $(head -c 300 < "$err_file")"
+        rm -f "$err_file"
+        return 0
+    fi
+    rm -f "$err_file"
+    if [ -z "$names_out" ]; then
+        log_info "cleanup_cluster_zombies(${cluster_id}): no zombies"
+        return 0
+    fi
+    local zombie
+    while IFS= read -r zombie; do
+        [ -z "$zombie" ] && continue
+        log_info "cleanup_cluster_zombies(${cluster_id}): removing zombie ${zombie}"
+        remote_exec "docker rm -f ${zombie} >/dev/null 2>&1 || true" >/dev/null 2>&1 || \
+            log_warn "cleanup_cluster_zombies(${cluster_id}): docker rm -f ${zombie} failed"
+    done <<< "$names_out"
+    # Post-state verification — any survivor under the label is reported but not
+    # treated as fatal (next compose up will re-attempt).
+    local remaining
+    remaining=$(remote_exec "docker ps -a --filter 'label=aether.cluster=${cluster_id}' --format '{{.Names}}' | grep -Ev '^(${allowlist})\$' || true" 2>/dev/null)
+    if [ -n "$remaining" ]; then
+        log_warn "cleanup_cluster_zombies(${cluster_id}): survivors after sweep: $(echo "$remaining" | tr '\n' ',' | sed 's/,$//')"
+    fi
+    return 0
+}
+
 ## DEPRECATED for routine cleanup — prefer `restore_cluster_baseline`. This
 ## helper forces the cluster back to the FIXED compose-node set (5 cores with
 ## original NodeIds), which fights the product model: killed nodes go

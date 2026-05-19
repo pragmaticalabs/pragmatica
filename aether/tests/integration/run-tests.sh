@@ -474,6 +474,26 @@ rebuild_remote_node_image() {
 deploy_docker() {
     local host="${TARGET_HOST:-localhost}"
 
+    # Localhost twin of `cleanup_cluster_zombies` (lib/cluster.sh). Same semantics,
+    # direct `docker` invocation since remote_exec always SSHs.
+    _local_cleanup_zombies() {
+        local cid="$1"
+        local allowlist="aether-${cid}-node-1|aether-${cid}-node-2|aether-${cid}-node-3|aether-${cid}-node-4|aether-${cid}-node-5|aether-${cid}-mgmt-gateway|forge-postgres"
+        local names
+        names=$(docker ps -a --filter "label=aether.cluster=${cid}" --format '{{.Names}}' 2>/dev/null | grep -Ev "^(${allowlist})$" || true)
+        if [ -z "$names" ]; then
+            log_info "cleanup_cluster_zombies(${cid}): no zombies"
+            return 0
+        fi
+        local z
+        while IFS= read -r z; do
+            [ -z "$z" ] && continue
+            log_info "cleanup_cluster_zombies(${cid}): removing zombie ${z}"
+            docker rm -f "$z" >/dev/null 2>&1 || log_warn "cleanup_cluster_zombies(${cid}): docker rm -f ${z} failed"
+        done <<< "$names"
+        return 0
+    }
+
     if [ "$host" != "localhost" ] && [ "$SKIP_IMAGE_PUSH" = false ]; then
         rebuild_remote_node_image "$host"
     elif [ "$host" != "localhost" ]; then
@@ -495,20 +515,28 @@ deploy_docker() {
         docker rm -f $(docker ps -aq --filter "name=aether-core-node-") 2>/dev/null || true
         docker rm -f $(docker ps -aq --filter "name=aether-default-core-node-") 2>/dev/null || true
         docker rm -f $(docker ps -aq --filter "name=aether-a-core-node-") 2>/dev/null || true
+        # Label-scoped zombie sweep (catches any CTM container missed by the name-prefix
+        # filters above, e.g. shapes introduced by future provider/pool naming changes).
+        _local_cleanup_zombies "a"
         docker volume rm -f aether_pgdata 2>/dev/null || true
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_A" "~/docker-compose-a.yml"
-        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true; docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
+        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true"
+        cleanup_cluster_zombies "a"
+        remote_exec "cd ~ && docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
     fi
 
     log_step "Deploying Cluster B (destructive)"
     if [ "$host" = "localhost" ]; then
         docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
+        _local_cleanup_zombies "b"
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
-        remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-core-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true; docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
+        remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-core-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true"
+        cleanup_cluster_zombies "b"
+        remote_exec "cd ~ && docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
     fi
 }
 
