@@ -142,16 +142,16 @@ class ClusterMembershipReducerTest {
     class FromProvisioning {
         private final Provisioning state = MembershipFsmState.provisioning(PEER, SLOT_ID);
 
-        @Test void provisioning_swimHealthy_isErr() {
-            assertIllegal(state, new SwimHealthy(PEER, 1L, T1));
+        @Test void provisioning_swimHealthy_isNop() {
+            assertNop(reducer.apply(state, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
-        @Test void provisioning_swimFaulty_isErr() {
-            assertIllegal(state, new SwimFaulty(PEER, 1L, T1));
+        @Test void provisioning_swimFaulty_isNop() {
+            assertNop(reducer.apply(state, new SwimFaulty(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
-        @Test void provisioning_swimDeparted_isErr() {
-            assertIllegal(state, new SwimDeparted(PEER, 1L, T1));
+        @Test void provisioning_swimDeparted_isNop() {
+            assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void provisioning_slotClaimed_entersJoining() {

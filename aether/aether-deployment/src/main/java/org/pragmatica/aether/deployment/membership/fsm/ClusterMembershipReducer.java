@@ -123,9 +123,13 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
 
     private Outcome applyProvisioning(Provisioning state, MembershipFsmEvent event) {
         return switch (event){
-            case SwimHealthy _ -> illegal(state, event);
-            case SwimFaulty _ -> illegal(state, event);
-            case SwimDeparted _ -> illegal(state, event);
+            // S16 (defensive): SWIM may observe a peer's transient state during the brief
+            // pre-SlotClaimed window — treat as nop rather than crashing the FSM. The
+            // slot lifecycle (SlotClaimed / JoinDeadlineExpired) is authoritative for
+            // advancing out of Provisioning; SWIM observations are noise here.
+            case SwimHealthy _ -> Outcome.nop(state);
+            case SwimFaulty _ -> Outcome.nop(state);
+            case SwimDeparted _ -> Outcome.nop(state);
             case SlotClaimed e -> enterJoining(state.peer(),
                                                Option.some(e.slotId()),
                                                e.at());
@@ -440,9 +444,11 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         return at.physicalMicros() / 1000L;
     }
 
-    /// SWIM-driven decommission reasons that activate the `decommissionedSwimRefractory`
-    /// gate in `decommissionedSwimHealthy` — see field doc on
-    /// `MembershipFsmConfig.decommissionedSwimRefractory`.
+    /// `swimDriven` flag carried on the `Decommissioned` state. SWIM-driven reasons
+    /// (`swim-faulty`, `swim-departed`) distinguish failure-detection paths from
+    /// operator/drain-driven decommissions. Currently informational only — the H.4
+    /// refractory gate that consumed it has been removed; the field is dormant and
+    /// scheduled for follow-up cleanup along with the `Decommissioned.swimDriven` field.
     private static boolean isSwimReason(String reason) {
         return REASON_SWIM_FAULTY.equals(reason) || REASON_SWIM_DEPARTED.equals(reason);
     }
@@ -472,8 +478,6 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
 
     /// Topology-observation refactor Step 2: reason carried on `NodeLifecycleValue` writes
     /// triggered by `TransportUnreachable` events (JOINING and ON_DUTY cells). Not a SWIM
-    /// reason — does NOT activate `decommissionedSwimRefractory` (see `isSwimReason`).
+    /// reason — does NOT mark the resulting Decommissioned state as `swimDriven`.
     private static final String REASON_TRANSPORT_FAILURE = "transport-failure";
-
-    private static final String REASON_REVIVAL = "revival";
 }

@@ -239,13 +239,21 @@ record ReachabilityAggregatorRecord(NodeId self,
         //
         // Supersedes the prior asymmetric scheme (REACHABLE on >=1 positive observer):
         // during cluster B chaos a single stale CONNECTED observation buffered through
-        // RECONNECT flaps was outvoting an ⌈N/2⌉+1 UNREACHABLE quorum, marking dead peers
-        // alive and breaking the 12-network suite. On a stable cluster the snapshot may
-        // degrade to all-UNKNOWN (self-fold only = 1 observer < threshold); this is OK
-        // because `MembershipView.resolveOnDutyStatus` takes the SWIM-HEALTHY fast path
-        // and never consults the snapshot when SWIM has converged. The snapshot only
-        // matters when SWIM is NOT HEALTHY — exactly the chaos scenario we just fixed.
-        // See reachability-aggregator-spec.md (§ supersession note).
+        // RECONNECT flaps was outvoting a strict-majority `(N/2)+1` UNREACHABLE quorum,
+        // marking dead peers alive and breaking the 12-network suite. On a stable cluster
+        // the snapshot may degrade to all-UNKNOWN (self-fold only = 1 observer < threshold);
+        // this is OK because `MembershipView.resolveOnDutyStatus` takes the SWIM-HEALTHY
+        // fast path and never consults the snapshot when SWIM has converged. The snapshot
+        // only matters when SWIM is NOT HEALTHY — exactly the chaos scenario we just fixed.
+        //
+        // Threshold is strict majority `(N/2)+1` (Rabia is CFT, not BFT — Byzantine
+        // `⌈N/2⌉+1` is not required and would block 2-of-N kill detection). The aggregator
+        // cannot distinguish a kill (peer dead, won't come back) from a partition (peer
+        // alive on the other side); both produce identical observations from any one side.
+        // The partition story is owned upstream: the minority side's `SelfDrainCoordinator`
+        // detects "I see ≥majority unreachable" and exits independently. See
+        // reachability-aggregator-spec.md (§ supersession note) and
+        // membership-architecture-spec.md §16 S05/S06.
         ReachabilityKind kind;
         int observerCount;
         if (reachable >= quorumThreshold && unreachable == 0) {
