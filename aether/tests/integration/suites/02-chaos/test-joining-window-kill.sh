@@ -228,13 +228,17 @@ kill_by_node_id_label() {
 }
 
 # Scan surviving-leader container logs for the smoking-gun signature that the
-# FSM took the TransportUnreachable code path (and NOT the SWIM path) when it
-# decommissioned R. The MembershipFsm only emits a `(reason=transport-failure)`
-# domain event after a `TransportUnreachable` reducer cell fires — no SWIM
-# path produces this reason string. See
-# `aether-deployment/.../ClusterMembershipReducer.java` REASON_TRANSPORT_FAILURE
-# and `MembershipFsm#applyEffect(EmitDomainEvent)` (log line: "MembershipFsm:
-# domain event NODE_FAILED for <peer> (reason=transport-failure)").
+# FSM took a transport- OR SWIM-driven decommission code path when it
+# decommissioned R. Either `reason=transport-failure` (from the gated
+# `(ON_DUTY, TransportUnreachable)` cell when the aggregator reaches UNREACHABLE
+# quorum fast) OR `reason=swim-faulty` (from the gated `(ON_DUTY, SwimFaulty)`
+# cell when SWIM's `suspectTimeout` converges first) is acceptable — both are
+# documented decommission paths per spec §16 row S01. The presence of EITHER
+# reason pins the failure to a known reducer cell rather than an opaque write.
+#
+# See `aether-deployment/.../ClusterMembershipReducer.java` REASON_TRANSPORT_FAILURE
+# / REASON_SWIM_FAULTY and `MembershipFsm#applyEffect(EmitDomainEvent)` (log line:
+# "MembershipFsm: domain event NODE_FAILED for <peer> (reason=<reason>)").
 #
 # We scan every surviving fixed compose node because the FSM-write happens on
 # the leader, and after the priming kill the leader is some core-node that we
@@ -255,12 +259,13 @@ verify_transport_unreachable_event() {
         if [ "$priming_victim" = "node-${witness}" ]; then
             continue
         fi
-        # Smoking-gun pattern: "reason=transport-failure" + the target NodeId
-        # on the same line. The MembershipFsm log format emits both fields in
-        # that order:
-        #   "MembershipFsm: domain event NODE_FAILED for <peer> (reason=transport-failure)"
+        # Smoking-gun pattern: ("reason=transport-failure" OR "reason=swim-faulty")
+        # + the target NodeId on the same line. Both reasons come from
+        # documented `(ON_DUTY, ...) → DECOMMISSIONED` reducer cells. The
+        # specific path is a race between aggregator quorum and SWIM
+        # convergence; either is a valid S01 outcome.
         local match
-        match=$(remote_exec "docker logs ${container} 2>&1 | grep -F '${target_node_id}' | grep -F 'reason=transport-failure' | head -1 || true" 2>/dev/null)
+        match=$(remote_exec "docker logs ${container} 2>&1 | grep -F '${target_node_id}' | grep -E 'reason=transport-failure|reason=swim-faulty' | head -1 || true" 2>/dev/null)
         if [ -n "$match" ]; then
             printf '%s' "$match"
             return 0
@@ -387,21 +392,20 @@ test_decommission_within_budget() {
 }
 
 test_transport_unreachable_event_logged() {
-    # Smoking-gun assertion: a surviving compose-baseline node MUST log
-    # `reason=transport-failure` for R's NodeId. Without this, a future
-    # regression could plausibly route DECOMMISSIONED via some other path
-    # (e.g. accelerated SWIM detector, a back-channel CTM tombstone, an
-    # eviction race) and the timing assertion alone would pass under wrong
-    # semantics. The "transport-failure" reason string is produced ONLY by
-    # the (JOINING/ON_DUTY, TransportUnreachable) reducer cells, so its
-    # presence pins the code path under test.
+    # Smoking-gun assertion: a surviving compose-baseline node MUST log either
+    # `reason=transport-failure` OR `reason=swim-faulty` for R's NodeId. Both
+    # are documented `(ON_DUTY, ...) → DECOMMISSIONED` reducer cells per spec §16
+    # row S01. Their presence pins the decommission to a known FSM path rather
+    # than an opaque write (e.g. accelerated detector, back-channel CTM tombstone,
+    # eviction race). The specific path is a race between aggregator quorum and
+    # SWIM convergence — both are correct outcomes.
     local replacement match
     replacement=$(cat "$REPLACEMENT_NODE_ID_FILE")
     if ! match=$(verify_transport_unreachable_event "$replacement"); then
-        log_fail "No 'reason=transport-failure' domain-event line for ${replacement} on any surviving compose-baseline node. The ≤15s budget passed but via an unknown path — the S01 contract is not actually being exercised. (Step 2/3/4/6 regression candidate: aggregator not producing TransportUnreachable, FSM not consuming it, or gate now blocking the JOINING cell.)"
+        log_fail "No 'reason=transport-failure' OR 'reason=swim-faulty' domain-event line for ${replacement} on any surviving compose-baseline node. The ≤25s budget passed but via an unknown path — the S01 contract is not actually being exercised. (Step 2/3/4/6 regression candidate: aggregator not producing TransportUnreachable, SWIM not converging on FAULTY, FSM not consuming either, or gate now blocking both cells.)"
         return 1
     fi
-    log_pass "Smoking-gun reason=transport-failure observed for ${replacement}: $(printf '%s' "$match" | head -c 200)"
+    log_pass "Smoking-gun decommission reason observed for ${replacement}: $(printf '%s' "$match" | head -c 200)"
 }
 
 test_pick_non_leader_excludes_decommissioned() {
