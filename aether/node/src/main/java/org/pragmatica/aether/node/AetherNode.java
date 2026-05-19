@@ -928,19 +928,41 @@ public interface AetherNode extends ManageableNode {
         // transition burst.
         var periodicConfig = PeriodicObservationConfig.defaultConfig();
         BooleanSupplier isLeaderSupplier = clusterNode.leaderManager()::isLeader;
+        // Decision-plane peer set: KV-known nodes in non-terminal lifecycle states
+        // (everything except DECOMMISSIONED), plus self. The aggregator MUST iterate
+        // this set — not the QUIC-driven `topologyManager().topology()` — otherwise a
+        // killed peer drops out of the self-fold the moment QUIC fires REMOVE, no
+        // fresh UNREACHABLE observations are produced, prior entries age out in 15s,
+        // and the dead peer becomes structurally invisible to the UNREACHABLE-quorum
+        // gate (see reachability-aggregator-spec.md "Periodic Observation Mode").
+        // Decision plane (KV) = "what to track"; observation plane (QUIC) =
+        // "what state". Keeping them on separate sources is the architectural
+        // invariant.
+        Supplier<Set<NodeId>> kvTrackedPeersSupplier = () -> {
+            var peers = new java.util.HashSet<NodeId>();
+            peers.add(config.self());
+            kvStore.forEach(AetherKey.NodeLifecycleKey.class,
+                            AetherValue.NodeLifecycleValue.class,
+                            (key, value) -> {
+                                if (value.state() != AetherValue.NodeLifecycleState.DECOMMISSIONED) {
+                                    peers.add(key.nodeId());
+                                }
+                            });
+            return Set.copyOf(peers);
+        };
         // ReachabilityAggregator: leader-side TTL+quorum aggregator producing the
         // cluster-canonical reachability snapshot broadcast in ClusterSyncPing.
-        // Quorum threshold N = current topology size (matches ON_DUTY count at
-        // steady state; adjusts during chaos as topology shrinks). TTL=15s — 3×
-        // the 5s periodic emission cadence, ensures observations remain live
+        // Quorum threshold N = KV-canonical non-terminal peer count (stable across
+        // chaos kills — DECOMMISSIONED is the only state that decrements N). TTL=15s
+        // — 3× the 5s periodic emission cadence, ensures observations remain live
         // across 2-3 emission cycles before expiry. See
         // aether/docs/specs/reachability-aggregator-spec.md "Periodic Observation
         // Mode" subsection.
         var reachabilityAggregator = ReachabilityAggregator.reachabilityAggregator(
             config.self(),
-            () -> clusterNode.topologyManager().topology().size(),
+            () -> kvTrackedPeersSupplier.get().size(),
             () -> clusterNode.network().connectedPeers(),
-            () -> Set.copyOf(clusterNode.topologyManager().topology()),
+            kvTrackedPeersSupplier,
             System::currentTimeMillis,
             15_000L);
         // Wire the leader-side aggregator into metricsCollector so MembershipView's
