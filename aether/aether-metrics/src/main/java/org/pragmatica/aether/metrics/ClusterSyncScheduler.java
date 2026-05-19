@@ -22,6 +22,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoining;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.Contract;
@@ -32,6 +33,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -250,15 +252,27 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
             case NodeJoined(_, List<NodeId> newTopology, _, _) -> context.setTopology(newTopology);
             case NodeRemoved(NodeId removed, List<NodeId> newTopology, _, _) -> handleNodeRemoved(removed, newTopology);
             case NodeDecommissioned(NodeId removed, List<NodeId> newTopology, _, _) -> handleNodeRemoved(removed, newTopology);
-            // RC1 Step 2 lifecycle-projection variants: ClusterSyncScheduler tracks
-            // post-commit topology only — JOINING / DRAINING / FAILED_DRAIN /
-            // SHUTTING_DOWN are pre-terminal transitions that do not change the active
-            // topology shape.
-            case MembershipDecision.NodeJoining _,
-                 MembershipDecision.NodeDraining _,
+            // RC1 resilience: JOINING peers are pre-commit replacement candidates not yet in
+            // `coreMemberIds`. Add the joining nodeId to the metrics-emission topology so the
+            // periodic `PeerConnectivityObservation` stream covers them — without this, the
+            // ReachabilityAggregator never receives DISCONNECTED evidence for crashed JOINING
+            // peers and the aggregator-quorum gate refuses to confirm UNREACHABLE, leaving
+            // stale ON_DUTY NodeLifecycleKeys for CTM-provisioned replacements.
+            case NodeJoining(NodeId joining, List<NodeId> newTopology, _, _) -> context.setTopology(augmentWith(newTopology, joining));
+            // DRAINING / FAILED_DRAIN / SHUTTING_DOWN nodes are still in `coreMemberIds` so the
+            // accompanying `topology` field already covers them — no augmentation needed.
+            case MembershipDecision.NodeDraining _,
                  MembershipDecision.NodeFailedDrain _,
                  MembershipDecision.NodeShuttingDown _ -> {}
         }
+    }
+
+    private static List<NodeId> augmentWith(List<NodeId> topology, NodeId extra) {
+        if (topology.contains(extra)) {return topology;}
+        var merged = new ArrayList<NodeId>(topology.size() + 1);
+        merged.addAll(topology);
+        merged.add(extra);
+        return List.copyOf(merged);
     }
 
     private void handleNodeRemoved(NodeId removed, List<NodeId> newTopology) {

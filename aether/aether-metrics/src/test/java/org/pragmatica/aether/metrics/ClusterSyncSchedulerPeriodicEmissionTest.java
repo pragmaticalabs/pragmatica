@@ -93,6 +93,45 @@ class ClusterSyncSchedulerPeriodicEmissionTest {
     }
 
     @Test
+    void onMembershipDecision_nodeJoining_includesJoiningPeerInTopologyEmission() {
+        // RC1 resilience regression guard. A JOINING peer is NOT in `coreMemberIds` yet,
+        // so `MembershipDecision.NodeJoining.topology()` reflects the ON_DUTY view only.
+        // ClusterSyncScheduler MUST augment the metrics topology with the joining nodeId,
+        // otherwise the periodic emission never reports DISCONNECTED for a crashed
+        // pre-promotion replacement and the aggregator-quorum gate refuses to confirm
+        // UNREACHABLE — leaving stale ON_DUTY NodeLifecycleKeys behind.
+        var connectedPeers = Set.of(PEER_A);
+        var network = new RecordingNetwork(connectedPeers);
+        var collector = new RecordingCollector();
+        var scheduler = newScheduler(network, collector, longPeriodicConfig());
+
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoining(PEER_B, List.of(SELF, PEER_A)));
+        scheduler.emitPeriodicConnectivityNow();
+
+        var invocations = collector.invocations();
+        assertThat(invocations).hasSize(1);
+        var invocation = invocations.getFirst();
+        assertThat(invocation.topology()).containsExactlyInAnyOrder(SELF, PEER_A, PEER_B);
+        assertThat(invocation.connected()).containsExactlyInAnyOrder(PEER_A);
+    }
+
+    @Test
+    void onMembershipDecision_nodeJoining_alreadyInTopology_noDuplicate() {
+        // Defensive: if a future projection includes the joining peer in `topology` itself,
+        // augmentation must be a no-op (no duplicate in the emission set).
+        var network = new RecordingNetwork(Set.of(PEER_A, PEER_B));
+        var collector = new RecordingCollector();
+        var scheduler = newScheduler(network, collector, longPeriodicConfig());
+
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoining(PEER_B, List.of(SELF, PEER_A, PEER_B)));
+        scheduler.emitPeriodicConnectivityNow();
+
+        var invocations = collector.invocations();
+        assertThat(invocations).hasSize(1);
+        assertThat(invocations.getFirst().topology()).containsExactlyInAnyOrder(SELF, PEER_A, PEER_B);
+    }
+
+    @Test
     void scheduledPeriodicTask_firesAtConfiguredCadenceOncePinging() {
         // Validates the scheduler wires SharedScheduler.scheduleAtFixedRate at
         // `periodicConfig.period()` cadence. Uses a tight 100ms period so the test
