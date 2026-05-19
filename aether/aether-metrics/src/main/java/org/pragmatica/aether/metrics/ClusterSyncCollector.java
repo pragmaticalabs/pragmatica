@@ -264,11 +264,15 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// RC1 (S01 fix) — verification threshold for acting on owner-broadcast eviction hints.
     /// If we've received traffic from the suggested-evicted peer within this window, we
     /// REFUSE the eviction (preserves the "independent observers" property; owner's view
-    /// may be wrong due to partial-network conditions). Chosen 5s as a compromise between
-    /// fast S01 detection and tolerance for sparse follower-to-follower direct traffic via
-    /// SWIM gossip (random per-round selection at period=1s in N=5 cluster averages ~4s
-    /// between direct messages from any given peer).
-    private static final TimeSpan EVICTION_HINT_VERIFY_WINDOW = TimeSpan.timeSpan(5).seconds();
+    /// may be wrong due to partial-network conditions). Set to 12s: longer than the
+    /// expected SWIM-gossip cadence between any specific peer pair (random per-round
+    /// selection at period=1s averages ~4s in N=5, but with jitter can stretch to 8-10s
+    /// in steady state). Genuinely dead peers go fully silent (zero direct traffic),
+    /// so their lastReceived ages out within ~3-5s — followers still agree quickly in
+    /// the true-dead case. Avoids cluster A regressions where transient owner ping-timeout
+    /// blips (CPU spike, brief GC pause) would otherwise cascade into spurious follower
+    /// disconnects of healthy peers.
+    private static final TimeSpan EVICTION_HINT_VERIFY_WINDOW = TimeSpan.timeSpan(12).seconds();
 
     private void processEvictionHints(ClusterSyncPing ping) {
         var hints = ping.evictionHints();
