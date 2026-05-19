@@ -17,6 +17,7 @@ import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -266,6 +267,20 @@ public final class ClusterSyncContext {
     @Contract public void emitPingTimeoutIfExceeded(NodeId peer, int missed) {
         if (missed <pingTimeoutThreshold) {return;}
         signalSink.emit(new HealthSignal.PingTimeout(peer, missed, epochSupplier.get()));
+        // RC1 (S01 fix): app-level liveness detection. QUIC's MAX_IDLE_TIMEOUT is
+        // intentionally disabled (cluster connections are persistent per QUIC RFC 9000
+        // §10.1), so the QUIC layer has no autonomous dead-peer detection — UDP sends
+        // are fire-and-forget. The cluster-sync ping/pong cycle IS an app-level liveness
+        // signal: `pingTimeoutThreshold` consecutive missed pongs (default 3 = ~3s) means
+        // the peer is unresponsive. Without this local disconnect, `ReachabilityAggregator.
+        // foldSelfObservations` would keep voting REACHABLE for the unresponsive peer
+        // (its QUIC `PeerState` stays CONNECTED), diluting follower UNREACHABLE evidence
+        // and forcing the FSM to wait on SWIM's 10s suspectTimeout floor for transport-
+        // gated decommission. Local disconnect here strips the false REACHABLE vote and
+        // lets the aggregator converge within the ping-timeout window. Disconnect is
+        // idempotent (peer.evict() guards against double-eviction). See spec §16 S01/S02
+        // and the QuicClusterClient.java:139 / QuicClusterServer.java:136 idle-timeout note.
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(peer));
     }
 
     public int bufferCap() {
