@@ -304,20 +304,36 @@ public interface AetherNode extends ManageableNode {
     @Contract void route(Message message);
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
+        return aetherNode(config, () -> Runtime.getRuntime().halt(2));
+    }
+
+    /// Overload for single-JVM hosting (Forge / Ember). The `jvmExit` hook is invoked by
+    /// the node's `SelfDrainCoordinator` when the drain phase completes — production passes
+    /// `Runtime.getRuntime().halt(2)`, in-JVM hosts pass a per-node callback that stops the
+    /// node gracefully and removes it from the host's registry without taking down the JVM.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config, Runnable jvmExit) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
         var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
-        return aetherNode(config, delegateRouter, nodeCodec);
+        return aetherNode(config, delegateRouter, nodeCodec, jvmExit);
     }
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
                                          SliceCodec nodeCodec) {
-        return config.validate().flatMap(_ -> createNode(config, delegateRouter, nodeCodec));
+        return aetherNode(config, delegateRouter, nodeCodec, () -> Runtime.getRuntime().halt(2));
+    }
+
+    static Result<AetherNode> aetherNode(AetherNodeConfig config,
+                                         MessageRouter.DelegateRouter delegateRouter,
+                                         SliceCodec nodeCodec,
+                                         Runnable jvmExit) {
+        return config.validate().flatMap(_ -> createNode(config, delegateRouter, nodeCodec, jvmExit));
     }
 
     private static Result<AetherNode> createNode(AetherNodeConfig config,
                                                  MessageRouter.DelegateRouter delegateRouter,
-                                                 SliceCodec nodeCodec) {
+                                                 SliceCodec nodeCodec,
+                                                 Runnable jvmExit) {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
@@ -375,7 +391,8 @@ public interface AetherNode extends ManageableNode {
                                              dhtNode,
                                              leaderTerm,
                                              hlcClock,
-                                             snapshotSource));
+                                             snapshotSource,
+                                             jvmExit));
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
@@ -427,7 +444,8 @@ public interface AetherNode extends ManageableNode {
                                                    DHTNode dhtNode,
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
-                                                   GenerationSnapshotSource snapshotSource) {
+                                                   GenerationSnapshotSource snapshotSource,
+                                                   Runnable jvmExit) {
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
         // it to the QUIC transport's tracked-write API. The default DHTNetwork impl
         // just calls `send` and reports Sent — but the DHT quorum collectors need the
@@ -1044,17 +1062,16 @@ public interface AetherNode extends ManageableNode {
         // membership-architecture-spec.md §16.1 (S19/S20). No KV/consensus dependency — a
         // partition victim cannot use either anyway.
         //
-        // `jvmExit` is `Runtime.getRuntime().halt(2)` for production (Docker, cloud). Forge /
-        // single-JVM test runtimes that bring up AetherNode in-process MUST supply a different
-        // hook (e.g., signal the test driver) — `halt(2)` would terminate the entire test JVM
-        // along with all other in-process nodes.
+        // `jvmExit` is threaded in from the factory: production is `Runtime.getRuntime().halt(2)`,
+        // single-JVM hosts (Forge/Ember) pass a per-node callback that stops the node gracefully
+        // and removes it from the host's registry without taking down the whole test JVM.
         var selfDrainCoordinator = SelfDrainCoordinator.selfDrainCoordinator(
                 config.self(),
                 () -> clusterNode.network().connectedPeers(),
                 () -> clusterNode.topologyManager().topology().size(),
                 inFlightTrackerForDrain,
                 SelfDrainConfig.selfDrainConfig(),
-                () -> Runtime.getRuntime().halt(2));
+                jvmExit);
         SharedScheduler.scheduleAtFixedRate(
                 selfDrainCoordinator::onConnectivityChange,
                 TimeSpan.timeSpan(1).seconds(),
