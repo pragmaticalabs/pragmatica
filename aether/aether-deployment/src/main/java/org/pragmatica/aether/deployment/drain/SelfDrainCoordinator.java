@@ -90,21 +90,10 @@ public final class SelfDrainCoordinator {
         this.jvmExit = jvmExit;
     }
 
-    /// Production factory: exits via `Runtime.getRuntime().halt(2)`.
-    public static SelfDrainCoordinator selfDrainCoordinator(NodeId self,
-                                                            Supplier<Set<NodeId>> connectedPeers,
-                                                            IntSupplier topologySize,
-                                                            InFlightRequestTracker tracker,
-                                                            SelfDrainConfig config) {
-        return new SelfDrainCoordinator(self,
-                                        connectedPeers,
-                                        topologySize,
-                                        tracker,
-                                        config,
-                                        () -> Runtime.getRuntime().halt(2));
-    }
-
-    /// Test factory: supply a recording exit hook instead of `Runtime.halt`.
+    /// Canonical factory. Caller supplies `jvmExit` explicitly — production passes
+    /// `() -> Runtime.getRuntime().halt(2)`, Forge / single-JVM test runtimes supply a
+    /// hook that signals the supervising driver instead (so a SelfDrain doesn't take down
+    /// the entire test JVM along with all other in-process nodes).
     public static SelfDrainCoordinator selfDrainCoordinator(NodeId self,
                                                             Supplier<Set<NodeId>> connectedPeers,
                                                             IntSupplier topologySize,

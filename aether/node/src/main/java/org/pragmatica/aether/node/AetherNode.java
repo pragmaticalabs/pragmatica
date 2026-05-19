@@ -1040,15 +1040,21 @@ public interface AetherNode extends ManageableNode {
         // Topology-observation refactor Step 5: node-side self-drain coordinator. Watches three
         // independent triggers (periodic 1Hz connectivity check, QuorumStateNotification.DISAPPEARED,
         // Rabia paused) and on the first one to fire kicks off an uninterruptible drain that
-        // gates the in-flight tracker, awaits ≤ inflightGrace, then `Runtime.halt(2)`.
+        // gates the in-flight tracker, awaits ≤ inflightGrace, then invokes `jvmExit`.
         // membership-architecture-spec.md §16.1 (S19/S20). No KV/consensus dependency — a
         // partition victim cannot use either anyway.
+        //
+        // `jvmExit` is `Runtime.getRuntime().halt(2)` for production (Docker, cloud). Forge /
+        // single-JVM test runtimes that bring up AetherNode in-process MUST supply a different
+        // hook (e.g., signal the test driver) — `halt(2)` would terminate the entire test JVM
+        // along with all other in-process nodes.
         var selfDrainCoordinator = SelfDrainCoordinator.selfDrainCoordinator(
                 config.self(),
                 () -> clusterNode.network().connectedPeers(),
                 () -> clusterNode.topologyManager().topology().size(),
                 inFlightTrackerForDrain,
-                SelfDrainConfig.selfDrainConfig());
+                SelfDrainConfig.selfDrainConfig(),
+                () -> Runtime.getRuntime().halt(2));
         SharedScheduler.scheduleAtFixedRate(
                 selfDrainCoordinator::onConnectivityChange,
                 TimeSpan.timeSpan(1).seconds(),
