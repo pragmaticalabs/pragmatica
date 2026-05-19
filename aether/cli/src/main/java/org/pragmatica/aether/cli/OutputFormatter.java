@@ -48,6 +48,14 @@ public sealed interface OutputFormatter {
 
     private static int printValue(String json, String fieldPath) {
         if (fieldPath == null) {return printJson(json);}
+        // Detect server-side error envelope (e.g., `{"error":"..."}` from a forward failure
+        // or 4xx/5xx response). Surface the actual error instead of the misleading
+        // "Path not found: <fieldPath>" — that message implied the field was renamed
+        // when in reality the response body was an error envelope without the expected shape.
+        if (isErrorResponse(json)) {
+            System.err.println("Error: " + extractErrorMessage(json));
+            return ExitCode.ERROR;
+        }
         return MAPPER.extractField(json, fieldPath)
                                   .fold(OutputFormatter::handleFieldError, OutputFormatter::printToStdout);
     }
