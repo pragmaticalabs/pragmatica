@@ -106,7 +106,7 @@ class MembershipViewTest {
         }
     }
 
-    @Nested @DisplayName("Legacy ON_DUTY KV entries are honoured when SWIM agrees")
+    @Nested @DisplayName("Legacy ON_DUTY KV entries are honoured when snapshot has not voted negative")
     class LegacyOnDutyHandling {
         @Test void onDutyKvWithHealthySwim_emitsOnDuty() {
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
@@ -116,32 +116,41 @@ class MembershipViewTest {
             assertThat(view.onDutyPeers()).containsExactly(NODE_1);
         }
 
-        @Test void onDutyKvWithFaultySwim_isUntracked() {
-            // Stale legacy ON_DUTY entry left behind by the FSM after SWIM has marked the
-            // peer dead. The view must NOT report ON_DUTY — SWIM is the truth for "alive".
-            // This is the central H-series correctness change.
+        @Test void onDutyKvWithFaultySwim_isOnDuty() {
+            // Cold-boot fix: KV says ON_DUTY, SWIM lags behind reporting FAULTY, and the
+            // aggregated reachability snapshot has not produced an explicit UNREACHABLE
+            // quorum (the `membershipView` factory hard-wires snapshot to `Option::none`,
+            // simulating cold-boot before the first aggregator emission). The KV entry is
+            // authoritative — absence of cluster-canonical negative evidence MUST NOT
+            // downgrade an ON_DUTY peer. The legacy "SWIM is truth for alive" assertion
+            // was the pre-fix behavior that stranded cold-boot clusters in UNTRACKED for
+            // the duration of convergence.
             var view = viewFrom(Map.of(NODE_1, SwimHealth.FAULTY),
                                  Map.of(NODE_1, NodeLifecycleState.ON_DUTY));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
-            assertThat(view.onDutyPeers()).isEmpty();
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
+            assertThat(view.onDutyPeers()).containsExactly(NODE_1);
         }
 
-        @Test void onDutyKvWithUnknownSwim_isUntracked() {
+        @Test void onDutyKvWithUnknownSwim_isOnDuty() {
+            // Same cold-boot semantic as the faulty-SWIM case: snapshot=Option.none() is
+            // non-information, so the KV-authoritative ON_DUTY survives.
             var view = viewFrom(Map.of(NODE_1, SwimHealth.UNKNOWN),
                                  Map.of(NODE_1, NodeLifecycleState.ON_DUTY));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
         }
     }
 
     @Nested @DisplayName("Mixed cluster snapshot")
     class MixedCluster {
         @Test void fivePeersAcrossStates_emitsCorrectMix() {
-            // Realistic chaos-recovery snapshot:
+            // Realistic chaos-recovery snapshot under the cold-boot semantic
+            // (snapshot=Option::none() via the membershipView factory):
             //   node-1: alive in SWIM, no KV → ON_DUTY (post-takeover discovery without write)
             //   node-2: alive in SWIM, KV DRAINING → DRAINING
-            //   node-3: faulty in SWIM, KV ON_DUTY (legacy stale) → UNTRACKED
+            //   node-3: faulty in SWIM, KV ON_DUTY (legacy stale) → ON_DUTY (no cluster-canonical
+            //          UNREACHABLE quorum; KV is authoritative until snapshot votes negative)
             //   node-4: faulty in SWIM, KV DECOMMISSIONED → DECOMMISSIONED
             //   (replacement): alive in SWIM, no KV → ON_DUTY
             var swim = new LinkedHashMap<NodeId, SwimHealth>();
@@ -159,9 +168,9 @@ class MembershipViewTest {
 
             assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.ON_DUTY);
             assertThat(view.statusOf(NODE_2)).isEqualTo(MemberStatus.DRAINING);
-            assertThat(view.statusOf(NODE_3)).isEqualTo(MemberStatus.UNTRACKED);
+            assertThat(view.statusOf(NODE_3)).isEqualTo(MemberStatus.ON_DUTY);
             assertThat(view.statusOf(replacement)).isEqualTo(MemberStatus.ON_DUTY);
-            assertThat(view.onDutyPeers()).containsExactlyInAnyOrder(NODE_1, replacement);
+            assertThat(view.onDutyPeers()).containsExactlyInAnyOrder(NODE_1, NODE_3, replacement);
         }
     }
 

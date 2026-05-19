@@ -30,15 +30,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Step 6 — table-driven coverage for `MembershipView.resolveOnDutyStatus`.
 ///
 /// Each row drives the resolution of a peer whose KV lifecycle entry is `ON_DUTY`. The 5
-/// rows correspond to the documented branches of `resolveOnDutyStatus` after the
-/// periodic-emission refactor: SWIM fast path, snapshot-REACHABLE promotion, snapshot
-/// UNREACHABLE / UNKNOWN downgrades, and cold-start `Option.none()` fallback.
+/// rows correspond to the documented branches after the cold-boot fix: SWIM fast path,
+/// snapshot-REACHABLE promotion, snapshot UNREACHABLE explicit demotion, and the two
+/// "non-information" cases (snapshot UNKNOWN / `Option.none()`) which both fall back to
+/// the KV-authoritative `ON_DUTY` state.
 ///
 /// **Why a new file.** [MembershipViewTest] covers the pure two-input (SWIM + KV)
 /// projection via the `membershipView(...)` factory, which hard-wires the snapshot supplier
 /// to `Option::none`. [MembershipViewQuorumTest] covers the strict-vs-bootstrap factory
 /// split. Neither exercises the snapshot-aware branches of `resolveOnDutyStatus` directly.
-/// This file fills the gap and documents the post-Step-1 UNKNOWN semantic.
+/// This file fills the gap and pins the spec-contract semantic: the snapshot is a SECOND
+/// confirmation source that PROMOTES, never DEMOTES on absence-of-information. Only an
+/// explicit `UNREACHABLE` quorum demotes a `kvState == ON_DUTY` peer.
 class MembershipViewResolveOnDutyStatusTest {
     private static final NodeId PEER = NodeId.nodeId("node-peer").unwrap();
     private static final long T0 = 100_000L;
@@ -49,7 +52,7 @@ class MembershipViewResolveOnDutyStatusTest {
                         MemberStatus expected) {}
 
     @Test
-    @DisplayName("resolveOnDutyStatus — 5 documented branches (post-periodic-emission)")
+    @DisplayName("resolveOnDutyStatus — 5 documented branches (snapshot promotes, never demotes on absence-of-information)")
     void resolveOnDutyStatus_allBranches() {
         var cases = List.of(
             new Case("SWIM HEALTHY + quorate → ON_DUTY (fast path; snapshot ignored)",
@@ -60,18 +63,18 @@ class MembershipViewResolveOnDutyStatusTest {
                      SwimHealth.FAULTY,
                      snapshotOf(ReachabilityKind.REACHABLE),
                      MemberStatus.ON_DUTY),
-            new Case("SWIM FAULTY + snapshot UNREACHABLE → UNTRACKED (transport-honest downgrade)",
+            new Case("SWIM FAULTY + snapshot UNREACHABLE → UNTRACKED (transport-honest explicit demotion)",
                      SwimHealth.FAULTY,
                      snapshotOf(ReachabilityKind.UNREACHABLE),
                      MemberStatus.UNTRACKED),
-            new Case("SWIM FAULTY + snapshot UNKNOWN → UNTRACKED (genuinely isolated peer)",
+            new Case("SWIM FAULTY + snapshot UNKNOWN → ON_DUTY (non-information; defer to KV)",
                      SwimHealth.FAULTY,
                      snapshotOf(ReachabilityKind.UNKNOWN),
-                     MemberStatus.UNTRACKED),
-            new Case("SWIM FAULTY + snapshot Option.none() → UNTRACKED (cold-start fallback)",
+                     MemberStatus.ON_DUTY),
+            new Case("SWIM FAULTY + snapshot Option.none() → ON_DUTY (cold-boot; KV is authoritative)",
                      SwimHealth.FAULTY,
                      Option.none(),
-                     MemberStatus.UNTRACKED));
+                     MemberStatus.ON_DUTY));
 
         for (var row : cases) {
             var view = viewFrom(row.swimHealth(), row.snapshot());
@@ -95,8 +98,13 @@ class MembershipViewResolveOnDutyStatusTest {
     }
 
     @Test
-    @DisplayName("Peer missing from snapshot states() map → UNTRACKED")
+    @DisplayName("Peer missing from snapshot states() map → ON_DUTY (non-information; defer to KV)")
     void resolveOnDutyStatus_peerAbsentFromSnapshotMap() {
+        // A peer with `kvState == ON_DUTY` that the leader has never observed yet (the
+        // states() map for our PEER is absent) is non-information, not negative evidence.
+        // The KV-authoritative ON_DUTY must hold until the snapshot produces an explicit
+        // UNREACHABLE quorum. This pins the cold-boot fix: snapshot promotes, never demotes
+        // on absence-of-information.
         var otherPeer = NodeId.nodeId("node-other").unwrap();
         var snapshot = Option.some(new AggregatedReachabilitySnapshot(
             T0,
@@ -104,7 +112,7 @@ class MembershipViewResolveOnDutyStatusTest {
 
         var view = viewFrom(SwimHealth.FAULTY, snapshot);
 
-        assertThat(view.statusOf(PEER)).isEqualTo(MemberStatus.UNTRACKED);
+        assertThat(view.statusOf(PEER)).isEqualTo(MemberStatus.ON_DUTY);
     }
 
     @Test
@@ -113,6 +121,35 @@ class MembershipViewResolveOnDutyStatusTest {
         var view = strictViewFrom(false, SwimHealth.HEALTHY, snapshotOf(ReachabilityKind.REACHABLE));
 
         assertThat(view.statusOf(PEER)).isEqualTo(MemberStatus.UNTRACKED);
+    }
+
+    @Test
+    @DisplayName("Cold-boot regression: snapshot=none(), kvState=ON_DUTY, SWIM=UNKNOWN, quorate → ON_DUTY")
+    void resolveOnDutyStatus_coldBootKvAuthoritative() {
+        // Empirical regression: 5-node cold-boot has followers with snapshot=none() and
+        // leader self-fold producing per-target UNKNOWN. The pre-fix code demoted every
+        // ON_DUTY peer to UNTRACKED for the duration of convergence, stranding the
+        // /api/cluster/topology coreCount below 4 for 240+ seconds. After the fix, KV is
+        // the authoritative source when the snapshot has not produced an explicit negative
+        // vote.
+        var view = strictViewFrom(true, SwimHealth.UNKNOWN, Option.none());
+
+        assertThat(view.statusOf(PEER)).isEqualTo(MemberStatus.ON_DUTY);
+        assertThat(view.onDutyPeers()).containsExactly(PEER);
+    }
+
+    @Test
+    @DisplayName("Snapshot UNREACHABLE explicit demotion (regression guard for the one case that DOES demote)")
+    void resolveOnDutyStatus_unreachableSnapshotDemotes() {
+        // Pins the explicit-UNREACHABLE downgrade we are intentionally keeping after the
+        // cold-boot fix. A cluster-canonical UNREACHABLE quorum is positive negative
+        // evidence (≥⌈N/2⌉+1 observers report the peer unreachable). It MUST override the
+        // KV-authoritative ON_DUTY, otherwise a peer the cluster has voted dead would
+        // continue counting toward on-duty capacity.
+        var view = strictViewFrom(true, SwimHealth.FAULTY, snapshotOf(ReachabilityKind.UNREACHABLE));
+
+        assertThat(view.statusOf(PEER)).isEqualTo(MemberStatus.UNTRACKED);
+        assertThat(view.onDutyPeers()).isEmpty();
     }
 
     private static Option<AggregatedReachabilitySnapshot> snapshotOf(ReachabilityKind kind) {

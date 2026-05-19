@@ -291,40 +291,37 @@ public interface MembershipView {
             };
         }
 
-        /// `kvState == ON_DUTY` requires confirmation. Resolution order:
+        /// `kvState == ON_DUTY` requires confirmation. Resolution order — the aggregated
+        /// reachability snapshot is a **SECOND confirmation source** that PROMOTES, never
+        /// DEMOTES on absence-of-information. The only demotion the snapshot can drive is an
+        /// explicit cluster-canonical UNREACHABLE quorum.
         ///
         /// 1. **Non-quorate** → `UNTRACKED`. A minority-side reader MUST NOT advertise
         ///    ON_DUTY peers; the majority may have re-routed work past them.
         /// 2. **Local SWIM HEALTHY + quorate** → `ON_DUTY` (fast path; snapshot not consulted).
-        /// 3. **Snapshot absent** (`Option.none()`) → `UNTRACKED`. Cold-start before the
-        ///    first aggregator snapshot has been received; conservative.
-        /// 4. **Snapshot present** → branch explicitly on the per-peer `ReachabilityKind`:
-        ///    - `REACHABLE` → `ON_DUTY` (cluster-canonical quorum promotes despite SWIM lag).
-        ///    - `UNREACHABLE` → `UNTRACKED` (transport-honest downgrade).
-        ///    - `UNKNOWN` → `UNTRACKED` (see semantic note below).
-        ///    - Peer absent from `states()` map → `UNTRACKED`.
+        /// 3. **Snapshot present + per-peer kind = UNREACHABLE** → `UNTRACKED`. The cluster has
+        ///    voted with a quorum of UNREACHABLE observers; honour the transport-honest
+        ///    downgrade.
+        /// 4. **All other cases** (`Option.none()`, snapshot kind `REACHABLE`, snapshot kind
+        ///    `UNKNOWN`, peer absent from `states()` map) → `ON_DUTY`. KV says ON_DUTY and
+        ///    the snapshot has not produced a quorate negative vote, so fall back to the
+        ///    KV-authoritative state. This is the cold-boot path that allows a 5-node cluster
+        ///    to converge: followers' snapshot starts as `Option.none()`, the leader's
+        ///    self-fold contributes only 1 observer (below the symmetric quorum threshold of
+        ///    ⌈N/2⌉+1), so the snapshot returns `UNKNOWN` per target. Treating either as a
+        ///    demotion strands the cluster in `UNTRACKED` for the duration of convergence —
+        ///    see `reachability-aggregator-spec.md` Layer 5 and the "Supersession note
+        ///    (2026-05-18)" describing why `UNKNOWN` is the steady-state on a stable cluster.
         ///
-        /// **UNKNOWN semantic — post-periodic-emission.** Prior to the periodic-observation
-        /// refactor (reachability-aggregator-spec.md "Periodic Observation Mode"), observations
-        /// were emitted only on QUIC transport transitions (ADD/EVICTED). On a steady-state
-        /// cluster with no flaps, the aggregator's per-target observation buffers aged out and
-        /// `UNKNOWN` simply meant "no transitions, no data" — it could equally describe a
-        /// healthy stable cluster or an isolated peer. Downgrading UNKNOWN to UNTRACKED was
-        /// therefore over-aggressive and only justified in conjunction with `Option.none()`.
-        ///
-        /// After the periodic-observation refactor, every node emits a `PeerConnectivityObservation`
-        /// every 5s for every topology peer it considers reachable; observations live for 15s
-        /// (3× period). A peer that produces `UNKNOWN` in the aggregated snapshot has therefore
-        /// failed to attract a REACHABLE quorum across ≥3 emission cycles AND has not attracted
-        /// an UNREACHABLE quorum either — i.e. it is **genuinely isolated** from this leader's
-        /// observation set (cluster partition / network island / one-sided routing failure).
-        /// Downgrading UNKNOWN to UNTRACKED is now the semantically correct projection, not a
-        /// conservative guess. The combined effect is that UNKNOWN and `Option.none()` both
-        /// reduce to UNTRACKED for the same operational reason: this reader has no positive
-        /// evidence the peer is currently reachable.
+        /// **Why snapshot is a PROMOTER, not a GATE.** The spec contract (Layer 5) is: when
+        /// SWIM has not yet reported HEALTHY for a `kvState == ON_DUTY` peer, the snapshot
+        /// provides cluster-canonical evidence to either confirm reachability (REACHABLE → keep
+        /// ON_DUTY) or override it (UNREACHABLE → demote). Absence of evidence
+        /// (`Option.none()` / `UNKNOWN` / peer-missing) is **non-information** — it cannot
+        /// override the KV-authoritative state, otherwise cold-boot convergence deadlocks.
         ///
         /// See `aether/docs/specs/membership-architecture-spec.md` §16 (S05/S06) and
-        /// `aether/docs/specs/reachability-aggregator-spec.md` "Periodic Observation Mode".
+        /// `aether/docs/specs/reachability-aggregator-spec.md` Layer 5.
         private static MemberStatus resolveOnDutyStatus(NodeId peer,
                                                         SwimHealth swimState,
                                                         boolean quorate,
@@ -335,18 +332,19 @@ public interface MembershipView {
             if (swimState == SwimHealth.HEALTHY) {
                 return MemberStatus.ON_DUTY;
             }
-            return reachabilitySnapshot.fold(() -> MemberStatus.UNTRACKED,
+            return reachabilitySnapshot.fold(() -> MemberStatus.ON_DUTY,
                                               snap -> kindFromSnapshot(snap, peer));
         }
 
-        /// Explicit projection of a per-peer `ReachabilityKind` into `MemberStatus`. Kept as a
-        /// separate function so the three-way branch (REACHABLE / UNREACHABLE / UNKNOWN) is
-        /// visible to readers rather than implicit in `snap.isReachable(peer)` returning false
-        /// for both UNREACHABLE and UNKNOWN.
+        /// Explicit projection of a per-peer `ReachabilityKind` into `MemberStatus` for the
+        /// `kvState == ON_DUTY + !SWIM.HEALTHY` case. Only `UNREACHABLE` demotes — every
+        /// other outcome (REACHABLE, UNKNOWN, peer absent from states map) keeps the
+        /// KV-authoritative `ON_DUTY`. See the doc-comment on
+        /// [#resolveOnDutyStatus] for the spec-contract rationale.
         private static MemberStatus kindFromSnapshot(AggregatedReachabilitySnapshot snap, NodeId peer) {
             var entry = snap.states().get(peer);
             if (entry == null) {
-                return MemberStatus.UNTRACKED;
+                return MemberStatus.ON_DUTY;
             }
             return projectKind(entry);
         }
@@ -355,7 +353,7 @@ public interface MembershipView {
             return switch (entry.kind()) {
                 case REACHABLE -> MemberStatus.ON_DUTY;
                 case UNREACHABLE -> MemberStatus.UNTRACKED;
-                case UNKNOWN -> MemberStatus.UNTRACKED;
+                case UNKNOWN -> MemberStatus.ON_DUTY;
             };
         }
     }
