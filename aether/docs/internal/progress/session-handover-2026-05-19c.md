@@ -167,7 +167,165 @@ Most recent run: `bs7qvdaxy`. 00-smoke 1P/1F at the gate; suite aborted. The 1 f
 - 02-chaos: variable (S01 sometimes passes, infra cascade issues from zombies — should be cleaner now).
 - 03-scaling, 05-security, 12-network, 13-edge-cases: cascaded from 02-chaos in past runs.
 
-## Next-session resume sequence
+## §16 reconciliation walk — RESULTS LANDED + VERIFICATION CORRECTIONS
+
+The background investigator (id `ad3b4a6742d657d1d`) completed the full S01..S20 walk-through at handover time + ~10 min. Subsequent direct verification of each cited file:line found the synthesis broadly correct but with two material misframings that would have led to a wrong fix. **The corrections below override the agent's framing where they conflict.**
+
+### Verification corrections to the agent's report
+
+1. **Threshold formula is CORRECT for CFT — DO NOT change to `⌈N/2⌉+1`.** The agent's S05/S06 fix proposal (`⌈N/2⌉+1` Byzantine majority) is wrong for Rabia, which is CFT (Crash-Fault Tolerant), not BFT. The code's `(N/2)+1` strict-majority threshold at `ReachabilityAggregator.java:264-267` is the right formula. Byzantine threshold would *break* S03 (2 kills in N=5 leaves only 3 observers, can never reach 4).
+
+2. **S05/S06 is NOT a code bug — it's a spec over-promise.** The aggregator cannot distinguish "killed peer" from "partitioned-away peer" from any single side; both produce identical observations. The spec's narrative "nop for partitioned peers" cannot be implemented without an oracle. **Resolution: amend the spec to reflect the symmetric design — majority decommissions, minority self-drains, both converge.** Both mechanisms land on the same end-state (peers gone, KV consistent). Brief partition that heals before minority exits is bounded and clean (minority is mid-drain, uninterruptible, exits anyway, restart as fresh node via CTM per S20).
+
+3. **S19 dual-trigger is NOT a bug.** `routeQuorumDisappearedToSelfDrain` at `AetherNode.java:2010-2021` invokes both `onQuorumDisappeared` AND `onRabiaPaused`. The comment at lines 2011-2015 explicitly documents this as intentional forward-compatibility wiring for a future Rabia-direct paused listener. Drop it from the punch list.
+
+4. **`ReachabilityAggregator.java:242` had a mislabel** — comment said "⌈N/2⌉+1" for what the code actually computes as `(N/2)+1`. Fixed in this batch; future readers will see the correct strict-majority labeling.
+
+5. **`DEFAULT_DECOMMISSIONED_REVIVAL_TTL` was confirmed dead** as the agent claimed. **Also found** that `DEFAULT_DECOMMISSIONED_SWIM_REFRACTORY` is dead too (same H.4 cleanup root). Both removed in this batch; `MembershipFsmConfig` is now a 2-field record.
+
+6. **Forge SelfDrain wiring** — verified that AetherNode used the production 5-arg `selfDrainCoordinator(...)` factory which hardcoded `Runtime.halt(2)`. Under the new RC1-vs-RC2 rule (architecture/foundation → RC1), this is a latent bug for any single-JVM caller (Forge mode). Fix landed in this batch: 5-arg factory removed; AetherNode now passes the halt hook explicitly; Forge can supply a different hook without touching SelfDrainCoordinator or its tests.
+
+### Fixes landed in this batch
+
+| Fix | File:line | Type |
+|-----|-----------|------|
+| S16 defensive nop (Provisioning + SWIM) | `ClusterMembershipReducer.java` applyProvisioning | code |
+| Dead-config removal (revivalTtl + swimRefractory) | `MembershipFsmConfig.java` | refactor |
+| Dead `REASON_REVIVAL` constant + stale javadoc references | `ClusterMembershipReducer.java` | cleanup |
+| Threshold formula label fix | `ReachabilityAggregator.java:242` | comment |
+| SelfDrain `jvmExit` made explicit | `SelfDrainCoordinator.java` + `AetherNode.java:1046` | wiring |
+| §16 spec amendments (S02, S03, S05, S06, S08, S09, S11, S12, S13, S15, S16, S17, S18, S20) | `membership-architecture-spec.md` | spec |
+| §16.1 self-drain narrative updated | `membership-architecture-spec.md` | spec |
+
+### Counts (original agent classification)
+
+| Category | Count | Scenarios |
+|----------|-------|-----------|
+| OK (no mismatch) | 8 | S01, S03, S07, S08, S10, S11, S13, S19 |
+| DESIGN gap (spec ↔ impl) | 5 | S05, S06 (cascade), S12, S15, S20 |
+| DESIGN ambiguity (spec underspecified) | 2 | S16, S17 |
+| TIMING concern | 4 | S02, S03, S14, S18 |
+| TEST coverage / naming drift | multiple | S04, S08, S09, S11, S12, S13, S15, S16 |
+| IMPL minor / cleanup | 1 | S11 (dead `DEFAULT_DECOMMISSIONED_REVIVAL_TTL` config field) |
+
+(scenarios can occupy multiple categories)
+
+### Top 3 by impact — fix these first next session
+
+#### 1. **S05/S06 threshold formula** — partition gate is NOT partition-safe (LOAD-BEARING)
+
+`ReachabilityAggregator.quorumThreshold` uses `(N/2)+1` (integer math = strict majority). For N=5 that's threshold=3. In a 2-vs-3 partition, the majority side's 3 observers can reach quorum 3 → gate confirms UNREACHABLE → minority gets `Put(DECOMMISSIONED)` from majority side.
+
+**Spec wants `⌈N/2⌉+1`** (Byzantine threshold). For N=5 that's 4 → majority's 3 observers can NOT reach quorum → gate blocks → minority stays ON_DUTY in KV. Partition-safety property holds.
+
+**Consequence of bug**: BRIEF partitions (<8s, before self-drain triggers) cause permanent decommissioning of the minority. Partition heals → minority returns → KV says DECOMMISSIONED → they refuse to operate. The whole point of the gate.
+
+**Fix altitude**: change formula in `ReachabilityAggregator.java:264-267` (or wherever `quorumThreshold` is defined). One-line code change + test update. ESSENTIAL before declaring Step 10 done.
+
+**Note for next session**: my previous conversation messages claimed threshold was 4 for N=5. That was WRONG — I conflated spec arithmetic with code arithmetic. The code uses simple majority. The walk surfaced this in detail.
+
+#### 2. **S15/S20 — reducer skips JOINING for SwimHealthy**
+
+`ClusterMembershipReducer.applyUntracked.SwimHealthy` calls `untrackedDirectToOnDuty:280-289` which writes only `Put(ON_DUTY)` — skipping the spec-required `Put(JOINING)`. The reducer's own javadoc explicitly acknowledges this and explains "SWIM only emits when state CHANGES" so JOINING is never observed via SWIM.
+
+**Two valid resolutions, pick one:**
+- (a) Amend spec §16 rows S15/S20/S12 to say "Put(ON_DUTY) only" — the reducer's behavior is intentional and correct.
+- (b) Add a synthetic `Put(JOINING)` write before `Put(ON_DUTY)` for SWIM-driven untracked→ON_DUTY paths — code matches spec.
+
+Recommend (a) — the reducer optimization is sound, the spec is over-prescribed.
+
+#### 3. **S17 — cold-start gate has two contradictory behaviors**
+
+- `Option.none()` snapshot → `ALWAYS_CONFIRMED` permissive → decommissions (per `ReachabilityGate.java:20-24` javadoc + `MembershipFsm.java:131-134`).
+- `Option.some(snapshot)` with all UNKNOWN entries → gate returns false → nop.
+
+Spec row S17 narrative ("trust upstream") aligns with case (a); spec column ("nop for all transport cells") aligns with case (b). Spec is self-contradictory.
+
+**Fix altitude**: spec amendment. Split S17 into two scenarios, one per case, with distinct expected behavior. The code already does both correctly per its own contracts.
+
+### §16 table spec gaps (lower priority)
+
+1. **Missing "aggregator quorum threshold" column** — S05/S06 ambiguity from spec narrative vs aggregator math.
+2. **Missing "restart path discriminator"** for S12/S15/S20 — CTM-mediated vs SWIM-discovery emit different KV writes.
+3. **Stale acceptance-test names** — multiple rows reference test names not in the tree (`gate_blocks_transient_unreachable`, `gate_blocks_swim_only_failure`, `drain_timeout_fails`, `decommissioned_terminal_no_revival`, `untracked_rejoin_after_gc`, `coldstart_kill_during_provisioning`, `gate_cold_start_fallback`, `drain_during_partition`). Cross-reference is stale; either rename tests or fix the column.
+4. **S02 vs S14 budget inconsistency** — both rely on transport-unreachable detection; S02 says ≤15s, S14 says ≤25s. Pick one.
+5. **S16 row hand-wavy** — "depends on race; either no writes or Put(DECOMMISSIONED)" — no acceptance criterion. Plus the Provisioning + SWIM observation case is `illegal` in the reducer (`applyProvisioning:126-128`), a third outcome the spec doesn't mention.
+6. **S17 row contradicts itself** (see top-3 #3 above).
+
+### Common root cause analysis (from the investigator)
+
+**Two clusters of related issues, not 13 independent problems:**
+
+(A) **Threshold formula too permissive** (S05, S06, possibly S02/S14 if N small). Fix at one site (the threshold formula in `ReachabilityAggregator.quorumThreshold`) repairs S05/S06 and tightens S02/S14 partition-safety. The spec narrative is the right design intent; the math doesn't enforce it.
+
+(B) **Spec's "JOINING → ON_DUTY" idealized path doesn't match the reducer's "SWIM-driven peers skip JOINING" optimization** (S15, S20, partially S12). One spec edit (or one new SwimHealthy → JOINING reducer cell) repairs all three.
+
+S04, S13, S16, S17 are independent variations on the gate semantics: distinct review items but smaller surface.
+
+### TIMING concerns (S02, S03, S14, S18) — not blocking
+
+15s budget vs ~17s empirical floor under remote Docker QUIC-drop latency. Same root as S01 (already raised to 25s, RC2 ticket #224 filed for QUIC tuning). Per-row budget revision will be needed for consistency.
+
+### S16 (cold-start + kill during Provisioning) — edge case
+
+`applyProvisioning:126-128` treats `SwimFaulty/Departed` during Provisioning as `illegal` (throws `IllegalStateException`). Hidden crash risk if SwimFaulty arrives before SlotClaimed. Mitigation: SWIM requires the peer to have been observed alive first, so SwimFaulty is unlikely in this window. But the FSM design pretends this race can't happen. Spec doesn't explicitly cover it. Either:
+- Add an explicit `Provisioning + SwimFaulty → nop` cell (defensive)
+- Document the assumption in spec
+
+### Per-scenario notes (full S01..S20 walk)
+
+| ID | Verdict | Key file:line | Note |
+|----|---------|---------------|------|
+| S01 | OK | `ClusterMembershipReducer.java:163` | UNGATED `TransportUnreachable` from JOINING → DECOMMISSIONED. Test `test-joining-window-kill.sh` budget=25s. |
+| S02 | TIMING | `applyOnDuty:180-201`, `PeriodicObservationConfig.java:30` | Leader uses direct `ingestSelfTransition` (sub-second); followers relay via 5s ClusterSyncPong cycle. 15s budget tight under remote QUIC. |
+| S03 | TIMING | same as S02 | QUIC floor × 2 parallel kills; same root as S02. |
+| S04 | TEST drift | `ReducerAggregatorGateTest.java:124-134` (`gateBlocks_transportUnreachableIsNop_zeroWrites`) | Behavior covered; spec test name `gate_blocks_transient_unreachable` does not exist verbatim. |
+| S05 | **DESIGN BUG** | `ReachabilityAggregator.java:264-267` (threshold) + `ClusterMembershipReducer.java:199-201` (gate consultation) | `(N/2)+1` lets majority side reach UNREACHABLE quorum for partitioned minority → decommissions them. Spec narrative says nop. Fix: change to `⌈N/2⌉+1` Byzantine threshold or `N-1`. |
+| S06 | OK in isolation, **CASCADE** | — | Code-wise nop on transport heal, but S05's bug means peers were already DECOMMISSIONED, so "never decommissioned" precondition fails. |
+| S07 | OK | `onDutyOperatorDecommission:339-342`, `enterDraining:355-361`, `drainingDrainOutcome:384-390` | ON_DUTY→DRAINING→DECOMMISSIONED writes both. |
+| S08 | TEST drift | `MembershipFsmOperatorWriteTest.java:209-218` (`operatorDrain_then_awaitDrainAckFailure_writesFailedDrain`) | Behavior covered; spec test name `drain_timeout_fails` does not exist. |
+| S09 | TEST GAP | — | No dedicated `drain_during_partition` test. Same reducer path as S08; low-priority gap. |
+| S10 | OK | reducer force-branches at `applyUntracked/OnDuty/Draining/FailedDrain` | All four states honor `event.force()` correctly. |
+| S11 | OK + **DEAD CONFIG** | `MembershipFsmConfig.java:37` | All Decommissioned events nop/illegal as expected (verified `ClusterMembershipReducerTest.java:358-411`). But `DEFAULT_DECOMMISSIONED_REVIVAL_TTL = 60s` is dead since H.4 removed revival path. Test naming drift: spec says `decommissioned_terminal_no_revival`, actual is `decommissioned_swimHealthy_isNop_hSeriesNoRevival:403`. |
+| S12 | **DESIGN SPLIT** | `applyUntracked:107` (SWIM) vs `applyUntracked:110-112` (SlotClaimed) | CTM-driven rejoin = 2 writes (JOINING+ON_DUTY); SWIM-discovery rejoin = 1 write (ON_DUTY only). Spec doesn't disambiguate path. Same root as S15/S20. Test name `untracked_rejoin_after_gc` not found; close cousin `untracked_swimHealthy_writesOnDuty_legacyConsumers:95`. |
+| S13 | OK | `applyOnDuty:180-182`, test `ReducerAggregatorGateTest.java:188-213` (`quorumSnapshotReachable_swimFaultyOnOnDuty_isNop`) | Gate blocks SwimFaulty when aggregator says REACHABLE. Spec test name `gate_blocks_swim_only_failure` drift only. |
+| S14 | OK + **BUDGET INCONSISTENCY** | `applyOnDuty:199-201` | Code path matches spec. But spec gives ≤25s budget here vs ≤15s for S02 — both rely on the SAME transport-detection path. Pick one. |
+| S15 | **DESIGN GAP** | `applyUntracked.SwimHealthy → untrackedDirectToOnDuty:280-289` | Reducer skips Put(JOINING) for SWIM-direct paths; spec wants both writes. Reducer's own javadoc admits + explains the skip. |
+| S16 | **DESIGN AMBIGUITY + HIDDEN CRASH** | `applyProvisioning:126-128` | `SwimFaulty/Departed` during Provisioning is `illegal` → throws. Spec doesn't cover this race. Acceptance test `coldstart_kill_during_provisioning` not found. |
+| S17 | **DESIGN CONTRADICTION** | `ReachabilityGate.java:20-24` + `MembershipFsm.java:131-134` vs `currentReachabilityGate:1230-1233` | `Option.none()` snapshot → ALWAYS_CONFIRMED permissive → decommissions. `Option.some(snapshot)` UNKNOWN → gate false → nop. Spec row narrative ("trust upstream") vs column ("nop") contradict. |
+| S18 | TIMING | `MembershipFsm.onLeaderChange:492-506`, `resumeInFlightProtocolsIfLeader:1028-1035` | Re-election + 5s aggregator tick + QUIC drop detection; 15s post-election ambitious. Same root tightness as S02/S14. |
+| S19 | OK + 2 minor notes | `SelfDrainCoordinator.java:79-91, 165-167, 104`, `AetherNode.java:1052-1055, 2016-2020` | Threshold `(N/2)+1` matches spec ⌈N/2⌉+1. Exit code 2. No KV/consensus imports (invariant). Notes: (a) `routeQuorumDisappearedToSelfDrain` invokes both `onQuorumDisappeared` and `onRabiaPaused` (CAS-gated, second is no-op); (b) periodic 1Hz tick short-circuits after DRAINING. |
+| S20 | **DESIGN GAP** | `applyUntracked.SwimHealthy:107` | Same root as S15. After self-drain restart, SWIM-mediated discovery writes only Put(ON_DUTY), skipping spec's Put(JOINING). CTM-mediated rejoin would emit both. |
+
+### Files referenced by the agent (for next-session diving)
+
+Code:
+- `aether/aether-deployment/.../membership/fsm/MembershipFsm.java`
+- `aether/aether-deployment/.../membership/fsm/ClusterMembershipReducer.java`
+- `aether/aether-deployment/.../membership/fsm/ReachabilityGate.java`
+- `aether/aether-deployment/.../membership/fsm/MembershipFsmConfig.java`
+- `aether/aether-deployment/.../membership/ReachabilityAggregator.java`
+- `aether/aether-deployment/.../membership/view/MembershipView.java`
+- `aether/aether-deployment/.../drain/SelfDrainCoordinator.java`
+- `aether/aether-deployment/.../drain/SelfDrainConfig.java`
+- `aether/node/.../AetherNode.java`
+- `aether/aether-metrics/.../ClusterSyncScheduler.java`
+- `aether/aether-metrics/.../PeriodicObservationConfig.java`
+
+Tests:
+- `aether/aether-deployment/.../fsm/ReducerAggregatorGateTest.java`
+- `aether/aether-deployment/.../fsm/ClusterMembershipReducerTest.java`
+- `aether/aether-deployment/.../fsm/MembershipFsmOperatorWriteTest.java`
+- `aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh`
+- `aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh`
+- `aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh`
+
+Spec:
+- `aether/docs/specs/membership-architecture-spec.md`
+
+---
+
+## Next-session resume sequence (UPDATED with §16 findings)
 
 1. **Read the §16 reconciliation agent's report** at:
    ```
