@@ -333,7 +333,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     private boolean acceptPingFencing(ClusterSyncPing ping) {
         var currentTerm = observedRabiaTerm.get();
-        if (ping.rabiaTerm() <currentTerm) {return false;}
+        if (ping.rabiaTerm() < currentTerm) {return false;}
         if (ping.rabiaTerm() > currentTerm) {observedRabiaTerm.set(ping.rabiaTerm());}
         return true;
     }

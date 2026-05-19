@@ -128,7 +128,7 @@ public final class SelfDrainCoordinator {
     }
 
     private void routeOnVisibility(int visible, int threshold) {
-        if (visible <threshold) {
+        if (visible < threshold) {
             recordBelowQuorum(visible, threshold);
         } else {
             recoverAboveQuorum();
@@ -170,7 +170,7 @@ public final class SelfDrainCoordinator {
         var nowMs = System.currentTimeMillis();
         var prev = firstBelowQuorumMs.get();
 
-        if (prev <0) {
+        if (prev < 0) {
             firstBelowQuorumMs.compareAndSet(prev, nowMs);
             log.info("Self-drain: visible={} below quorum={} on {} — starting debounce window {}ms",
                      visible,
