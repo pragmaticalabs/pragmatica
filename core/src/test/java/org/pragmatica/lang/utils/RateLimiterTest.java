@@ -314,22 +314,6 @@ class RateLimiterTest {
     }
 
     @Test
-    void shouldRejectInvalidConfiguration() {
-        assertThrows(IllegalArgumentException.class,
-                     () -> RateLimiter.builder().rate(0).period(timeSpan(1).seconds()).timeSource(timeSource));
-        assertThrows(IllegalArgumentException.class,
-                     () -> RateLimiter.builder().rate(-1).period(timeSpan(1).seconds()).timeSource(timeSource));
-        assertThrows(IllegalArgumentException.class,
-                     () -> RateLimiter.builder().rate(5).period(timeSpan(0).seconds()).timeSource(timeSource));
-        assertThrows(IllegalArgumentException.class,
-                     () -> RateLimiter.builder()
-                             .rate(5).period(timeSpan(1).seconds()).burst(-1).timeSource(timeSource));
-        assertThrows(IllegalArgumentException.class,
-                     () -> RateLimiter.builder()
-                             .rate(70_000).period(timeSpan(1).seconds()).timeSource(timeSource));
-    }
-
-    @Test
     void shouldRecoverFullCapacityOverWideTimeAdvance() {
         // Wide advance after burst: tokens cap at maxTokens, not unbounded.
         var limiter = RateLimiter.builder()

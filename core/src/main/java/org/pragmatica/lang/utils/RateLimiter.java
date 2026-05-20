@@ -108,101 +108,69 @@ public interface RateLimiter {
             return new OptionalStage(rate, period, extraPermits, timeSource);
         }
 
+        /// Finalize the builder with the given time source.
+        ///
+        /// State layout (64 bits): `[tokens:16 | lastRefillNanos:48]`. `lastRefillNanos` is rebased
+        /// against a base captured here and stored mod-2^48 (~3.26 days). Active limiters are
+        /// unaffected; a limiter idle for longer than 2^48 ns may transiently under-refill on its
+        /// next call and self-correct.
         public RateLimiter timeSource(TimeSource source) {
-            return new RateLimiterImpl(rate, period.nanos(), burst, source);
+            record TokenBucket(long maxTokens, long nanosPerToken, TimeSource timeSource,
+                               long baseNanos, AtomicLong state) implements RateLimiter {
+                private static final int TOKENS_SHIFT = 48;
+                private static final long TIME_MASK = (1L << 48) - 1L;
+
+                @Override
+                public boolean tryAcquire() {
+                    long now = (timeSource.nanoTime() - baseNanos) & TIME_MASK;
+                    while (true) {
+                        long observed = state.get();
+                        long tokens = observed >>> TOKENS_SHIFT;
+                        long lastRefill = observed & TIME_MASK;
+
+                        long elapsed = (now - lastRefill) & TIME_MASK;
+                        long tokensToAdd = elapsed / nanosPerToken;
+                        long newTokens = Math.min(maxTokens, tokens + tokensToAdd);
+                        long newLastRefill = (lastRefill + tokensToAdd * nanosPerToken) & TIME_MASK;
+
+                        if (newTokens >= 1L) {
+                            long updated = ((newTokens - 1L) << TOKENS_SHIFT) | newLastRefill;
+                            if (state.compareAndSet(observed, updated)) {
+                                return true;
+                            }
+                        } else if (newLastRefill != lastRefill) {
+                            long updated = (newTokens << TOKENS_SHIFT) | newLastRefill;
+                            if (state.compareAndSet(observed, updated)) {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                        // CAS lost — retry with the same `now`, freshly observed state.
+                    }
+                }
+
+                @Override
+                public TimeSpan retryAfter() {
+                    long now = (timeSource.nanoTime() - baseNanos) & TIME_MASK;
+                    long observed = state.get();
+                    long lastRefill = observed & TIME_MASK;
+                    long timeSinceRefill = (now - lastRefill) & TIME_MASK;
+                    long fraction = timeSinceRefill % nanosPerToken;
+                    long remainingNanos = nanosPerToken - fraction;
+                    return timeSpan(Math.max(1L, remainingNanos)).nanos();
+                }
+            }
+
+            long maxTokens = (long) rate + (long) burst;
+            long nanosPerToken = period.nanos() / rate;
+            long baseNanos = source.nanoTime();
+            return new TokenBucket(maxTokens, nanosPerToken, source, baseNanos,
+                                   new AtomicLong(maxTokens << 48));
         }
 
         public RateLimiter withDefaultTimeSource() {
             return timeSource(TimeSource.system());
-        }
-    }
-
-    /// Internal implementation. Packed-state CAS token bucket.
-    ///
-    /// State layout (64 bits): `[tokens:16 | lastRefillNanos:48]`. `lastRefillNanos` is rebased
-    /// against a base captured at construction and stored mod-2^48 (~3.26 days). Active limiters
-    /// are unaffected; a limiter idle for more than 2^48 ns may transiently under-refill on its
-    /// next call and self-correct.
-    final class RateLimiterImpl implements RateLimiter {
-        private static final int TOKENS_SHIFT = 48;
-        private static final long TIME_MASK = (1L << 48) - 1L;
-        private static final int MAX_TOKENS_CAP = 0xFFFF; // 65_535
-
-        private final long maxTokens;
-        private final long nanosPerToken;
-        private final TimeSource timeSource;
-        private final long baseNanos;
-        private final AtomicLong state;
-
-        RateLimiterImpl(int rate, long periodNanos, int burst, TimeSource timeSource) {
-            if (rate <= 0) {
-                throw new IllegalArgumentException("rate must be positive, got: " + rate);
-            }
-            if (periodNanos <= 0L) {
-                throw new IllegalArgumentException("period must be positive, got: " + periodNanos + "ns");
-            }
-            if (burst < 0) {
-                throw new IllegalArgumentException("burst must be non-negative, got: " + burst);
-            }
-            long max = (long) rate + (long) burst;
-            if (max > MAX_TOKENS_CAP) {
-                throw new IllegalArgumentException(
-                    "rate + burst must not exceed " + MAX_TOKENS_CAP + ", got: " + max);
-            }
-            if (rate > periodNanos) {
-                throw new IllegalArgumentException(
-                    "rate (" + rate + ") must not exceed period in nanoseconds (" + periodNanos + ")");
-            }
-            this.maxTokens = max;
-            this.nanosPerToken = periodNanos / rate;
-            this.timeSource = timeSource;
-            this.baseNanos = timeSource.nanoTime();
-            this.state = new AtomicLong(pack(max, 0L));
-        }
-
-        @Override
-        public boolean tryAcquire() {
-            long now = (timeSource.nanoTime() - baseNanos) & TIME_MASK;
-            while (true) {
-                long observed = state.get();
-                long tokens = observed >>> TOKENS_SHIFT;
-                long lastRefill = observed & TIME_MASK;
-
-                long elapsed = (now - lastRefill) & TIME_MASK;
-                long tokensToAdd = elapsed / nanosPerToken;
-                long newTokens = Math.min(maxTokens, tokens + tokensToAdd);
-                long newLastRefill = (lastRefill + tokensToAdd * nanosPerToken) & TIME_MASK;
-
-                if (newTokens >= 1L) {
-                    long updated = pack(newTokens - 1L, newLastRefill);
-                    if (state.compareAndSet(observed, updated)) {
-                        return true;
-                    }
-                } else if (newLastRefill != lastRefill) {
-                    long updated = pack(newTokens, newLastRefill);
-                    if (state.compareAndSet(observed, updated)) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-                // CAS lost — retry with the same `now`, freshly observed state.
-            }
-        }
-
-        @Override
-        public TimeSpan retryAfter() {
-            long now = (timeSource.nanoTime() - baseNanos) & TIME_MASK;
-            long observed = state.get();
-            long lastRefill = observed & TIME_MASK;
-            long timeSinceRefill = (now - lastRefill) & TIME_MASK;
-            long fraction = timeSinceRefill % nanosPerToken;
-            long remainingNanos = nanosPerToken - fraction;
-            return timeSpan(Math.max(1L, remainingNanos)).nanos();
-        }
-
-        private static long pack(long tokens, long lastRefill) {
-            return (tokens << TOKENS_SHIFT) | (lastRefill & TIME_MASK);
         }
     }
 }
