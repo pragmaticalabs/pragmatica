@@ -136,10 +136,17 @@ Get overall cluster status including uptime, cluster info, slice count, and metr
   },
   "nodeId": "node-1",
   "status": "running",
+  "runtimeState": "ACTIVE",
+  "lifecycleState": "ON_DUTY",
+  "clusterPhase": "NORMAL",
   "isLeader": true,
   "leader": "node-1"
 }
 ```
+
+`runtimeState` carries the JVM/process state machine (`NodeState`: `STARTING` / `JOINING` / `ACTIVE` / `DRAINING` / `STOPPED`) — "is the process up and serving".
+
+`lifecycleState` carries the cluster-level FSM intent from KV-Store (`NodeLifecycleState`: `JOINING` / `ON_DUTY` / `DRAINING` / `DECOMMISSIONED` / `FAILED_DRAIN`; `SHUTTING_DOWN` is normalized to `DRAINING`). Empty string when no KV entry exists yet (cold-start transient).
 
 ### GET /api/health
 

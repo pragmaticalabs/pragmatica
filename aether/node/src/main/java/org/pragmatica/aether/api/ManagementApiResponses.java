@@ -23,6 +23,7 @@ public sealed interface ManagementApiResponses {
                           MetricsSummary metrics,
                           String nodeId,
                           String status,
+                          String runtimeState,
                           String lifecycleState,
                           String clusterPhase,
                           boolean isLeader,

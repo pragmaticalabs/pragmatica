@@ -140,13 +140,18 @@ public final class StatusRoutes implements RouteSource {
                                   metrics,
                                   node.self().id(),
                                   "running",
-                                  // NOTE: this field is named `lifecycleState` for backward compat but actually
-                                  // carries `NodeState` (in-memory JVM runtime: STARTING/JOINING/ACTIVE/DRAINING/STOPPED),
-                                  // NOT the FSM-level `NodeLifecycleState`. For the FSM lifecycle of any node
-                                  // (including self), read `cluster.nodes[].kvState` further down in this response,
-                                  // or query `/api/nodes/lifecycle/{id}`. Renaming this field is a separate cleanup.
+                                  // runtimeState — JVM/process-level state from the in-memory lifecycle
+                                  // state machine (NodeState: STARTING/JOINING/ACTIVE/DRAINING/STOPPED).
+                                  // Describes "is the process up and serving"; orthogonal to the FSM intent
+                                  // captured in `lifecycleState` below.
                                   node.nodeLifecycle().currentState()
                                                     .name(),
+                                  // lifecycleState — cluster-level FSM intent from KV-Store
+                                  // (NodeLifecycleState: JOINING/ON_DUTY/DRAINING/DECOMMISSIONED/FAILED_DRAIN).
+                                  // SHUTTING_DOWN is normalized to DRAINING per state-authority spec.
+                                  // Empty string when no KV entry exists yet (cold-start transient window).
+                                  // Mirrors `cluster.nodes[selfId].kvState` for top-level ergonomic access.
+                                  kvStateMap.getOrDefault(selfId, ""),
                                   readClusterPhase(node),
                                   node.isLeader(),
                                   leaderId,
