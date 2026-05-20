@@ -108,7 +108,20 @@ public final class StatusRoutes implements RouteSource {
         // Layer 5.
         var reachabilitySnapshot = node.metricsCollector().lastReachabilitySnapshot();
         var selfId = node.self();
-        var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view, nodeId, leader, reachabilitySnapshot, selfId))
+        // Per-peer KV state pre-fetch — authoritative FSM intent, exposed alongside the derived view.
+        // O(N) read from kvStore for the size of the lifecycle table; cheap for cluster sizes typical of RC1.
+        // TODO (B5, RC2): if cluster size grows past hundreds, add an indexed accessor — current
+        // `forEach` is intentionally simple; see aether/docs/internal/cli-gap-audit.md §B5.
+        var kvStateMap = new java.util.HashMap<NodeId, String>();
+        node.kvStore().forEach(org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey.class,
+                               org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue.class,
+                               (key, value) -> kvStateMap.put(key.nodeId(), externalStateName(value.state())));
+        var nodeInfos = allNodeIds.stream().map(nodeId -> toNodeInfo(view,
+                                                                     nodeId,
+                                                                     leader,
+                                                                     reachabilitySnapshot,
+                                                                     selfId,
+                                                                     kvStateMap.getOrDefault(nodeId, "")))
                                             .toList();
         var quorate = leader.isPresent() && nodeInfos.size() >= quorumOf(nodeInfos.size());
         var cluster = new ClusterInfo(nodeInfos.size(), leaderId, quorate, nodeInfos);
@@ -133,23 +146,35 @@ public final class StatusRoutes implements RouteSource {
     }
 
     private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader,
-                                       Option<AggregatedReachabilitySnapshot> reachabilitySnapshot, NodeId selfId) {
+                                       Option<AggregatedReachabilitySnapshot> reachabilitySnapshot, NodeId selfId,
+                                       String kvState) {
         var isLeader = leader.map(l -> l.equals(nodeId)).or(false);
         var status = view.statusOf(nodeId);
-        // Cluster-canonical reachability: ON_DUTY in MembershipView but UNREACHABLE in
-        // the leader-broadcast aggregated snapshot means a quorum of observers has lost
-        // transport to this peer — downgrade to UNKNOWN so operator-facing reads (CLI,
-        // dashboard, integration test harness) see the cluster's actual state rather
-        // than the SWIM-lagged view. Cold-start fallback (snapshot Option.none()): no
-        // downgrade — trust KV directly.
+        // kvState — authoritative FSM state (KV-direct), independent of SWIM / reachability overlay.
+        // Empty string when no KV entry exists (peer known only via SWIM in the JOINING/transient window).
+        // See aether/docs/specs/state-authority.md for the kvState vs derivedStatus contract.
+        // derivedStatus — operator-visible projection of KV ∪ SWIM ∪ aggregated reachability ∪ quorum.
+        // ROUTE-LAYER DOWNGRADE (intentional, belt-and-suspenders on top of MembershipView): if KV says
+        // ON_DUTY but a quorum of observers reports UNREACHABLE in the latest aggregated snapshot, we show
+        // UNKNOWN here so operator dashboards stop trusting a peer the cluster has consensus-lost. The FSM
+        // hasn't yet written a transition (DRAINING/DECOMMISSIONED), so kvState above still reflects
+        // ON_DUTY — the divergence is intentional and the two fields disambiguate.
         var transportLag = status == MembershipView.MemberStatus.ON_DUTY
                            && !nodeId.equals(selfId)
                            && reachabilitySnapshot.fold(() -> false, s -> !s.isReachable(nodeId));
         if (transportLag) {
-            return new NodeInfo(nodeId.id(), isLeader, "UNKNOWN");
+            return new NodeInfo(nodeId.id(), isLeader, kvState, "UNKNOWN");
         }
-        var lifecycleState = status == MembershipView.MemberStatus.UNTRACKED ? "UNKNOWN" : status.name();
-        return new NodeInfo(nodeId.id(), isLeader, lifecycleState);
+        var derivedStatus = status == MembershipView.MemberStatus.UNTRACKED ? "UNKNOWN" : status.name();
+        return new NodeInfo(nodeId.id(), isLeader, kvState, derivedStatus);
+    }
+
+    /// Collapse `SHUTTING_DOWN` to `DRAINING` for external viewers. Mirrors the normalization in
+    /// `NodeLifecycleRoutes.externalStateName`. See `aether/docs/specs/state-authority.md`.
+    private static String externalStateName(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState state) {
+        return state == org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.SHUTTING_DOWN
+              ? org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.DRAINING.name()
+              : state.name();
     }
 
     /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the

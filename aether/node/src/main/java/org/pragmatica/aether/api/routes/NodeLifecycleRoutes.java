@@ -95,32 +95,35 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// retain their consensus timestamp). For SWIM-only entries (peers with no KV record),
     /// `updatedAt` is 0 — they are derived from the live SWIM view and have no consensus-
     /// audit anchor yet.
+    /// List form is KV-direct (matches the single-id form). Authoritative FSM state only;
+    /// MembershipView's SWIM/reachability overlay is exposed via `/api/nodes/status` instead.
+    /// See `aether/docs/specs/state-authority.md` for the two-endpoint contract.
     private List<LifecycleEntry> getAllLifecycleStates() {
         var entries = new ArrayList<LifecycleEntry>();
-        nodeSupplier.get().membershipView().snapshot().forEach((peer, member) -> appendIfTracked(entries, peer, member));
+        nodeSupplier.get().kvStore().forEach(NodeLifecycleKey.class,
+                                              NodeLifecycleValue.class,
+                                              (key, value) -> entries.add(toLifecycleEntry(key, value)));
         return entries;
-    }
-
-    private static void appendIfTracked(List<LifecycleEntry> entries,
-                                          NodeId peer,
-                                          MembershipView.MemberView member) {
-        if (member.status() == MembershipView.MemberStatus.UNTRACKED) {
-            return;
-        }
-        var updatedAt = member.lifecycle().map(NodeLifecycleValue::updatedAt).or(0L);
-        entries.add(new LifecycleEntry(peer.id(), member.status().name(), updatedAt));
     }
 
     private static LifecycleEntry toLifecycleEntry(NodeLifecycleKey key, NodeLifecycleValue value) {
         return new LifecycleEntry(key.nodeId().id(),
-                                  value.state().name(),
+                                  externalStateName(value.state()),
                                   value.updatedAt());
     }
 
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
         return resolveNodeLifecycle(nodeIdStr).map(value -> new LifecycleEntry(nodeIdStr,
-                                                                               value.state().name(),
+                                                                               externalStateName(value.state()),
                                                                                value.updatedAt()));
+    }
+
+    /// Collapse `SHUTTING_DOWN` to `DRAINING` for external viewers. Internal FSM/`NodeDeploymentManager`
+    /// still distinguish them (the former triggers self-shutdown), but operators see them as the same
+    /// "node is going away" state. See `cluster-membership-fsm-spec.md` §R6 — the FSM no longer emits
+    /// `SHUTTING_DOWN`, only the `NODE_SHUTDOWN` API action writes it transiently before halt.
+    private static String externalStateName(NodeLifecycleState state) {
+        return state == NodeLifecycleState.SHUTTING_DOWN ? NodeLifecycleState.DRAINING.name() : state.name();
     }
 
     private Promise<TransitionResult> drainNode(String nodeIdStr) {

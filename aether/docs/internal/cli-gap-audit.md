@@ -122,17 +122,30 @@ Resolved in commit (Phase B.1 — error envelope standardization). The framework
 
 **Verification:** 736 tests pass (399 node + 337 CLI) post-refactor. Per-route shapes preserved via the funnel; only the wire envelope changed.
 
-### #24 — State authority: MembershipView projection vs KV-direct (decision pending)
+### #24 — State authority: MembershipView projection vs KV-direct lifecycle (LANDED)
 
-The handover doc for session 2026-05-19c flagged this. Currently:
-- `/api/nodes/status` (was `/api/status`) returns `cluster.nodes[]` derived from **MembershipView** (a projection over SWIM ∪ KV with cluster-canonical reachability downgrade). Known projection lag.
-- `/api/nodes/lifecycle` and `/api/nodes/lifecycle/{id}` read **KV-direct** (canonical FSM state, no lag).
+Resolved in commit (Phase B.2 — state authority cleanup). Original framing of "fix the projection OR demote it" was reframed by deeper investigation: **both endpoints are needed by design**; the real issues were silent inconsistencies and missing documentation.
 
-Tests bypass `/api/nodes/status` to read `/api/nodes/lifecycle/{id}` directly because of the lag — meaning the operator-visible API isn't authoritative.
+**Foundational spec**: `aether/docs/specs/state-authority.md` — declares the two-endpoint contract.
 
-**Decision needed**: either fix the MembershipView projection lag so `/api/nodes/status` is authoritative, or formally demote it ("eventually consistent operator view, use `/api/nodes/lifecycle/{id}` for transition gating") and document.
+**What landed**:
+- **F1**: `/api/nodes/lifecycle` (mass form) switched from MembershipView-derived to KV-direct, matching the `/{id}` single form. Both list and get share authority now.
+- **F2**: `NodeInfo` record gained a `kvState` field; `lifecycleState` renamed to `derivedStatus`. Wire-format break (RC1, acceptable). Operators can now compare FSM intent (kvState) against the derived operator view (derivedStatus) side-by-side.
+- **F3**: `StatusRoutes.toNodeInfo` route-layer reachability downgrade documented inline as belt-and-suspenders on top of MembershipView. Intentionally stricter — operator dashboards stop trusting a peer the aggregator has consensus-lost even before the FSM commits a transition.
+- **F4**: `SHUTTING_DOWN` collapsed to `DRAINING` at both external API endpoints via `externalStateName`. Internal FSM and `NodeDeploymentManager` still distinguish (the transient `SHUTTING_DOWN` write triggers self-shutdown), but the operator-visible API exposes them as the same "node going away" state. Documented in `NodeLifecycleRoutes.externalStateName` and the spec doc.
+- **F5**: Spec doc `state-authority.md` published. Operator-facing contract for which endpoint is authoritative for what.
+- **B5** (indexing): TODO comment added at `StatusRoutes.java` referring to RC2 follow-up.
 
-This is architectural, not a path rename. Belongs in RC1 per the "anything affecting foundation → RC1" rule.
+**Test infra updated**:
+- `lib/cluster.sh` helpers `node_lifecycle_state` and `pick_non_leader` switched from `lifecycleState` → `derivedStatus` field name.
+- Comment narrative updated to describe the new two-field shape.
+
+**Future hardening (separate follow-ups noted in spec doc)**:
+- `/api/cluster/status` `ClusterStatusNodeInfo.lifecycleState` may warrant the same kvState/derivedStatus split. Different endpoint family.
+- Bulk lifecycle filter endpoints (`?state=ON_DUTY`) — CLI ergonomic gap.
+- B5 indexing for large clusters — RC2 concern.
+
+**Verification**: tests pass at 736+/0 (existing suite); new contract verified in `lib/cluster.sh` test helpers using `derivedStatus` field.
 
 ### CLI gaps still open (not addressed in Phase A)
 

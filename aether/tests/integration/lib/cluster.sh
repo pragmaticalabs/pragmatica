@@ -136,7 +136,7 @@ cluster_quorate() {
 node_lifecycle_state() {
     local target_node="$1"
     aether_json status 2>/dev/null \
-        | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"'"$target_node"'"[^}]*"lifecycleState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"'"$target_node"'"[^}]*"derivedStatus"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
         | head -1
 }
 
@@ -188,10 +188,10 @@ mgmt_entry_point_node() {
 # docker/remote runs since the mgmt-gateway sidecar removed the need for
 # client-side node pinning). Fails loudly if no candidate remains.
 #
-# Source of truth: `/api/nodes/status` cluster.nodes[] filtered to lifecycleState=ON_DUTY.
+# Source of truth: `/api/nodes/status` cluster.nodes[] filtered to derivedStatus=ON_DUTY.
 # H-series MembershipView derives ON_DUTY at read-time from SWIM health, so
 # /api/nodes/lifecycle no longer carries explicit ON_DUTY atoms. /api/nodes/status
-# reflects the same derived view and carries per-node id + lifecycleState.
+# reflects the same derived view and carries per-node id + kvState + derivedStatus.
 # Nodes that were drained / killed / decommissioned are NOT valid kill targets:
 #  (a) their derived state will be DECOMMISSIONED or UNKNOWN (not ON_DUTY),
 #  (b) the surviving cluster has already removed them from its SWIM members map,
@@ -235,15 +235,15 @@ pick_non_leader() {
         leader="$derived_leader"
     fi
 
-    # Extract node IDs with lifecycleState=ON_DUTY from /api/nodes/status cluster.nodes[].
-    # NodeInfo JSON field order (Jackson record serialization): id, isLeader, lifecycleState.
+    # Extract node IDs with derivedStatus=ON_DUTY from /api/nodes/status cluster.nodes[].
+    # NodeInfo JSON field order (Jackson record serialization): id, isLeader, kvState, derivedStatus.
     # We split on '{' so each token is one candidate object, keep only tokens that carry
-    # "lifecycleState":"ON_DUTY", then extract the "id" value with sed.
+    # "derivedStatus":"ON_DUTY", then extract the "id" value with sed.
     # BSD awk (macOS default) lacks 3-arg match(), so we use grep+sed throughout.
     local current_members
     current_members=$(printf '%s' "$status_payload" \
         | tr '{' '\n' \
-        | grep '"lifecycleState"[[:space:]]*:[[:space:]]*"ON_DUTY"' \
+        | grep '"derivedStatus"[[:space:]]*:[[:space:]]*"ON_DUTY"' \
         | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | sed 's/"id"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
     if [ -z "$current_members" ]; then
@@ -265,7 +265,7 @@ pick_non_leader() {
         if [ "$candidate" = "$leader" ]; then continue; fi
         if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
         # Docker-mode liveness guard.
-        # /api/nodes/status reports `lifecycleState=ON_DUTY` from the leader's derived
+        # /api/nodes/status reports `derivedStatus=ON_DUTY` from the leader's derived
         # MembershipView. A node killed in a previous test file may still appear
         # ON_DUTY across the boundary into the next file if (a) CTM has not
         # tombstoned its slot yet, (b) MembershipView has not propagated the

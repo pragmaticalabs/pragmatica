@@ -32,7 +32,7 @@ public sealed interface ManagementApiResponses {
 
     record ClusterInfo(int nodeCount, String leaderId, boolean quorate, List<NodeInfo> nodes){}
 
-    record NodeInfo(String id, boolean isLeader, String lifecycleState){}
+    record NodeInfo(String id, boolean isLeader, String kvState, String derivedStatus){}
 
     record MetricsSummary(double requestsPerSecond, double successRate, double avgLatencyMs){}
 
