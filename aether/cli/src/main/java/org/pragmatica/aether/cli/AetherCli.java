@@ -829,19 +829,54 @@ import static org.pragmatica.lang.Option.some;
 
             @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) private Integer pushAllArtifacts(String artifactId,
                                                                                                List<ArtifactDescriptor> artifacts) {
-                System.out.println("Pushing " + artifactId + " blueprint (" + artifacts.size() + " artifacts):");
+                var options = artifactParent.parent.outputOptions();
+                var jsonMode = options.format() == OutputFormat.JSON;
+                if (!jsonMode) {System.out.println("Pushing " + artifactId + " blueprint (" + artifacts.size() + " artifacts):");}
+                var statuses = new ArrayList<String>();
                 for (var artifact : artifacts) {
-                    var result = pushSingleArtifact(artifact);
-                    if (result != ExitCode.SUCCESS) {return result;}
+                    var outcome = pushSingleArtifact(artifact, jsonMode);
+                    if (outcome.exitCode() != ExitCode.SUCCESS) {return outcome.exitCode();}
+                    statuses.add(outcome.status());
                 }
-                System.out.println("All artifacts pushed successfully.");
+                if (jsonMode) {emitBulkPushJson(artifactId, artifacts, statuses);} else {System.out.println("All artifacts pushed successfully.");}
                 return ExitCode.SUCCESS;
             }
 
-            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"}) private Integer pushSingleArtifact(ArtifactDescriptor descriptor) {
+            private record PushOutcome(int exitCode, String status, String response){}
+
+            private void emitBulkPushJson(String artifactId, List<ArtifactDescriptor> artifacts, List<String> statuses) {
+                var aggregate = aggregateStatus(statuses);
+                var sb = new StringBuilder(256);
+                sb.append("{\"status\":\"").append(aggregate).append("\",")
+                  .append("\"blueprint\":\"").append(escapeJsonValue(artifactId)).append("\",")
+                  .append("\"artifacts\":[");
+                for (int i = 0;i <artifacts.size();i++) {
+                    if (i > 0) {sb.append(',');}
+                    sb.append("{\"coords\":\"").append(escapeJsonValue(artifacts.get(i).label())).append("\",")
+                      .append("\"status\":\"").append(statuses.get(i)).append("\"}");
+                }
+                sb.append("]}");
+                System.out.println(sb);
+            }
+
+            /// Aggregate per-artifact statuses into a single top-level field that
+            /// integration scripts can read with a single `jq '.status'` lookup:
+            ///   - all `uploaded`         → `"uploaded"`
+            ///   - all `already-present`  → `"already-present"`
+            ///   - mixed                  → `"mixed"`
+            /// `mixed` still counts as success (exit code 0) — every individual artifact
+            /// either uploaded or was already present.
+            private static String aggregateStatus(List<String> statuses) {
+                if (statuses.isEmpty()) {return "uploaded";}
+                var first = statuses.getFirst();
+                for (var s : statuses) {if (!s.equals(first)) {return "mixed";}}
+                return first;
+            }
+
+            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"}) private PushOutcome pushSingleArtifact(ArtifactDescriptor descriptor, boolean jsonMode) {
                 if (!Files.exists(descriptor.localPath())) {
                     System.err.println("  x " + descriptor.label() + " (not found: " + descriptor.localPath() + ")");
-                    return ExitCode.ERROR;
+                    return new PushOutcome(ExitCode.ERROR, "missing", "");
                 }
                 try {
                     var content = Files.readAllBytes(descriptor.localPath());
@@ -854,14 +889,40 @@ import static org.pragmatica.lang.Option.some;
                     var errorCode = OutputFormatter.checkResponseError(response,
                                                                        artifactParent.parent.outputOptions(),
                                                                        "Failed to push");
-                    if (errorCode >= 0) {return errorCode;}
-                    var sizeKb = content.length / 1024;
-                    System.out.println("  + " + descriptor.label() + " (" + sizeKb + "KB)");
-                    return ExitCode.SUCCESS;
+                    if (errorCode >= 0) {return new PushOutcome(errorCode, "failed", response);}
+                    var status = parsePushStatus(response);
+                    if (!jsonMode) {
+                        var sizeKb = content.length / 1024;
+                        var suffix = status.equals("already-present")
+                                ? " (already present)"
+                                : "";
+                        System.out.println("  + " + descriptor.label() + " (" + sizeKb + "KB)" + suffix);
+                    }
+                    return new PushOutcome(ExitCode.SUCCESS, status, response);
                 } catch (IOException e) {
                     System.err.println("  x " + descriptor.label() + " (error: " + e.getMessage() + ")");
-                    return ExitCode.ERROR;
+                    return new PushOutcome(ExitCode.ERROR, "io-error", "");
                 }
+            }
+
+            /// Extract the `status` field from the server's idempotent-PUT JSON body.
+            /// Falls back to `"uploaded"` if the body cannot be parsed (defensive — the
+            /// server contract is fixed, so this only triggers if a buggy server replies
+            /// with a non-JSON 200 OK).
+            private static String parsePushStatus(String response) {
+                if (response == null || response.isBlank()) {return "uploaded";}
+                var trimmed = response.trim();
+                var marker = "\"status\"";
+                var idx = trimmed.indexOf(marker);
+                if (idx <0) {return "uploaded";}
+                var rest = trimmed.substring(idx + marker.length());
+                var colon = rest.indexOf(':');
+                if (colon <0) {return "uploaded";}
+                var afterColon = rest.substring(colon + 1).stripLeading();
+                if (afterColon.isEmpty() || afterColon.charAt(0) != '"') {return "uploaded";}
+                var endQuote = afterColon.indexOf('"', 1);
+                if (endQuote <0) {return "uploaded";}
+                return afterColon.substring(1, endQuote);
             }
 
             @SuppressWarnings("JBCT-SEQ-01") private static Result<String> readBlueprintToml(Path jarPath) {

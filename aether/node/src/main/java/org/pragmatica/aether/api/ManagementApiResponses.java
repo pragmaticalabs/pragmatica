@@ -442,4 +442,14 @@ public sealed interface ManagementApiResponses {
                                 String sha1,
                                 long deployedAt,
                                 boolean isDeployed){}
+
+    /// Wire shape for the idempotent artifact PUT response (`PUT /repository/...`).
+    /// `status` is `"uploaded"` on a fresh upload, `"already-present"` when the
+    /// artifact was already in the store (200 OK in both cases). `coords` is the
+    /// canonical `group:artifact:version` triple; `size`/`md5`/`sha1` reflect the
+    /// persisted artifact (recomputed on upload, read from KV metadata on duplicate).
+    /// The record lives here for documentation/test purposes; the actual JSON is
+    /// rendered inline in `MavenProtocolHandlerImpl.renderPushJson` to avoid a
+    /// Jackson dependency at the artifact-repo layer.
+    record ArtifactPushResponse(String status, String coords, long size, String md5, String sha1){}
 }

@@ -33,6 +33,10 @@ public interface MavenProtocolHandler {
             return new MavenResponse(200, contentType, content);
         }
 
+        public static MavenResponse json(byte[] body) {
+            return new MavenResponse(200, "application/json", body);
+        }
+
         public static MavenResponse created() {
             return new MavenResponse(201, "text/plain", new byte[0]);
         }
@@ -134,13 +138,94 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
 
     private Promise<MavenResponse> handlePutParsed(ParsedPath parsed, byte[] content) {
         return switch (parsed){
-            case ParsedPath.ArtifactPath ap when ap.extension().equals("jar") -> store.deploy(ap.artifact(),
-                                                                                              content).map(_ -> MavenResponse.created())
-                                                                                             .recover(cause -> MavenResponse.serverError(cause.message()));
+            case ParsedPath.ArtifactPath ap when ap.extension().equals("jar") -> handlePutJar(ap, content);
             case ParsedPath.ArtifactPath _ -> Promise.success(MavenResponse.created());
             case ParsedPath.ChecksumPath _ -> Promise.success(MavenResponse.created());
             case ParsedPath.MetadataPath _ -> Promise.success(MavenResponse.created());
         };
+    }
+
+    /// Idempotent PUT semantics: if the artifact already exists in the store, return
+    /// `{"status":"already-present", ...}` with the existing size/md5/sha1 from KV metadata.
+    /// Otherwise call `store.deploy` and return `{"status":"uploaded", ...}` with the
+    /// metrics computed from the deploy result. Both paths emit HTTP 200 OK with a
+    /// JSON body so clients can rely on the exit code + status field for idempotence
+    /// instead of grepping error strings.
+    ///
+    /// Single DHT round-trip for the existence check: `metadata()` returns
+    /// `Option.none()` when the meta key is absent, otherwise the parsed record. We
+    /// deliberately do NOT call `resolveWithMetadata` here — that reads all chunks and
+    /// verifies SHA1 integrity, which is needed for GET semantics but is wasteful for
+    /// a duplicate-PUT response. Race: two concurrent PUTs both see `none` and both
+    /// call `deploy`; the second overwrites the metadata key. This is acceptable —
+    /// each client's "uploaded" semantics still hold (the PUT they sent did write
+    /// content to the store) and `ArtifactStore.deploy` is idempotent at the chunk
+    /// level (content-addressed BlockIds).
+    private Promise<MavenResponse> handlePutJar(ParsedPath.ArtifactPath ap, byte[] content) {
+        return store.metadata(ap.artifact())
+                    .flatMap(metaOpt -> metaOpt.map(meta -> buildAlreadyPresentResponse(ap.artifact(), meta))
+                                              .or(() -> deployAndBuildResponse(ap.artifact(), content)))
+                    .recover(cause -> MavenResponse.serverError(cause.message()));
+    }
+
+    private Promise<MavenResponse> buildAlreadyPresentResponse(Artifact artifact, ArtifactStore.ArtifactMetadata meta) {
+        return Promise.success(MavenResponse.json(renderPushJson("already-present",
+                                                                 artifact,
+                                                                 meta.size(),
+                                                                 meta.md5(),
+                                                                 meta.sha1())));
+    }
+
+    private Promise<MavenResponse> deployAndBuildResponse(Artifact artifact, byte[] content) {
+        return store.deploy(artifact, content)
+                    .map(result -> MavenResponse.json(renderPushJson("uploaded",
+                                                                     result.artifact(),
+                                                                     result.size(),
+                                                                     result.md5(),
+                                                                     result.sha1())));
+    }
+
+    /// Hand-rolled JSON renderer: the artifact-repo module deliberately has no Jackson
+    /// dependency (keeps the resource layer free of JSON-mapper transitive weight). The
+    /// fields are primitives + URL-safe strings (artifact coordinates, hex digests),
+    /// so escaping is limited to backslash and double-quote in the status/coords
+    /// values. If the JSON shape ever grows nested objects, promote this to a shared
+    /// serialization helper instead of expanding the inline writer.
+    private byte[] renderPushJson(String status, Artifact artifact, long size, String md5, String sha1) {
+        var sb = new StringBuilder(160);
+        sb.append('{');
+        appendJsonField(sb, "status", status);
+        sb.append(',');
+        appendJsonField(sb, "coords", artifact.asString());
+        sb.append(',');
+        sb.append("\"size\":").append(size);
+        sb.append(',');
+        appendJsonField(sb, "md5", md5);
+        sb.append(',');
+        appendJsonField(sb, "sha1", sha1);
+        sb.append('}');
+        return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void appendJsonField(StringBuilder sb, String name, String value) {
+        sb.append('"').append(name).append("\":\"").append(escapeJson(value)).append('"');
+    }
+
+    private static String escapeJson(String s) {
+        if (s == null) {return "";}
+        var sb = new StringBuilder(s.length() + 8);
+        for (int i = 0;i <s.length();i++) {
+            var c = s.charAt(i);
+            switch (c){
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     private Option<ParsedPath> parsePath(String path) {

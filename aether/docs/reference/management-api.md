@@ -2151,6 +2151,39 @@ Upload an artifact file to the repository. Maximum upload size: 64 MB.
 
 **Content-Type**: Binary content (e.g., `application/java-archive`).
 
+**Idempotent (RC1)**: this endpoint is idempotent. Both a fresh upload and a
+duplicate upload (where the artifact is already present in the store) return
+HTTP 200 OK with a JSON body. Clients can distinguish the two cases via the
+`status` field instead of grepping error strings or relying on a 4xx status.
+
+Fresh upload response:
+
+```json
+{
+  "status": "uploaded",
+  "coords": "org.example:my-slice:1.0.0",
+  "size": 524288,
+  "md5": "...",
+  "sha1": "..."
+}
+```
+
+Duplicate upload response (artifact already in store; size/md5/sha1 read from
+persisted metadata without re-reading the underlying chunks):
+
+```json
+{
+  "status": "already-present",
+  "coords": "org.example:my-slice:1.0.0",
+  "size": 524288,
+  "md5": "...",
+  "sha1": "..."
+}
+```
+
+Failure responses are unchanged: 4xx/5xx with the standard
+`application/problem+json` envelope.
+
 ### POST /repository/{groupPath}/{artifactId}/{version}/{filename}
 
 Alternative upload method (same behavior as PUT).

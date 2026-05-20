@@ -920,34 +920,59 @@ slices_target_total() {
 }
 
 push_blueprint() {
-    # Push a blueprint artifact, tolerating "already exists" responses and
-    # retrying transient leader-unavailable errors. Returns 0 on success or
-    # already-pushed-state; non-zero only on terminal failure. Previously the
-    # `2>/dev/null` here swallowed the actual stderr — combined with `set -e`
-    # in callers, this caused tests to abort silently mid `test_cluster_ready`
-    # without any indication of the root cause. Now stderr is captured to a
-    # tempfile and inspected; idempotent successes are surfaced as PASS.
+    # Push a blueprint artifact. The server-side PUT /repository/... endpoint is now
+    # idempotent (RC1): both fresh uploads and duplicates return HTTP 200 with a JSON
+    # body whose `status` field is "uploaded" or "already-present" — both count as
+    # success. This helper:
+    #   1. invokes `aether artifacts push --format json` so the CLI emits a
+    #      machine-readable summary on stdout;
+    #   2. validates the exit code (fail-closed on non-zero);
+    #   3. parses the top-level `.status` field via jq to confirm the response shape
+    #      and surface "mixed" / "already-present" outcomes in the test log;
+    #   4. retries on transient leader-unavailable signals captured from stderr.
+    # Returns 0 on either upload outcome, non-zero only on a real failure or an
+    # unparseable response (defence in depth — a misbehaving server that emits a
+    # 200 with a non-JSON body is treated as failure).
     local coords="$1"
     local attempts="${PUSH_BLUEPRINT_ATTEMPTS:-3}"
-    local errfile
-    errfile=$(mktemp)
     local i=1
     while [ "$i" -le "$attempts" ]; do
         log_info "Pushing blueprint artifacts: ${coords} (attempt ${i}/${attempts})" >&2
-        local out
-        if out=$(aether_failover artifacts push "$coords" 2>"$errfile"); then
-            printf '%s' "$out"
-            rm -f "$errfile"
-            return 0
+        local errfile
+        errfile=$(mktemp)
+        local out err rc
+        if out=$(aether_failover artifacts push --format json "$coords" 2>"$errfile"); then
+            rc=0
+        else
+            rc=$?
         fi
-        local rc=$?
-        local err
         err=$(cat "$errfile" 2>/dev/null || echo "")
-        # Idempotent: any "already exists" / 409 / "already pushed" signal counts as success.
-        if printf '%s%s' "$out" "$err" | grep -qiE 'already exists|already pushed|409|conflict|duplicate artifact'; then
-            log_info "push_blueprint ${coords}: artifact already present (idempotent success)" >&2
-            rm -f "$errfile"
-            return 0
+        rm -f "$errfile"
+        if [ "$rc" -eq 0 ]; then
+            # Parse the status field. Use jq when available; fall back to a grep
+            # extractor (no external dep) so the integration suite still works on
+            # minimal CI images. Either way, an unparseable response = failure.
+            local status
+            if command -v jq >/dev/null 2>&1; then
+                status=$(printf '%s' "$out" | jq -r '.status // empty' 2>/dev/null || echo "")
+            else
+                status=$(printf '%s' "$out" | grep -oE '"status"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | sed -E 's/.*"status"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+            fi
+            case "$status" in
+                uploaded|already-present|mixed)
+                    log_info "push_blueprint ${coords}: status=${status}" >&2
+                    printf '%s' "$out"
+                    return 0
+                    ;;
+                "")
+                    log_warn "push_blueprint ${coords}: CLI exited 0 but response had no parseable .status field. Body: $(printf '%s' "$out" | head -c 300)" >&2
+                    return 1
+                    ;;
+                *)
+                    log_warn "push_blueprint ${coords}: unexpected status='${status}'. Body: $(printf '%s' "$out" | head -c 300)" >&2
+                    return 1
+                    ;;
+            esac
         fi
         # Transient leader / not-yet-ready errors → retry.
         if printf '%s%s' "$out" "$err" | grep -qiE 'NotLeader|leader unavailable|503|temporarily|timeout|connection refused'; then
@@ -958,11 +983,9 @@ push_blueprint() {
         fi
         # Terminal failure: surface the stderr so the caller sees WHY the push failed.
         log_warn "push_blueprint ${coords}: failed with rc=${rc}: $(printf '%s' "$err" | head -c 300)" >&2
-        rm -f "$errfile"
         return "$rc"
     done
     log_warn "push_blueprint ${coords}: exhausted ${attempts} attempts" >&2
-    rm -f "$errfile"
     return 1
 }
 

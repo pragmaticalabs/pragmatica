@@ -64,6 +64,13 @@ public interface ArtifactStore {
     }
 
     Promise<Boolean> exists(Artifact artifact);
+    /// Fetch persisted metadata for an artifact WITHOUT reading or integrity-verifying
+    /// the underlying block contents. Returns `Option.none()` when no metadata key is
+    /// present in the DHT (artifact absent). Used by the idempotent PUT path where the
+    /// caller only needs size/hashes for the response body — paying the full
+    /// `resolveWithMetadata` cost (block fan-out + SHA1 verification) would defeat the
+    /// purpose of returning early on a duplicate upload.
+    Promise<Option<ArtifactMetadata>> metadata(Artifact artifact);
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
     Promise<Unit> delete(Artifact artifact);
     Metrics metrics();
@@ -228,6 +235,11 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     @Override public Promise<Boolean> exists(Artifact artifact) {
         return dht.exists(metaKey(artifact));
+    }
+
+    @Override public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+        return dht.get(metaKey(artifact))
+                      .map(opt -> opt.flatMap(ArtifactMetadata::fromBytes));
     }
 
     @Override public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {

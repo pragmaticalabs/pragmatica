@@ -69,7 +69,15 @@ public final class MavenProtocolRoutes implements RouteHandler {
         var status = findHttpStatus(mavenResponse.statusCode());
         response.write(status,
                        mavenResponse.content(),
-                       ContentType.contentType(mavenResponse.contentType(), ContentCategory.BINARY));
+                       ContentType.contentType(mavenResponse.contentType(), categoryFor(mavenResponse.contentType())));
+    }
+
+    private ContentCategory categoryFor(String contentType) {
+        if (contentType == null) {return ContentCategory.BINARY;}
+        if (contentType.startsWith("application/json") || contentType.startsWith("application/problem+json")) {return ContentCategory.JSON;}
+        if (contentType.startsWith("application/xml")) {return ContentCategory.XML;}
+        if (contentType.startsWith("text/")) {return ContentCategory.TEXT;}
+        return ContentCategory.BINARY;
     }
 
     private HttpStatus findHttpStatus(int code) {
