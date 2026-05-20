@@ -9,18 +9,16 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 test_nodes_formed() {
     wait_for_cluster_ready 120
     local expected="${NODE_COUNT:-5}"
-    local floor=$(( expected - 1 ))
     local count
     count=$(cluster_member_count)
-    # N-1 floor: tolerates the seed-node special case where the leader's own
-    # `NodeLifecycleKey` isn't written to KV (cluster_member_count = generation.members
-    # excludes it). See aether/docs/specs/test-readiness-contract.md §1.1 + §6 (RC2
-    # follow-up). Strict equality returns when the seed-node lifecycle write lands.
-    if [ "$count" -lt "$floor" ]; then
-        log_fail "Cluster has fewer than ${floor} members (got ${count})"
+    # Strict equality: the seed-node lifecycle write bug is fixed (every node — including
+    # the initial leader — appears in the generation snapshot). See
+    # aether/docs/specs/test-readiness-contract.md §6.
+    if [ "$count" -ne "$expected" ]; then
+        log_fail "Cluster has ${count} members, expected ${expected}"
         return 1
     fi
-    log_pass "Cluster member floor met (${count} ≥ ${floor})"
+    log_pass "Cluster has ${count} members"
 }
 
 test_leader_elected() {
@@ -39,13 +37,12 @@ test_quorum_established() {
     local node_count
     node_count=$(cluster_member_count)
     local expected="${NODE_COUNT:-5}"
-    local floor=$(( expected - 1 ))
-    # N-1 floor (seed-node bug, see test-readiness-contract §6 RC2 follow-up).
-    if [ "$node_count" -lt "$floor" ]; then
-        log_fail "Quorum below floor (${node_count} < ${floor})"
+    # Strict equality (seed-node bug fixed; see test-readiness-contract §6).
+    if [ "$node_count" -ne "$expected" ]; then
+        log_fail "Quorum mismatch (${node_count} != ${expected})"
         return 1
     fi
-    log_pass "Quorum established (${node_count} ≥ ${floor})"
+    log_pass "Quorum established (${node_count})"
 }
 
 test_liveness_probe() {
@@ -56,13 +53,12 @@ test_all_nodes_visible() {
     local count
     count=$(cluster_member_count)
     local expected="${NODE_COUNT:-5}"
-    local floor=$(( expected - 1 ))
-    # N-1 floor (seed-node bug, see test-readiness-contract §6 RC2 follow-up).
-    if [ "$count" -lt "$floor" ]; then
-        log_fail "Fewer than ${floor} nodes visible (got ${count})"
+    # Strict equality (seed-node bug fixed; see test-readiness-contract §6).
+    if [ "$count" -ne "$expected" ]; then
+        log_fail "Expected ${expected} nodes visible, got ${count}"
         return 1
     fi
-    log_pass "Node visibility floor met (${count} ≥ ${floor})"
+    log_pass "All ${count} nodes visible"
 }
 
 test_status_endpoint() {
