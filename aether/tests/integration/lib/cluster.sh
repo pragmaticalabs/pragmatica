@@ -434,10 +434,14 @@ wait_for_cluster_ready() {
 # MembershipView). Block cluster-ready on `>= N-1` so the cascade isn't blocked at
 # the precondition. TODO RC2: tighten back once MembershipView converges.
 _cluster_is_ready() {
-    # Check 1: generation snapshot members ≥ NODE_COUNT.
+    # Check 1: generation snapshot members ≥ NODE_COUNT - 1 (tolerate one lagging admit).
+    # The N-1 floor mirrors Property 3 (active core) and tolerates the seed-node special
+    # case where the leader's own NodeLifecycleKey isn't written until after first KV
+    # quiesce; see test-readiness-contract.md §1.1 + §6 follow-up.
     local count
     count=$(cluster_member_count)
-    [ -n "$count" ] && [ "$count" -ge "${NODE_COUNT:-5}" ] 2>/dev/null || return 1
+    local member_floor=$(( ${NODE_COUNT:-5} - 1 ))
+    [ -n "$count" ] && [ "$count" -ge "$member_floor" ] 2>/dev/null || return 1
 
     # Check 2: leader elected (non-empty, non-"none").
     local leader
