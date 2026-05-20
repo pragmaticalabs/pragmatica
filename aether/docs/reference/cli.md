@@ -265,6 +265,25 @@ Health check:
 aether health
 ```
 
+#### nodes health
+
+Per-node readiness/liveness check. Defaults to the connected node; pass `[id]` to query a specific
+node (the request is forwarded by the management plane to that node and the response carries that
+node's per-component readiness breakdown). Use `--liveness` to query `/health/live` instead of the
+default `/health/ready`.
+
+```bash
+# Readiness on the connected node
+aether nodes health
+
+# Readiness on a specific node
+aether nodes health node-2
+
+# Liveness on a specific node
+aether nodes health node-2 --liveness
+```
+
+Output mirrors the JSON shape of `GET /health/ready` (or `/health/live` with `--liveness`).
 #### scale
 
 Scale a blueprint-deployed slice. The slice must be part of an active blueprint.

@@ -73,8 +73,16 @@ public final class StatusRoutes implements RouteSource {
                                          .toJson(this::buildHealthResponse),
                          ManagementRoutes.<LivenessResponse>route(ManagementRoute.HEALTH_LIVE)
                                          .toJson(this::buildLivenessResponse),
+                         ManagementRoutes.<LivenessResponse>route(ManagementRoute.HEALTH_LIVE_GET)
+                                         .withPath(org.pragmatica.http.routing.PathParameter.aString())
+                                         .to(__ -> org.pragmatica.lang.Promise.success(buildLivenessResponse()))
+                                         .asJson(),
                          ManagementRoutes.<ReadinessResponse>route(ManagementRoute.HEALTH_READY)
                                          .toJson(this::buildReadinessResponse),
+                         ManagementRoutes.<ReadinessResponse>route(ManagementRoute.HEALTH_READY_GET)
+                                         .withPath(org.pragmatica.http.routing.PathParameter.aString())
+                                         .to(__ -> org.pragmatica.lang.Promise.success(buildReadinessResponse()))
+                                         .asJson(),
                          ManagementRoutes.<List<ClusterEvent>>route(ManagementRoute.EVENTS)
                                          .withQuery(QueryParameter.aLong("sinceEpoch"), QueryParameter.aLong("sinceSeq"))
                                          .toValue(this::buildEventsResponse)

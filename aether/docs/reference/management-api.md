@@ -178,6 +178,13 @@ No authentication required.
 }
 ```
 
+### GET /health/live/{id}
+
+Per-node variant of `/health/live`. The request lands on any node and is forwarded to the
+node identified by `{id}` (via the standard `nodeIdParam(0)` forwarding pattern shared with
+`/api/nodes/status/{id}`, `/api/nodes/inflight/{id}`, `/api/nodes/slices/{id}`, etc.). Response
+shape and authentication semantics match `GET /health/live`.
+
 ### GET /health/ready
 
 Readiness probe for container orchestrators. Returns 200 when the node is ready to receive traffic, 503 when not ready.
@@ -200,6 +207,12 @@ Components checked:
 - **consensus** — Is the node participating in consensus? DOWN during initial cluster formation.
 - **routes** — Has the node received its initial route synchronization from the KV-Store?
 - **quorum** — Does the node have a quorum (at least 2 nodes total)?
+
+### GET /health/ready/{id}
+
+Per-node variant of `/health/ready`. Forwarded to the node identified by `{id}` via the standard
+`nodeIdParam(0)` forwarding pattern. Response shape and authentication semantics match
+`GET /health/ready`.
 
 ### GET /api/nodes
 
@@ -2486,7 +2499,9 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | Method | Path | Section |
 |--------|------|---------|
 | GET | `/health/live` | Health Probes |
+| GET | `/health/live/{id}` | Health Probes |
 | GET | `/health/ready` | Health Probes |
+| GET | `/health/ready/{id}` | Health Probes |
 | GET | `/api/nodes/status` | Cluster Status |
 | GET | `/api/health` | Cluster Status |
 | GET | `/api/nodes` | Cluster Status |

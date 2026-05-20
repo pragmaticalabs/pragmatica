@@ -481,7 +481,8 @@ import static org.pragmatica.lang.Option.some;
                  NodesCommand.SlicesCommand.class,
                  NodesCommand.RoutesCommand.class,
                  NodesCommand.InflightCommand.class,
-                 NodesCommand.MetricsCommand.class
+                 NodesCommand.MetricsCommand.class,
+                 NodesCommand.HealthCommand.class
              }) static class NodesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand private AetherCli parent;
 
@@ -584,6 +585,22 @@ import static org.pragmatica.lang.Option.some;
             @Override public Integer call() {
                 var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_METRICS_GET, List.of(id)))
                                               .or(() -> nodesParent.parent.fetch(NODE_METRICS));
+                return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "health", description = "Show readiness check on a node (defaults to local; pass [id] for any node; --liveness for /health/live)") static class HealthCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
+            @CommandLine.Option(names = "--liveness", description = "Query /health/live instead of /health/ready") private boolean liveness;
+
+            @Override public Integer call() {
+                var perNodeRoute = liveness ? HEALTH_LIVE_GET : HEALTH_READY_GET;
+                var localRoute = liveness ? HEALTH_LIVE : HEALTH_READY;
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(perNodeRoute, List.of(id)))
+                                              .or(() -> nodesParent.parent.fetch(localRoute));
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
             }
         }

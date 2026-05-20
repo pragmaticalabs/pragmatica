@@ -28,7 +28,9 @@ import static org.pragmatica.http.routing.HttpMethod.PUT;
 
 public enum ManagementRoute {
     HEALTH_LIVE(GET, "/health/live", List.of(), LOCAL),
+    HEALTH_LIVE_GET(GET, "/health/live", List.of("id"), RouteTarget.nodeIdParam(0)),
     HEALTH_READY(GET, "/health/ready", List.of(), LOCAL),
+    HEALTH_READY_GET(GET, "/health/ready", List.of("id"), RouteTarget.nodeIdParam(0)),
     NODE_STATUS(GET, "/api/nodes/status", List.of(), ANY),
     NODE_STATUS_GET(GET, "/api/nodes/status", List.of("id"), RouteTarget.nodeIdParam(0)),
     NODES_LIST(GET, "/api/nodes", List.of(), ANY),
