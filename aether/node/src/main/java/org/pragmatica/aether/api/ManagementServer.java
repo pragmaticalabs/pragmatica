@@ -37,6 +37,7 @@ import org.pragmatica.aether.api.routes.AbTestRoutes;
 import org.pragmatica.aether.api.routes.RouteHandler;
 import org.pragmatica.aether.api.routes.ScheduledTaskRoutes;
 import org.pragmatica.aether.api.routes.SchemaRoutes;
+import org.pragmatica.aether.api.routes.ProblemResponses;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
@@ -760,7 +761,11 @@ class ManagementServerImpl implements ManagementServer {
 
     private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {
         log.warn("Management forward failed [{}] {}: {}", requestId, path, cause.message());
-        response.error(HttpStatus.SERVICE_UNAVAILABLE, "Management forward failed: " + cause.message());
+        ProblemResponses.writeProblem(response,
+                                      org.pragmatica.http.routing.HttpStatus.SERVICE_UNAVAILABLE,
+                                      "Management forward failed: " + cause.message(),
+                                      path,
+                                      requestId);
     }
 
     private Unit sendForwardUnavailable(InstrumentedResponseWriter response,
@@ -769,7 +774,11 @@ class ManagementServerImpl implements ManagementServer {
                                         String methodName,
                                         long startTime) {
         log.warn("Management forwarder unavailable [{}] {} {}", requestId, methodName, path);
-        response.error(HttpStatus.SERVICE_UNAVAILABLE, "Management forwarding not yet available");
+        ProblemResponses.writeProblem(response,
+                                      org.pragmatica.http.routing.HttpStatus.SERVICE_UNAVAILABLE,
+                                      "Management forwarding not yet available",
+                                      path,
+                                      requestId);
         recordRequestMetrics(methodName, path, response, startTime);
         return Unit.unit();
     }
@@ -852,9 +861,12 @@ class ManagementServerImpl implements ManagementServer {
                                                                                      cause.message()));
             return;
         }}
-        var notFoundBody = ("{\"error\":\"No route found for " + context.method() + " " + context.path() + "\"}").getBytes(StandardCharsets.UTF_8);
+        var notFoundBody = ProblemResponses.renderProblemBytes(org.pragmatica.http.routing.HttpStatus.NOT_FOUND,
+                                                               "No route found for " + context.method() + " " + context.path(),
+                                                               context.path(),
+                                                               context.requestId());
         var notFound = new HttpResponseData(HttpStatus.NOT_FOUND.code(),
-                                            java.util.Map.of("Content-Type", "application/json"),
+                                            java.util.Map.of("Content-Type", ProblemResponses.problemContentType()),
                                             notFoundBody);
         sendManagementForwardSuccess(network, request, ser, notFound);
     }
@@ -919,8 +931,11 @@ class ManagementServerImpl implements ManagementServer {
 
     private void writeProbeJson(ResponseWriter response, Object value, HttpStatus httpStatus) {
         probeJsonMapper.writeAsString(value).onSuccess(json -> response.respond(httpStatus, json))
-                                     .onFailure(cause -> response.error(HttpStatus.INTERNAL_SERVER_ERROR,
-                                                                        cause.message()));
+                                     .onFailure(cause -> ProblemResponses.writeProblem(response,
+                                                                                       org.pragmatica.http.routing.HttpStatus.INTERNAL_SERVER_ERROR,
+                                                                                       cause.message(),
+                                                                                       "/health",
+                                                                                       ""));
     }
 
     @SuppressWarnings("JBCT-PAT-01") private boolean validateManagementSecurity(RequestContext ctx,
@@ -938,7 +953,8 @@ class ManagementServerImpl implements ManagementServer {
                                          .onFailure(cause -> handleManagementSecurityFailure(response,
                                                                                              cause,
                                                                                              path,
-                                                                                             methodName))
+                                                                                             methodName,
+                                                                                             ctx.requestId()))
                                          .onSuccess(sc -> logManagementAccess(sc, methodName, path))
                                          .isSuccess();
     }
@@ -989,14 +1005,26 @@ class ManagementServerImpl implements ManagementServer {
     @SuppressWarnings("JBCT-PAT-01") private void handleManagementSecurityFailure(ResponseWriter response,
                                                                                   Cause cause,
                                                                                   String path,
-                                                                                  String method) {
+                                                                                  String method,
+                                                                                  String requestId) {
         AuditLog.authFailure("mgmt", cause.message(), method, path);
         var status = resolveSecurityErrorStatus(cause);
         requestObserver.recordSecurityDenial(classifyDenialType(cause), method, path);
-        if (status == HttpStatus.UNAUTHORIZED) {response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"")
-                                                               .error(status,
-                                                                      cause.message());} else {response.error(status,
-                                                                                                              cause.message());}
+        if (status == HttpStatus.UNAUTHORIZED) {
+            response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+        }
+        ProblemResponses.writeProblem(response,
+                                      toRoutingStatus(status),
+                                      cause.message(),
+                                      path,
+                                      requestId);
+    }
+
+    private static org.pragmatica.http.routing.HttpStatus toRoutingStatus(HttpStatus status) {
+        for (var s : org.pragmatica.http.routing.HttpStatus.values()) {
+            if (s.code() == status.code()) {return s;}
+        }
+        return org.pragmatica.http.routing.HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private static String classifyDenialType(Cause cause) {

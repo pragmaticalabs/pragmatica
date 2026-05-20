@@ -132,11 +132,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeLifecycleValue current) {
-        if (current.state() != NodeLifecycleState.ON_DUTY) {return Promise.success(new TransitionResult(false,
-                                                                                                        nodeIdStr,
-                                                                                                        current.state()
-                                                                                                                     .name(),
-                                                                                                        "Cannot drain from " + current.state() + " (must be ON_DUTY)"));}
+        if (current.state() != NodeLifecycleState.ON_DUTY) {
+            return HttpError.httpError(HttpStatus.CONFLICT,
+                                       Causes.cause("Cannot drain node " + nodeIdStr + " from " + current.state() + " (must be ON_DUTY)"))
+                                  .promise();
+        }
         return NodeId.nodeId(nodeIdStr).async()
                             .flatMap(this::runDrainProtocol);
     }
@@ -247,11 +247,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> guardActivateState(String nodeIdStr, NodeLifecycleValue current) {
-        if (current.state() != NodeLifecycleState.DRAINING && current.state() != NodeLifecycleState.DECOMMISSIONED) {return Promise.success(new TransitionResult(false,
-                                                                                                                                                                 nodeIdStr,
-                                                                                                                                                                 current.state()
-                                                                                                                                                                              .name(),
-                                                                                                                                                                 "Cannot activate from " + current.state() + " (must be DRAINING or DECOMMISSIONED)"));}
+        if (current.state() != NodeLifecycleState.DRAINING && current.state() != NodeLifecycleState.DECOMMISSIONED) {
+            return HttpError.httpError(HttpStatus.CONFLICT,
+                                       Causes.cause("Cannot activate node " + nodeIdStr + " from " + current.state() + " (must be DRAINING or DECOMMISSIONED)"))
+                                  .promise();
+        }
         return NodeId.nodeId(nodeIdStr).async()
                             .flatMap(this::routeActivateThroughLifecycleWriter)
                             .map(_ -> activateSuccessResult(nodeIdStr));

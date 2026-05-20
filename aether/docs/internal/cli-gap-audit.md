@@ -104,18 +104,23 @@ Phase B is a separate commit because it introduces new behavior, not just rename
 
 ## Remaining open consistency cleanups (not in Phase A or B)
 
-### #23 — Error envelope shape (decision pending)
+### #23 — Error envelope shape (LANDED)
 
-Three error-response styles exist in current routes:
-- `HttpError.httpError(HttpStatus.CONFLICT, ...)` → `{"error": "..."}` envelope (e.g. NodeLifecycleRoutes line ~242)
-- `Result.failure(Cause)` → `asJson()` → variable JSON depending on Cause subtype (e.g. DeployRoutes)
-- Plain HTTP error code with body containing `Cause.message()` text (e.g. SliceRoutes)
+Resolved in commit (Phase B.1 — error envelope standardization). The framework now emits **RFC 9457 ProblemDetail** with content-type `application/problem+json` for every management-plane error.
 
-CLI `OutputFormatter.printValue` only recognizes the first shape (the explicit `{"error": "..."}` envelope). The other two are silently mishandled — error fields are surfaced as field-not-found rather than as errors.
+**What landed:**
+- New utility `aether/node/.../api/routes/ProblemResponses.java` — canonical emission helper used by Router and ManagementServer error sites
+- `ManagementRouter.writeError` rewired to emit ProblemDetail (single funnel, propagates to every route automatically)
+- `ManagementServer` error sites updated: `sendForwardError`, `sendForwardUnavailable`, `writeProbeJson` failure path, `handleManagementSecurityFailure`, the inline 404 builder
+- `NodeLifecycleRoutes` leak fixed: drain/activate state-mismatch (was returning `TransitionResult(success=false)` at HTTP 200) now returns `HttpError.httpError(CONFLICT, ...)` → 409 ProblemDetail
+- `aether/cli/.../OutputFormatter.java` updated to recognize ProblemDetail by integer `status` field; legacy `{"error":"..."}` envelope still accepted for backward compat with non-Aether endpoints
+- `WWW-Authenticate` header still set for 401 responses (security parity), now alongside ProblemDetail body
 
-**Decision needed**: standardize on a single error envelope shape and refactor all routes. CLI's existing detection becomes universally applicable. Likely shape: `{"error": "human-readable message", "code": "machine-readable-code", "details": {...optional context...}}`.
+**What was NOT included (separate follow-up commits):**
+- Sealed `*Error` types (`ClusterConfigError` 24 variants, `KeyNotFoundError`, `UpgradeError`, `WorkerError`, `SecurityError`, etc.) → still default to HTTP 500 via the non-HttpError path. Per-domain `httpStatus()` mapping should land incrementally — each domain owner decides their cause→status table. The envelope shape is correct; only the status code is conservative.
+- `BlueprintValidationResponse(valid:false)` left as-is — validation is a read-only query with structured results, not an error.
 
-Test-side impact: `app_route_wired` helper currently greps response body for the literal string `"title":"No route found for "` to distinguish 404-no-route from 404-app-not-found. After envelope standardization, this becomes a structured field check instead of substring grep.
+**Verification:** 736 tests pass (399 node + 337 CLI) post-refactor. Per-route shapes preserved via the funnel; only the wire envelope changed.
 
 ### #24 — State authority: MembershipView projection vs KV-direct (decision pending)
 
