@@ -2619,6 +2619,16 @@ JOINING → ON_DUTY ←→ DRAINING → DECOMMISSIONED → SHUTTING_DOWN
 
 Get lifecycle state for all nodes.
 
+**Query parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `state` | string | no | Case-insensitive lifecycle state (e.g. `ON_DUTY`, `DRAINING`), or a `+`-separated union of states (e.g. `ON_DUTY+JOINING`). When present, the response is filtered to entries whose `state` is a member of the set (uppercase normalisation + split-on-`+` server-side). Omit for the unfiltered list. An empty filter (`+` alone) matches no entry. |
+
+**Examples:**
+- `GET /api/nodes/lifecycle?state=ON_DUTY` — only entries currently `ON_DUTY`.
+- `GET /api/nodes/lifecycle?state=ON_DUTY+JOINING` — entries whose state is `ON_DUTY` or `JOINING`.
+
 **Response:**
 ```json
 [

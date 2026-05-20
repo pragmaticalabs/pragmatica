@@ -982,7 +982,13 @@ Manage node lifecycle states:
 # List all node lifecycle states
 aether nodes lifecycle
 
-# Get lifecycle state for a specific node
+# Filter the list to a single state (case-insensitive)
+aether nodes lifecycle --state ON_DUTY
+
+# Multi-state union via `+`
+aether nodes lifecycle --state ON_DUTY+JOINING
+
+# Get lifecycle state for a specific node (--state ignored when [id] is supplied)
 aether nodes lifecycle <nodeId>
 
 # Drain a node (ON_DUTY → DRAINING, CDM evacuates slices respecting budget)

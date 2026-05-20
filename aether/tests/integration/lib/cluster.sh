@@ -188,15 +188,18 @@ mgmt_entry_point_node() {
 # docker/remote runs since the mgmt-gateway sidecar removed the need for
 # client-side node pinning). Fails loudly if no candidate remains.
 #
-# Source of truth: `/api/nodes/status` cluster.nodes[] filtered to derivedStatus=ON_DUTY.
-# H-series MembershipView derives ON_DUTY at read-time from SWIM health, so
-# /api/nodes/lifecycle no longer carries explicit ON_DUTY atoms. /api/nodes/status
-# reflects the same derived view and carries per-node id + kvState + derivedStatus.
-# Nodes that were drained / killed / decommissioned are NOT valid kill targets:
-#  (a) their derived state will be DECOMMISSIONED or UNKNOWN (not ON_DUTY),
-#  (b) the surviving cluster has already removed them from its SWIM members map,
-#      so killing them produces no Ping timeout and no FAULTY edge.
-# Falls back to empty (fail-closed) if the API call fails.
+# Source of truth: `aether nodes lifecycle --state ON_DUTY --format json` — the
+# server-side state filter (commit chain post-2026-05-20) returns the lifecycle
+# entries already restricted to ON_DUTY. The KV-direct list contains a
+# `Put(L=ON_DUTY)` atom for every aggregator-quorum-acked peer; nodes that were
+# drained / killed / decommissioned carry a different state and are dropped.
+# Leader re-derivation still rides on `/api/nodes/status` because lifecycle
+# carries no leader identity — the caller must `wait_for_leader` before invoking
+# us, and we additionally cross-check against `cluster.leaderId` from
+# `/api/nodes/status` to close the MGMT_ENTRY_POINT round-robin race the
+# previous design called out (separate payloads now, but per-call atomicity is
+# preserved within each fetch).
+# Falls back to empty (fail-closed) if either call fails.
 pick_non_leader() {
     local leader="$1"
     local count="${2:-1}"
@@ -213,19 +216,18 @@ pick_non_leader() {
         return 1
     fi
 
-    # Single /api/nodes/status fetch: enumerate ON_DUTY members AND re-derive the leader
-    # from the SAME payload. Previously the caller passed `leader` and we re-read
-    # `/api/nodes/status` independently; under MGMT_ENTRY_POINT round-robin those two
-    # reads could hit different backends and disagree, so we'd happily echo the
-    # *current* leader as a victim. Now: one payload, one truth.
+    # Re-derive leader from /api/nodes/status to close the MGMT_ENTRY_POINT
+    # round-robin race: the caller's `cluster_leader` call could have hit a
+    # different backend than the one we're about to query, and a fast
+    # re-election between the two reads would let us hand back the new leader
+    # as a "non-leader" victim. We tolerate `"leaderId":null` (empty string
+    # parse) — that just means we fall back to the caller-supplied leader.
     local status_payload
     status_payload=$(api_get "/api/nodes/status" 2>/dev/null || true)
     if [ -z "$status_payload" ]; then
         log_fail "pick_non_leader: /api/nodes/status returned empty body — cannot select victim" >&2
         return 1
     fi
-    # Re-derived leader from the same payload. cluster.leaderId is a string field
-    # at the top level; tolerate both `"leaderId":"x"` and `"leaderId":null`.
     local derived_leader
     derived_leader=$(printf '%s' "$status_payload" \
         | grep -o '"leaderId"[[:space:]]*:[[:space:]]*"[^"]*"' \
@@ -235,26 +237,29 @@ pick_non_leader() {
         leader="$derived_leader"
     fi
 
-    # Extract node IDs with derivedStatus=ON_DUTY from /api/nodes/status cluster.nodes[].
-    # NodeInfo JSON field order (Jackson record serialization): id, isLeader, kvState, derivedStatus.
-    # We split on '{' so each token is one candidate object, keep only tokens that carry
-    # "derivedStatus":"ON_DUTY", then extract the "id" value with sed.
-    # BSD awk (macOS default) lacks 3-arg match(), so we use grep+sed throughout.
+    # Candidate enumeration: server-side state filter via the aether CLI. The
+    # response is a JSON array of `{nodeId, state, updatedAt}` triplets, all
+    # already ON_DUTY post-filter — we just extract the `nodeId` field with
+    # grep+sed (BSD-awk-compatible, no jq dependency).
+    local lifecycle_payload
+    lifecycle_payload=$(aether_json "nodes lifecycle" --state ON_DUTY 2>/dev/null || true)
+    if [ -z "$lifecycle_payload" ]; then
+        log_fail "pick_non_leader: 'aether nodes lifecycle --state ON_DUTY' returned empty body — cannot select victim" >&2
+        return 1
+    fi
     local current_members
-    current_members=$(printf '%s' "$status_payload" \
-        | tr '{' '\n' \
-        | grep '"derivedStatus"[[:space:]]*:[[:space:]]*"ON_DUTY"' \
-        | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' \
-        | sed 's/"id"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
+    current_members=$(printf '%s' "$lifecycle_payload" \
+        | grep -o '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed 's/"nodeId"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)
     if [ -z "$current_members" ]; then
-        # Fail-closed: if /api/nodes/status has no ON_DUTY members, the test premise
+        # Fail-closed: if lifecycle has no ON_DUTY members, the test premise
         # (a healthy cluster from which we can pick a non-leader) is broken.
         #
         # log_fail goes to stderr — pick_non_leader is consumed via `$(...)`, so any
         # stdout output is interpreted by the caller as a node-id. Sending the error
         # to stderr lets callers see the FAIL banner while `$(...)` captures the empty
         # string and the caller's `if [ -z ... ]` check fires correctly.
-        log_fail "pick_non_leader: /api/nodes/status returned no ON_DUTY members — cannot select victim" >&2
+        log_fail "pick_non_leader: 'aether nodes lifecycle --state ON_DUTY' returned no entries — cannot select victim" >&2
         return 1
     fi
 
@@ -265,11 +270,11 @@ pick_non_leader() {
         if [ "$candidate" = "$leader" ]; then continue; fi
         if [ -n "$pinned" ] && [ "$candidate" = "$pinned" ]; then continue; fi
         # Docker-mode liveness guard.
-        # /api/nodes/status reports `derivedStatus=ON_DUTY` from the leader's derived
-        # MembershipView. A node killed in a previous test file may still appear
-        # ON_DUTY across the boundary into the next file if (a) CTM has not
-        # tombstoned its slot yet, (b) MembershipView has not propagated the
-        # SWIM FAULTY → DECOMMISSIONED transition, or (c) `restore_cluster_baseline`
+        # Lifecycle reports `state=ON_DUTY` from the KV-store. A node killed in
+        # a previous test file may still appear ON_DUTY across the boundary
+        # into the next file if (a) CTM has not tombstoned its slot yet,
+        # (b) the membership FSM has not propagated the SWIM FAULTY →
+        # DECOMMISSIONED transition, or (c) `restore_cluster_baseline`
         # returned on ON_DUTY count without verifying connected-peer parity.
         # The cluster-side fix lives upstream; in the meantime we skip dead
         # candidates so the test can pick a live one — and log the skip so the
@@ -278,7 +283,7 @@ pick_non_leader() {
             local _alive_name
             _alive_name=$(_docker_container_by_node_id_label "$candidate" 2>/dev/null || true)
             if [ -z "$_alive_name" ]; then
-                log_warn "pick_non_leader: /api/nodes/status reports '${candidate}' as ON_DUTY but no live container carries label aether.node-id=${candidate} on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: MembershipView/CTM tombstone propagation)" >&2
+                log_warn "pick_non_leader: lifecycle reports '${candidate}' as ON_DUTY but no live container carries label aether.node-id=${candidate} on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: MembershipView/CTM tombstone propagation)" >&2
                 continue
             fi
         fi

@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.HttpError;
 import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -30,6 +31,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -58,7 +60,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     @Override public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<List<LifecycleEntry>>route(ManagementRoute.NODE_LIFECYCLE_LIST)
-                                         .toJson(this::getAllLifecycleStates),
+                                         .withQuery(QueryParameter.aString("state"))
+                                         .toValue(this::getAllLifecycleStates)
+                                         .asJson(),
                          ManagementRoutes.<LifecycleEntry>route(ManagementRoute.NODE_LIFECYCLE_GET)
                                          .withPath(aString())
                                          .to(this::getNodeLifecycle)
@@ -102,12 +106,29 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// List form is KV-direct (matches the single-id form). Authoritative FSM state only;
     /// MembershipView's SWIM/reachability overlay is exposed via `/api/nodes/status` instead.
     /// See `aether/docs/specs/state-authority.md` for the two-endpoint contract.
-    private List<LifecycleEntry> getAllLifecycleStates() {
+    ///
+    /// Optional `state` filter (single state or `+`-separated union, e.g. `state=ON_DUTY` or
+    /// `state=JOINING+ON_DUTY`) is parsed via the shared `RouteFilters.parseStateFilter` helper
+    /// and applied as a membership predicate against the externalised state name (post
+    /// SHUTTING_DOWN→DRAINING collapse — operators filter on what they see, not the
+    /// internal state). Empty filter set (e.g. `state=+` alone) matches no entry.
+    private List<LifecycleEntry> getAllLifecycleStates(Option<String> stateFilter) {
+        var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
         nodeSupplier.get().kvStore().forEach(NodeLifecycleKey.class,
                                               NodeLifecycleValue.class,
-                                              (key, value) -> entries.add(toLifecycleEntry(key, value)));
+                                              (key, value) -> appendIfMatches(entries, key, value, normalizedFilter));
         return entries;
+    }
+
+    private static void appendIfMatches(List<LifecycleEntry> entries,
+                                        NodeLifecycleKey key,
+                                        NodeLifecycleValue value,
+                                        Option<Set<String>> normalizedFilter) {
+        var entry = toLifecycleEntry(key, value);
+        if (normalizedFilter.map(set -> set.contains(entry.state())).or(true)) {
+            entries.add(entry);
+        }
     }
 
     private static LifecycleEntry toLifecycleEntry(NodeLifecycleKey key, NodeLifecycleValue value) {

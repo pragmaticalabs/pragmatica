@@ -496,13 +496,19 @@ import static org.pragmatica.lang.Option.some;
 
             @Parameters(index = "0", description = "Node ID (omit to list all)", arity = "0..1") private String nodeId;
 
+            @CommandLine.Option(names = {"--state"}, description = "Filter list to nodes in this state (case-insensitive). Multi-state union via `+`, e.g. ON_DUTY+JOINING. Ignored when [id] is supplied.") private String state;
+
             @Override public Integer call() {
                 return option(nodeId).map(this::showSingleNodeLifecycle).or(() -> showAllLifecycleStates());
             }
 
             private Integer showAllLifecycleStates() {
-                var response = nodesParent.parent.fetch(NODE_LIFECYCLE_LIST);
+                var response = nodesParent.parent.fetch(NODE_LIFECYCLE_LIST, List.of(), buildLifecycleQuery());
                 return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+
+            private String buildLifecycleQuery() {
+                return option(state).map(s -> "state=" + s).or("");
             }
 
             private Integer showSingleNodeLifecycle(String id) {
