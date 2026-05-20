@@ -421,22 +421,17 @@ is_cluster_ready() {
 }
 
 # wait_for_cluster_ready [timeout] [expected_count] — canonical "cluster is ready" gate.
-# Composite: generation members ≥ expected, leader elected, active cores ≥ expected-1,
-# ≥expected nodes answer /health/ready UP. See aether/docs/specs/test-readiness-contract.md §1.
+# Composite: generation members ≥ expected, leader elected, active cores ≥ expected-1.
+# See aether/docs/specs/test-readiness-contract.md §1.
 #
-# **Default `expected = NODE_COUNT - 1`** — this is the operational invariant the existing
-# `restore_cluster_baseline` already delivers (post-chaos, the leader's MembershipView
-# converges to N-1 because of the RC2 PeerObservationStore convergence gap; CTM replacements
-# are in generation within seconds but the entry-point view stays at N-1 for the full
-# 1200s budget). Defaulting to N-1 here keeps the cluster-ready gate aligned with the
-# helper that supposedly restores baseline; otherwise the helpers contradict each other and
-# every post-chaos test cascades on a strict-N assertion the cluster can't satisfy.
-#
-# Callers that need strict N (smoke gate, pre-disruption initial assertions, cluster-formation
-# tests) MUST pass `NODE_COUNT` explicitly as the second arg.
+# **Default `expected = NODE_COUNT`** — strict full-size cluster, matching the pre-Wave 5
+# canonical behavior. Property 3 (active core floor) uses `expected-1` to tolerate the
+# RC2 MembershipView convergence lag while still requiring the cluster's self-reported
+# member count to reach the configured size. Chaos suites that legitimately operate at
+# N-1 (mid-recovery) can pass `NODE_COUNT-1` explicitly.
 wait_for_cluster_ready() {
     local timeout="${1:-120}"
-    local expected="${2:-$(( ${NODE_COUNT:-5} - 1 ))}"
+    local expected="${2:-${NODE_COUNT:-5}}"
     # Fast-path snapshot — if the cluster is already ready, skip the entire wait_for harness.
     # Saves the 2s wait_for interval on the happy path (which is most tests).
     if _cluster_is_ready "$expected" 2>/dev/null; then
@@ -456,12 +451,17 @@ wait_for_cluster_ready() {
 }
 
 # Composite snapshot predicate backing wait_for_cluster_ready / is_cluster_ready.
-# Returns 0 when ALL four properties of the canonical contract hold simultaneously;
-# returns 1 (snapshot-not-ready) otherwise. See test-readiness-contract.md §1.1.
-# Arg 1: expected node count (default NODE_COUNT). Property 1 uses strict equality;
-# property 3 uses expected-1 floor; property 4 counts UP responses across `expected`
-# adjacent ports starting at MGMT_PORT (suite post-kill use accepts any `expected` UPs
-# among the configured port range, tolerating a single dead port).
+# Returns 0 when ALL three cluster-side properties hold simultaneously; returns 1 otherwise.
+# See test-readiness-contract.md §1.1. Arg 1: expected node count (default NODE_COUNT).
+#
+# The contract is purely cluster-side (member count + leader + active core floor) — no
+# per-node port probing. The per-node /health/ready iteration that an earlier revision
+# tried to layer on top broke under CTM auto-heal: replacement nodes are provisioned at
+# ports outside the configured MGMT_PORT..MGMT_PORT+N-1 range, so any test that ran after
+# a chaos suite kill-then-recover saw "wrong port" failures even though the cluster was
+# operationally healthy. The cluster's own self-view (generation + topology) is the
+# canonical source of truth; tests that need per-node readiness verification can probe
+# /health/ready directly with the appropriate port list.
 _cluster_is_ready() {
     local expected="${1:-${NODE_COUNT:-5}}"
     # Check 1: generation snapshot members ≥ expected (strict-N when expected=NODE_COUNT,
@@ -481,20 +481,6 @@ _cluster_is_ready() {
     floor=$(( expected - 1 ))
     [ -n "$active" ] && [ "$active" -ge "$floor" ] 2>/dev/null || return 1
 
-    # Check 4: at least `expected` node ports answer /health/ready with "status":"UP".
-    # Iterates the full NODE_COUNT port range so a dead port doesn't short-circuit the
-    # whole check; counts UP responses and succeeds when >= expected.
-    local i port body up=0
-    local total="${NODE_COUNT:-5}"
-    for i in $(seq 0 $((total - 1))); do
-        port=$((MGMT_PORT + i))
-        body=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
-                    "http://${TARGET_HOST}:${port}/health/ready" 2>/dev/null) || continue
-        if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"UP"'; then
-            up=$((up + 1))
-        fi
-    done
-    [ "$up" -ge "$expected" ] 2>/dev/null || return 1
     return 0
 }
 

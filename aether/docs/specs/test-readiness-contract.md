@@ -14,26 +14,23 @@ The contract codifies what each definition actually measures, when to use it, an
 
 A cluster is **ready** when ALL of the following hold simultaneously:
 
-1. **Generation snapshot is converged** — `/api/cluster/generation` reports `core.members[]` with cardinality `== NODE_COUNT`. (The seed-node lifecycle write bug is fixed — `ClusterDeploymentState.handleNodeAdded` now plants a `JOINING` `NodeLifecycleKey` for seed nodes, so the initial leader's own entry is present from cluster bootstrap; see §6.)
+1. **Generation snapshot is converged** — `/api/cluster/generation` reports `core.members[]` with cardinality `≥ expected` (default `expected = NODE_COUNT`). The seed-node lifecycle write bug is fixed — `ClusterDeploymentState.handleNodeAdded` now plants a `JOINING` `NodeLifecycleKey` for seed nodes, so the initial leader's own entry is present from cluster bootstrap; see §6.
 2. **Leader is elected** — `/api/nodes/status` reports `cluster.leaderId` ≠ `"none"` and ≠ empty.
-3. **Active-core floor is met** — `/api/cluster/topology` reports `coreCount` ≥ `NODE_COUNT - 1`. (The N-1 floor tolerates one node lagging the consensus write of `ON_DUTY` while the rest of the cluster is operational.)
-4. **Every node is per-node ready** — for every expected node port (`MGMT_PORT + i` for `i ∈ [0, NODE_COUNT)`), `GET /health/ready` returns body containing `"status":"UP"`.
+3. **Active-core floor is met** — `/api/cluster/topology` reports `coreCount ≥ expected - 1`. (The `expected-1` floor tolerates one node lagging the consensus write of `ON_DUTY` while the rest of the cluster is operational — bounds the RC2 `MembershipView` convergence lag.)
 
-Properties (1)–(3) describe the *cluster's view of itself* (does the consensus plane agree on the shape?). Property (4) describes each *node's view of its own readiness* (is each JVM through the start-up sequence: consensus connected, slices loaded, routes published?).
-
-Both views must agree for a test to safely proceed. A cluster that satisfies (1)–(3) but not (4) means one node is in the cluster's consensus but its own internal lifecycle says it's not ready for work; tests that submit requests to it will race the per-node-ready transition. A cluster that satisfies (4) but not (1)–(3) means individual JVMs are healthy but they haven't formed consensus yet; cluster-wide operations will fail.
+Properties (1)–(3) describe the cluster's *self-view* — the consensus plane's authoritative record of cluster shape. The contract is purely cluster-side; no per-node port probing. (An earlier revision added a Property 4 that iterated `MGMT_PORT..MGMT_PORT+N-1` calling `/health/ready` per port, but it broke under CTM auto-heal: replacement nodes are provisioned at ports outside that fixed range, so post-chaos tests cascaded with phantom "node X not ready" failures even though the cluster was operationally healthy. Tests that need per-node readiness verification should probe `/health/ready` directly with the appropriate port list.)
 
 ### 1.2 Canonical helper
 
-`wait_for_cluster_ready [timeout] [expected_count]` in `aether/tests/integration/lib/cluster.sh`. Default `timeout=120s`, default `expected=NODE_COUNT-1`.
+`wait_for_cluster_ready [timeout] [expected_count]` in `aether/tests/integration/lib/cluster.sh`. Default `timeout=120s`, default `expected=NODE_COUNT` (strict full size).
 
-**Default usage** (`wait_for_cluster_ready` with no expected): tolerates `N-1` (operational quorum floor). This is the **operational invariant** the existing `restore_cluster_baseline` actually delivers — post-chaos, the leader's MembershipView converges to N-1 because of an RC2 `PeerObservationStore` convergence gap (CTM replacements are in generation within seconds but the entry-point view stays at N-1). Defaulting to N-1 here keeps every gate aligned with what baseline restoration produces; the alternative (strict N) was tried and caused every post-chaos test to cascade-fail on a precondition the cluster could not satisfy.
+**Default usage** (`wait_for_cluster_ready` with no expected): expects the full cluster — `members ≥ NODE_COUNT`, leader elected, `active cores ≥ NODE_COUNT - 1`. Property 3's `N-1` floor tolerates the RC2 `MembershipView` convergence lag.
 
-**Strict-N usage** (`wait_for_cluster_ready <timeout> $NODE_COUNT`): smoke gates, pre-disruption initial assertions, and cluster-formation tests pass `NODE_COUNT` explicitly when the cluster is expected to be at full size (fresh deploy, no chaos has run yet).
+**Lenient usage** (`wait_for_cluster_ready <timeout> $((NODE_COUNT - 1))`): chaos tests legitimately operating at N-1 mid-recovery can pass `NODE_COUNT-1` explicitly to acknowledge the expected degraded baseline.
 
-The properties evaluate at `expected`: members ≥ `expected`, active-core floor ≥ `expected-1`, ≥`expected` of the configured ports answer `/health/ready` UP. Leader-elected is unconditional.
-
-The spec recommends preferring the strict form whenever the test environment is known to be at full size; defaulting to N-1 acknowledges the RC2 convergence gap, not a relaxation of the canonical intent.
+**Fast paths**:
+- If the cluster is already ready at call time, the helper returns in 0s without entering the `wait_for` polling loop.
+- If `MGMT_ENTRY_POINT/health/live` doesn't respond within 1s, the helper fast-fails immediately rather than wasting the full timeout on an unreachable cluster (caps the cascading slowdown when one suite leaves the cluster broken for downstream suites).
 
 ### 1.3 Why "ready" is not the same as "healthy"
 
