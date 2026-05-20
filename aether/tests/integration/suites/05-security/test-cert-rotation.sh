@@ -9,6 +9,8 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 
 LOAD_DURATION="${LOAD_DURATION:-60}"
 LOAD_RPS="${LOAD_RPS:-5}"
+# Mid-flight ops tier — see aether/docs/specs/test-readiness-contract.md §4 (5.0%).
+# TLS cert rotation during concurrent load; handshake retries across the rotation window.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-5.0}"
 
 test_cluster_ready() {

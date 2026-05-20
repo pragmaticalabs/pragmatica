@@ -10,6 +10,8 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 
 LOAD_RPS="${LOAD_RPS:-5}"
 LOAD_DURATION="${LOAD_DURATION:-180}"
+# Operational event tier — see aether/docs/specs/test-readiness-contract.md §4 (2.0%).
+# Single moderate disruption (one node drained); small percentage lost during cutover window.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
 test_seed_config() {

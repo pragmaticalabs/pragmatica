@@ -12,6 +12,8 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 SOAK_DURATION="${SOAK_DURATION:-14400}"  # 4 hours default
 SOAK_RPS="${SOAK_RPS:-100}"             # 100 rps default
 SOAK_LOG="/tmp/sustained_load_soak.log"
+# Soak baseline — see aether/docs/specs/test-readiness-contract.md §4 (Soak tier, 1.0%).
+# Long-running steady-state load with no disruption; threshold is the measurement noise floor.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-1.0}"
 BLUEPRINT="${SOAK_BLUEPRINT:-org.pragmatica.aether.test:test-persistence:1.0.0}"
 SOAK_KEY="${SOAK_KEY:-soak-test}"

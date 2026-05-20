@@ -11,6 +11,9 @@ source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 LOAD_DURATION="${LOAD_DURATION:-60}"
 LOAD_RPS="${LOAD_RPS:-5}"
+# Simultaneous chaos tier — see aether/docs/specs/test-readiness-contract.md §4 (10.0%).
+# Nodes killed during sustained load; in-flight requests on killed nodes are lost outright
+# until LB drops them; replacement provisioning + failover takes seconds.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-10.0}"
 
 test_initial_state() {

@@ -15,6 +15,8 @@ max_rps=100
 if [ "$STREAM_RPS" -gt "$max_rps" ] 2>/dev/null; then
     STREAM_RPS="$max_rps"
 fi
+# Mid-flight ops tier — see aether/docs/specs/test-readiness-contract.md §4 (5.0%).
+# Streaming reconfiguration during concurrent load; partition reassignment + retries.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-5.0}"
 
 test_cluster_ready() {
