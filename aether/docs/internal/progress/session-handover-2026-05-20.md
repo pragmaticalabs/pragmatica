@@ -1,18 +1,55 @@
 # Session handover — 2026-05-20
 
 Branch: `release-1.0.0-rc1`
-HEAD: `023c819cc`
-Candidate tag: `v1.0.0-rc1-candidate` → `023c819cc`
+HEAD: `c332fac60`
+Candidate tag: `v1.0.0-rc1-candidate` → `c332fac60`
 
 ## Topline
 
-**Three work waves landed today on `release-1.0.0-rc1`:**
+**Five work waves landed today on `release-1.0.0-rc1`:**
 
 **Wave 1 — CLI / REST surface consistency audit closeout** (commits `6dd22fdc7` … `caedfa62a`, summarized in §"Wave 1" below). Six commits closing out the audit including a $2500 post-audit self-review.
 
 **Wave 2 — Tier 1 RC1-foundational follow-ups** (commits `f563841b4` … `1bca1b4e1`). Five commits closing every Tier 1 item that was queued at the end of Wave 1: `HttpStatusAware` mixin + status-code mapping across 4 sealed `*Error` hierarchies; rename `StatusResponse.lifecycleState` → `runtimeState` with a separate KV-direct FSM `lifecycleState` field; same `kvState`/`derivedStatus` split for `ClusterStatusNodeInfo` in `/api/cluster/status` (plus discovery that the field was a `"ON_DUTY"` hardcoded stub — fixed); CLI namespace consolidation folding `node-{slices,routes,inflight,metrics}` under `aether nodes <verb> [id]` and resolving a latent `NodesCommand`/`NodeCommand` `@Command(name="nodes")` clash via merge.
 
 **Wave 3 — Tier 2 operator parity batch** (commits `8c172328f` … `023c819cc`). Four commits closing four Tier 2 CLI/API gaps: idempotent artifact push (200 + `{status: uploaded|already-present}` instead of stderr-grep-bait); `aether cluster tasks list/status` CLI subcommands with client-side filter; `?state=` query param on `/api/slices` + matching CLI `--state` flag; per-node `/health/{ready,live}/{id}` endpoints + `aether nodes health [id]` CLI using the Phase B `NodeIdParam` forwarding pattern. Plus inline TASKS_TABLE column-field bug fix during the cluster-tasks work.
+
+**Wave 4 — CLI finishing batch** (commits `efb5e1438` … `c9b8ae7cc`). Three commits closing the remaining CLI consistency gaps: `aether slices --state` extended to accept `+`-separated multi-state union (e.g. `LOADED+ACTIVE` — eliminates the last raw-JSON LOADED|ACTIVE union grep on the test side); `aether nodes lifecycle --state X[+Y]` filter (server query param + CLI option + `RouteFilters` shared helper extracted at the 2nd callsite); top-level `aether topology` moved under `aether cluster topology` namespace for discovery.
+
+**Wave 5 — Test-side detection consolidation** (commits `f9954a8b6` … `c332fac60`). Four commits implementing the canonical detection contract for integration tests: new `aether/docs/specs/test-readiness-contract.md` spec defining "cluster is ready" (4-property composite), "node count" vocabulary (`cluster_member_count` vs `cluster_active_core_count`), health endpoint contract (`/health/live` vs `/health/ready` vs `/api/health` vs `/api/nodes/status`), and error rate threshold tier table; 61-file shell refactor folding three readiness helpers into canonical `wait_for_cluster_ready` + renaming both node-count helpers per spec; inline rationale comments at all 6 `MAX_ERROR_RATE=` sites citing the spec §4 tier; new `SELF_DRAIN_INITIATED` cluster event emitted from `SelfDrainCoordinator.initiateDrain` (eliminates the `docker logs | grep "Self-drain: DRAINING on"` workaround in `test-self-drain-quorum-loss.sh`).
+
+## Commits — Wave 5 (Test-side detection consolidation)
+
+| Commit | Subject | Scope |
+|---|---|---|
+| `f9954a8b6` | `docs: add test-readiness-contract spec — canonical definitions for cluster ready, node count, health endpoints, error rate thresholds` | New 180-line spec at `aether/docs/specs/test-readiness-contract.md`. §1 canonical "cluster is ready" (4-property composite: generation members ≥ N, leader elected, active cores ≥ N-1, every node /health/ready UP). §2 node-count vocabulary (member_count = generation includes JOINING; active_core_count = topology ON_DUTY+HEALTHY). §3 health endpoint contract per endpoint. §4 error rate threshold tiers (1% soak / 2% operational / 5% mid-flight ops / 10% chaos). §5 quick reference table. §6 future work (T3.1 SelfDrainInitiated + RC2 #224 deferred). |
+| `ebe551c6d` | `refactor(test-infra): canonical wait_for_cluster_ready + rename cluster_member_count/cluster_active_core_count per test-readiness-contract spec` | 61 files modified (lib + 56 suite scripts). New `wait_for_cluster_ready` helper implementing all 4 spec properties as one composite predicate. Deprecated aliases `is_cluster_ready` / `wait_for_cluster` / `wait_for_all_nodes_ready` retained as shims. Renames: `cluster_node_count` → `cluster_member_count`, `cluster_node_count_on_duty_healthy` → `cluster_active_core_count`. Zero remaining old-name hits. macOS BSD sed `\b` issue worked around via perl. Trade-off: per-port readiness diagnostic spam from the old loop is dropped in favor of fail-fast atomicity (recoverable via deprecated alias). |
+| `afe007095` | `docs(test-infra): inline rationale comments at MAX_ERROR_RATE sites citing test-readiness-contract §4` | 6 suite files (test-soak-4h, test-streaming-soak, test-03-scale-down, test-kill-under-load, test-stream-under-load, test-cert-rotation). Each `MAX_ERROR_RATE=` gets a 2-line comment citing spec §4 tier + disruption-magnitude rationale. |
+| `c332fac60` | `feat(aether): SELF_DRAIN_INITIATED cluster event + test migrates off docker-log grep` | New `ClusterEventValue.EventType.SELF_DRAIN_INITIATED` variant (severity WARNING). New narrow `SelfDrainEventPublisher` `@FunctionalInterface` in `aether-deployment/.../drain/` (avoids `aether-deployment` → `aether-node` cycle). `SelfDrainCoordinator.initiateDrain` publishes after the existing log.warn; wrapped try-catch so a throwing publisher doesn't interrupt the drain. `AetherNode` wires via forward-declared `AtomicReference<ClusterEventLogPublisher>` resolved lazily at publish time. **NOT leader-gated** (rationale: the draining node is the only authoritative source; partition victims wouldn't reach the leader). Test `test-self-drain-quorum-loss.sh` migrates from `docker logs | grep` to `wait_for_self_drain_event` polling `/api/events` for `type=SELF_DRAIN_INITIATED + details.nodeId=<n>`. Event is a SOFT signal under quorum loss (Rabia may not commit before halt(2)); exit-code-2 + container-exit remain HARD contract. 20 tests in `SelfDrainCoordinatorTest` (up from 17 — 3 new EventEmission tests). |
+
+### Tier 5 (test-detection) backlog status
+
+Of the test-detection inconsistencies enumerated at the end of Wave 1:
+- ✅ "Cluster is ready" — three helpers folded into canonical `wait_for_cluster_ready` (`ebe551c6d`)
+- ✅ Node count divergence — renamed for semantic clarity per spec §2 (`ebe551c6d`)
+- ✅ Health endpoint zoo — semantic contract documented per endpoint in spec §3 (`f9954a8b6`)
+- ✅ Error rate thresholds — tier table written + inline rationale comments at every site (`f9954a8b6` + `afe007095`)
+- ✅ Drain-trigger signal — `SELF_DRAIN_INITIATED` event published, test migrated (`c332fac60`)
+- ✅ Slice instance state grep — `slices_total_instances` LOADED+ACTIVE union migrated via Wave 4 `efb5e1438`
+- ✅ Task group status raw-JSON grep — migrated via Wave 3 `b82c0262a`
+- 🚧 Node departure widening (NODE_LEFT vs NODE_FAILED + reason=transport-failure vs swim-faulty) — explicitly RC2-bound (#224 two-path SwimFaulty vs TransportUnreachable architectural finding)
+
+The only remaining test-detection inconsistency is the one explicitly deferred to RC2.
+
+## Commits — Wave 4 (CLI finishing batch)
+
+| Commit | Subject | Scope |
+|---|---|---|
+| `efb5e1438` | `feat(aether): aether slices --state supports +-separated multi-state union` | `--state LOADED+ACTIVE` (or any `+`-joined combination) filters server-side via uppercase split-on-`+` Set membership. Single-state queries continue working unchanged. `slices_total_instances` shell helper migrated from raw-JSON `(LOADED\|ACTIVE)` grep to `--state LOADED+ACTIVE`. |
+| `442c20f72` | `feat(aether): aether nodes lifecycle --state filter (multi-state via +) + RouteFilters shared helper` | Adds `?state=` query param on `/api/nodes/lifecycle` (multi-state via `+`) + `--state` option on `aether nodes lifecycle`. Extracts `RouteFilters.parseStateFilter` to a shared helper at the 2nd callsite (Slice + NodeLifecycle routes); `SliceRoutes` migrated to use it. `pick_non_leader` shell helper migrated from `/api/nodes/status` derivedStatus grep to `aether nodes lifecycle --state ON_DUTY`. |
+| `c9b8ae7cc` | `refactor(aether/cli): move topology under cluster namespace (aether topology -> aether cluster topology)` | RC1 hard-cut rename. `TopologyStatusCommand` moved from `AetherCli.java` inner class to new top-level file `aether/cli/cluster/ClusterTopologyCommand.java`; registered as subcommand of `ClusterCommand`. Subcommands `circuit-breaker` (status/reset) and `auto-heal` (status/enable/disable) follow. 5 files modified. Zero remaining `aether topology ` callers anywhere. |
+
+## Commits — Wave 1 (audit closeout, in order)
 
 ## Wave 1 — Audit closeout (commits `6dd22fdc7` … `caedfa62a`)
 
@@ -151,20 +188,20 @@ These came up during today's audit work and are worth preserving as project memo
 
 ## Suggested next-session opener
 
-With both Tier 1 (foundational) and four of five Tier 2 items closed, the natural next move is one of:
+With Tier 1 (foundational), Tier 2 (operator parity), AND Tier 5 (test-side detection) effectively closed, the surface work for RC1 is in a clean state. The natural next moves:
 
-1. **`aether events --follow` (SSE infrastructure)** — the deferred Wave 3 item. Requires building a chunked-response primitive in `integrations/http-routing/` (Netty integration) + an event-aggregator subscription API. RC2-scope but blocks ~10 test helpers from migrating off poll loops. Highest leverage if SSE infrastructure is desired.
-2. **Tier 3 — `SelfDrainInitiated` event** — adds a typed cluster event for the self-drain-on-quorum-loss code path. Eliminates `test-self-drain-quorum-loss.sh`'s `docker logs | grep "Self-drain: DRAINING on"` workaround.
+1. **Pre-release smoke** — run the full integration suite against the remote Docker cluster to catch any regressions from today's broad surface changes (wire-format renames in §1-3, helper renames in §5, event additions). 14 suites; one full pass is the right confidence builder before tagging RC1.
+2. **`aether events --follow` (SSE infrastructure)** — the deferred Wave 3 item. Requires building a chunked-response primitive in `integrations/http-routing/` + an event-aggregator subscription API. RC2-scope but operator-facing.
 3. **Tier 3 — typed schemas for free-form JSON responses** — `/api/config`, `/api/metrics/transport`, `/api/metrics/history` currently return untyped trees. Typing them improves CLI rendering and operator tooling.
-4. **Pre-release smoke** — with the Tier 1 + Tier 2 surface stabilized, run a fresh end-to-end integration suite sweep against the remote Docker cluster to catch any regressions from today's wire-format changes (esp. `StatusResponse.runtimeState`, `ClusterStatusNodeInfo` shape, artifact push response shape).
+4. **RC2 #224** — two-path SwimFaulty vs TransportUnreachable architectural finding; gates the last test-detection inconsistency (node departure widening).
 
 ## Session metadata
 
-- Date: 2026-05-20 (single working day, three waves)
-- Commits: Wave 1 (audit closeout) = 6 substantive + 1 handover + 1 self-review fix = 8 commits. Wave 2 (Tier 1 closeout) = 5 substantive commits. Wave 3 (Tier 2 batch) = 4 substantive commits. Plus this handover update = **19 commits total**.
-- Files touched: ~110 unique across all commits
-- Build verifications: ≥14 independent `build-runner` runs, all green
-- Tests passing at HEAD: aether/node 399, aether/cli 342 (was 337 — +5 from cluster-tasks filter tests), aether-config 280, artifact-repo 22 (incremental; full reactor green)
-- Tag movements: `v1.0.0-rc1-candidate` advanced 16+ times
-- Notable architectural choices: (1) `http-routing` added as `aether-config` dep — alternative architectures rejected with rationale documented in commit; (2) `NodesCommand`/`NodeCommand` picocli name-clash fixed by merge as part of T1.4 (latent bug discovered mid-task); (3) `ClusterStatusNodeInfo.lifecycleState` was a stub hardcoded `"ON_DUTY"` — discovered + fixed during T1.3; (4) `aether blueprints contains` reframed as artifact-push idempotency once the survey revealed the real problem lived a layer down; (5) `events --follow` SSE deferred to RC2 after survey revealed no HTTP streaming primitive exists
-- $2500 post-audit challenge from Wave 1 generated the follow-up backlog that Waves 2+3 cleared
+- Date: 2026-05-20 (single working day, five waves)
+- Commits: Wave 1 (audit closeout) = 6 substantive + 1 handover + 1 self-review fix = 8. Wave 2 (Tier 1 closeout) = 5 substantive. Wave 3 (Tier 2 batch) = 4 substantive. Wave 4 (CLI finishing) = 3 substantive. Wave 5 (test-side consolidation) = 4 substantive. Plus 3 handover updates = **27 commits total**.
+- Files touched: ~180 unique across all commits
+- Build verifications: ≥18 independent `build-runner` / smoke runs, all green
+- Tests passing at HEAD: 399 (aether/node) + 342 (aether/cli, +5 from cluster-tasks filter tests) + 280 (aether-config) + 22 (artifact-repo) + 20 (SelfDrainCoordinator, +3 EventEmission tests). Full reactor green.
+- Tag movements: `v1.0.0-rc1-candidate` advanced 22+ times
+- Notable architectural choices: (1) `http-routing` added as `aether-config` dep — alternative architectures rejected with rationale documented; (2) `NodesCommand`/`NodeCommand` picocli name-clash fixed by merge as part of T1.4; (3) `ClusterStatusNodeInfo.lifecycleState` was a stub hardcoded `"ON_DUTY"` — discovered + fixed during T1.3; (4) `aether blueprints contains` reframed as artifact-push idempotency once the survey revealed the real problem lived a layer down; (5) `events --follow` SSE deferred to RC2 after survey revealed no HTTP streaming primitive exists; (6) `SelfDrainCoordinator` publisher injection via narrow `SelfDrainEventPublisher` interface to avoid `aether-deployment` → `aether-node` cycle, with forward-declared `AtomicReference` for construction ordering; (7) `SELF_DRAIN_INITIATED` event explicitly NOT leader-gated (originating node is the only source); (8) test-readiness-contract spec is the first written contract for integration-test setup helpers — establishes the pattern of "spec doc → fold helpers to match" rather than letting helpers drift independently
+- $2500 post-audit challenge from Wave 1 generated the follow-up backlog that Waves 2+3 cleared; user-directed test-side consolidation generated the Wave 5 backlog
