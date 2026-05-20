@@ -454,13 +454,23 @@ public final class SliceRoutes implements RouteSource {
     private ClusterSlicesResponse buildClusterSlicesResponse(Option<String> stateFilter) {
         var node = nodeSupplier.get();
         var targets = collectSliceTargets(node);
-        var normalizedFilter = stateFilter.map(s -> s.toUpperCase(java.util.Locale.ROOT));
+        var normalizedFilter = stateFilter.map(SliceRoutes::parseStateFilter);
         var slices = node.deploymentMap().allDeployments()
                                        .stream()
                                        .map(info -> toClusterSliceInfo(info, targets, normalizedFilter))
                                        .filter(slice -> slice.instances().size() > 0 || normalizedFilter.isEmpty())
                                        .toList();
         return new ClusterSlicesResponse(slices);
+    }
+
+    /// Parse a `+`-separated state filter into an uppercase set of state names.
+    /// Empty / blank parts are dropped. The resulting set is the membership predicate
+    /// applied per instance. Empty set (e.g. `--state +`) matches no instance.
+    private static java.util.Set<String> parseStateFilter(String input) {
+        return java.util.Arrays.stream(input.split("\\+"))
+                                .map(s -> s.trim().toUpperCase(java.util.Locale.ROOT))
+                                .filter(s -> !s.isEmpty())
+                                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     private Map<String, SliceTargetValue> collectSliceTargets(ManageableNode node) {
@@ -475,14 +485,14 @@ public final class SliceRoutes implements RouteSource {
 
     private static ClusterSliceInfo toClusterSliceInfo(DeploymentMap.SliceDeploymentInfo info,
                                                        Map<String, SliceTargetValue> targets,
-                                                       Option<String> normalizedFilter) {
+                                                       Option<java.util.Set<String>> normalizedFilter) {
         var artifactStr = info.artifact();
         var artifactBase = artifactStr.contains(":")
                           ? artifactStr.substring(0, artifactStr.lastIndexOf(':'))
                           : artifactStr;
         var target = Option.option(targets.get(artifactBase));
         var instances = info.instances().stream()
-                                      .filter(i -> normalizedFilter.map(s -> s.equals(i.state().name())).or(true))
+                                      .filter(i -> normalizedFilter.map(set -> set.contains(i.state().name())).or(true))
                                       .map(i -> new ClusterSliceInstance(i.nodeId(),
                                                                          i.state().name(),
                                                                          ""))

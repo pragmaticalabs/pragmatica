@@ -297,9 +297,11 @@ Returns cluster-wide slice data including per-node instances, target counts, and
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `state` | string | no | Case-insensitive slice instance state (e.g. `ACTIVE`, `LOADED`). When present, the response filters `instances[]` per slice to only those whose `state` matches (uppercase normalisation server-side). Slices with no matching instances are dropped from the response. Omit for unfiltered output. |
+| `state` | string | no | Case-insensitive slice instance state (e.g. `ACTIVE`, `LOADED`), or a `+`-separated union of states (e.g. `LOADED+ACTIVE`). When present, the response filters `instances[]` per slice to only those whose `state` is a member of the set (uppercase normalisation + split-on-`+` server-side). Slices with no matching instances are dropped from the response. Omit for unfiltered output. An empty filter (`+` alone) matches no instance. |
 
-**Example:** `GET /api/slices?state=ACTIVE` returns only slices that have at least one `ACTIVE` instance, with each slice's `instances[]` restricted to its `ACTIVE` entries.
+**Examples:**
+- `GET /api/slices?state=ACTIVE` — only slices that have at least one `ACTIVE` instance; each slice's `instances[]` restricted to `ACTIVE` entries.
+- `GET /api/slices?state=LOADED+ACTIVE` — only slices that have at least one `LOADED` or `ACTIVE` instance; each slice's `instances[]` restricted to those two states.
 
 **Response:**
 ```json

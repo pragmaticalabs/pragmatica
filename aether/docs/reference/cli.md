@@ -165,6 +165,12 @@ Filtered example — only ACTIVE instances:
 aether slices --state ACTIVE
 ```
 
+Multi-state union via `+`:
+
+```bash
+aether slices --state LOADED+ACTIVE
+```
+
 #### nodes slices
 
 Show slices loaded on the connected node (flat list of artifact names). Pass `[id]` for a specific node:

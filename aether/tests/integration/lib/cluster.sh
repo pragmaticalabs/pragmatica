@@ -711,15 +711,15 @@ wait_for_all_target_instances_active() {
 # Slice operations
 # ---------------------------------------------------------------------------
 slices_total_instances() {
+    # Server-side multi-state filter (CLI: `aether slices --state LOADED+ACTIVE`); avoids
+    # the prior raw-JSON `(LOADED|ACTIVE)` grep that was sensitive to whitespace and
+    # would silently miss new states. Count `"state"` occurrences in the restricted
+    # response body — the filter has already removed any non-LOADED/ACTIVE entries
+    # server-side, so the inner grep just tallies what remains.
     local slices
-    slices=$(cluster_slices)
-    # Count running instances (LOADED or ACTIVE state)
+    slices=$(aether_json slices --state "LOADED+ACTIVE")
     local count
-    # Strict alternation — the prior `[LA][CO][AT][DI][EV][DE]*` character-class regex
-    # over-matched (any 6+ char permutation of those letters: e.g., FAILED substrings,
-    # future state names, garbage). Use explicit alternation so adding a new state
-    # like `LOADING` requires deliberate inclusion here.
-    count=$(printf '%s' "$slices" | grep -oE '"state"[[:space:]]*:[[:space:]]*"(LOADED|ACTIVE)"' | wc -l | tr -d ' ')
+    count=$(printf '%s' "$slices" | grep -oE '"state"[[:space:]]*:' | wc -l | tr -d ' ')
     echo "${count:-0}"
 }
 
