@@ -54,7 +54,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.NodeCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.NodeSlicesCommand.class, AetherCli.RoutesCommand.class, AetherCli.NodeRoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.NodeCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.NodeSlicesCommand.class, AetherCli.RoutesCommand.class, AetherCli.NodeRoutesCommand.class, AetherCli.NodeInflightCommand.class, AetherCli.NodeMetricsCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)") private String nodeAddress;
@@ -460,11 +460,14 @@ import static org.pragmatica.lang.Option.some;
                         .replace("\t", "\\t");
     }
 
-    @Command(name = "status", description = "Show cluster status") static class StatusCommand implements Callable<Integer> {
+    @Command(name = "status", description = "Show cluster status (or specific node when [id] is given)") static class StatusCommand implements Callable<Integer> {
         @CommandLine.ParentCommand private AetherCli parent;
 
+        @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
         @Override public Integer call() {
-            var response = parent.fetch(NODE_STATUS);
+            var response = option(nodeId).map(id -> parent.fetch(NODE_STATUS_GET, List.of(id)))
+                                          .or(() -> parent.fetch(NODE_STATUS));
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -487,20 +490,50 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "node-slices", description = "Show slices loaded on the connected node") static class NodeSlicesCommand implements Callable<Integer> {
+    @Command(name = "node-slices", description = "Show slices loaded on the connected node (or specific node when [id] is given)") static class NodeSlicesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand private AetherCli parent;
 
+        @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
         @Override public Integer call() {
-            var response = parent.fetch(NODE_SLICES);
+            var response = option(nodeId).map(id -> parent.fetch(NODE_SLICES_GET, List.of(id)))
+                                          .or(() -> parent.fetch(NODE_SLICES));
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
 
-    @Command(name = "node-routes", description = "Show HTTP routes on the connected node") static class NodeRoutesCommand implements Callable<Integer> {
+    @Command(name = "node-routes", description = "Show HTTP routes on the connected node (or specific node when [id] is given)") static class NodeRoutesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand private AetherCli parent;
 
+        @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
         @Override public Integer call() {
-            var response = parent.fetch(NODE_ROUTES);
+            var response = option(nodeId).map(id -> parent.fetch(NODE_ROUTES_GET, List.of(id)))
+                                          .or(() -> parent.fetch(NODE_ROUTES));
+            return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+    }
+
+    @Command(name = "node-inflight", description = "Show in-flight request count on the connected node (or specific node when [id] is given)") static class NodeInflightCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand private AetherCli parent;
+
+        @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
+        @Override public Integer call() {
+            var response = option(nodeId).map(id -> parent.fetch(NODE_INFLIGHT_GET, List.of(id)))
+                                          .or(() -> parent.fetch(NODE_INFLIGHT));
+            return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+    }
+
+    @Command(name = "node-metrics", description = "Show per-node metrics (or specific node when [id] is given)") static class NodeMetricsCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand private AetherCli parent;
+
+        @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
+        @Override public Integer call() {
+            var response = option(nodeId).map(id -> parent.fetch(NODE_METRICS_GET, List.of(id)))
+                                          .or(() -> parent.fetch(NODE_METRICS));
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }

@@ -75,10 +75,18 @@ public final class SliceRoutes implements RouteSource {
                                          .toJson(this::buildClusterSlicesResponse),
                          ManagementRoutes.<SlicesResponse>route(ManagementRoute.NODE_SLICES)
                                          .toJson(this::buildNodeSlicesResponse),
+                         ManagementRoutes.<SlicesResponse>route(ManagementRoute.NODE_SLICES_GET)
+                                         .withPath(aString())
+                                         .to(__ -> org.pragmatica.lang.Promise.success(buildNodeSlicesResponse()))
+                                         .asJson(),
                          ManagementRoutes.<SlicesStatusResponse>route(ManagementRoute.SLICES_STATUS)
                                          .toJson(this::buildSlicesStatusResponse),
                          ManagementRoutes.<RoutesResponse>route(ManagementRoute.NODE_ROUTES)
                                          .toJson(this::buildRoutesResponse),
+                         ManagementRoutes.<RoutesResponse>route(ManagementRoute.NODE_ROUTES_GET)
+                                         .withPath(aString())
+                                         .to(__ -> org.pragmatica.lang.Promise.success(buildRoutesResponse()))
+                                         .asJson(),
                          ManagementRoutes.<ScaleResponse>route(ManagementRoute.SLICE_SCALE)
                                          .withBody(ScaleRequest.class)
                                          .toJson(this::handleScale),

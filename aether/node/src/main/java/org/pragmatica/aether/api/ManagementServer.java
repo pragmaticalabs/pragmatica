@@ -644,8 +644,8 @@ class ManagementServerImpl implements ManagementServer {
         if (methodOpt.isEmpty()) {return false;}
         var matched = ManagementRoute.match(methodOpt.unwrap(), ctx.path()).option();
         if (matched.isEmpty()) {return false;}
-        var target = matched.unwrap().route()
-                                   .target();
+        var matchedRoute = matched.unwrap();
+        var target = matchedRoute.route().target();
         return switch (target){
             case RouteTarget.LocalNode __ -> false;
             case RouteTarget.AnyCoreNode __ -> tryForwardIfNotCore(ctx, response, methodName, startTime);
@@ -655,6 +655,12 @@ class ManagementServerImpl implements ManagementServer {
                                                                                 startTime,
                                                                                 group);
             case RouteTarget.LeaderNode __ -> tryForwardIfNotLeader(ctx, response, methodName, startTime);
+            case RouteTarget.NodeIdParam(var paramIndex) -> tryForwardIfNotTargetNode(ctx,
+                                                                                       response,
+                                                                                       methodName,
+                                                                                       startTime,
+                                                                                       matchedRoute,
+                                                                                       paramIndex);
         };
     }
 
@@ -690,6 +696,25 @@ class ManagementServerImpl implements ManagementServer {
         if (ownerResult.isFailure()) {return false;}
         var owner = ownerResult.unwrap();
         if (owner.equals(node.self())) {return false;}
+        forwardManagementRequest(ctx, response, methodName, startTime);
+        return true;
+    }
+
+    /// Forward if the path-param-named node id != local node. The forwarder also re-checks
+    /// (locality + connectedness) but we short-circuit here to avoid an unnecessary forwarder
+    /// instantiation when the target is local.
+    private boolean tryForwardIfNotTargetNode(RequestContext ctx,
+                                              InstrumentedResponseWriter response,
+                                              String methodName,
+                                              long startTime,
+                                              org.pragmatica.aether.management.route.MatchedRoute matched,
+                                              int paramIndex) {
+        var paramNames = matched.route().paramNames();
+        if (paramIndex < 0 || paramIndex >= paramNames.size()) {return false;}
+        var targetId = matched.params().get(paramNames.get(paramIndex));
+        if (targetId == null) {return false;}
+        var node = nodeSupplier.get();
+        if (targetId.equals(node.self().id())) {return false;}
         forwardManagementRequest(ctx, response, methodName, startTime);
         return true;
     }

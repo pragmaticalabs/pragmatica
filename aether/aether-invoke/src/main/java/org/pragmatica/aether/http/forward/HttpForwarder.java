@@ -289,6 +289,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                                                            requestContext,
                                                                                            requestId);
                     case RouteTarget.LeaderNode __ -> forwardToLeader(requestContext, requestId);
+                    case RouteTarget.NodeIdParam(var paramIndex) -> forwardToTargetNode(route,
+                                                                                        requestContext,
+                                                                                        paramIndex,
+                                                                                        requestId);
                 };
             }
 
@@ -414,6 +418,55 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  0,
                                  Pipeline.MANAGEMENT);
                 return resultPromise;
+            }
+
+            /// Forward to a peer named by a path param. The param at `paramIndex` in the
+            /// matched route is interpreted as a NodeId. If the target equals the local node,
+            /// returns `notLocalTarget` to signal "handle locally" (parallel to `notLeader`).
+            /// If the target peer is not in the connected set, returns `targetDisconnected`.
+            private Promise<HttpResponseData> forwardToTargetNode(ManagementRoute route,
+                                                                  HttpRequestContext requestContext,
+                                                                  int paramIndex,
+                                                                  String requestId) {
+                var methodOpt = parseHttpMethod(requestContext.method());
+                if (methodOpt.isEmpty()) {
+                    return Causes.cause("Unparseable HTTP method on per-node forward: " + requestContext.method())
+                                 .<HttpResponseData>promise();
+                }
+                var matchResult = ManagementRoute.match(methodOpt.unwrap(), requestContext.path());
+                if (matchResult.isFailure()) {
+                    return matchResult.fold(c -> c.<HttpResponseData>promise(),
+                                            __ -> Causes.cause("unreachable")
+                                                        .<HttpResponseData>promise());
+                }
+                var matched = matchResult.unwrap();
+                var paramNames = matched.route().paramNames();
+                if (paramIndex < 0 || paramIndex >= paramNames.size()) {
+                    return Causes.cause("Per-node forward configured with out-of-range paramIndex=" + paramIndex + " on route " + route.name())
+                                 .<HttpResponseData>promise();
+                }
+                var targetId = matched.params().get(paramNames.get(paramIndex));
+                if (targetId == null) {
+                    return Causes.cause("Per-node forward param missing on route " + route.name() + " paramIndex=" + paramIndex)
+                                 .<HttpResponseData>promise();
+                }
+                var targetResult = NodeId.nodeId(targetId);
+                if (targetResult.isFailure()) {
+                    return Causes.cause("Invalid node id in per-node forward: " + targetId)
+                                 .<HttpResponseData>promise();
+                }
+                var target = targetResult.unwrap();
+                if (target.equals(selfNodeId)) {
+                    log.debug("Per-node forward target {} is local; signalling local handling [{}]", target, requestId);
+                    return ManagementRouteError.notLocalTarget(target.id())
+                                                                .<HttpResponseData>promise();
+                }
+                if (!clusterNetwork.connectedPeers().contains(target)) {
+                    log.warn("Per-node forward target {} not connected for [{}]", target, requestId);
+                    return ManagementRouteError.targetDisconnected(target.id())
+                                                                    .<HttpResponseData>promise();
+                }
+                return forwardToSpecificNode(requestContext, target, requestId);
             }
 
             private static Option<HttpMethod> parseHttpMethod(String raw) {

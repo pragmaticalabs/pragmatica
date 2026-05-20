@@ -63,6 +63,10 @@ public final class StatusRoutes implements RouteSource {
     @Override public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<StatusResponse>route(ManagementRoute.NODE_STATUS)
                                          .toJson(this::buildStatusResponse),
+                         ManagementRoutes.<StatusResponse>route(ManagementRoute.NODE_STATUS_GET)
+                                         .withPath(org.pragmatica.http.routing.PathParameter.aString())
+                                         .to(__ -> org.pragmatica.lang.Promise.success(buildStatusResponse()))
+                                         .asJson(),
                          ManagementRoutes.<NodesResponse>route(ManagementRoute.NODES_LIST)
                                          .toJson(this::buildNodesResponse),
                          ManagementRoutes.<HealthResponse>route(ManagementRoute.CLUSTER_HEALTH)

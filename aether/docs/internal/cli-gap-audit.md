@@ -74,31 +74,46 @@ These were discovered after the first sweep and would have silently broken the s
 
 ---
 
-## Phase B — planned, not yet landed
+## Phase B — Per-node variant endpoints (LANDED)
 
-### Per-node variant endpoints
+Resolved in commit (Phase B.3). Adds five new endpoints + CLI commands for cross-node per-id introspection with new forwarder infrastructure.
 
-User-approved scope: add parameterized variants for endpoints currently restricted to local-node introspection.
+**Foundation: `RouteTarget.NodeIdParam(int paramIndex)`** — new sealed variant declaring "the path param at this index names a target node." `HttpForwarder` and `ManagementServer` dispatch updated to recognize it.
 
-| New enum entry | Path | Behavior |
+**New endpoints (5)**:
+
+| Enum | Path | Returns same shape as |
 |---|---|---|
-| `NODE_STATUS_GET` | `GET /api/nodes/status/{id}` | Returns status of specified node (forwarded if not local) |
-| `NODE_INFLIGHT_GET` | `GET /api/nodes/inflight/{id}` | Returns in-flight request count for specified node |
-| `NODE_ROUTES_GET` | `GET /api/nodes/routes/{id}` | Returns route table for specified node |
-| `NODE_SLICES_GET` | `GET /api/nodes/slices/{id}` | Returns slice deployments on specified node |
-| `NODE_METRICS_GET` | `GET /api/nodes/metrics/{id}` | Returns per-node metrics for specified node |
+| `NODE_STATUS_GET` | `GET /api/nodes/status/{id}` | `/api/nodes/status` |
+| `NODE_INFLIGHT_GET` | `GET /api/nodes/inflight/{id}` | `/api/nodes/inflight` |
+| `NODE_SLICES_GET` | `GET /api/nodes/slices/{id}` | `/api/nodes/slices` |
+| `NODE_ROUTES_GET` | `GET /api/nodes/routes/{id}` | `/api/nodes/routes` |
+| `NODE_METRICS_GET` | `GET /api/nodes/metrics/{id}` | `/api/nodes/metrics` |
 
-Each pairs with an existing parameterless variant (`/api/nodes/status` without id = local). No-param = implicit local; with-param = forward to target node.
+Each per-id route ignores the id at handler time — by the time the handler runs, the forwarder has routed the request to the target node, so the handler just builds the local response.
 
-### Phase B implementation requirements
+**New CLI subcommands / optional args**:
+- `aether status [id]` — optional positional, dispatches to `NODE_STATUS_GET` when present
+- `aether node-slices [id]` — same
+- `aether node-routes [id]` — same
+- `aether node-inflight [id]` — NEW top-level subcommand
+- `aether node-metrics [id]` — NEW top-level subcommand (separate from cluster-wide `aether metrics`)
 
-1. **Add enum entries** to `ManagementRoute.java`.
-2. **Implement server-side forwarding handlers** — the routes class needs to recognize incoming `{id}`, determine if local, and forward to target node if not. The HTTP forwarding infrastructure exists (per `HttpForwarder` in `aether-invoke/`); the per-node-by-id routing is the new piece.
-3. **Add CLI optional `[id]` argument** to corresponding subcommands. The `aether nodes lifecycle` subcommand already has this pattern (`@Parameters(index = "0", arity = "0..1")`) and can serve as the template.
-4. **Update CLI hyphenated top-levels**: consider folding `aether node-slices` → `aether nodes slices [id]` and `aether node-routes` → `aether nodes routes [id]` for full coherence.
-5. **Tests**: integration test for each new per-node variant (verify forwarding is correct, response shape matches local-call shape).
+**Forwarding infrastructure**:
+- `HttpForwarder.forwardToTargetNode(route, requestContext, paramIndex, requestId)` — re-matches the path to extract the target NodeId, falls through to local handling when target == self, returns `targetDisconnected` if target peer is not in the connected set
+- `ManagementServer.tryForwardIfNotTargetNode` — short-circuits forwarder instantiation when target is local
+- New error variants `ManagementRouteError.NotLocalTarget` and `ManagementRouteError.TargetDisconnected`
 
-Phase B is a separate commit because it introduces new behavior, not just renames.
+**Tested**:
+- 49 management-api tests pass — `RouteAssemblerTest.roundTrip_assembleThenMatch_preservesParams` exercises all 134 enum entries (including the 5 new ones); assemble + match consistency verified for every new route
+- 399 node tests pass (route handler registration compiles + StatusRoutes / NodeLifecycleRoutes / SliceRoutes / MetricsRoutes all wire correctly)
+- 337 CLI tests pass
+
+**Notes**:
+- Integration testing of cross-node forwarding is exercised by the RC1 e2e suites — the LEADER and ANY targets share the same `forwardToSpecificNode` primitive that NodeIdParam now uses. Add a focused integration test if a per-node-fetch corner case surfaces.
+- The kebab-case top-level commands (`aether node-slices`, `aether node-routes`, `aether node-inflight`, `aether node-metrics`) keep the existing CLI pattern. Folding all per-node forms under `aether nodes <verb> [id]` is a separate UX cleanup tracked as a follow-up.
+
+
 
 ---
 

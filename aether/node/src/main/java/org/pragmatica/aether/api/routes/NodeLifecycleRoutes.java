@@ -76,7 +76,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                          .to(this::shutdownNode)
                                          .asJson(),
                          ManagementRoutes.<InFlightResponse>route(ManagementRoute.NODE_INFLIGHT)
-                                         .toJson(this::getInFlightCount));
+                                         .toJson(this::getInFlightCount),
+                         ManagementRoutes.<InFlightResponse>route(ManagementRoute.NODE_INFLIGHT_GET)
+                                         .withPath(aString())
+                                         .to(__ -> Promise.success(getInFlightCount()))
+                                         .asJson());
     }
 
     private InFlightResponse getInFlightCount() {

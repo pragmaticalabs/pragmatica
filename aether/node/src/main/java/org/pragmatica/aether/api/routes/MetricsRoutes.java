@@ -70,6 +70,10 @@ public final class MetricsRoutes implements RouteSource {
                                          .as(PROMETHEUS_CONTENT_TYPE),
                          ManagementRoutes.<List<NodeMetric>>route(ManagementRoute.NODE_METRICS)
                                          .toJson(this::buildNodeMetricsResponse),
+                         ManagementRoutes.<List<NodeMetric>>route(ManagementRoute.NODE_METRICS_GET)
+                                         .withPath(org.pragmatica.http.routing.PathParameter.aString())
+                                         .to(__ -> org.pragmatica.lang.Promise.success(buildNodeMetricsResponse()))
+                                         .asJson(),
                          ManagementRoutes.<ArtifactMetricsResponse>route(ManagementRoute.ARTIFACT_METRICS)
                                          .toJson(this::buildArtifactMetricsResponse),
                          ManagementRoutes.<InvocationMetricsResponse>route(ManagementRoute.INVOCATION_METRICS)
