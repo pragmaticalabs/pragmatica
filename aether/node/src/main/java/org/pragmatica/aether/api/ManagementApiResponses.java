@@ -414,7 +414,7 @@ public sealed interface ManagementApiResponses {
                                  long uptimeSeconds,
                                  Option<LoadBalancerStatusInfo> loadBalancer){}
 
-    record ClusterStatusNodeInfo(String nodeId, String role, String lifecycleState, String version, boolean isLeader){}
+    record ClusterStatusNodeInfo(String nodeId, String role, String kvState, String derivedStatus, String version, boolean isLeader){}
 
     record ApplyConfigRequest(String tomlContent, long expectedVersion){}
 
