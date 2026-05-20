@@ -280,6 +280,14 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 
 Returns cluster-wide slice data including per-node instances, target counts, and version information.
 
+**Query parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `state` | string | no | Case-insensitive slice instance state (e.g. `ACTIVE`, `LOADED`). When present, the response filters `instances[]` per slice to only those whose `state` matches (uppercase normalisation server-side). Slices with no matching instances are dropped from the response. Omit for unfiltered output. |
+
+**Example:** `GET /api/slices?state=ACTIVE` returns only slices that have at least one `ACTIVE` instance, with each slice's `instances[]` restricted to its `ACTIVE` entries.
+
 **Response:**
 ```json
 {

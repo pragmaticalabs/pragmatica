@@ -902,8 +902,14 @@ app_route_wired() {
 }
 
 slices_active_instances() {
+    # Use the server-side `?state=ACTIVE` filter (CLI: `aether slices --state ACTIVE`)
+    # so the response already restricts instances[] to ACTIVE; a single state-marker
+    # grep counts them. Equivalent in cardinality to the prior client-side grep
+    # against the unfiltered list, but the filter is now an authoritative contract
+    # (uppercase normalisation, instance-level filter) instead of a regex over the
+    # raw JSON. See `aether/docs/reference/management-api.md#get-apislices`.
     local slices
-    slices=$(cluster_slices)
+    slices=$(aether_json slices --state ACTIVE)
     local count
     count=$(printf '%s' "$slices" | grep -o '"state"[[:space:]]*:[[:space:]]*"ACTIVE"' | wc -l | tr -d ' ')
     echo "${count:-0}"

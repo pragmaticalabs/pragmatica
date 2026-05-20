@@ -141,6 +141,12 @@ Show all slices across the cluster with per-node instances, target counts, and v
 aether slices
 ```
 
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--state <STATE>` | Filter to slices/instances in this state (case-insensitive, e.g. `ACTIVE`, `LOADED`). When supplied, the response restricts each slice's `instances[]` to entries whose state matches, and drops slices with no matching instances. |
+
 Output:
 ```
 Slices (cluster-wide):
@@ -151,6 +157,12 @@ Slices (cluster-wide):
   org.example:inventory:1.0.0          target: 2  min: 1  version: 1.0.0
     node-1  ACTIVE
     node-2  ACTIVE
+```
+
+Filtered example — only ACTIVE instances:
+
+```bash
+aether slices --state ACTIVE
 ```
 
 #### nodes slices

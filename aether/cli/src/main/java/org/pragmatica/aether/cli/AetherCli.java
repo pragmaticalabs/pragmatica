@@ -604,9 +604,15 @@ import static org.pragmatica.lang.Option.some;
     @Command(name = "slices", description = "Show all slices across the cluster") static class SlicesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand private AetherCli parent;
 
+        @CommandLine.Option(names = {"--state"}, description = "Filter to slices/instances in this state (case-insensitive, e.g. ACTIVE, LOADED)") private String state;
+
         @Override public Integer call() {
-            var response = parent.fetch(SLICES_LIST);
+            var response = parent.fetch(SLICES_LIST, List.of(), buildSlicesQuery());
             return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+
+        private String buildSlicesQuery() {
+            return option(state).map(s -> "state=" + s).or("");
         }
     }
 

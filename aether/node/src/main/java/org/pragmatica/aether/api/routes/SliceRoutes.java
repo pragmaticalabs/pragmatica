@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -72,7 +73,9 @@ public final class SliceRoutes implements RouteSource {
 
     @Override public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<ClusterSlicesResponse>route(ManagementRoute.SLICES_LIST)
-                                         .toJson(this::buildClusterSlicesResponse),
+                                         .withQuery(QueryParameter.aString("state"))
+                                         .toValue(this::buildClusterSlicesResponse)
+                                         .asJson(),
                          ManagementRoutes.<SlicesResponse>route(ManagementRoute.NODE_SLICES)
                                          .toJson(this::buildNodeSlicesResponse),
                          ManagementRoutes.<SlicesResponse>route(ManagementRoute.NODE_SLICES_GET)
@@ -448,12 +451,14 @@ public final class SliceRoutes implements RouteSource {
         return new SlicesResponse(slices);
     }
 
-    private ClusterSlicesResponse buildClusterSlicesResponse() {
+    private ClusterSlicesResponse buildClusterSlicesResponse(Option<String> stateFilter) {
         var node = nodeSupplier.get();
         var targets = collectSliceTargets(node);
+        var normalizedFilter = stateFilter.map(s -> s.toUpperCase(java.util.Locale.ROOT));
         var slices = node.deploymentMap().allDeployments()
                                        .stream()
-                                       .map(info -> toClusterSliceInfo(info, targets))
+                                       .map(info -> toClusterSliceInfo(info, targets, normalizedFilter))
+                                       .filter(slice -> slice.instances().size() > 0 || normalizedFilter.isEmpty())
                                        .toList();
         return new ClusterSlicesResponse(slices);
     }
@@ -469,13 +474,15 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private static ClusterSliceInfo toClusterSliceInfo(DeploymentMap.SliceDeploymentInfo info,
-                                                       Map<String, SliceTargetValue> targets) {
+                                                       Map<String, SliceTargetValue> targets,
+                                                       Option<String> normalizedFilter) {
         var artifactStr = info.artifact();
         var artifactBase = artifactStr.contains(":")
                           ? artifactStr.substring(0, artifactStr.lastIndexOf(':'))
                           : artifactStr;
         var target = Option.option(targets.get(artifactBase));
         var instances = info.instances().stream()
+                                      .filter(i -> normalizedFilter.map(s -> s.equals(i.state().name())).or(true))
                                       .map(i -> new ClusterSliceInstance(i.nodeId(),
                                                                          i.state().name(),
                                                                          ""))
