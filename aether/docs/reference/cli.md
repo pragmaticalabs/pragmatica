@@ -1294,12 +1294,12 @@ aether cluster topology
 # lb-passive        PASSIVE     HEALTHY       aether-lb                             0.0.0.0:7000
 ```
 
-### `aether topology circuit-breaker status`
+### `aether cluster topology circuit-breaker status`
 
 Show the CTM (Cluster Topology Manager) provisioning circuit breaker state. The breaker trips after 3 consecutive provisioning failures and halts auto-heal until reset.
 
 ```bash
-aether topology circuit-breaker status
+aether cluster topology circuit-breaker status
 ```
 
 Example output:
@@ -1307,12 +1307,12 @@ Example output:
 {"consecutiveFailures": 0, "trippedAt": 3, "nextAllowedMs": 0, "tripped": false}
 ```
 
-### `aether topology circuit-breaker reset`
+### `aether cluster topology circuit-breaker reset`
 
 Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing the underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (`scale`, node-ready, phase NORMAL, leader handoff) have fired. Returns the prior consecutive-failure count.
 
 ```bash
-aether topology circuit-breaker reset
+aether cluster topology circuit-breaker reset
 ```
 
 Example output:
@@ -1320,12 +1320,12 @@ Example output:
 {"status": "reset", "priorFailureCount": 3}
 ```
 
-### `aether topology auto-heal status`
+### `aether cluster topology auto-heal status`
 
 Show whether CTM auto-heal (deficit-driven replacement provisioning) is currently enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker.
 
 ```bash
-aether topology auto-heal status
+aether cluster topology auto-heal status
 ```
 
 Example output:
@@ -1333,12 +1333,12 @@ Example output:
 {"enabled": true}
 ```
 
-### `aether topology auto-heal disable`
+### `aether cluster topology auto-heal disable`
 
 Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion.
 
 ```bash
-aether topology auto-heal disable
+aether cluster topology auto-heal disable
 ```
 
 Example output:
@@ -1346,12 +1346,12 @@ Example output:
 {"enabled": false, "previousState": true}
 ```
 
-### `aether topology auto-heal enable`
+### `aether cluster topology auto-heal enable`
 
 Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately.
 
 ```bash
-aether topology auto-heal enable
+aether cluster topology auto-heal enable
 ```
 
 Example output:

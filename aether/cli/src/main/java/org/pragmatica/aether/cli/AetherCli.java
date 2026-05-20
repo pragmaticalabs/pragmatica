@@ -54,7 +54,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)") private String nodeAddress;
@@ -2094,82 +2094,6 @@ import static org.pragmatica.lang.Option.some;
 
         private String buildEventsQuery() {
             return option(since).map(s -> "since=" + s).or("");
-        }
-    }
-
-    @Command(name = "topology", description = "Cluster topology operations", subcommands = {TopologyStatusCommand.CircuitBreakerCommand.class, TopologyStatusCommand.AutoHealCommand.class}) static class TopologyStatusCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand private AetherCli parent;
-
-        @Override public Integer call() {
-            var response = parent.fetch(CLUSTER_TOPOLOGY);
-            return OutputFormatter.printQuery(response, parent.outputOptions());
-        }
-
-        @Command(name = "circuit-breaker", description = "CTM provisioning circuit breaker", subcommands = {CircuitBreakerCommand.StatusCommand.class, CircuitBreakerCommand.ResetCommand.class}) static class CircuitBreakerCommand implements Runnable {
-            @CommandLine.ParentCommand private TopologyStatusCommand topologyParent;
-
-            @Contract@Override public void run() {
-                CommandLine.usage(this, System.out);
-            }
-
-            @Command(name = "status", description = "Show CTM provisioning circuit breaker state") static class StatusCommand implements Callable<Integer> {
-                @CommandLine.ParentCommand private CircuitBreakerCommand cbParent;
-
-                @Override public Integer call() {
-                    var response = cbParent.topologyParent.parent.fetch(CLUSTER_CIRCUIT_BREAKER_STATUS);
-                    return OutputFormatter.printQuery(response, cbParent.topologyParent.parent.outputOptions());
-                }
-            }
-
-            @Command(name = "reset", description = "Reset the CTM provisioning circuit breaker (operator override; use after fixing the underlying provisioning issue)") static class ResetCommand implements Callable<Integer> {
-                @CommandLine.ParentCommand private CircuitBreakerCommand cbParent;
-
-                @Override public Integer call() {
-                    var response = cbParent.topologyParent.parent.post(CLUSTER_CIRCUIT_BREAKER_RESET, "{}");
-                    return OutputFormatter.printAction(response,
-                                                       cbParent.topologyParent.parent.outputOptions(),
-                                                       "Circuit breaker reset");
-                }
-            }
-        }
-
-        @Command(name = "auto-heal", description = "CTM auto-heal (deficit-driven replacement provisioning) toggle", subcommands = {AutoHealCommand.StatusCommand.class, AutoHealCommand.EnableCommand.class, AutoHealCommand.DisableCommand.class}) static class AutoHealCommand implements Runnable {
-            @CommandLine.ParentCommand private TopologyStatusCommand topologyParent;
-
-            @Contract@Override public void run() {
-                CommandLine.usage(this, System.out);
-            }
-
-            @Command(name = "status", description = "Show whether CTM auto-heal is enabled") static class StatusCommand implements Callable<Integer> {
-                @CommandLine.ParentCommand private AutoHealCommand ahParent;
-
-                @Override public Integer call() {
-                    var response = ahParent.topologyParent.parent.fetch(CLUSTER_AUTO_HEAL_STATUS);
-                    return OutputFormatter.printQuery(response, ahParent.topologyParent.parent.outputOptions());
-                }
-            }
-
-            @Command(name = "enable", description = "Enable CTM auto-heal (resume deficit-driven replacement provisioning)") static class EnableCommand implements Callable<Integer> {
-                @CommandLine.ParentCommand private AutoHealCommand ahParent;
-
-                @Override public Integer call() {
-                    var response = ahParent.topologyParent.parent.post(CLUSTER_AUTO_HEAL_ENABLE, "{}");
-                    return OutputFormatter.printAction(response,
-                                                       ahParent.topologyParent.parent.outputOptions(),
-                                                       "Auto-heal enabled");
-                }
-            }
-
-            @Command(name = "disable", description = "Disable CTM auto-heal (halt deficit-driven replacement provisioning until re-enabled)") static class DisableCommand implements Callable<Integer> {
-                @CommandLine.ParentCommand private AutoHealCommand ahParent;
-
-                @Override public Integer call() {
-                    var response = ahParent.topologyParent.parent.post(CLUSTER_AUTO_HEAL_DISABLE, "{}");
-                    return OutputFormatter.printAction(response,
-                                                       ahParent.topologyParent.parent.outputOptions(),
-                                                       "Auto-heal disabled");
-                }
-            }
         }
     }
 

@@ -35,7 +35,7 @@ test_cluster_ready() {
 # every downstream cluster B suite that relies on CTM provisioning replacements
 # after kill_node.
 _reactivate_auto_heal_trap() {
-    enable_auto_heal || log_warn "EXIT trap: enable_auto_heal returned non-zero — operator must manually re-enable via 'aether topology auto-heal enable' or cluster will not self-heal"
+    enable_auto_heal || log_warn "EXIT trap: enable_auto_heal returned non-zero — operator must manually re-enable via 'aether cluster topology auto-heal enable' or cluster will not self-heal"
 }
 trap _reactivate_auto_heal_trap EXIT
 
