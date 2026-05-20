@@ -246,8 +246,11 @@ pick_non_leader() {
     # response is a JSON array of `{nodeId, state, updatedAt}` triplets, all
     # already ON_DUTY post-filter — we just extract the `nodeId` field with
     # grep+sed (BSD-awk-compatible, no jq dependency).
+    # NOTE: `aether_json` only accepts single-word subcommands ($1 is the command);
+    # `nodes lifecycle` is a parent+sub pair that picocli won't auto-split if quoted as one arg.
+    # Call `aether_failover` directly here so the subcommand is passed as two distinct args.
     local lifecycle_payload
-    lifecycle_payload=$(aether_json "nodes lifecycle" --state ON_DUTY 2>/dev/null || true)
+    lifecycle_payload=$(aether_failover nodes lifecycle --state ON_DUTY --format json 2>/dev/null || true)
     if [ -z "$lifecycle_payload" ]; then
         log_fail "pick_non_leader: 'aether nodes lifecycle --state ON_DUTY' returned empty body — cannot select victim" >&2
         return 1
