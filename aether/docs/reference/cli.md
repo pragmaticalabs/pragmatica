@@ -95,7 +95,7 @@ authorization_role = "VIEWER"
 |------|-----------|
 | **ADMIN** | All commands |
 | **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
-| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `node-slices`, `routes`, `node-routes`, `metrics`, `events`, `health` |
+| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `nodes slices`, `routes`, `nodes routes`, `metrics`, `events`, `health` |
 
 When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
 
@@ -153,12 +153,12 @@ Slices (cluster-wide):
     node-2  ACTIVE
 ```
 
-#### node-slices
+#### nodes slices
 
-Show slices loaded on the connected node (flat list of artifact names):
+Show slices loaded on the connected node (flat list of artifact names). Pass `[id]` for a specific node:
 
 ```bash
-aether node-slices
+aether nodes slices
 ```
 
 Output:
@@ -183,12 +183,12 @@ Routes (cluster-wide):
   POST /orders   [node-1, node-2]  security: api-key
 ```
 
-#### node-routes
+#### nodes routes
 
-Show HTTP routes on the connected node:
+Show HTTP routes on the connected node. Pass `[id]` for a specific node:
 
 ```bash
-aether node-routes
+aether nodes routes
 ```
 
 Output:

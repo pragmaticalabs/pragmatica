@@ -94,10 +94,10 @@ Each per-id route ignores the id at handler time — by the time the handler run
 
 **New CLI subcommands / optional args**:
 - `aether status [id]` — optional positional, dispatches to `NODE_STATUS_GET` when present
-- `aether node-slices [id]` — same
-- `aether node-routes [id]` — same
-- `aether node-inflight [id]` — NEW top-level subcommand
-- `aether node-metrics [id]` — NEW top-level subcommand (separate from cluster-wide `aether metrics`)
+- `aether nodes slices [id]` — same
+- `aether nodes routes [id]` — same
+- `aether nodes inflight [id]` — NEW subcommand under `aether nodes`
+- `aether nodes metrics [id]` — NEW subcommand under `aether nodes` (separate from cluster-wide `aether metrics`)
 
 **Forwarding infrastructure**:
 - `HttpForwarder.forwardToTargetNode(route, requestContext, paramIndex, requestId)` — re-matches the path to extract the target NodeId, falls through to local handling when target == self, returns `targetDisconnected` if target peer is not in the connected set
@@ -111,7 +111,7 @@ Each per-id route ignores the id at handler time — by the time the handler run
 
 **Notes**:
 - Integration testing of cross-node forwarding is exercised by the RC1 e2e suites — the LEADER and ANY targets share the same `forwardToSpecificNode` primitive that NodeIdParam now uses. Add a focused integration test if a per-node-fetch corner case surfaces.
-- The kebab-case top-level commands (`aether node-slices`, `aether node-routes`, `aether node-inflight`, `aether node-metrics`) keep the existing CLI pattern. Folding all per-node forms under `aether nodes <verb> [id]` is a separate UX cleanup tracked as a follow-up.
+- The per-node introspection forms now live under `aether nodes <verb> [id]` (`slices`, `routes`, `inflight`, `metrics`) — folded under the same parent as lifecycle/drain/activate/shutdown. Earlier kebab top-levels (`aether node-slices`, etc.) have been removed.
 
 
 

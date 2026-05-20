@@ -54,7 +54,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.NodeCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.NodeSlicesCommand.class, AetherCli.RoutesCommand.class, AetherCli.NodeRoutesCommand.class, AetherCli.NodeInflightCommand.class, AetherCli.NodeMetricsCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.TopologyStatusCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, GenerateCompletion.class}) @Contract public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)") private String nodeAddress;
@@ -472,12 +472,132 @@ import static org.pragmatica.lang.Option.some;
         }
     }
 
-    @Command(name = "nodes", description = "List active nodes") static class NodesCommand implements Callable<Integer> {
+    @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection",
+             subcommands = {
+                 NodesCommand.LifecycleCommand.class,
+                 NodesCommand.DrainCommand.class,
+                 NodesCommand.ActivateCommand.class,
+                 NodesCommand.ShutdownCommand.class,
+                 NodesCommand.SlicesCommand.class,
+                 NodesCommand.RoutesCommand.class,
+                 NodesCommand.InflightCommand.class,
+                 NodesCommand.MetricsCommand.class
+             }) static class NodesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand private AetherCli parent;
 
         @Override public Integer call() {
             var response = parent.fetch(NODES_LIST);
             return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+
+        @Command(name = "lifecycle", description = "Show node lifecycle states") static class LifecycleCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID (omit to list all)", arity = "0..1") private String nodeId;
+
+            @Override public Integer call() {
+                return option(nodeId).map(this::showSingleNodeLifecycle).or(() -> showAllLifecycleStates());
+            }
+
+            private Integer showAllLifecycleStates() {
+                var response = nodesParent.parent.fetch(NODE_LIFECYCLE_LIST);
+                return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+
+            private Integer showSingleNodeLifecycle(String id) {
+                var response = nodesParent.parent.fetch(NODE_LIFECYCLE_GET, List.of(id));
+                return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "drain", description = "Drain a node (ON_DUTY -> DRAINING)") static class DrainCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID") private String nodeId;
+
+            @Override public Integer call() {
+                return executeTransition(NODE_DRAIN, "drain", nodeId, nodesParent);
+            }
+        }
+
+        @Command(name = "activate", description = "Activate a node (DRAINING/DECOMMISSIONED -> ON_DUTY)") static class ActivateCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID") private String nodeId;
+
+            @Override public Integer call() {
+                return executeTransition(NODE_ACTIVATE, "activate", nodeId, nodesParent);
+            }
+        }
+
+        @Command(name = "shutdown", description = "Shutdown a node (any -> SHUTTING_DOWN)") static class ShutdownCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID") private String nodeId;
+
+            @Override public Integer call() {
+                return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodesParent);
+            }
+        }
+
+        @Command(name = "slices", description = "Show slices on a node (defaults to local; pass [id] for any node)") static class SlicesCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
+            @Override public Integer call() {
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_SLICES_GET, List.of(id)))
+                                              .or(() -> nodesParent.parent.fetch(NODE_SLICES));
+                return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "routes", description = "Show HTTP routes on a node (defaults to local; pass [id] for any node)") static class RoutesCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
+            @Override public Integer call() {
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_ROUTES_GET, List.of(id)))
+                                              .or(() -> nodesParent.parent.fetch(NODE_ROUTES));
+                return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "inflight", description = "Show in-flight request count on a node (defaults to local; pass [id] for any node)") static class InflightCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
+            @Override public Integer call() {
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_INFLIGHT_GET, List.of(id)))
+                                              .or(() -> nodesParent.parent.fetch(NODE_INFLIGHT));
+                return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "metrics", description = "Show per-node metrics (defaults to local; pass [id] for any node)") static class MetricsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
+
+            @Override public Integer call() {
+                var response = option(nodeId).map(id -> nodesParent.parent.fetch(NODE_METRICS_GET, List.of(id)))
+                                              .or(() -> nodesParent.parent.fetch(NODE_METRICS));
+                return OutputFormatter.printQuery(response, nodesParent.parent.outputOptions());
+            }
+        }
+
+        @SuppressWarnings("JBCT-UTIL-02") private static Integer executeTransition(ManagementRoute route,
+                                                                                   String action,
+                                                                                   String nodeId,
+                                                                                   NodesCommand nodesParent) {
+            var response = nodesParent.parent.post(route, List.of(nodeId), "");
+            var errorCode = OutputFormatter.checkResponseError(response,
+                                                               nodesParent.parent.outputOptions(),
+                                                               "Failed to " + action + " node " + nodeId);
+            if (errorCode >= 0) {return errorCode;}
+            return OutputFormatter.printAction(response, nodesParent.parent.outputOptions(), action + " node " + nodeId);
         }
     }
 
@@ -486,54 +606,6 @@ import static org.pragmatica.lang.Option.some;
 
         @Override public Integer call() {
             var response = parent.fetch(SLICES_LIST);
-            return OutputFormatter.printQuery(response, parent.outputOptions());
-        }
-    }
-
-    @Command(name = "node-slices", description = "Show slices loaded on the connected node (or specific node when [id] is given)") static class NodeSlicesCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand private AetherCli parent;
-
-        @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
-
-        @Override public Integer call() {
-            var response = option(nodeId).map(id -> parent.fetch(NODE_SLICES_GET, List.of(id)))
-                                          .or(() -> parent.fetch(NODE_SLICES));
-            return OutputFormatter.printQuery(response, parent.outputOptions());
-        }
-    }
-
-    @Command(name = "node-routes", description = "Show HTTP routes on the connected node (or specific node when [id] is given)") static class NodeRoutesCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand private AetherCli parent;
-
-        @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
-
-        @Override public Integer call() {
-            var response = option(nodeId).map(id -> parent.fetch(NODE_ROUTES_GET, List.of(id)))
-                                          .or(() -> parent.fetch(NODE_ROUTES));
-            return OutputFormatter.printQuery(response, parent.outputOptions());
-        }
-    }
-
-    @Command(name = "node-inflight", description = "Show in-flight request count on the connected node (or specific node when [id] is given)") static class NodeInflightCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand private AetherCli parent;
-
-        @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
-
-        @Override public Integer call() {
-            var response = option(nodeId).map(id -> parent.fetch(NODE_INFLIGHT_GET, List.of(id)))
-                                          .or(() -> parent.fetch(NODE_INFLIGHT));
-            return OutputFormatter.printQuery(response, parent.outputOptions());
-        }
-    }
-
-    @Command(name = "node-metrics", description = "Show per-node metrics (or specific node when [id] is given)") static class NodeMetricsCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand private AetherCli parent;
-
-        @Parameters(index = "0", description = "Node ID (omit for local node)", arity = "0..1") private String nodeId;
-
-        @Override public Integer call() {
-            var response = option(nodeId).map(id -> parent.fetch(NODE_METRICS_GET, List.of(id)))
-                                          .or(() -> parent.fetch(NODE_METRICS));
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }
@@ -1932,76 +2004,6 @@ import static org.pragmatica.lang.Option.some;
 
         private String buildEventsQuery() {
             return option(since).map(s -> "since=" + s).or("");
-        }
-    }
-
-    @Command(name = "nodes", description = "Node lifecycle management", subcommands = {NodeCommand.LifecycleCommand.class, NodeCommand.DrainCommand.class, NodeCommand.ActivateCommand.class, NodeCommand.ShutdownCommand.class}) static class NodeCommand implements Runnable {
-        @CommandLine.ParentCommand private AetherCli parent;
-
-        @Contract@Override public void run() {
-            CommandLine.usage(this, System.out);
-        }
-
-        @Command(name = "lifecycle", description = "Show node lifecycle states") static class LifecycleCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand private NodeCommand nodeParent;
-
-            @Parameters(index = "0", description = "Node ID (omit to list all)", arity = "0..1") private String nodeId;
-
-            @Override public Integer call() {
-                return option(nodeId).map(this::showSingleNodeLifecycle).or(() -> showAllLifecycleStates());
-            }
-
-            private Integer showAllLifecycleStates() {
-                var response = nodeParent.parent.fetch(NODE_LIFECYCLE_LIST);
-                return OutputFormatter.printQuery(response, nodeParent.parent.outputOptions());
-            }
-
-            private Integer showSingleNodeLifecycle(String id) {
-                var response = nodeParent.parent.fetch(NODE_LIFECYCLE_GET, List.of(id));
-                return OutputFormatter.printQuery(response, nodeParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "drain", description = "Drain a node (ON_DUTY -> DRAINING)") static class DrainCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand private NodeCommand nodeParent;
-
-            @Parameters(index = "0", description = "Node ID") private String nodeId;
-
-            @Override public Integer call() {
-                return executeTransition(NODE_DRAIN, "drain", nodeId, nodeParent);
-            }
-        }
-
-        @Command(name = "activate", description = "Activate a node (DRAINING/DECOMMISSIONED -> ON_DUTY)") static class ActivateCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand private NodeCommand nodeParent;
-
-            @Parameters(index = "0", description = "Node ID") private String nodeId;
-
-            @Override public Integer call() {
-                return executeTransition(NODE_ACTIVATE, "activate", nodeId, nodeParent);
-            }
-        }
-
-        @Command(name = "shutdown", description = "Shutdown a node (any -> SHUTTING_DOWN)") static class ShutdownCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand private NodeCommand nodeParent;
-
-            @Parameters(index = "0", description = "Node ID") private String nodeId;
-
-            @Override public Integer call() {
-                return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodeParent);
-            }
-        }
-
-        @SuppressWarnings("JBCT-UTIL-02") private static Integer executeTransition(ManagementRoute route,
-                                                                                   String action,
-                                                                                   String nodeId,
-                                                                                   NodeCommand nodeParent) {
-            var response = nodeParent.parent.post(route, List.of(nodeId), "");
-            var errorCode = OutputFormatter.checkResponseError(response,
-                                                               nodeParent.parent.outputOptions(),
-                                                               "Failed to " + action + " node " + nodeId);
-            if (errorCode >= 0) {return errorCode;}
-            return OutputFormatter.printAction(response, nodeParent.parent.outputOptions(), action + " node " + nodeId);
         }
     }
 
