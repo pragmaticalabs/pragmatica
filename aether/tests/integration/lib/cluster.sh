@@ -1589,13 +1589,13 @@ reset_provisioning_circuit() {
 # state-not-applied.
 disable_auto_heal() {
     local pre_state result rc post_state
-    pre_state=$(aether_failover topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
+    pre_state=$(aether_failover cluster topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
     if [ "$pre_state" = "false" ]; then
         log_info "disable_auto_heal: already disabled (idempotent no-op)"
         return 0
     fi
 
-    result=$(aether_failover topology auto-heal disable 2>&1)
+    result=$(aether_failover cluster topology auto-heal disable 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
         log_warn "disable_auto_heal: CLI failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
@@ -1603,7 +1603,7 @@ disable_auto_heal() {
     fi
     log_info "disable_auto_heal: ${result}"
 
-    post_state=$(aether_failover topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
+    post_state=$(aether_failover cluster topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
     if [ "$post_state" != "false" ]; then
         log_warn "disable_auto_heal: CLI returned success but post-state is '${post_state}' (expected 'false')"
         return 1
@@ -1614,13 +1614,13 @@ disable_auto_heal() {
 # Enable CTM auto-heal. Symmetric to disable_auto_heal (idempotent, verify-after).
 enable_auto_heal() {
     local pre_state result rc post_state
-    pre_state=$(aether_failover topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
+    pre_state=$(aether_failover cluster topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
     if [ "$pre_state" = "true" ]; then
         log_info "enable_auto_heal: already enabled (idempotent no-op)"
         return 0
     fi
 
-    result=$(aether_failover topology auto-heal enable 2>&1)
+    result=$(aether_failover cluster topology auto-heal enable 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
         log_warn "enable_auto_heal: CLI failed rc=${rc}: $(printf '%s' "$result" | head -c 200)"
@@ -1628,7 +1628,7 @@ enable_auto_heal() {
     fi
     log_info "enable_auto_heal: ${result}"
 
-    post_state=$(aether_failover topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
+    post_state=$(aether_failover cluster topology auto-heal status --format value --field enabled 2>/dev/null || echo "unknown")
     if [ "$post_state" != "true" ]; then
         log_warn "enable_auto_heal: CLI returned success but post-state is '${post_state}' (expected 'true')"
         return 1
@@ -1642,7 +1642,7 @@ enable_auto_heal() {
 #   if [ "$(auto_heal_enabled)" = "false" ]; then ...
 auto_heal_enabled() {
     local value rc
-    value=$(aether_failover topology auto-heal status --format value --field enabled 2>&1)
+    value=$(aether_failover cluster topology auto-heal status --format value --field enabled 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ]; then
         log_warn "auto_heal_enabled: CLI failed rc=${rc}: $(printf '%s' "$value" | head -c 200)" >&2
