@@ -27,10 +27,13 @@ public final class RouteFilters {
     private RouteFilters() {}
 
     /// Parse a `+`-separated state filter into an uppercase set of state names.
-    /// Empty / blank parts are dropped. The resulting set is the membership predicate
-    /// applied per record. Empty set (e.g. `?state=+`) matches nothing.
+    /// Accepts `+`, whitespace, or commas as separators — robust to URL form encoding,
+    /// which decodes a literal `+` in query strings to a space (so the wire receives
+    /// `LOADED ACTIVE` when the operator typed `--state LOADED+ACTIVE`). Empty / blank
+    /// parts are dropped. The resulting set is the membership predicate applied per
+    /// record. Empty set (e.g. `?state=+`) matches nothing.
     public static Set<String> parseStateFilter(String input) {
-        return Arrays.stream(input.split("\\+"))
+        return Arrays.stream(input.split("[+,\\s]+"))
                      .map(s -> s.trim().toUpperCase(Locale.ROOT))
                      .filter(s -> !s.isEmpty())
                      .collect(Collectors.toUnmodifiableSet());
