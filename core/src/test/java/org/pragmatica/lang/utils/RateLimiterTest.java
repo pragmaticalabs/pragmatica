@@ -7,6 +7,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.RateLimiter.RateLimiterError.LimitExceeded;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
@@ -29,6 +30,10 @@ class RateLimiterTest {
 
         public void advanceTime(long millis) {
             currentTime = currentTime.plus(millis, TimeUnit.MILLISECONDS);
+        }
+
+        public void advanceNanos(long nanos) {
+            currentTime = currentTime.plus(nanos, TimeUnit.NANOSECONDS);
         }
     }
 
@@ -116,6 +121,32 @@ class RateLimiterTest {
     }
 
     @Test
+    void shouldRefillContinuouslyOneTokenPerQuantum() {
+        // rate=5/sec → nanosPerToken = 200ms. Exhaust, then advance 200ms — exactly one token.
+        for (int i = 0; i < 5; i++) {
+            assertTrue(rateLimiter.tryAcquire());
+        }
+        assertFalse(rateLimiter.tryAcquire());
+
+        timeSource.advanceTime(200);
+
+        assertTrue(rateLimiter.tryAcquire(), "One token should be available after 200ms");
+        assertFalse(rateLimiter.tryAcquire(), "Only one token should be available after 200ms");
+    }
+
+    @Test
+    void shouldNotRefillBeforeQuantumElapsed() {
+        for (int i = 0; i < 5; i++) {
+            assertTrue(rateLimiter.tryAcquire());
+        }
+
+        timeSource.advanceTime(199); // just below nanosPerToken (200ms)
+
+        assertFalse(rateLimiter.tryAcquire(),
+                    "No token should be available before one full quantum elapsed");
+    }
+
+    @Test
     void shouldAllowBurstCapacity() {
         var limiterWithBurst = RateLimiter.builder()
                 .rate(5)
@@ -149,7 +180,7 @@ class RateLimiterTest {
                 .onSuccessRun(Assertions::fail)
                 .onFailure(cause -> {
                     if (cause instanceof LimitExceeded limited) {
-                        assertTrue(limited.retryAfter().millis() > 0,
+                        assertTrue(limited.retryAfter().nanos() > 0,
                                 "Retry after should be positive");
                         assertTrue(limited.retryAfter().millis() <= 1000,
                                 "Retry after should not exceed period");
@@ -160,43 +191,60 @@ class RateLimiterTest {
     }
 
     @Test
-    void shouldHandleConcurrentExecutions() {
-        var limiter = RateLimiter.builder()
-                .rate(100)
-                .period(timeSpan(1).seconds())
-                .withDefaultTimeSource();
+    void retryAfterShouldBeBoundedByQuantum() {
+        // nanosPerToken at rate=5/sec, period=1s is 200ms.
+        for (int i = 0; i < 5; i++) {
+            assertTrue(rateLimiter.tryAcquire());
+        }
+        assertFalse(rateLimiter.tryAcquire());
 
-        var successCount = new AtomicInteger(0);
-        var failureCount = new AtomicInteger(0);
-
-        var promises = IntStream.range(0, 150)
-                .mapToObj(_ -> limiter.execute(() -> Promise.success("OK"))
-                        .onSuccess(_ -> successCount.incrementAndGet())
-                        .onFailure(_ -> failureCount.incrementAndGet()))
-                .toList();
-
-        Promise.allOf(promises)
-                .await(timeSpan(2).seconds())
-                .onFailureRun(Assertions::fail);
-
-        assertEquals(100, successCount.get(), "Should allow exactly rate permits");
-        assertEquals(50, failureCount.get(), "Should reject excess requests");
+        var retry = rateLimiter.retryAfter();
+        assertTrue(retry.nanos() > 0, "retryAfter must be positive");
+        assertTrue(retry.nanos() <= timeSpan(200).millis().nanos(),
+                   "retryAfter must not exceed one quantum (200ms), was " + retry);
     }
 
     @Test
-    void shouldCreateSimpleRateLimiter() {
-        var simpleLimiter = RateLimiter.rateLimiter(10, timeSpan(1).seconds());
+    void shouldHandleConcurrentTryAcquireDeterministically() throws InterruptedException {
+        // Frozen time: no refill possible. With capacity K, exactly K of N threads should succeed.
+        var limiter = RateLimiter.builder()
+                .rate(100)
+                .period(timeSpan(1).seconds())
+                .burst(0)
+                .timeSource(timeSource);
 
-        for (int i = 0; i < 10; i++) {
-            simpleLimiter.execute(() -> Promise.success("OK"))
-                    .await()
-                    .onFailureRun(Assertions::fail);
+        int contenders = 256;
+        int capacity = 100;
+
+        var start = new CountDownLatch(1);
+        var done = new CountDownLatch(contenders);
+        var successCount = new AtomicInteger(0);
+        var failureCount = new AtomicInteger(0);
+
+        for (int i = 0; i < contenders; i++) {
+            Thread.startVirtualThread(() -> {
+                try {
+                    start.await();
+                    if (limiter.tryAcquire()) {
+                        successCount.incrementAndGet();
+                    } else {
+                        failureCount.incrementAndGet();
+                    }
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    done.countDown();
+                }
+            });
         }
 
-        simpleLimiter.execute(() -> Promise.success("Fail"))
-                .await()
-                .onSuccessRun(Assertions::fail)
-                .onFailure(cause -> assertInstanceOf(LimitExceeded.class, cause));
+        start.countDown();
+        assertTrue(done.await(5, TimeUnit.SECONDS), "Contenders should finish quickly");
+
+        assertEquals(capacity, successCount.get(),
+                     "Exactly capacity permits should be admitted under contention");
+        assertEquals(contenders - capacity, failureCount.get(),
+                     "All other requests should be rejected");
     }
 
     @Test
@@ -233,7 +281,7 @@ class RateLimiterTest {
                 .timeSource(timeSource);
 
         // Advance time by 10 periods without using permits
-        timeSource.advanceTime(10000);
+        timeSource.advanceTime(10_000);
 
         // Trigger refill by executing
         int successCount = 0;
@@ -246,5 +294,58 @@ class RateLimiterTest {
 
         // Should not exceed rate + burst = 8
         assertEquals(8, successCount, "Should not exceed max tokens");
+    }
+
+    @Test
+    void shouldCreateSimpleRateLimiter() {
+        // Uses real system clock — verify the wiring works end-to-end on the default time source.
+        var simpleLimiter = RateLimiter.rateLimiter(10, timeSpan(1).seconds());
+
+        for (int i = 0; i < 10; i++) {
+            simpleLimiter.execute(() -> Promise.success("OK"))
+                    .await()
+                    .onFailureRun(Assertions::fail);
+        }
+
+        simpleLimiter.execute(() -> Promise.success("Fail"))
+                .await()
+                .onSuccessRun(Assertions::fail)
+                .onFailure(cause -> assertInstanceOf(LimitExceeded.class, cause));
+    }
+
+    @Test
+    void shouldRejectInvalidConfiguration() {
+        assertThrows(IllegalArgumentException.class,
+                     () -> RateLimiter.builder().rate(0).period(timeSpan(1).seconds()).timeSource(timeSource));
+        assertThrows(IllegalArgumentException.class,
+                     () -> RateLimiter.builder().rate(-1).period(timeSpan(1).seconds()).timeSource(timeSource));
+        assertThrows(IllegalArgumentException.class,
+                     () -> RateLimiter.builder().rate(5).period(timeSpan(0).seconds()).timeSource(timeSource));
+        assertThrows(IllegalArgumentException.class,
+                     () -> RateLimiter.builder()
+                             .rate(5).period(timeSpan(1).seconds()).burst(-1).timeSource(timeSource));
+        assertThrows(IllegalArgumentException.class,
+                     () -> RateLimiter.builder()
+                             .rate(70_000).period(timeSpan(1).seconds()).timeSource(timeSource));
+    }
+
+    @Test
+    void shouldRecoverFullCapacityOverWideTimeAdvance() {
+        // Wide advance after burst: tokens cap at maxTokens, not unbounded.
+        var limiter = RateLimiter.builder()
+                .rate(100)
+                .period(timeSpan(1).seconds())
+                .burst(50)
+                .timeSource(timeSource);
+
+        timeSource.advanceTime(60_000); // 60 periods
+
+        int successes = 0;
+        for (int i = 0; i < 500; i++) {
+            if (limiter.tryAcquire()) {
+                successes++;
+            }
+        }
+        assertEquals(150, successes, "Capacity must cap at rate + burst regardless of idle duration");
     }
 }
