@@ -684,6 +684,56 @@ class ResultTest {
     }
 
     @Test
+    void firstFailureOfReturnsListOfValuesForSuccessInputs() {
+        Result.firstFailureOf(List.of(Result.success(321),
+                                      Result.success(123),
+                                      Result.success(456)))
+              .onSuccess(values -> {
+                  assertEquals(3, values.size());
+                  assertEquals(321, values.get(0));
+                  assertEquals(123, values.get(1));
+                  assertEquals(456, values.get(2));
+              })
+              .onFailureRun(Assertions::fail);
+    }
+
+    @Test
+    void firstFailureOfReturnsEmptyListForEmptyInput() {
+        Result.<Integer>firstFailureOf(List.of())
+              .onSuccess(values -> assertEquals(0, values.size()))
+              .onFailureRun(Assertions::fail);
+    }
+
+    @Test
+    void firstFailureOfReturnsFirstFailureUnwrapped() {
+        var firstFailure = Causes.cause("first failure");
+        var secondFailure = Causes.cause("second failure");
+
+        Result.firstFailureOf(List.of(Result.success(321),
+                                      Result.failure(firstFailure),
+                                      Result.failure(secondFailure)))
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> assertEquals(firstFailure, cause));
+    }
+
+    @Test
+    void firstFailureOfShortCircuitsAndDoesNotAggregate() {
+        // Contrast with allOf, which would yield a composite of all failures.
+        var earlyFailure = Causes.cause("early");
+        var laterFailure = Causes.cause("later");
+
+        Result.firstFailureOf(List.of(Result.failure(earlyFailure),
+                                      Result.failure(laterFailure),
+                                      Result.failure(Causes.cause("ignored"))))
+              .onSuccessRun(Assertions::fail)
+              .onFailure(cause -> {
+                  assertEquals(earlyFailure, cause);
+                  assertEquals(1, cause.stream().count(),
+                               "failure must not be composite — should carry only the first cause");
+              });
+    }
+
+    @Test
     void allReturnsSuccessFor1SuccessInput() {
         Result.all(Result.success(321))
               .map(value -> {

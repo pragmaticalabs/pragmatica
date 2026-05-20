@@ -1357,6 +1357,33 @@ public sealed interface Result<T> permits Success, Failure {
     }
 
     /// **[Factory]**
+    /// Transform the list of [Result] instances into [Result] with the list of values, short-circuiting on the first failure.
+    ///
+    /// Unlike [#allOf(List)] which inspects every input and aggregates **all** failures into a composite cause, this
+    /// variant stops at the first failure encountered and returns its cause unwrapped — no composite, no accumulation
+    /// of later failures. Use this when only one failure matters (early-exit validation, fail-fast pipelines) or when
+    /// the inputs are expensive to inspect past the first rejection.
+    ///
+    /// @param results input list of [Result] instances
+    ///
+    /// @return success instance with values in input order if every [Result] is a success, or a failure carrying the
+    ///         cause of the first failure in iteration order
+    static <T> Result<List<T>> firstFailureOf(List<Result<T>> results) {
+        var values = new ArrayList<T>();
+        for (var value : results) {
+            switch (value) {
+                case Failure<T> failure -> {
+                    return failure.cause().result();
+                }
+                case Success<T> success -> {
+                    values.add(success.value());
+                }
+            }
+        }
+        return Result.success(values);
+    }
+
+    /// **[Factory]**
     /// Transform provided results into a single result containing the tuple of values.
     /// The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
