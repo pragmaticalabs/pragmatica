@@ -7,13 +7,14 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_nodes_formed() {
-    wait_for_cluster_ready 120
+    # Smoke gate runs on a fresh cluster — pass strict NODE_COUNT explicitly so we don't
+    # inherit the post-chaos N-1 default. The seed-node lifecycle write bug is fixed (every
+    # node — including the initial leader — appears in the generation snapshot). See
+    # aether/docs/specs/test-readiness-contract.md §1.2 + §6.
+    wait_for_cluster_ready 120 "${NODE_COUNT:-5}"
     local expected="${NODE_COUNT:-5}"
     local count
     count=$(cluster_member_count)
-    # Strict equality: the seed-node lifecycle write bug is fixed (every node — including
-    # the initial leader — appears in the generation snapshot). See
-    # aether/docs/specs/test-readiness-contract.md §6.
     if [ "$count" -ne "$expected" ]; then
         log_fail "Cluster has ${count} members, expected ${expected}"
         return 1

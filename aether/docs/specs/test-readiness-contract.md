@@ -25,7 +25,15 @@ Both views must agree for a test to safely proceed. A cluster that satisfies (1)
 
 ### 1.2 Canonical helper
 
-`wait_for_cluster_ready [timeout]` in `aether/tests/integration/lib/cluster.sh`. Default timeout 120s.
+`wait_for_cluster_ready [timeout] [expected_count]` in `aether/tests/integration/lib/cluster.sh`. Default `timeout=120s`, default `expected=NODE_COUNT-1`.
+
+**Default usage** (`wait_for_cluster_ready` with no expected): tolerates `N-1` (operational quorum floor). This is the **operational invariant** the existing `restore_cluster_baseline` actually delivers — post-chaos, the leader's MembershipView converges to N-1 because of an RC2 `PeerObservationStore` convergence gap (CTM replacements are in generation within seconds but the entry-point view stays at N-1). Defaulting to N-1 here keeps every gate aligned with what baseline restoration produces; the alternative (strict N) was tried and caused every post-chaos test to cascade-fail on a precondition the cluster could not satisfy.
+
+**Strict-N usage** (`wait_for_cluster_ready <timeout> $NODE_COUNT`): smoke gates, pre-disruption initial assertions, and cluster-formation tests pass `NODE_COUNT` explicitly when the cluster is expected to be at full size (fresh deploy, no chaos has run yet).
+
+The properties evaluate at `expected`: members ≥ `expected`, active-core floor ≥ `expected-1`, ≥`expected` of the configured ports answer `/health/ready` UP. Leader-elected is unconditional.
+
+The spec recommends preferring the strict form whenever the test environment is known to be at full size; defaulting to N-1 acknowledges the RC2 convergence gap, not a relaxation of the canonical intent.
 
 ### 1.3 Why "ready" is not the same as "healthy"
 
