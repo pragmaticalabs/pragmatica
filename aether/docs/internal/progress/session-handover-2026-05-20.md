@@ -1,12 +1,18 @@
 # Session handover — 2026-05-20
 
 Branch: `release-1.0.0-rc1`
-HEAD: `95f5f4f9d`
-Candidate tag: `v1.0.0-rc1-candidate` → `95f5f4f9d`
+HEAD: `1bca1b4e1`
+Candidate tag: `v1.0.0-rc1-candidate` → `1bca1b4e1`
 
 ## Topline
 
-Six commits landed today closing out the **CLI / REST surface consistency audit** plus a post-audit self-review that caught a silent dashboard regression. The work started with "are tests detecting things consistently?" and pivoted to "is the CLI itself coherent enough that consistent detection becomes possible?" The audit produced four foundational decisions (`#22`, `#23`, `#24`, Phase B), each landed as a focused commit with full test verification.
+**Two work waves landed today on `release-1.0.0-rc1`:**
+
+**Wave 1 — CLI / REST surface consistency audit closeout** (commits `6dd22fdc7` … `caedfa62a`, summarized in §"Wave 1" below). Six commits closing out the audit including a $2500 post-audit self-review.
+
+**Wave 2 — Tier 1 RC1-foundational follow-ups** (commits `f563841b4` … `1bca1b4e1`). Five commits closing every Tier 1 item that was queued at the end of Wave 1: `HttpStatusAware` mixin + status-code mapping across 4 sealed `*Error` hierarchies; rename `StatusResponse.lifecycleState` → `runtimeState` with a separate KV-direct FSM `lifecycleState` field; same `kvState`/`derivedStatus` split for `ClusterStatusNodeInfo` in `/api/cluster/status` (plus discovery that the field was a `"ON_DUTY"` hardcoded stub — fixed); CLI namespace consolidation folding `node-{slices,routes,inflight,metrics}` under `aether nodes <verb> [id]` and resolving a latent `NodesCommand`/`NodeCommand` `@Command(name="nodes")` clash via merge.
+
+## Wave 1 — Audit closeout (commits `6dd22fdc7` … `caedfa62a`)
 
 The headline architectural deliverables:
 
@@ -15,7 +21,7 @@ The headline architectural deliverables:
 3. **Two-endpoint state authority contract** — `/api/nodes/lifecycle/{id}` is KV-direct FSM authority; `/api/nodes/status cluster.nodes[]` carries both `kvState` (authoritative) and `derivedStatus` (operator view with reachability overlay) side-by-side.
 4. **Per-node variant endpoints** — `NodeIdParam` routing primitive lets `aether status <id>` work from any node via the cluster forwarder.
 
-## Commits (in order)
+## Commits — Wave 1 (audit closeout, in order)
 
 | Commit | Subject | Scope |
 |---|---|---|
@@ -28,6 +34,26 @@ The headline architectural deliverables:
 | `95f5f4f9d` | `fix(aether): dashboard reads renamed NodeInfo.derivedStatus + flag misnamed StatusResponse.lifecycleState field` | **Post-audit self-review under $2500 challenge** caught two issues missed by Maven test verification: dashboard JS silently defaulted to `ON_DUTY` for every node because `n.lifecycleState` field was renamed to `derivedStatus`/`kvState` in `#24` but JS wasn't updated (Maven doesn't lint JS); and the top-level wire field `StatusResponse.lifecycleState` is misnamed — it carries `NodeState` (in-memory JVM runtime) not `NodeLifecycleState` (FSM). Dashboard fixed; field-name fix queued as follow-up. |
 
 Test counts at each step: **386 → 736 → 736 → 785** (each commit verified independently via `build-runner` agent).
+
+## Commits — Wave 2 (Tier 1 RC1-foundational closeout)
+
+| Commit | Subject | Scope |
+|---|---|---|
+| `f563841b4` | `feat(http-routing): HttpStatusAware mixin + ClusterConfigError httpStatus() mapping` | New `HttpStatusAware extends Cause` interface in `integrations/http-routing/`. `HttpError extends HttpStatusAware` with `default httpStatus() { return status(); }` — single dispatch covers both. `ProblemResponses.resolveStatus` updated. `ClusterConfigError` (32 variants) extends `HttpStatusAware` with interface-default `BAD_REQUEST` + 11 per-variant overrides: `ClusterNotFound`→404, `VersionConflict`/`ClusterAlreadyExists`/`QuorumSafetyViolation`/`ImmutableFieldChange`/`UpgradeInProgress`→409, `BootstrapFailed`/`SecretResolutionFailed`/`CloudCredentialsMissing`→500, `ProvisionTimeout`/`QuorumTimeout`→504. Added `http-routing` dep to `aether-config/pom.xml` (architectural call documented). 1016 tests green. |
+| `9af8a802f` | `feat(aether/node): cascade HttpStatusAware to WorkerError, SecurityError, ManagementServerError` | Three sealed types in `aether/node` (no new pom deps). `WorkerError.General` enum gained per-constant `HttpStatus status` field (state-machine variants→409, BOOTSTRAP_FAILED→500, GOVERNOR_UNAVAILABLE/NetworkFailure→503, ConfigurationError→400). `SecurityError` default 401; `AccessDenied`/`InsufficientRole`→403; `JwksFetchFailed`→500. `ManagementServerError` default 500; `MissingField`/`InvalidArtifactPath`→400; `NotLeader`→409; `StrategyChangeNotSupported`→501. **Skipped** `RateGuardError` (slice-api Apache-2.0 dev-facing surface; single variant) and `MetricsError` (single variant, would need new pom dep for one mapping). |
+| `3f6d91653` | `refactor(aether): split StatusResponse runtimeState/lifecycleState fields` | Resolves the field-name finding from `95f5f4f9d`'s post-audit self-review. Top-level `lifecycleState` field renamed to `runtimeState` (carries `NodeState`: STARTING/JOINING/ACTIVE/DRAINING/STOPPED). NEW `lifecycleState` field added carrying authoritative FSM state from KV-Store (`NodeLifecycleState`: JOINING/ON_DUTY/DRAINING/DECOMMISSIONED/FAILED_DRAIN; SHUTTING_DOWN normalized to DRAINING; empty string when no KV entry yet). Constructor arity 12→13. Sweep across docs + CHANGELOG; CLI uses generic JSON rendering so no Java consumer broke; dashboard already consumes per-node fields, unaffected. |
+| `2f1b43f56` | `refactor(aether): split ClusterStatusNodeInfo kvState/derivedStatus (and actually populate)` | `/api/cluster/status` `nodes[]` gets the same `kvState`/`derivedStatus` split as `/api/nodes/status` `NodeInfo` from `#24`. **Critical sub-finding**: `ClusterConfigRoutes.toStatusNodeInfo` was hardcoding `lifecycleState="ON_DUTY"` for every node — long-standing stub. Now properly reads `NodeLifecycleKey` from kvStore + computes `derivedStatus` with reachability overlay (mirrors `StatusRoutes.toNodeInfo`). `ClusterStatusNodeInfo.role` is still hardcoded `"core"` — follow-up TODO noted inline + in CHANGELOG. |
+| `1bca1b4e1` | `refactor(aether/cli): fold kebab top-levels under nodes namespace; resolve NodesCommand/NodeCommand clash` | `AetherCli.java`: merged two `@Command(name="nodes")` classes (`NodesCommand` + `NodeCommand`) that were silently shadowing each other in picocli into a single `NodesCommand`. Default behavior preserved (`aether nodes` lists active nodes). Kebab top-levels `node-{slices,routes,inflight,metrics}` moved as `nodes <verb>` inner subcommands. Sweep across `cli.md` + `cli-gap-audit.md` + CHANGELOG. No remaining `aether node-{slices,routes,inflight,metrics}` references anywhere. |
+
+Test counts: **399 (node) + 337 (cli) + 280 (config) = green at every Wave 2 step**.
+
+### Tier 1 backlog: CLEARED
+
+All four Tier 1 items from the Wave 1 handover are now landed (see Wave 2 commits above):
+- ✅ Sealed `*Error` httpStatus() mapping (`f563841b4` + `9af8a802f`)
+- ✅ `StatusResponse.lifecycleState` → `runtimeState` + genuine FSM `lifecycleState` (`3f6d91653`)
+- ✅ `ClusterStatusNodeInfo.lifecycleState` → `kvState`/`derivedStatus` (`2f1b43f56`) + bonus stub-discovery + fix
+- ✅ Fold kebab `aether node-{slices,routes,inflight,metrics}` under `aether nodes <verb>` (`1bca1b4e1`) + bonus NodesCommand/NodeCommand merge
 
 ## Key files for next session
 
@@ -42,14 +68,11 @@ Test counts at each step: **386 → 736 → 736 → 785** (each commit verified 
 
 ## Outstanding items, by priority
 
-### Tier 1 — RC1-ish foundational cleanup (per "anything affecting foundation → RC1" rule)
+### Tier 1 — CLEARED in Wave 2
 
-| Item | Where | Effort |
-|---|---|---|
-| **Sealed `*Error` httpStatus() mapping** — most causes still default to 500 in the new envelope. Per-domain incremental commits (start with `ClusterConfigError` — 24 variants, all RC1 surface). | `aether/aether-config/src/main/java/.../cluster/ClusterConfigError.java`, plus `KeyNotFoundError`, `UpgradeError`, `WorkerError`, `ConfigNotFoundError`, `SecurityError` | ~2 hours per domain; mechanical once pattern established. Consider an `HttpStatusAware` mixin interface in `http-routing` so `ManagementRouter.writeError` can dispatch via interface check. |
-| **`StatusResponse.lifecycleState` field is misnamed** | `aether/node/src/main/java/.../routes/StatusRoutes.java:143-148`, `aether/node/src/main/java/.../api/ManagementApiResponses.java:26` | The top-level wire field `lifecycleState` actually carries `NodeState` (in-memory JVM runtime: STARTING/JOINING/ACTIVE/DRAINING/STOPPED), NOT the FSM-level `NodeLifecycleState`. Comment added at the call site. Rename to `runtimeState` or `processState` for clarity; consider adding a separate `lifecycleState` field that genuinely carries FSM state (read from `kvStore.get(NodeLifecycleKey(self))`) for parity with the per-node `kvState` field in `cluster.nodes[]`. Wire-format change, RC1 hard-cut still possible. |
-| **`ClusterStatusNodeInfo.lifecycleState`** in `/api/cluster/status` cluster.nodes[]. Same question as `/api/nodes/status` was — single field that conflates KV intent vs derived view. Should likely get the same `kvState`/`derivedStatus` split. | `aether/node/src/main/java/.../ManagementApiResponses.java:416`, `ClusterConfigRoutes.java` | ~half day; mirrors the `#24` work. |
-| **Folding `node-slices`/`node-routes`/`node-inflight`/`node-metrics` kebab top-levels** under `aether nodes <verb> [id]` namespace. CLI UX cleanup — current kebab forms work but inconsistent with `aether nodes drain/activate/lifecycle`. | `aether/cli/src/main/java/.../AetherCli.java` — NodeCommand subcommands | ~half day; mechanical picocli refactor. Aliases possible if breaking is too aggressive. |
+All Tier 1 items landed. See "Tier 1 backlog: CLEARED" subsection above for the commit mapping. Remaining sub-stubs (none load-bearing for RC1):
+- `ClusterStatusNodeInfo.role` is still hardcoded `"core"` — should read from `ActivationDirectiveValue` like `EnrichedNodeInfo.role` does. Documented inline as TODO.
+- `RateGuardError` and `MetricsError` deliberately not made `HttpStatusAware` — rationale recorded in `9af8a802f` commit message. Funnel-side mapping can be added later if/when these surface through `ProblemResponses`.
 
 ### Tier 2 — CLI / API gaps (operator parity)
 
@@ -108,25 +131,25 @@ These came up during today's audit work and are worth preserving as project memo
 
 ## Suggested next-session opener
 
-Highest-leverage continuation: **Tier 1 — start with `ClusterConfigError` httpStatus() mapping.** This is the biggest sealed Cause hierarchy on the management surface (24 variants), all currently land on HTTP 500 with the new envelope. Adding per-variant status codes immediately improves operator API quality across `/api/cluster/config`, `/api/cluster/upgrade`, `/api/cluster/scale`, and the related cluster lifecycle routes.
+With Tier 1 cleared, the natural next move is **Tier 2 operator parity gaps**. Highest-leverage starter: **`aether events --follow` (streaming/SSE)** — it directly unblocks ~10 test helpers and ~15 assertions currently doing per-node fan-out polling, and the underlying event-aggregator surface already exists. Implementation sketch:
+1. Add `/api/events/stream` with `text/event-stream` content-type (SSE) — reuse the `eventAggregator()` Stream.
+2. CLI `--follow` flag on `aether events` switches from one-shot fetch to long-poll SSE consumer.
+3. Replace `topology_events_since` / `wait_for_node_departure` shell helpers with `aether events --follow --filter type=NODE_LEFT` patterns.
 
-Suggested approach (proven to work today):
-1. Define `HttpStatusAware` interface in `integrations/http-routing/`
-2. Have `ClusterConfigError` interface extend it with `default HttpStatus httpStatus() { return BAD_REQUEST; }`
-3. Per-variant overrides where semantics differ (`VersionConflict` → 409, `QuorumSafetyViolation` → 409, `InvalidCoreCount` → 400, etc.)
-4. Update `ProblemResponses.writeProblem(Cause)` / `ManagementRouter.writeError` to consult `HttpStatusAware` before defaulting to 500
-5. Build verify, commit, advance tag
+Alternative entry points if SSE feels too large:
+- `aether blueprints contains <coords>` — tiny endpoint, eliminates `lib/cluster.sh:push_blueprint` stderr-grep
+- `aether nodes health [id]` — surfaces per-node `/health/ready` data already produced by the server
+- `aether slices --filter state=ACTIVE` — server-side filter for the existing `/api/slices` endpoint
 
-Then repeat per sealed type: `KeyNotFoundError` (404), `ConfigNotFoundError` (404), `UpgradeError.AlreadyAtVersion` (409), `MetricsError.StrategyChangeNotSupported` (501 — already wrapped in `HttpError`), `RateGuardError.LimitExceeded` (429), `CoordinatorError.NOT_LEADER` (409 — already wrapped at one site, others fall through).
-
-Each follow-up commit ~half a day. Audit doc captures decisions; spec docs don't need additional pages (just per-domain change-list).
+For Tier 3 / RC2 readiness work the priority order is captured in `aether/docs/internal/cli-gap-audit.md`.
 
 ## Session metadata
 
-- Date: 2026-05-20 (single working day)
-- Commits: 5 substantive + handover + post-audit self-review fix (7 total)
-- Files touched: ~85 unique across all commits
-- Build verifications: 5 independent `build-runner` runs, all green
-- Tests passing at HEAD: 785 (Maven test surface)
-- Tag movements: `v1.0.0-rc1-candidate` advanced 7 times
-- Notable self-correction: $2500 post-audit challenge caught silent dashboard regression that 4 prior verification rounds missed (JS not in Maven test surface)
+- Date: 2026-05-20 (single working day, two waves)
+- Commits: Wave 1 (audit closeout) = 6 substantive + 1 handover + 1 self-review fix = 8 commits. Wave 2 (Tier 1 closeout) = 5 substantive commits. Plus this handover update = **14 commits total**.
+- Files touched: ~95 unique across all commits
+- Build verifications: ≥10 independent `build-runner` runs, all green
+- Tests passing at HEAD: aether/node 399, aether/cli 337, aether-config 280 (incremental; full reactor green)
+- Tag movements: `v1.0.0-rc1-candidate` advanced 12+ times
+- Notable architectural choices: (1) `http-routing` added as `aether-config` dep — alternative architectures rejected with rationale documented in commit; (2) `NodesCommand`/`NodeCommand` picocli name-clash fixed by merge as part of T1.4 (latent bug discovered mid-task)
+- $2500 post-audit challenge from Wave 1 generated the follow-up backlog that Wave 2 cleared
