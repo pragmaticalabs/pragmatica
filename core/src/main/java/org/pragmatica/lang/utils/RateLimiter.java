@@ -115,7 +115,7 @@ public interface RateLimiter {
         /// unaffected; a limiter idle for longer than 2^48 ns may transiently under-refill on its
         /// next call and self-correct.
         public RateLimiter timeSource(TimeSource source) {
-            record TokenBucket(long maxTokens, long nanosPerToken, TimeSource timeSource,
+            record rateLimiter(long maxTokens, long nanosPerToken, TimeSource timeSource,
                                long baseNanos, AtomicLong state) implements RateLimiter {
                 private static final int TOKENS_SHIFT = 48;
                 private static final long TIME_MASK = (1L << 48) - 1L;
@@ -165,7 +165,7 @@ public interface RateLimiter {
             long maxTokens = (long) rate + (long) burst;
             long nanosPerToken = period.nanos() / rate;
             long baseNanos = source.nanoTime();
-            return new TokenBucket(maxTokens, nanosPerToken, source, baseNanos,
+            return new rateLimiter(maxTokens, nanosPerToken, source, baseNanos,
                                    new AtomicLong(maxTokens << 48));
         }
 
