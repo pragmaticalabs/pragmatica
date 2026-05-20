@@ -1,12 +1,12 @@
 # Session handover — 2026-05-20
 
 Branch: `release-1.0.0-rc1`
-HEAD: `56d0f4221`
-Candidate tag: `v1.0.0-rc1-candidate` → `56d0f4221`
+HEAD: `95f5f4f9d`
+Candidate tag: `v1.0.0-rc1-candidate` → `95f5f4f9d`
 
 ## Topline
 
-Five commits landed today closing out the **CLI / REST surface consistency audit** — the work that started with "are tests detecting things consistently?" and pivoted to "is the CLI itself coherent enough that consistent detection becomes possible?" The audit produced four foundational decisions (`#22`, `#23`, `#24`, Phase B), each of which landed as a focused commit with full test verification.
+Six commits landed today closing out the **CLI / REST surface consistency audit** plus a post-audit self-review that caught a silent dashboard regression. The work started with "are tests detecting things consistently?" and pivoted to "is the CLI itself coherent enough that consistent detection becomes possible?" The audit produced four foundational decisions (`#22`, `#23`, `#24`, Phase B), each landed as a focused commit with full test verification.
 
 The headline architectural deliverables:
 
@@ -24,6 +24,8 @@ The headline architectural deliverables:
 | `55e0909bb` | `refactor(aether): RFC 9457 ProblemDetail envelope for management-plane errors` | 6 files. `ProblemResponses.java` utility, `ManagementRouter.writeError`, `ManagementServer` 4 sites, CLI `OutputFormatter` parses ProblemDetail, `NodeLifecycleRoutes` drain/activate leak fix (200→409). |
 | `0fc1c8a9b` | `refactor(aether): state authority cleanup (kvState/derivedStatus split, KV-direct lifecycle list, SHUTTING_DOWN collapse)` | 6 files. New `state-authority.md` spec; `NodeInfo` shape change; `/api/nodes/lifecycle` mass form switched to KV-direct; `SHUTTING_DOWN`→`DRAINING` normalization at API boundary; `lib/cluster.sh` field renames. |
 | `56d0f4221` | `feat(aether): per-node variant endpoints (NodeIdParam routing + forwarder + 5 CLI commands)` | 11 files. New `RouteTarget.NodeIdParam(int paramIndex)`. `HttpForwarder.forwardToTargetNode`. `ManagementServer.tryForwardIfNotTargetNode`. 5 new enum entries (`NODE_STATUS_GET`, `NODE_INFLIGHT_GET`, `NODE_SLICES_GET`, `NODE_ROUTES_GET`, `NODE_METRICS_GET`). 5 route handlers. 4 CLI commands gaining optional `[id]` (`status`, `node-slices`, `node-routes`) + 2 new top-levels (`node-inflight`, `node-metrics`). New error variants `NotLocalTarget` / `TargetDisconnected`. |
+| `8399594cc` | `docs: session handover 2026-05-20 — CLI/REST surface consistency audit closeout` | Initial handover doc (this file in pre-self-review state). |
+| `95f5f4f9d` | `fix(aether): dashboard reads renamed NodeInfo.derivedStatus + flag misnamed StatusResponse.lifecycleState field` | **Post-audit self-review under $2500 challenge** caught two issues missed by Maven test verification: dashboard JS silently defaulted to `ON_DUTY` for every node because `n.lifecycleState` field was renamed to `derivedStatus`/`kvState` in `#24` but JS wasn't updated (Maven doesn't lint JS); and the top-level wire field `StatusResponse.lifecycleState` is misnamed — it carries `NodeState` (in-memory JVM runtime) not `NodeLifecycleState` (FSM). Dashboard fixed; field-name fix queued as follow-up. |
 
 Test counts at each step: **386 → 736 → 736 → 785** (each commit verified independently via `build-runner` agent).
 
@@ -100,6 +102,10 @@ These came up during today's audit work and are worth preserving as project memo
 
 5. **`SHUTTING_DOWN` is internal-only.** Per `cluster-membership-fsm-spec.md` §R6, the FSM no longer emits it (folded into `DRAINING`). Only the `NODE_SHUTDOWN` API action writes it transiently before `NodeDeploymentManager` observes the write and triggers `halt(2)`. External viewers see `DRAINING`.
 
+6. **Maven test surface doesn't cover JS / HTML / Dockerfile / shell scripts.** Surfaces compiled-by-build-tool get verified; everything else needs grep-after-renames discipline. The $2500 self-review caught a silent dashboard regression that 4 prior verification rounds missed because JS isn't linted. Project memory: after any wire-format rename, grep extension classes `*.js`, `*.html`, `*.sh`, `Dockerfile`, `*.yml` for the old field name, not just `*.java`.
+
+7. **`NodeState` vs `NodeLifecycleState` are different enums.** `NodeState` is the in-memory JVM runtime state machine (STARTING/JOINING/ACTIVE/DRAINING/STOPPED) defined at `aether/node/.../lifecycle/NodeState.java`. `NodeLifecycleState` is the cluster-level KV-Store FSM state (JOINING/ON_DUTY/DRAINING/DECOMMISSIONED/SHUTTING_DOWN/FAILED_DRAIN) defined at `aether/slice/.../kvstore/AetherValue.java`. They overlap on JOINING/DRAINING names but mean different things. `StatusResponse.lifecycleState` (top-level wire field) carries `NodeState`, not `NodeLifecycleState` — the name is misleading and needs renaming.
+
 ## Suggested next-session opener
 
 Highest-leverage continuation: **Tier 1 — start with `ClusterConfigError` httpStatus() mapping.** This is the biggest sealed Cause hierarchy on the management surface (24 variants), all currently land on HTTP 500 with the new envelope. Adding per-variant status codes immediately improves operator API quality across `/api/cluster/config`, `/api/cluster/upgrade`, `/api/cluster/scale`, and the related cluster lifecycle routes.
@@ -118,8 +124,9 @@ Each follow-up commit ~half a day. Audit doc captures decisions; spec docs don't
 ## Session metadata
 
 - Date: 2026-05-20 (single working day)
-- Commits: 5 substantive + handover
-- Files touched: ~80 unique across all commits
-- Build verifications: 4 independent `build-runner` runs, all green
-- Tests passing at HEAD: 785
-- Tag movements: `v1.0.0-rc1-candidate` advanced 5 times
+- Commits: 5 substantive + handover + post-audit self-review fix (7 total)
+- Files touched: ~85 unique across all commits
+- Build verifications: 5 independent `build-runner` runs, all green
+- Tests passing at HEAD: 785 (Maven test surface)
+- Tag movements: `v1.0.0-rc1-candidate` advanced 7 times
+- Notable self-correction: $2500 post-audit challenge caught silent dashboard regression that 4 prior verification rounds missed (JS not in Maven test surface)
