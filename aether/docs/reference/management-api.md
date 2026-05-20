@@ -275,9 +275,11 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 ]
 ```
 
-**Event Types:** `NODE_JOINED`, `NODE_LEFT`, `NODE_FAILED`, `LEADER_ELECTED`, `LEADER_LOST`, `QUORUM_ESTABLISHED`, `QUORUM_LOST`, `DEPLOYMENT_STARTED`, `DEPLOYMENT_COMPLETED`, `DEPLOYMENT_FAILED`, `SLICE_FAILURE`, `CONNECTION_ESTABLISHED`, `CONNECTION_FAILED`, `GENERATION_CHANGED`
+**Event Types:** `NODE_JOINED`, `NODE_LEFT`, `NODE_FAILED`, `LEADER_ELECTED`, `LEADER_LOST`, `QUORUM_ESTABLISHED`, `QUORUM_LOST`, `DEPLOYMENT_STARTED`, `DEPLOYMENT_COMPLETED`, `DEPLOYMENT_FAILED`, `SLICE_FAILURE`, `CONNECTION_ESTABLISHED`, `CONNECTION_FAILED`, `GENERATION_CHANGED`, `SELF_DRAIN_INITIATED`
 
 `GENERATION_CHANGED` events are emitted by the leader's `HealthReconciler` whenever the cluster generation epoch advances. `details` carries `oldEpoch`, `newEpoch`, and `reason` (a `GenerationReason` enum name). See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4.
+
+`SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (membership-architecture-spec.md §16.1, S19/S20). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
 **Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 

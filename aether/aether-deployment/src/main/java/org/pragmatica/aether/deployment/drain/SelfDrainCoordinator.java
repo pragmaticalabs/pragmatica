@@ -4,11 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.drain;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -73,6 +75,7 @@ public final class SelfDrainCoordinator {
     private final InFlightRequestTracker tracker;
     private final SelfDrainConfig config;
     private final Runnable jvmExit;
+    private final SelfDrainEventPublisher eventPublisher;
     private final AtomicReference<Phase> phase = new AtomicReference<>(Phase.ACTIVE);
     private final AtomicLong firstBelowQuorumMs = new AtomicLong(-1L);
 
@@ -81,26 +84,36 @@ public final class SelfDrainCoordinator {
                                  IntSupplier topologySize,
                                  InFlightRequestTracker tracker,
                                  SelfDrainConfig config,
-                                 Runnable jvmExit) {
+                                 Runnable jvmExit,
+                                 SelfDrainEventPublisher eventPublisher) {
         this.self = self;
         this.connectedPeers = connectedPeers;
         this.topologySize = topologySize;
         this.tracker = tracker;
         this.config = config;
         this.jvmExit = jvmExit;
+        this.eventPublisher = eventPublisher;
     }
 
     /// Canonical factory. Caller supplies `jvmExit` explicitly — production passes
     /// `() -> Runtime.getRuntime().halt(2)`, Forge / single-JVM test runtimes supply a
     /// hook that signals the supervising driver instead (so a SelfDrain doesn't take down
     /// the entire test JVM along with all other in-process nodes).
+    ///
+    /// `eventPublisher` is the sink for the `SELF_DRAIN_INITIATED` cluster event emitted
+    /// at the `ACTIVE → DRAINING` transition. The drain decision is made by the draining
+    /// node itself; the event is NOT leader-gated upstream (the leader cannot publish
+    /// self-drain on behalf of a partition victim — see `SelfDrainEventPublisher`).
+    /// Tests that don't care about the event surface should pass
+    /// `SelfDrainEventPublisher.NO_OP`.
     public static SelfDrainCoordinator selfDrainCoordinator(NodeId self,
                                                             Supplier<Set<NodeId>> connectedPeers,
                                                             IntSupplier topologySize,
                                                             InFlightRequestTracker tracker,
                                                             SelfDrainConfig config,
-                                                            Runnable jvmExit) {
-        return new SelfDrainCoordinator(self, connectedPeers, topologySize, tracker, config, jvmExit);
+                                                            Runnable jvmExit,
+                                                            SelfDrainEventPublisher eventPublisher) {
+        return new SelfDrainCoordinator(self, connectedPeers, topologySize, tracker, config, jvmExit, eventPublisher);
     }
 
     /// Periodic 1Hz check: caller schedules this. Computes
@@ -198,9 +211,29 @@ public final class SelfDrainCoordinator {
                  self.id(),
                  reason,
                  config.inflightGrace().millis());
+        publishSelfDrainEvent(reason);
         tracker.setAcceptingNewWork(false);
         tracker.onAllDrained(this::onTrackerDrained);
         SharedScheduler.schedule(this::onGraceExpired, config.inflightGrace());
+    }
+
+    /// Surface the `SELF_DRAIN_INITIATED` cluster event. Best-effort: an exception from
+    /// the publisher MUST NOT interrupt the drain sequence — the node is about to halt
+    /// either way. The event is intentionally not leader-gated; the draining node itself
+    /// is the only authoritative source for "I'm self-draining" (membership-architecture-
+    /// spec.md §16.1).
+    private void publishSelfDrainEvent(String reason) {
+        try {
+            eventPublisher.publish(ClusterEventValue.EventType.SELF_DRAIN_INITIATED,
+                                   ClusterEventValue.Severity.WARNING,
+                                   "Self-drain initiated on " + self.id() + " (reason=" + reason + ")",
+                                   Map.of("nodeId", self.id(),
+                                          "reason", reason,
+                                          "graceMs", String.valueOf(config.inflightGrace().millis())));
+        } catch (Throwable t) {
+            log.warn("Self-drain: SELF_DRAIN_INITIATED publish failed on {} (reason={}): {} — drain proceeds regardless",
+                     self.id(), reason, t.getMessage());
+        }
     }
 
     private void onTrackerDrained() {

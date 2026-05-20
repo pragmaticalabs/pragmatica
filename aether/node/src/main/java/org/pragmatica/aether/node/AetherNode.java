@@ -1065,13 +1065,28 @@ public interface AetherNode extends ManageableNode {
         // `jvmExit` is threaded in from the factory: production is `Runtime.getRuntime().halt(2)`,
         // single-JVM hosts (Forge/Ember) pass a per-node callback that stops the node gracefully
         // and removes it from the host's registry without taking down the whole test JVM.
+        //
+        // T3.1: SELF_DRAIN_INITIATED cluster event surface. The `ClusterEventLogPublisher` is
+        // constructed downstream (after rabiaTermSupplier and clusterCommandApplier are wired)
+        // so we forward-declare it via an AtomicReference resolved lazily inside the publisher
+        // lambda. The lambda is invoked only at the ACTIVE→DRAINING transition, by which time
+        // the ref is always populated. NOT leader-gated: the draining node itself is the only
+        // authoritative source for "I'm self-draining" — a partition victim cannot rely on the
+        // leader to surface this on its behalf.
+        var eventLogPublisherForDrainRef = new AtomicReference<ClusterEventLogPublisher>();
+        org.pragmatica.aether.deployment.drain.SelfDrainEventPublisher selfDrainEventSink = (type, severity, message, details) -> {
+            var publisher = eventLogPublisherForDrainRef.get();
+            if (publisher == null) {return;}
+            publisher.publish(type, severity, message, details);
+        };
         var selfDrainCoordinator = SelfDrainCoordinator.selfDrainCoordinator(
                 config.self(),
                 () -> clusterNode.network().connectedPeers(),
                 () -> clusterNode.topologyManager().topology().size(),
                 inFlightTrackerForDrain,
                 SelfDrainConfig.selfDrainConfig(),
-                jvmExit);
+                jvmExit,
+                selfDrainEventSink);
         SharedScheduler.scheduleAtFixedRate(
                 selfDrainCoordinator::onConnectivityChange,
                 TimeSpan.timeSpan(1).seconds(),
@@ -1209,6 +1224,10 @@ public interface AetherNode extends ManageableNode {
                                                                                     hlcClock,
                                                                                     rabiaTermSupplier::get,
                                                                                     clusterCommandApplier);
+        // T3.1: surface the publisher to the SelfDrainCoordinator's lazy-resolving lambda
+        // forward-declared upstream. By this point the publisher is fully wired; the
+        // coordinator's lambda will resolve the ref on the first ACTIVE→DRAINING transition.
+        eventLogPublisherForDrainRef.set(eventLogPublisher);
         var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
                                                                             clusterTopologyManager.observer()::clusterSize,
                                                                             eventLogPublisher,

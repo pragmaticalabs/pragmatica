@@ -68,7 +68,7 @@ class SelfDrainCoordinatorTest {
             Supplier<Set<NodeId>> peers = () -> Set.of(PEER_A);
             IntSupplier size = () -> 5;
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, peers, size, tracker, fastConfig(),
-                                                                  exits::incrementAndGet);
+                                                                  exits::incrementAndGet, SelfDrainEventPublisher.NO_OP);
 
             coord.onConnectivityChange();
             await().atMost(2, TimeUnit.SECONDS)
@@ -88,7 +88,7 @@ class SelfDrainCoordinatorTest {
             IntSupplier size = () -> 5;
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, peersRef::get, size, tracker,
                                                                   new SelfDrainConfig(timeSpan(400).millis(), timeSpan(1).seconds()),
-                                                                  exits::incrementAndGet);
+                                                                  exits::incrementAndGet, SelfDrainEventPublisher.NO_OP);
 
             coord.onConnectivityChange();
             sleep(100);
@@ -110,7 +110,8 @@ class SelfDrainCoordinatorTest {
                                                                   () -> 5,
                                                                   tracker,
                                                                   fastConfig(),
-                                                                  exits::incrementAndGet);
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
 
             coord.onQuorumDisappeared();
             await().atMost(1, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
@@ -126,7 +127,8 @@ class SelfDrainCoordinatorTest {
                                                                   () -> 5,
                                                                   tracker,
                                                                   fastConfig(),
-                                                                  exits::incrementAndGet);
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
 
             coord.onRabiaPaused();
             await().atMost(1, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
@@ -144,7 +146,8 @@ class SelfDrainCoordinatorTest {
                                                                   () -> 5,
                                                                   tracker,
                                                                   tightGrace(),
-                                                                  exits::incrementAndGet);
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
 
             coord.onQuorumDisappeared();
             // Full quorum is now visible — must NOT abort drain.
@@ -165,7 +168,8 @@ class SelfDrainCoordinatorTest {
                                                                   () -> 5,
                                                                   tracker,
                                                                   tightGrace(),
-                                                                  exits::incrementAndGet);
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
 
             coord.initiateDrain("test-1");
             coord.initiateDrain("test-2");
@@ -183,7 +187,8 @@ class SelfDrainCoordinatorTest {
             var exits = exitCounter();
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
-                                                                  tracker, fastConfig(), exits::incrementAndGet);
+                                                                  tracker, fastConfig(), exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
 
             assertThat(tracker.isAcceptingNewWork()).isTrue();
             coord.onQuorumDisappeared();
@@ -200,7 +205,8 @@ class SelfDrainCoordinatorTest {
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
                                                                   tracker,
                                                                   new SelfDrainConfig(timeSpan(200).millis(), timeSpan(10).seconds()),
-                                                                  exits::incrementAndGet);
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
 
             coord.onQuorumDisappeared();
             sleep(50);
@@ -221,7 +227,8 @@ class SelfDrainCoordinatorTest {
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
                                                                   tracker,
                                                                   new SelfDrainConfig(timeSpan(50).millis(), timeSpan(200).millis()),
-                                                                  exits::incrementAndGet);
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
 
             coord.onQuorumDisappeared();
 
@@ -242,7 +249,8 @@ class SelfDrainCoordinatorTest {
             if (expectedThreshold <= 1) {return;}
             var peers = peerSetOfSize(expectedThreshold - 2);
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> peers, () -> topologySize,
-                                                                  tracker, fastConfig(), exits::incrementAndGet);
+                                                                  tracker, fastConfig(), exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
 
             coord.onConnectivityChange();
             await().atMost(2, TimeUnit.SECONDS)
@@ -263,7 +271,8 @@ class SelfDrainCoordinatorTest {
                                                                   () -> 5,
                                                                   tracker,
                                                                   fastConfig(),
-                                                                  exits::incrementAndGet);
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
 
             for (int i = 0; i < 20; i++) {
                 coord.onConnectivityChange();
@@ -271,6 +280,73 @@ class SelfDrainCoordinatorTest {
             }
             assertThat(exits.get()).isZero();
             assertThat(coord.phase()).isEqualTo(SelfDrainCoordinator.Phase.ACTIVE);
+        }
+    }
+
+    @Nested class EventEmission {
+        @Test
+        void selfDrainInitiated_eventPublished_onActiveToDrainingTransition() {
+            var exits = exitCounter();
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            var captured = new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.EventType>();
+            var capturedSeverity = new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.Severity>();
+            var capturedDetails = new java.util.concurrent.atomic.AtomicReference<java.util.Map<String, String>>();
+            var publishCount = new AtomicInteger(0);
+            SelfDrainEventPublisher publisher = (type, severity, message, details) -> {
+                captured.set(type);
+                capturedSeverity.set(severity);
+                capturedDetails.set(details);
+                publishCount.incrementAndGet();
+            };
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
+                                                                  tracker,
+                                                                  new SelfDrainConfig(timeSpan(50).millis(), timeSpan(200).millis()),
+                                                                  exits::incrementAndGet, publisher);
+
+            coord.onQuorumDisappeared();
+
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(publishCount.get()).isEqualTo(1));
+            assertThat(captured.get()).isEqualTo(org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.EventType.SELF_DRAIN_INITIATED);
+            assertThat(capturedSeverity.get()).isEqualTo(org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.Severity.WARNING);
+            assertThat(capturedDetails.get()).containsEntry("nodeId", SELF.id());
+            assertThat(capturedDetails.get()).containsEntry("reason", "quorum-disappeared");
+            assertThat(capturedDetails.get()).containsKey("graceMs");
+        }
+
+        @Test
+        void publisherThrows_drainStillProceeds() {
+            var exits = exitCounter();
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            SelfDrainEventPublisher throwingPublisher = (type, severity, message, details) -> {
+                throw new RuntimeException("publisher unavailable");
+            };
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
+                                                                  tracker,
+                                                                  new SelfDrainConfig(timeSpan(50).millis(), timeSpan(200).millis()),
+                                                                  exits::incrementAndGet, throwingPublisher);
+
+            coord.onQuorumDisappeared();
+
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
+            assertThat(coord.phase()).isEqualTo(SelfDrainCoordinator.Phase.EXITED);
+        }
+
+        @Test
+        void selfDrainInitiated_publishedExactlyOnce_onDoubleTrigger() {
+            var exits = exitCounter();
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            var publishCount = new AtomicInteger(0);
+            SelfDrainEventPublisher publisher = (type, severity, message, details) -> publishCount.incrementAndGet();
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
+                                                                  tracker, tightGrace(),
+                                                                  exits::incrementAndGet, publisher);
+
+            coord.onQuorumDisappeared();
+            coord.onRabiaPaused();
+            coord.initiateDrain("redundant");
+
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
+            assertThat(publishCount.get()).isEqualTo(1);
         }
     }
 

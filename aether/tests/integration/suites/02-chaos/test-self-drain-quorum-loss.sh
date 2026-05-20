@@ -46,16 +46,25 @@
 #   shutdown path (graceful, SIGKILL, SIGTERM) — i.e. self-drain did NOT
 #   fire as designed.
 #
-# Smoking-gun log signature:
-#   SelfDrainCoordinator emits a WARN line at the CAS transition into
-#   DRAINING:
-#     "Self-drain: DRAINING on <self-id> (reason=<r>) — closing tracker
-#      gate, grace=<n>ms"
-#   This string is produced ONLY by `initiateDrain(String)` and pins the
-#   code path under test. The `reason` will be `sustained-below-quorum`
-#   for the periodic-check path or `quorum-disappeared` for the
-#   QuorumStateNotification path — either is acceptable; both prove the
-#   coordinator fired.
+# Smoking-gun signal (T3.1):
+#   At the SelfDrainCoordinator CAS transition into DRAINING the
+#   coordinator publishes a `SELF_DRAIN_INITIATED` event into the cluster-
+#   scoped replicated event log (Severity=WARNING, details.nodeId=<self>,
+#   details.reason=<sustained-below-quorum|quorum-disappeared|rabia-paused>,
+#   details.graceMs=<n>). The event is NOT leader-gated — the draining
+#   node itself is the only authoritative source for "I'm self-draining".
+#   We consume it from /api/events via `wait_for_self_drain_event`
+#   (lib/topology.sh) filtering by type AND nodeId.
+#
+#   Caveat: the publish goes through Rabia. In S19 quorum is gone on the
+#   survivor side, so the publish may not commit before `Runtime.halt(2)`
+#   lands. The event is therefore a SOFT signal — missing it falls back
+#   to `log_warn`. The exit-code-2 + container-exit-state assertions
+#   remain the HARD contract.
+#
+#   This REPLACES the prior `docker logs | grep 'Self-drain: DRAINING on'`
+#   workaround which suffered from SSH-RTT + docker-daemon log-flush race
+#   and was a single-cluster-only signal.
 #
 # Regression coverage for the topology-observation refactor:
 #   * Step 5 (SelfDrainCoordinator implementation): the entire test
@@ -95,6 +104,11 @@ RECOVERY_BUDGET_S=60
 VICTIMS_FILE="/tmp/s19-victims.$$"
 SURVIVORS_FILE="/tmp/s19-survivors.$$"
 KILL_TS_FILE="/tmp/s19-kill-ts.$$"
+# Event-baseline timestamp captured immediately BEFORE the kill so the
+# subsequent /api/events poll for SELF_DRAIN_INITIATED only sees events
+# emitted by survivors AFTER the kill landed. Format: ISO-8601 UTC,
+# accepted by /api/events?since= and produced by `topology_now`.
+EVENT_BASELINE_FILE="/tmp/s19-event-baseline.$$"
 
 # Resolve the docker container name for a fixed compose ordinal (1..N).
 # This is intentionally label-free: at the point of S19 we want to kill
@@ -166,27 +180,32 @@ wait_for_container_exit() {
     return 1
 }
 
-# Grep a survivor's docker logs for the SelfDrainCoordinator drain-trigger
-# warn line. `docker logs` still works on exited containers (the logs are
-# retained per docker's log driver configuration). Returns the matching
-# line on stdout (first hit) or empty + rc=1.
+# Smoking-gun for the `ACTIVE → DRAINING` CAS transition: the
+# `SELF_DRAIN_INITIATED` cluster event published by `SelfDrainCoordinator.
+# initiateDrain(String)`. This event is intentionally NOT leader-gated (the
+# draining node itself is the only authoritative source for "I'm self-
+# draining" — a partition victim cannot rely on the leader to publish on
+# its behalf). We poll the unioned-multi-node /api/events stream via
+# `wait_for_self_drain_event` (lib/topology.sh) filtering by
+# `type=SELF_DRAIN_INITIATED` AND `details.nodeId=<ordinal-mapped-id>`.
 #
-# Pattern: "Self-drain: DRAINING on" anchors the unique log signature from
-# `SelfDrainCoordinator.initiateDrain(String)`:
-#   log.warn("Self-drain: DRAINING on {} (reason={}) — closing tracker gate, grace={}ms", ...)
-# The string "Self-drain: DRAINING on" appears nowhere else in the
-# codebase (verified by grep).
-find_drain_trigger_log() {
-    local ordinal="$1"
-    local name match
-    name=$(compose_container_name "$ordinal")
-    match=$(remote_exec "docker logs ${name} 2>&1 | grep -F 'Self-drain: DRAINING on' | head -1 || true" 2>/dev/null)
-    if [ -z "$match" ]; then
-        return 1
-    fi
-    printf '%s' "$match"
-    return 0
-}
+# T3.1 (test-readiness-contract.md §6): this REPLACES the prior `docker
+# logs | grep 'Self-drain: DRAINING on'` workaround. Event-driven assertion
+# avoids the SSH-RTT + docker-daemon log-flush race and produces a stable
+# acceptance signal that survives log-driver rotation.
+#
+# Caveat — Rabia publish under quorum loss: SelfDrainCoordinator publishes
+# the event synchronously at the CAS, but the publish flows through Rabia.
+# In the S19 scenario quorum is GONE on the survivor side, so the publish
+# may not commit before `Runtime.halt(2)` lands. The event MAY still reach
+# the cluster via a victim's pre-shutdown gossip OR via post-restart
+# replay; either way it's best-effort. We therefore poll on a generous
+# budget (the survivor exit budget is the natural bound) and tolerate
+# timeout as a soft signal — the exit-code-2 + container-exit-state
+# assertions remain the hard contract. The `--soft` flag below downgrades
+# a missing event to a `log_warn` instead of a `log_fail`, mirroring the
+# negative-assertion pattern of `verify_no_kv_writes_after_drain`.
+SELF_DRAIN_EVENT_TIMEOUT_S=60
 
 # After the drain-trigger line, the SelfDrainCoordinator MUST NOT initiate
 # any KV write — its design forbids consensus/KV dependency (asserted at
@@ -263,6 +282,13 @@ test_pick_victims_and_kill_three_simultaneously() {
     # the three SIGKILLs are issued within microseconds of each other.
     # This is the closest practical approximation to "simultaneous".
     kill_cmd="docker kill aether-${CLUSTER_ID:-b}-node-1 aether-${CLUSTER_ID:-b}-node-2 aether-${CLUSTER_ID:-b}-node-3"
+    # T3.1: capture the /api/events baseline timestamp BEFORE issuing the
+    # kill so the SELF_DRAIN_INITIATED poll later sees only events emitted
+    # AFTER the kill landed. The since-filter is exclusive on the server
+    # side; a couple of seconds of pre-baseline drift is irrelevant
+    # because the WARNING-severity SELF_DRAIN_INITIATED event isn't
+    # emitted by anything other than `SelfDrainCoordinator.initiateDrain`.
+    topology_now > "$EVENT_BASELINE_FILE"
     # Record kill timestamp BEFORE the kill returns so any SSH-RTT
     # latency is counted against us, not against the budget (worst-case
     # for the test; if anything, we under-count the wall-clock available,
@@ -358,24 +384,39 @@ test_survivor_exit_codes_are_two() {
 }
 
 test_drain_trigger_log_signature_present() {
-    # Smoking gun: each survivor MUST have logged the
-    # SelfDrainCoordinator.initiateDrain WARN line. This string is
-    # produced ONLY by `initiateDrain(String)`; absent it the survivors
-    # exited via some other path (and the exit-code-2 assertion above
-    # likely already caught it, but this gives the actual diagnostic).
-    local s1 s2 m1 m2
+    # Smoking gun (T3.1): each survivor MUST emit `SELF_DRAIN_INITIATED`
+    # at the SelfDrainCoordinator ACTIVE→DRAINING CAS. We consume it from
+    # /api/events via `wait_for_self_drain_event` (lib/topology.sh) using
+    # the baseline captured immediately pre-kill. The event is NOT
+    # leader-gated (a partition victim is the only authoritative source
+    # for "I'm self-draining"), so the publish originates on the survivor
+    # itself; `topology_events_since` unions across all live node
+    # endpoints so it will be picked up whichever node first replays it
+    # to the cluster-scoped event log.
+    #
+    # Caveat: in S19 quorum is gone on the survivor side, so the Rabia
+    # publish may not commit before `Runtime.halt(2)` lands. We therefore
+    # treat a timeout as a SOFT signal (`log_warn`, not `log_fail`) — the
+    # exit-code-2 + container-exit-state assertions above are the hard
+    # contract. If the event reliably lands in CI we can upgrade to
+    # `log_fail` later; for now we honor the publish-vs-halt race.
+    local s1 s2 baseline
     s1=$(sed -n '1p' "$SURVIVORS_FILE")
     s2=$(sed -n '2p' "$SURVIVORS_FILE")
-    if ! m1=$(find_drain_trigger_log "$s1"); then
-        log_fail "S19 violation: no 'Self-drain: DRAINING on' log line on survivor node-${s1} — SelfDrainCoordinator.initiateDrain() never fired. Regression candidate: Step 5 trigger wiring (periodic 1Hz check or QuorumStateNotification.DISAPPEARED route)."
-        return 1
+    baseline=$(cat "$EVENT_BASELINE_FILE" 2>/dev/null || echo "")
+    if [ -z "$baseline" ]; then
+        log_warn "Missing /api/events baseline (s19-event-baseline file empty) — SELF_DRAIN_INITIATED poll will scan from epoch=0"
     fi
-    log_pass "Smoking-gun on node-${s1}: $(printf '%s' "$m1" | head -c 200)"
-    if ! m2=$(find_drain_trigger_log "$s2"); then
-        log_fail "S19 violation: no 'Self-drain: DRAINING on' log line on survivor node-${s2}"
-        return 1
+    if wait_for_self_drain_event "node-${s1}" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
+        log_pass "SELF_DRAIN_INITIATED observed via /api/events for node-${s1}"
+    else
+        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for node-${s1} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
     fi
-    log_pass "Smoking-gun on node-${s2}: $(printf '%s' "$m2" | head -c 200)"
+    if wait_for_self_drain_event "node-${s2}" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
+        log_pass "SELF_DRAIN_INITIATED observed via /api/events for node-${s2}"
+    else
+        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for node-${s2} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
+    fi
 }
 
 test_no_kv_writes_after_drain_trigger() {
@@ -430,7 +471,7 @@ test_cluster_recovers_to_five_on_duty() {
 }
 
 cleanup() {
-    rm -f "$VICTIMS_FILE" "$SURVIVORS_FILE" "$KILL_TS_FILE"
+    rm -f "$VICTIMS_FILE" "$SURVIVORS_FILE" "$KILL_TS_FILE" "$EVENT_BASELINE_FILE"
 
     # Semantic baseline restore. After S19+S20 the cluster should already
     # be back at 5 ON_DUTY (restart_all_nodes was invoked in

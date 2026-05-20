@@ -212,3 +212,44 @@ observe_quorum_window() {
     echo "min=$min quorum=$quorum ok"
     return 0
 }
+
+# Wait until a SELF_DRAIN_INITIATED event is observed for the given node since
+# the supplied baseline. Returns 0 on success, 1 on timeout.
+# Usage: wait_for_self_drain_event node-3 "$baseline" 60
+#
+# Caller may pass either fixture form (node-N) or runtime form (source-role-N).
+# Events carry the runtime form, so we translate before matching on cloud.
+#
+# Background: SELF_DRAIN_INITIATED is published by the draining node itself when
+# its SelfDrainCoordinator flips ACTIVE → DRAINING (membership-architecture-spec.md
+# §16.1). It is NOT leader-gated because a partition victim is the only
+# authoritative source for "I'm self-draining" — and may not be able to reach the
+# leader at all. The event therefore must be polled from the survivor's own
+# /api/events buffer (or any node that observed the replicated commit before the
+# survivor halted). `topology_events_since` already unions across all node
+# endpoints, so a single call is enough.
+#
+# Timing: SelfDrainCoordinator publishes synchronously at the CAS transition
+# (well before Runtime.halt(2)), but the publish goes through Rabia. If quorum is
+# lost (the scenario this event covers), the publish may not commit before the
+# halt lands. We therefore poll on a generous budget and tolerate timeout — the
+# CALLER decides whether timeout is a test failure or a known limitation.
+wait_for_self_drain_event() {
+    local node_id="$1" baseline="$2" timeout="${3:-60}"
+    node_id=$(to_node_id "$node_id")
+    timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local events
+        events=$(topology_events_since "$baseline" 2>/dev/null) || events=""
+        if [ -n "$events" ]; then
+            local count
+            count=$(topology_count_node_events "$events" SELF_DRAIN_INITIATED "$node_id")
+            if [ "$count" -gt 0 ]; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}

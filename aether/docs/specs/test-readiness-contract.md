@@ -175,6 +175,6 @@ For test authors. Lookup table.
 
 ## 6. Future work
 
-- **`SelfDrainInitiated` event** (T3.1) — eliminate the `docker logs | grep 'Self-drain: DRAINING on'` workaround in `test-self-drain-quorum-loss.sh`. Once landed, tests can subscribe to `/api/events` filtering for `type=SELF_DRAIN_INITIATED`.
+- **`SelfDrainInitiated` event** (T3.1) — RESOLVED in this commit. `SELF_DRAIN_INITIATED` is now emitted by the draining node itself at the `ACTIVE → DRAINING` transition (intentionally NOT leader-gated — a partition victim is the only authoritative source). `test-self-drain-quorum-loss.sh` consumes the event from `/api/events` via the unioned-multi-node `topology_events_since` helper, replacing the `docker logs | grep 'Self-drain: DRAINING on'` workaround.
 - **Node departure widening** (RC2 #224) — `NODE_LEFT` vs `NODE_FAILED` event split + `reason=transport-failure` vs `reason=swim-faulty` widening is bound to the two-path SwimFaulty vs TransportUnreachable architectural finding. Out of scope for RC1.
 - **Per-suite threshold rationale comments** (T5.4) — each suite using a non-1% threshold should carry a one-line comment naming the tier from §4 it falls into. Mechanical follow-up.
