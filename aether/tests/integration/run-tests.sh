@@ -214,8 +214,8 @@ deploy_blueprints() {
     for bp in "${unique_bps[@]}"; do
         local coords="org.pragmatica.aether.test:${bp}:1.0.0"
         log_info "Pushing blueprint: ${coords} to ${cluster_endpoint}"
-        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" artifact push "$coords" 2>/dev/null || true
-        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" blueprint deploy "$coords" 2>&1 || \
+        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" artifacts push "$coords" 2>/dev/null || true
+        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" blueprints deploy "$coords" 2>&1 || \
             log_warn "blueprint deploy ${coords} did not return success (continuing)"
     done
 }

@@ -27,9 +27,11 @@ test_mgmt_status_json() {
 }
 
 test_mgmt_nodes_json() {
-    # Query directly via CLI which knows how to count nodes
+    # Query directly via CLI which knows how to count nodes.
+    # `aether topology` moved under `aether cluster topology` in T2.6; aether_field
+    # only takes single-word commands, so call aether_failover directly here.
     local count
-    count=$(aether_field topology coreCount)
+    count=$(aether_failover cluster topology --format value --field coreCount 2>/dev/null || echo 0)
     assert_gt "$count" "0" "Management cluster topology returns coreCount > 0"
 }
 

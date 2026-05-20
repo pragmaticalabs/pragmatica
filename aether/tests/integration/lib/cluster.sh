@@ -437,6 +437,21 @@ is_cluster_ready() {
 wait_for_cluster_ready() {
     local timeout="${1:-120}"
     local expected="${2:-$(( ${NODE_COUNT:-5} - 1 ))}"
+    # Fast-path snapshot — if the cluster is already ready, skip the entire wait_for harness.
+    # Saves the 2s wait_for interval on the happy path (which is most tests).
+    if _cluster_is_ready "$expected" 2>/dev/null; then
+        log_pass "cluster ready (${expected}+ members, canonical §1.1) (0s)"
+        return 0
+    fi
+    # Fast-fail probe — if the entry point's /health/live is dead, the cluster is
+    # categorically unreachable and no amount of waiting will help. Bail out in ~1s
+    # instead of waiting the full timeout. This caps the cascading slowdown across
+    # downstream tests when one suite leaves the cluster in a broken state.
+    if ! curl -sfk -m 1 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
+        log_fail "cluster ready (${expected}+ members, canonical §1.1) — entry point ${MGMT_ENTRY_POINT} not responding to /health/live; cluster appears down, fast-failing"
+        return 1
+    fi
+    # Slow path — cluster is reachable but not yet at full readiness; enter the polling loop.
     wait_for "cluster ready (${expected}+ members, canonical §1.1)" "_cluster_is_ready ${expected}" "$timeout"
 }
 

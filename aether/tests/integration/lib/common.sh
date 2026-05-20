@@ -93,7 +93,11 @@ aether_failover() {
 # Example: aether_field status cluster.nodeCount
 aether_field() {
     local command="$1" field="$2"
-    aether_failover "$command" --format value --field "$field"
+    # Split $command on spaces so multi-word subcommands like "cluster topology" pass as
+    # separate args to picocli — quoting them as one string makes picocli see a literal
+    # "cluster topology" token that matches no subcommand.
+    # shellcheck disable=SC2086
+    aether_failover $command --format value --field "$field"
 }
 
 # Query a CLI command and return full JSON output
@@ -101,7 +105,9 @@ aether_field() {
 # Example: aether_json status
 aether_json() {
     local command="$1"; shift
-    aether_failover "$command" --format json "$@"
+    # Split $command on spaces (see aether_field for rationale).
+    # shellcheck disable=SC2086
+    aether_failover $command --format json "$@"
 }
 
 # ---------------------------------------------------------------------------
