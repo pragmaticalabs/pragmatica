@@ -6,8 +6,8 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
-import org.pragmatica.http.routing.HttpError;
 import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.routing.HttpStatusAware;
 import org.pragmatica.http.routing.ProblemDetail;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
@@ -24,11 +24,13 @@ import java.nio.charset.StandardCharsets;
 /// with the standard `type/title/status/detail/instance` members plus the `requestId`
 /// extension for request tracing.
 ///
-/// Cause → status resolution: `HttpError` instances surface their `status()`;
-/// any other Cause defaults to HTTP 500. Per-domain sealed `*Error` types should
-/// implement `HttpError` (or wrap themselves in `HttpError.httpError(status, cause)`)
-/// to project semantic codes (404/409/422/etc.) onto the wire. The fallback to 500
-/// preserves today's behavior for un-mapped causes — incrementally fixable per domain.
+/// Cause → status resolution: any cause implementing `HttpStatusAware` surfaces its
+/// `httpStatus()` (which includes `HttpError` instances via the default mapping to
+/// `status()`); any other Cause defaults to HTTP 500. Per-domain sealed `*Error` types
+/// should implement `HttpStatusAware` with a default and per-variant overrides where
+/// semantics differ (e.g. `ClusterConfigError` defaults to 400 with `VersionConflict`→409,
+/// `ClusterNotFound`→404, etc.). The fallback to 500 preserves today's behavior for
+/// un-mapped causes — incrementally fixable per domain.
 public final class ProblemResponses {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
     private static final ContentType CONTENT_TYPE_PROBLEM = ContentType.contentType("application/problem+json",
@@ -83,7 +85,7 @@ public final class ProblemResponses {
     }
 
     private static HttpStatus resolveStatus(Cause cause) {
-        return cause instanceof HttpError he ? he.status() : HttpStatus.INTERNAL_SERVER_ERROR;
+        return cause instanceof HttpStatusAware ha ? ha.httpStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {
