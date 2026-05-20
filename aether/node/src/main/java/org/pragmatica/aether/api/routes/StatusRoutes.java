@@ -140,6 +140,11 @@ public final class StatusRoutes implements RouteSource {
                                   metrics,
                                   node.self().id(),
                                   "running",
+                                  // NOTE: this field is named `lifecycleState` for backward compat but actually
+                                  // carries `NodeState` (in-memory JVM runtime: STARTING/JOINING/ACTIVE/DRAINING/STOPPED),
+                                  // NOT the FSM-level `NodeLifecycleState`. For the FSM lifecycle of any node
+                                  // (including self), read `cluster.nodes[].kvState` further down in this response,
+                                  // or query `/api/nodes/lifecycle/{id}`. Renaming this field is a separate cleanup.
                                   node.nodeLifecycle().currentState()
                                                     .name(),
                                   readClusterPhase(node),

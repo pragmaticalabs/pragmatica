@@ -46,7 +46,7 @@ document.addEventListener('alpine:init', function() {
                         cpuUsage: n.cpuUsage || 0,
                         heapUsedMb: n.heapUsedMb || 0,
                         heapMaxMb: n.heapMaxMb || 0,
-                        lifecycleState: n.lifecycleState || 'ON_DUTY',
+                        lifecycleState: n.derivedStatus || n.kvState || 'ON_DUTY',
                         slices: []
                     };
                 });
