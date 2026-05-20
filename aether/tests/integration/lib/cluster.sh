@@ -1977,10 +1977,12 @@ task_assignment_count() {
 
 task_group_status() {
     local group="$1"
-    local tasks
-    tasks=$(cluster_tasks)
-    # Extract status for the matching group from JSON
-    printf '%s' "$tasks" | grep -o "\"group\"[[:space:]]*:[[:space:]]*\"${group}\"[^}]*\"status\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"status"[[:space:]]*:[[:space:]]*"//' | sed 's/"$//' || echo "UNASSIGNED"
+    # Drive the canonical CLI surface — `aether cluster tasks status <group>` fetches
+    # the full assignments list, filters to the matching group client-side, and (in
+    # --format value mode) emits the single status field. Falls back to UNASSIGNED on
+    # CLI error so callers wrapping this in a `wait_for` predicate keep their existing
+    # truth-table.
+    aether_failover cluster tasks status "$group" --format value --field assignments.0.status 2>/dev/null || echo "UNASSIGNED"
 }
 
 task_group_node() {
