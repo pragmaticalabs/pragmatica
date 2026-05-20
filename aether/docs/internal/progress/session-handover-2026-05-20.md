@@ -1,16 +1,18 @@
 # Session handover — 2026-05-20
 
 Branch: `release-1.0.0-rc1`
-HEAD: `1bca1b4e1`
-Candidate tag: `v1.0.0-rc1-candidate` → `1bca1b4e1`
+HEAD: `023c819cc`
+Candidate tag: `v1.0.0-rc1-candidate` → `023c819cc`
 
 ## Topline
 
-**Two work waves landed today on `release-1.0.0-rc1`:**
+**Three work waves landed today on `release-1.0.0-rc1`:**
 
 **Wave 1 — CLI / REST surface consistency audit closeout** (commits `6dd22fdc7` … `caedfa62a`, summarized in §"Wave 1" below). Six commits closing out the audit including a $2500 post-audit self-review.
 
 **Wave 2 — Tier 1 RC1-foundational follow-ups** (commits `f563841b4` … `1bca1b4e1`). Five commits closing every Tier 1 item that was queued at the end of Wave 1: `HttpStatusAware` mixin + status-code mapping across 4 sealed `*Error` hierarchies; rename `StatusResponse.lifecycleState` → `runtimeState` with a separate KV-direct FSM `lifecycleState` field; same `kvState`/`derivedStatus` split for `ClusterStatusNodeInfo` in `/api/cluster/status` (plus discovery that the field was a `"ON_DUTY"` hardcoded stub — fixed); CLI namespace consolidation folding `node-{slices,routes,inflight,metrics}` under `aether nodes <verb> [id]` and resolving a latent `NodesCommand`/`NodeCommand` `@Command(name="nodes")` clash via merge.
+
+**Wave 3 — Tier 2 operator parity batch** (commits `8c172328f` … `023c819cc`). Four commits closing four Tier 2 CLI/API gaps: idempotent artifact push (200 + `{status: uploaded|already-present}` instead of stderr-grep-bait); `aether cluster tasks list/status` CLI subcommands with client-side filter; `?state=` query param on `/api/slices` + matching CLI `--state` flag; per-node `/health/{ready,live}/{id}` endpoints + `aether nodes health [id]` CLI using the Phase B `NodeIdParam` forwarding pattern. Plus inline TASKS_TABLE column-field bug fix during the cluster-tasks work.
 
 ## Wave 1 — Audit closeout (commits `6dd22fdc7` … `caedfa62a`)
 
@@ -54,6 +56,24 @@ All four Tier 1 items from the Wave 1 handover are now landed (see Wave 2 commit
 - ✅ `StatusResponse.lifecycleState` → `runtimeState` + genuine FSM `lifecycleState` (`3f6d91653`)
 - ✅ `ClusterStatusNodeInfo.lifecycleState` → `kvState`/`derivedStatus` (`2f1b43f56`) + bonus stub-discovery + fix
 - ✅ Fold kebab `aether node-{slices,routes,inflight,metrics}` under `aether nodes <verb>` (`1bca1b4e1`) + bonus NodesCommand/NodeCommand merge
+
+## Commits — Wave 3 (Tier 2 operator parity batch)
+
+| Commit | Subject | Scope |
+|---|---|---|
+| `8c172328f` | `feat(artifact-repo): idempotent artifact push (200 with status uploaded\|already-present)` | Reframing: started as "blueprints contains" but survey revealed (a) blueprint coords aren't persisted (would need schema change), (b) the actual problem lives at the ARTIFACT upload layer not blueprint publish, (c) blueprint publish via KV-Store Put is already idempotent. Real fix: `PUT /repository/...` now checks `ArtifactStore.exists()` first, returns 200 + `{"status":"already-present","coords","size","md5","sha1"}` on duplicate. New `ArtifactPushResponse` record. New `MavenResponse.json(byte[])` factory. New `ArtifactStore.metadata(Artifact)` lightweight accessor. `MavenProtocolRoutes` content-category honored from response (not hardcoded BINARY). CLI `PushArtifactCommand` emits aggregate `--format json` shape. `push_blueprint` shell helper drops legacy `already exists\|409\|conflict\|duplicate artifact` regex; reads JSON `.status` field instead. 9 files / 351 ins / 39 del. |
+| `b82c0262a` | `feat(cli): aether cluster tasks list/status subcommands + fix TASKS_TABLE column field mappings` | `aether cluster tasks list` (explicit form of existing default) + `aether cluster tasks status <group>` (client-side filter using brace-depth-counter JSON extractor, no Jackson dep). 5 new tests for the filter. Inline bug fix during work: `TASKS_TABLE` columns were keyed off `assignedNode`/`since` but server emits `assignedTo`/`assignedAt` — pre-existing dead-render that the new commands surfaced. `task_group_status` shell helper migrated from raw-JSON grep to CLI `--format value --field assignments.0.status`. 342 tests (up from 337). |
+| `262826e65` | `feat(aether): /api/slices state filter + aether slices --state CLI flag` | Server-side instance-level filter (case-insensitive). Slices with no matching instances drop from the response when filter present. CLI `--state` mirrors `EventsCommand` query-string pattern. `slices_active_instances` shell helper migrated; `slices_total_instances` deliberately left on full list (LOADED+ACTIVE union not expressible as single-state filter — documented in commit). |
+| `023c819cc` | `feat(aether): per-node /health/{ready,live}/{id} endpoints + aether nodes health [id] CLI` | Two new `ManagementRoute` enum entries (`HEALTH_READY_GET`, `HEALTH_LIVE_GET`) using Phase B `NodeIdParam(0)` forwarding. Routes register the existing `buildReadinessResponse` / `buildLivenessResponse` handlers — id param is ignored at handler time because forwarder has already routed. `NodesCommand.HealthCommand` inner static class with optional `[id]` arg + `--liveness` flag. `lib/cluster.sh` raw-curl loops intentionally NOT migrated — documented as a per-iter latency concern (~50ms curl vs ~5-15s CLI cold-start). 399 tests green; `RouteAssemblerTest.roundTrip_assembleThenMatch_preservesParams` exercises the new entries via `ManagementRoute.values()` iteration. |
+
+### Tier 2 backlog status
+
+Of the five Tier 2 items from the Wave 1 handover backlog:
+- ✅ `aether cluster tasks list/status` — `b82c0262a`
+- ✅ `aether nodes health [id]` — `023c819cc`
+- ✅ `aether slices --filter state=` — `262826e65` (as `--state`)
+- ✅ `aether blueprints contains <coords>` — reframed and landed as artifact-push idempotency (`8c172328f`) which fixes the actual underlying problem more cleanly
+- 🚧 `aether events --follow` — deferred: survey revealed no SSE/streaming primitive exists in `integrations/http-routing/`; would require new chunked-encoding response infrastructure (RC2-scope per session decision)
 
 ## Key files for next session
 
@@ -131,25 +151,20 @@ These came up during today's audit work and are worth preserving as project memo
 
 ## Suggested next-session opener
 
-With Tier 1 cleared, the natural next move is **Tier 2 operator parity gaps**. Highest-leverage starter: **`aether events --follow` (streaming/SSE)** — it directly unblocks ~10 test helpers and ~15 assertions currently doing per-node fan-out polling, and the underlying event-aggregator surface already exists. Implementation sketch:
-1. Add `/api/events/stream` with `text/event-stream` content-type (SSE) — reuse the `eventAggregator()` Stream.
-2. CLI `--follow` flag on `aether events` switches from one-shot fetch to long-poll SSE consumer.
-3. Replace `topology_events_since` / `wait_for_node_departure` shell helpers with `aether events --follow --filter type=NODE_LEFT` patterns.
+With both Tier 1 (foundational) and four of five Tier 2 items closed, the natural next move is one of:
 
-Alternative entry points if SSE feels too large:
-- `aether blueprints contains <coords>` — tiny endpoint, eliminates `lib/cluster.sh:push_blueprint` stderr-grep
-- `aether nodes health [id]` — surfaces per-node `/health/ready` data already produced by the server
-- `aether slices --filter state=ACTIVE` — server-side filter for the existing `/api/slices` endpoint
-
-For Tier 3 / RC2 readiness work the priority order is captured in `aether/docs/internal/cli-gap-audit.md`.
+1. **`aether events --follow` (SSE infrastructure)** — the deferred Wave 3 item. Requires building a chunked-response primitive in `integrations/http-routing/` (Netty integration) + an event-aggregator subscription API. RC2-scope but blocks ~10 test helpers from migrating off poll loops. Highest leverage if SSE infrastructure is desired.
+2. **Tier 3 — `SelfDrainInitiated` event** — adds a typed cluster event for the self-drain-on-quorum-loss code path. Eliminates `test-self-drain-quorum-loss.sh`'s `docker logs | grep "Self-drain: DRAINING on"` workaround.
+3. **Tier 3 — typed schemas for free-form JSON responses** — `/api/config`, `/api/metrics/transport`, `/api/metrics/history` currently return untyped trees. Typing them improves CLI rendering and operator tooling.
+4. **Pre-release smoke** — with the Tier 1 + Tier 2 surface stabilized, run a fresh end-to-end integration suite sweep against the remote Docker cluster to catch any regressions from today's wire-format changes (esp. `StatusResponse.runtimeState`, `ClusterStatusNodeInfo` shape, artifact push response shape).
 
 ## Session metadata
 
-- Date: 2026-05-20 (single working day, two waves)
-- Commits: Wave 1 (audit closeout) = 6 substantive + 1 handover + 1 self-review fix = 8 commits. Wave 2 (Tier 1 closeout) = 5 substantive commits. Plus this handover update = **14 commits total**.
-- Files touched: ~95 unique across all commits
-- Build verifications: ≥10 independent `build-runner` runs, all green
-- Tests passing at HEAD: aether/node 399, aether/cli 337, aether-config 280 (incremental; full reactor green)
-- Tag movements: `v1.0.0-rc1-candidate` advanced 12+ times
-- Notable architectural choices: (1) `http-routing` added as `aether-config` dep — alternative architectures rejected with rationale documented in commit; (2) `NodesCommand`/`NodeCommand` picocli name-clash fixed by merge as part of T1.4 (latent bug discovered mid-task)
-- $2500 post-audit challenge from Wave 1 generated the follow-up backlog that Wave 2 cleared
+- Date: 2026-05-20 (single working day, three waves)
+- Commits: Wave 1 (audit closeout) = 6 substantive + 1 handover + 1 self-review fix = 8 commits. Wave 2 (Tier 1 closeout) = 5 substantive commits. Wave 3 (Tier 2 batch) = 4 substantive commits. Plus this handover update = **19 commits total**.
+- Files touched: ~110 unique across all commits
+- Build verifications: ≥14 independent `build-runner` runs, all green
+- Tests passing at HEAD: aether/node 399, aether/cli 342 (was 337 — +5 from cluster-tasks filter tests), aether-config 280, artifact-repo 22 (incremental; full reactor green)
+- Tag movements: `v1.0.0-rc1-candidate` advanced 16+ times
+- Notable architectural choices: (1) `http-routing` added as `aether-config` dep — alternative architectures rejected with rationale documented in commit; (2) `NodesCommand`/`NodeCommand` picocli name-clash fixed by merge as part of T1.4 (latent bug discovered mid-task); (3) `ClusterStatusNodeInfo.lifecycleState` was a stub hardcoded `"ON_DUTY"` — discovered + fixed during T1.3; (4) `aether blueprints contains` reframed as artifact-push idempotency once the survey revealed the real problem lived a layer down; (5) `events --follow` SSE deferred to RC2 after survey revealed no HTTP streaming primitive exists
+- $2500 post-audit challenge from Wave 1 generated the follow-up backlog that Waves 2+3 cleared
