@@ -7,10 +7,10 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_nodes_formed() {
-    wait_for_cluster 120
+    wait_for_cluster_ready 120
     local expected="${NODE_COUNT:-5}"
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     # Equality, not ≥ — `coreCount > NODE_COUNT` indicates phantom KV state
     # (e.g., persisted aether_pgdata from a previous run replaying ghost ON_DUTY
     # peers). Vacuous "≥ 5" hides cluster contamination.
@@ -31,7 +31,7 @@ test_leader_elected() {
 
 test_quorum_established() {
     local node_count
-    node_count=$(cluster_node_count)
+    node_count=$(cluster_member_count)
     local expected="${NODE_COUNT:-5}"
     # Tight: quorum is established only when count == expected, not just ≥ 3.
     assert_eq "$node_count" "$expected" "Quorum established (${node_count} nodes == ${expected})"
@@ -43,7 +43,7 @@ test_liveness_probe() {
 
 test_all_nodes_visible() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     local expected="${NODE_COUNT:-5}"
     assert_eq "$count" "$expected" "All nodes visible (${count} == ${expected})"
 }

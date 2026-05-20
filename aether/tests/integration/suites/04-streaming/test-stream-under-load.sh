@@ -18,7 +18,7 @@ fi
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-5.0}"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }
@@ -68,7 +68,7 @@ test_stream_info_after_load() {
 
 test_cluster_stable() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Cluster stable: 5 nodes after stream load"
     assert_cluster_healthy "Cluster healthy after stream load"
 }

@@ -10,7 +10,7 @@ ROUTE_CLEANUP_TIMEOUT="${ROUTE_CLEANUP_TIMEOUT:-60}"
 BLUEPRINT="org.pragmatica.aether.test:test-echo:1.0.0"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # ClusterGeneration barrier: whatever churn a prior destructive suite left is
     # committed to a stable generation before we deploy. No rescale-fallback needed.
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 60 || log_warn "pre-deploy snapshot not quiesced"

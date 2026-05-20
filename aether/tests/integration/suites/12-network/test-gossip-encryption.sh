@@ -7,20 +7,20 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
 test_cluster_formed_with_encryption() {
     # Operational health, not raw generation-snapshot membership.
-    # `cluster_node_count` (generation `core.members[]` length) can transiently carry
+    # `cluster_member_count` (generation `core.members[]` length) can transiently carry
     # tombstones / mid-decommission CTM-replacement entries left by an earlier suite,
     # producing 6-7 even though only 5 nodes are actively serving. The test's intent
     # is "the cluster formed with 5 operational nodes under encryption" — the right
     # signal for that is the transport-honest ON_DUTY+HEALTHY core count exposed by
     # /api/cluster/topology.coreCount (the same metric restore_cluster_baseline gates on).
     local count
-    count=$(cluster_node_count_on_duty_healthy)
+    count=$(cluster_active_core_count)
     assert_eq "$count" "5" "Cluster formed with 5 ON_DUTY healthy cores (encryption enabled)"
 }
 

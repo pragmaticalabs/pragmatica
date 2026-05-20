@@ -20,7 +20,7 @@ _cert_renewal_status() {
 }
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 

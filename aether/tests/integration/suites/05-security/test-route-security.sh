@@ -76,7 +76,7 @@ test_operator_can_scale() {
         return 0
     fi
     local current_count
-    current_count=$(cluster_node_count)
+    current_count=$(cluster_member_count)
     local status
     status=$(http_status "${CLUSTER_ENDPOINT}/api/scale" \
         -X POST \

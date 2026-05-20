@@ -13,7 +13,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC
 # MGMT_PORT = base of the per-node direct mgmt port range (set by run-tests.sh:
 # 5151 for cluster A, 5161 for cluster B). MGMT_PORT+i resolves to node-{i+1}'s
 # direct host-mapped mgmt port (gateway-bypass; used by per-node probes such as
-# wait_for_all_nodes_ready and rotate_mgmt_entry_point on cloud env).
+# wait_for_cluster_ready and rotate_mgmt_entry_point on cloud env).
 MGMT_PORT="${MGMT_PORT:-5151}"
 APP_PORT="${APP_PORT:-8070}"
 LB_PORT="${LB_PORT:-9090}"

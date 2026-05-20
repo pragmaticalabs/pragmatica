@@ -167,7 +167,7 @@ connect_node_to_network() {
 # ---------------------------------------------------------------------------
 
 test_initial_state() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # NORMAL phase gates the SWIM cold-boot suppression and the FSM gate's
     # cold-start fallback (spec §17). Without NORMAL, the gate's
     # "no snapshot → allow" branch can permit decommission writes that
@@ -179,7 +179,7 @@ test_initial_state() {
         log_warn "Cluster phase did not reach NORMAL within 180s — gate cold-start fallback may permit decommission and absorb the S05 assertion"
     wait_for_leader 60
     local count
-    count=$(cluster_node_count_on_duty_healthy)
+    count=$(cluster_active_core_count)
     assert_eq "$count" "5" "Initial: 5 ON_DUTY healthy cores"
 }
 
@@ -271,9 +271,9 @@ test_cluster_heals_to_5_onduty() {
     # of the previous test function, so SECONDS-relative budgeting here
     # is approximate but tight enough (run_test scheduling adds <1s).
     if ! wait_for "5 ON_DUTY healthy cores after partition heal" \
-        "[ \$(cluster_node_count_on_duty_healthy) -eq 5 ]" "$HEAL_BUDGET_S"; then
+        "[ \$(cluster_active_core_count) -eq 5 ]" "$HEAL_BUDGET_S"; then
         local now_count
-        now_count=$(cluster_node_count_on_duty_healthy)
+        now_count=$(cluster_active_core_count)
         log_fail "S06 violation: cluster did not return to 5 ON_DUTY healthy cores within ${HEAL_BUDGET_S}s of partition heal (current count=${now_count}). Possible regression: post-heal SWIM/QUIC reconvergence stuck, or one of the minority nodes was incorrectly written to DECOMMISSIONED late (after the partition assertion window closed but before reconnect took effect)."
         return 1
     fi

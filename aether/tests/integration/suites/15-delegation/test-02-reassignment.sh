@@ -29,7 +29,7 @@ get_different_node() {
 # Prerequisite: cluster healthy, all tasks active
 # ---------------------------------------------------------------------------
 test_prerequisite() {
-    wait_for_cluster 120
+    wait_for_cluster_ready 120
     wait_for "all task groups ACTIVE" \
         "[ \$(cluster_tasks | grep -o '\"status\"[[:space:]]*:[[:space:]]*\"ACTIVE\"' | wc -l | tr -d ' ') -ge 6 ]" \
         60
@@ -153,7 +153,7 @@ test_node_failure_reassignment() {
     # Restart the killed node
     log_info "Restarting killed node: ${scaling_node}"
     start_node "$scaling_node"
-    wait_for_cluster 120
+    wait_for_cluster_ready 120
     log_pass "Cluster recovered after node restart"
 }
 

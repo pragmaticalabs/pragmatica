@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 EXPORT_FILE="/tmp/aether-config-export.json"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
@@ -70,7 +70,7 @@ test_config_identical_after_reapply() {
 test_cluster_healthy_after_roundtrip() {
     assert_cluster_healthy "Healthy after config roundtrip"
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "5 nodes after config roundtrip"
 }
 

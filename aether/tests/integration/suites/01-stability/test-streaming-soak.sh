@@ -61,7 +61,7 @@ test_sustained_publish() {
 
 test_cluster_stable_after_stream() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Cluster stable: 5 nodes after streaming soak"
 }
 

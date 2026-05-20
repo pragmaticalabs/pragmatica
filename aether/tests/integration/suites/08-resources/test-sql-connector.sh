@@ -11,7 +11,7 @@ BLUEPRINT="${SQL_BLUEPRINT:-org.pragmatica.aether.test:test-persistence:1.0.0}"
 POOL_BURST="${POOL_BURST:-50}"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 

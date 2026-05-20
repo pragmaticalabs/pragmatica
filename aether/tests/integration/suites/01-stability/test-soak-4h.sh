@@ -41,9 +41,9 @@ collect_stats() {
 }
 
 test_cluster_baseline() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "${NODE_COUNT:-5}" "Baseline: ${count} nodes (>= ${NODE_COUNT:-5})"
 }
 
@@ -79,7 +79,7 @@ test_collect_pre_stats() {
 
 test_soak_load() {
     local start_nodes
-    start_nodes=$(cluster_node_count)
+    start_nodes=$(cluster_member_count)
 
     log_info "Starting ${SOAK_DURATION}s soak at ${SOAK_RPS} rps against app endpoint"
     rm -f "$SOAK_LOG"
@@ -107,7 +107,7 @@ test_collect_post_stats() {
 
 test_no_node_drift() {
     local end_nodes
-    end_nodes=$(cluster_node_count)
+    end_nodes=$(cluster_member_count)
     assert_ge "$end_nodes" "${NODE_COUNT:-5}" "No node drift: ${end_nodes} nodes (>= ${NODE_COUNT:-5})"
 }
 

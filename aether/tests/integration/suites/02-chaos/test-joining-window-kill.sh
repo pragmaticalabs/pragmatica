@@ -279,7 +279,7 @@ verify_transport_unreachable_event() {
 # ---------------------------------------------------------------------------
 
 test_initial_state() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # NORMAL phase gates SWIM cold-boot suppression. Without NORMAL the FSM may
     # also suppress the TransportUnreachable cell during the cold-start fallback
     # (spec §17), so the test premise (TransportUnreachable wins over SWIM)
@@ -287,7 +287,7 @@ test_initial_state() {
     wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; the JOINING-window assertion may absorb a SWIM-path success and not exercise S01"
     wait_for_leader 60
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
     # Capture the pre-priming label snapshot so the replacement-discovery loop
     # below can compute a clean set-diff. We snapshot AFTER NORMAL+leader so

@@ -40,14 +40,14 @@ test_bootstrap_cluster() {
 }
 
 test_cluster_forms() {
-    wait_for_cluster 90
+    wait_for_cluster_ready 90
     log_pass "Cluster healthy after bootstrap"
 }
 
 test_expected_node_count() {
     wait_for_node_count 5 120
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Expected 5 nodes after bootstrap"
 }
 

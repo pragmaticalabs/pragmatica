@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 BLUEPRINT="org.pragmatica.aether.example:url-shortener:1.0.0"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_node_count 5 30
     # Push the example artifact explicitly — the runner-level pre-push at
     # run-tests.sh hardcodes the org.pragmatica.aether.test groupId, so

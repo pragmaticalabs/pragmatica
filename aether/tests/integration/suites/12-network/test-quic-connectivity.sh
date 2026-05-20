@@ -10,7 +10,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/topology.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # SWIM cold-boot suppression bypass: kills against a phase=COLD_BOOT cluster
     # produce UnknownObserved (not FaultyObserved), so no NODE_FAILED event fires.
     # Soft (log_warn): cluster B on docker-remote can be slow to reach NORMAL
@@ -93,7 +93,7 @@ test_connections_recovered() {
     # replacement, and restarting the original would push the cluster to a
     # 6-node "stale + replacement" state that fights the elastic-cluster model.
     if ! wait_for "5 ON_DUTY healthy cores after QUIC recovery" \
-        "[ \$(cluster_node_count_on_duty_healthy) -eq 5 ]" 180; then
+        "[ \$(cluster_active_core_count) -eq 5 ]" 180; then
         log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 180s after kill+auto-heal"
         return 1
     fi

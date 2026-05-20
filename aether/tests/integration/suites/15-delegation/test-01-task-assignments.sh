@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 # Prerequisite: cluster must be healthy with a leader
 # ---------------------------------------------------------------------------
 test_cluster_ready() {
-    wait_for_cluster 120
+    wait_for_cluster_ready 120
     local leader
     leader=$(cluster_leader)
     assert_ne "$leader" "" "Leader elected: ${leader}"

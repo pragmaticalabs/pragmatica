@@ -222,7 +222,7 @@ verify_no_kv_writes_after_drain() {
 # ---------------------------------------------------------------------------
 
 test_initial_state() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # NORMAL phase ensures the aggregator's periodic emission has stabilized
     # and the cold-start fallback paths in SelfDrainCoordinator are no
     # longer in effect. Soft (log_warn) to align with sibling tests; the
@@ -232,7 +232,7 @@ test_initial_state() {
         log_warn "Cluster phase did not reach NORMAL within 180s — self-drain timing may be elongated by cold-start aggregator behavior"
     wait_for_leader 60
     local count
-    count=$(cluster_node_count_on_duty_healthy)
+    count=$(cluster_active_core_count)
     assert_eq "$count" "5" "Initial: 5 ON_DUTY healthy cores"
 }
 
@@ -420,9 +420,9 @@ test_cluster_recovers_to_five_on_duty() {
     # restart_all_nodes already drove the cluster back to leader + quorum,
     # but the ON_DUTY healthy count is the actual S20 acceptance signal.
     if ! wait_for "5 ON_DUTY healthy cores after self-drain recovery" \
-        "[ \$(cluster_node_count_on_duty_healthy) -eq 5 ]" "$RECOVERY_BUDGET_S"; then
+        "[ \$(cluster_active_core_count) -eq 5 ]" "$RECOVERY_BUDGET_S"; then
         local now_count
-        now_count=$(cluster_node_count_on_duty_healthy)
+        now_count=$(cluster_active_core_count)
         log_fail "S20 violation: cluster did not return to 5 ON_DUTY healthy cores within ${RECOVERY_BUDGET_S}s of restart (current count=${now_count})"
         return 1
     fi

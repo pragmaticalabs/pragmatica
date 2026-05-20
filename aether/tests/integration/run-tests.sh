@@ -423,11 +423,11 @@ run_cluster_b_suites() {
         # failure — chaos tests can leave residual CTM-provisioned replacements whose
         # snapshots haven't propagated, and skipping subsequent destructive suites just
         # turns one failure into five. Each suite is responsible for its own preconditions
-        # via the wait_for_cluster / wait_for_leader helpers in run_test().
+        # via the wait_for_cluster_ready / wait_for_leader helpers in run_test().
         local quiesce_start
         quiesce_start=$(date +%s)
         # 60s base × TIMEOUT_SCALE: 60s docker / 180s cloud. Best-effort barrier;
-        # continue-on-fail because each suite's own `wait_for_cluster` re-establishes
+        # continue-on-fail because each suite's own `wait_for_cluster_ready` re-establishes
         # preconditions if churn lingers.
         await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || \
             log_warn "Cluster B did not quiesce within 60s after suite ${suite} — continuing"

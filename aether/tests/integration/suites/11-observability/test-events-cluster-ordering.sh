@@ -17,7 +17,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 MARKER="cluster-order-$$-$(date +%s)"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready for event-ordering test"
 }
 

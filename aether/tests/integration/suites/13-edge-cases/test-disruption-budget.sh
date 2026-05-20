@@ -7,13 +7,13 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # ClusterGeneration barrier: inherit-from-predecessor churn is committed to a stable
     # generation (no manual drain-reset). Lingering DRAINING lifecycle is fenced by the
     # leader's snapshot quiescence — if the budget is still exhausted it's a real defect.
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 120 || log_warn "pre-test snapshot not quiesced"
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     if [ "$count" -lt 3 ] 2>/dev/null; then
         log_fail "Need at least 3 nodes for disruption budget test, got ${count}"
         return 1

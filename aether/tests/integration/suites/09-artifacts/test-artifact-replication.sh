@@ -24,10 +24,10 @@ cleanup_temp() {
 trap cleanup_temp EXIT
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "2" "At least 2 nodes available for replication test"
 }
 

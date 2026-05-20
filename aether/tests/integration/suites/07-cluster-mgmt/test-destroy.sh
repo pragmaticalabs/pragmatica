@@ -16,9 +16,9 @@ test_destroy_guard() {
 }
 
 test_cluster_exists() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_gt "$count" "0" "Cluster exists with ${count} nodes"
 }
 

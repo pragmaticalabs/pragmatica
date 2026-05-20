@@ -9,12 +9,12 @@ source "${SCRIPT_DIR}/../../lib/topology.sh"
 source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 test_initial_state() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
     wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
     wait_for_leader 60
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
 }
 
@@ -42,7 +42,7 @@ test_kill_non_leader() {
         log_fail "No NODE_LEFT/NODE_FAILED event for ${victim} within 60s"
         return 1
     fi
-    log_pass "Departure of ${victim} observed via /api/events (current count: $(cluster_node_count))"
+    log_pass "Departure of ${victim} observed via /api/events (current count: $(cluster_member_count))"
 }
 
 test_leader_unchanged() {
@@ -66,7 +66,7 @@ test_auto_heal() {
         return 1
     }
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Auto-heal restored cluster to exactly 5 nodes"
 }
 

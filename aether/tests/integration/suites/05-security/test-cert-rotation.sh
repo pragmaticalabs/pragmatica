@@ -12,7 +12,7 @@ LOAD_RPS="${LOAD_RPS:-5}"
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-5.0}"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready for cert rotation test"
 }
 
@@ -78,7 +78,7 @@ test_cluster_healthy_after_rotation() {
 
 test_all_nodes_present() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "${NODE_COUNT:-5}" "All ${NODE_COUNT:-5} nodes present after cert rotation"
 }
 

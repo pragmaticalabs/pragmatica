@@ -13,7 +13,7 @@ LOAD_DURATION="${LOAD_DURATION:-180}"
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
 test_seed_config() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_leader 60
     seed_cluster_config
     # Wait for generation to quiesce after previous suite's scale-down — ensures
@@ -30,7 +30,7 @@ test_scale_up_to_7() {
     # Hetzner remote even when the cluster was actually at 7.
     wait_for_node_count_fast 7 180
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "7" "Scaled to 7 nodes"
 }
 
@@ -61,7 +61,7 @@ test_scale_down_under_load() {
 
 test_5_nodes_healthy() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "5 nodes present after scale-down"
     assert_cluster_healthy "Cluster healthy at 5 nodes"
 }

@@ -9,12 +9,12 @@ source "${SCRIPT_DIR}/../../lib/topology.sh"
 source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 test_initial_state() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
     wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
     wait_for_leader 60
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
 }
 
@@ -62,7 +62,7 @@ test_kill_leader_and_reelect() {
 
 test_cluster_has_quorum() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "4" "Cluster has quorum after leader kill (${count} nodes)"
 }
 
@@ -75,11 +75,11 @@ test_health_with_4_nodes() {
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
     wait_for_node_count 5 180 || {
-        log_fail "Cluster did not reach 5 nodes after auto-heal (current=$(cluster_node_count))"
+        log_fail "Cluster did not reach 5 nodes after auto-heal (current=$(cluster_member_count))"
         return 1
     }
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Auto-heal restored cluster to exactly 5 nodes"
 }
 

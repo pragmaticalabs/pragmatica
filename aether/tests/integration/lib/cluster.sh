@@ -8,7 +8,9 @@ source "${LIB_DIR}/generation.sh"
 # ---------------------------------------------------------------------------
 # Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
-cluster_node_count() {
+# cluster_member_count — generation snapshot member count (includes JOINING).
+# See aether/docs/specs/test-readiness-contract.md §2.1.
+cluster_member_count() {
     # Query core node count via the generation snapshot rather than the topology
     # endpoint. `/api/cluster/topology` `coreCount` is filtered to ON_DUTY+HEALTHY
     # members only, so during a CTM scale-up the freshly-provisioned overlay-only
@@ -78,12 +80,12 @@ cluster_leader() {
 # current epoch (so KV writes that just landed are reflected), then reads count.
 #
 # Use after a state-changing action (scale_cluster, kill_node, etc.) when the test
-# wants the FINAL count without polling. Without this, `cluster_node_count` may
+# wants the FINAL count without polling. Without this, `cluster_member_count` may
 # return the pre-action snapshot — particularly for scale-down, where the
 # `max(members, desired)` heuristic biases toward the larger (stale) members count.
 #
 # Args: optional timeout in seconds (default 30).
-# Falls back to the plain `cluster_node_count` if the await endpoint is unreachable
+# Falls back to the plain `cluster_member_count` if the await endpoint is unreachable
 # (cold cluster pre-projection) so the call is always safe.
 cluster_node_count_quiesced() {
     local timeout="${1:-30}"
@@ -91,7 +93,7 @@ cluster_node_count_quiesced() {
     if [ -n "$endpoint" ]; then
         await_generation_quiesced "$endpoint" "current" "$timeout" >/dev/null 2>&1 || true
     fi
-    cluster_node_count
+    cluster_member_count
 }
 
 # Spec §4.4 / §10 P7: tests must consume the same operator-visible signals.
@@ -105,11 +107,14 @@ cluster_phase() {
 # derives ON_DUTY at read-time from SWIM health rather than persisting an explicit
 # NodeLifecycleKey KV atom — so /api/nodes/lifecycle no longer carries ON_DUTY entries.
 # /api/cluster/topology `coreCount` is the authoritative operator-visible count of
-# cores that are ON_DUTY+HEALTHY (as noted in cluster_node_count comment above).
+# cores that are ON_DUTY+HEALTHY (as noted in cluster_member_count comment above).
 # Used by `restore_cluster_baseline` to assert the cluster has converged to N healthy
 # cores AFTER CTM auto-heal, without requiring those cores to be the original five
 # compose nodes (CTM replacements come up with fresh NodeIds).
-cluster_node_count_on_duty_healthy() {
+#
+# cluster_active_core_count — topology snapshot ON_DUTY+reachable core count.
+# See aether/docs/specs/test-readiness-contract.md §2.2.
+cluster_active_core_count() {
     local topology
     topology=$(api_get "/api/cluster/topology" 2>/dev/null || true)
     if [ -z "$topology" ]; then
@@ -315,50 +320,10 @@ pick_non_leader() {
 #
 # Uses raw curl to keep per-iter cost ~50ms (vs ~5-15s/iter for `aether status`).
 wait_for_all_nodes_ready() {
-    local timeout="${1:-120}"
-    local deadline=$(($(date +%s) + timeout))
-    local pending=()
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-        pending+=($((MGMT_PORT + i)))
-    done
-    while [ "$(date +%s)" -lt "$deadline" ] && [ "${#pending[@]}" -gt 0 ]; do
-        local still_pending=()
-        for port in "${pending[@]}"; do
-            local body
-            body=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
-                        "http://${TARGET_HOST}:${port}/health/ready" 2>/dev/null) || {
-                still_pending+=("$port")
-                continue
-            }
-            if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"UP"'; then
-                continue
-            fi
-            still_pending+=("$port")
-        done
-        # `set -u` rejects "${still_pending[@]}" when the array is empty (all nodes ready).
-        # Guard explicitly: if everything is ready, clear pending and break out.
-        if [ "${#still_pending[@]}" -eq 0 ]; then
-            pending=()
-            break
-        fi
-        pending=("${still_pending[@]}")
-        sleep 1
-    done
-    if [ "${#pending[@]}" -gt 0 ]; then
-        log_warn "wait_for_all_nodes_ready: not ready on ports: ${pending[*]}"
-        # Diagnostic: dump full /health/ready body for each pending node so we can see
-        # which ComponentHealth (consensus / routes / quorum) is DOWN. Without this,
-        # all we know is "not ready" — useless for nailing down the actual bug.
-        for port in "${pending[@]}"; do
-            local diag
-            diag=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
-                        "http://${TARGET_HOST}:${port}/health/ready" 2>&1 \
-                        || echo '<no response or non-2xx>')
-            log_warn "wait_for_all_nodes_ready: port=${port} body=${diag}"
-        done
-        return 1
-    fi
-    return 0
+    # @deprecated alias — folded into wait_for_cluster_ready (per-node /health/ready
+    # check is now item 4 of the canonical readiness contract).
+    # See aether/docs/specs/test-readiness-contract.md §1.4.
+    wait_for_cluster_ready "$@"
 }
 
 # Rotate MGMT_ENTRY_POINT to any surviving core node reachable on the cluster's mgmt port.
@@ -443,35 +408,57 @@ assert_cluster_healthy() {
 }
 
 is_cluster_ready() {
-    # Fix J: gate cluster-readiness on BOTH node count AND a real elected leader.
-    # The previous count-only check returned TRUE for "5 nodes connected, no leader",
-    # which silently masked failures into downstream `await-quiesced` 500s — a leaderless
-    # cluster has CTM dormant, so blueprint/scale/task ops are no-ops that look like passes
-    # via `none == none` matches in `cluster_leader` comparisons. Requiring a non-empty,
-    # non-"none" leaderId restores fail-fast behaviour for genuine leader-election regressions.
+    # Snapshot-only readiness predicate (no wait, no polling). Cites the canonical
+    # contract: aether/docs/specs/test-readiness-contract.md §1.1.
     #
-    # RC1 Wave 4 follow-up (task #29 honesty fix companion): also require
-    # `cluster_node_count_on_duty_healthy >= NODE_COUNT`. The generation-snapshot count
-    # (`cluster_node_count`) includes JOINING nodes and SWIM-cached-but-transport-dead
-    # entries; after the /api/cluster/topology honesty fix `coreCount` now reflects the
-    # transport-connected ON_DUTY count. Without this second predicate, `wait_for_cluster`
-    # returns TRUE while only 2 of 5 members are reachable for ops, and downstream chaos
-    # tests fail with "only N/M candidates available". Both predicates together fail-close
-    # until the cluster is genuinely operationally ready.
+    # Delegates to the private composite _cluster_is_ready snapshot used inside
+    # wait_for_cluster_ready. Kept as an alias for callers that intentionally
+    # want a one-shot check (e.g., predicate consumed by another `wait_for`).
+    _cluster_is_ready
+}
+
+# wait_for_cluster_ready — canonical "cluster is ready for tests" gate.
+# Composite: generation members ≥ NODE_COUNT, leader elected, active cores ≥ N-1,
+# every node /health/ready UP. See aether/docs/specs/test-readiness-contract.md §1.
+wait_for_cluster_ready() {
+    wait_for "cluster ready (canonical §1.1)" "_cluster_is_ready" "${1:-120}"
+}
+
+# Composite snapshot predicate backing wait_for_cluster_ready / is_cluster_ready.
+# Returns 0 when ALL four properties of the canonical contract hold simultaneously;
+# returns 1 (snapshot-not-ready) otherwise. See test-readiness-contract.md §1.1.
+#
+# RC1 Wave 4 follow-up (task #29 honesty fix companion): the active-core check uses
+# a `>= N-1` floor. Tests downstream of 02-chaos inherit a cluster at N-1 ON_DUTY
+# healthy (the CTM replacement is alive in generation but not yet ON_DUTY in
+# MembershipView). Block cluster-ready on `>= N-1` so the cascade isn't blocked at
+# the precondition. TODO RC2: tighten back once MembershipView converges.
+_cluster_is_ready() {
+    # Check 1: generation snapshot members ≥ NODE_COUNT.
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     [ -n "$count" ] && [ "$count" -ge "${NODE_COUNT:-5}" ] 2>/dev/null || return 1
+
+    # Check 2: leader elected (non-empty, non-"none").
     local leader
     leader=$(cluster_leader 2>/dev/null)
     [ -n "$leader" ] && [ "$leader" != "none" ] || return 1
-    local healthy
-    healthy=$(cluster_node_count_on_duty_healthy 2>/dev/null)
-    # See restore_cluster_baseline doc: tests downstream of 02-chaos inherit a cluster
-    # at N-1 ON_DUTY healthy (the CTM replacement is alive in generation but not yet
-    # ON_DUTY in MembershipView). Block cluster-ready on `>= N-1` so the cascade isn't
-    # blocked at the precondition. TODO RC2: tighten back once MembershipView converges.
-    local floor=$(( ${NODE_COUNT:-5} - 1 ))
-    [ -n "$healthy" ] && [ "$healthy" -ge "$floor" ] 2>/dev/null
+
+    # Check 3: active core floor ≥ NODE_COUNT - 1 (tolerate one lagging FSM commit).
+    local active floor
+    active=$(cluster_active_core_count 2>/dev/null)
+    floor=$(( ${NODE_COUNT:-5} - 1 ))
+    [ -n "$active" ] && [ "$active" -ge "$floor" ] 2>/dev/null || return 1
+
+    # Check 4: every expected node port answers /health/ready with "status":"UP".
+    local i port body
+    for i in $(seq 0 $((${NODE_COUNT:-5} - 1))); do
+        port=$((MGMT_PORT + i))
+        body=$(curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" \
+                    "http://${TARGET_HOST}:${port}/health/ready" 2>/dev/null) || return 1
+        printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"UP"' || return 1
+    done
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -517,7 +504,10 @@ wait_for_lb_ready() {
 # Wait helpers
 # ---------------------------------------------------------------------------
 wait_for_cluster() {
-    wait_for "cluster healthy" "is_cluster_ready" "${1:-120}"
+    # @deprecated alias — kept as a shim for any caller missed during the RC1
+    # rename. New code MUST call wait_for_cluster_ready directly. See
+    # aether/docs/specs/test-readiness-contract.md §1.4.
+    wait_for_cluster_ready "$@"
 }
 
 # Wait for cluster using direct node access (before LB is available)
@@ -529,11 +519,11 @@ wait_for_cluster_direct() {
 
 wait_for_node_count() {
     local expected="$1" timeout="${2:-120}"
-    wait_for "${expected} nodes" "[ \$(cluster_node_count) -eq ${expected} ]" "$timeout"
+    wait_for "${expected} nodes" "[ \$(cluster_member_count) -eq ${expected} ]" "$timeout"
 }
 
 # Faster variant of wait_for_node_count for tight scaling polls (test-02/03 scale up/down).
-# `cluster_node_count` round-trips through `_resolve_live_endpoint` (one curl probe) and
+# `cluster_member_count` round-trips through `_resolve_live_endpoint` (one curl probe) and
 # then through `api_get` (a second curl to fetch topology). On Hetzner remote each curl
 # can spend up to 2s on a stalled endpoint — combined with the 2s `wait_for` interval
 # and JSON parsing, an iteration can take 4-6s, so a 300s timeout only buys ~50-75
@@ -548,7 +538,7 @@ wait_for_node_count() {
 # first one that answers /health/live within 1s. JSON path: max(`core.desiredSize`,
 # count of `"nodeId"` occurrences in core.members[]) from /api/cluster/generation,
 # falling back to `coreCount` from /api/cluster/topology if generation is empty.
-# Mirrors `cluster_node_count` — see that helper for the full rationale; the short
+# Mirrors `cluster_member_count` — see that helper for the full rationale; the short
 # version is that topology.coreCount filters to ON_DUTY+HEALTHY and lags during
 # CTM scale-up while the generation snapshot reflects the committed cluster
 # membership including JOINING peers (overlay-only, not host-port-mapped).
@@ -1308,8 +1298,8 @@ restart_all_nodes() {
     fi
     # Per-node readiness — guarantees the next test passes its first poll regardless
     # of which port run-tests.sh re-pins MGMT_ENTRY_POINT to in its fresh subshell.
-    if ! wait_for_all_nodes_ready 90; then
-        log_fail "restart_all_nodes: not all nodes reported /health/ready=UP within 90s — next test would hit a half-warm node"
+    if ! wait_for_cluster_ready 90; then
+        log_fail "restart_all_nodes: cluster not ready within 90s — next test would hit a half-warm node"
         return 1
     fi
     # SWIM cold-boot guard (non-fatal): `phase=COLD_BOOT` causes
@@ -1758,8 +1748,8 @@ restore_cluster_baseline() {
     # MembershipView convergence properly (PeerObservationStore cross-node aggregator).
     local floor=$((target - 1))
     if ! wait_for "${floor}+ ON_DUTY healthy cores (target=${target})" \
-        "[ \$(cluster_node_count_on_duty_healthy) -ge ${floor} ]" 600; then
-        log_fail "restore_cluster_baseline: failed to converge to ${floor}+ ON_DUTY healthy cores within 600s (current=$(cluster_node_count_on_duty_healthy))"
+        "[ \$(cluster_active_core_count) -ge ${floor} ]" 600; then
+        log_fail "restore_cluster_baseline: failed to converge to ${floor}+ ON_DUTY healthy cores within 600s (current=$(cluster_active_core_count))"
         return 1
     fi
 

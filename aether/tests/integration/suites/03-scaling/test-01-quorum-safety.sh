@@ -8,14 +8,14 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_seed_config() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_leader 60
     seed_cluster_config
 }
 
 test_initial_state() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "3" "Initial: at least 3 nodes"
 }
 
@@ -95,7 +95,7 @@ test_reject_scale_above_max() {
 
 test_cluster_unchanged() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "3" "Cluster unchanged after rejected scale operations"
     assert_cluster_healthy "Cluster still healthy"
 }
