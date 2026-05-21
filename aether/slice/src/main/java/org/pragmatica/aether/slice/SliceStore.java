@@ -116,6 +116,18 @@ import static org.pragmatica.lang.utils.Causes.cause;
     Promise<LoadedSlice> deactivateSlice(Artifact artifact);
     Promise<Unit> unloadSlice(Artifact artifact);
 
+    /// Return the slice-composite (`slice.toml ⊕ nodeComposite`) for a loaded slice.
+    ///
+    /// Returns `Option.none()` when:
+    /// - The slice is not loaded
+    /// - The slice's load Promise is unresolved or failed
+    /// - The store was constructed without a `nodeComposite` (per-slice config disabled)
+    ///
+    /// Callers (e.g. `NodeDeploymentState`) should consult this during activation to
+    /// resolve per-slice configuration (topics, schedules, streams, @ConfigUpdate
+    /// sections) without falling back to the global `ConfigService.instance()` singleton.
+    Option<ConfigurationProvider> sliceComposite(Artifact artifact);
+
     enum EntryState {
         LOADED,
         ACTIVE
@@ -362,6 +374,12 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                   .fold(_ -> Stream.empty(),
                                                                         entry -> Stream.of(entry.asLoadedSlice())))
                                  .toList();
+        }
+
+        @Override public Option<ConfigurationProvider> sliceComposite(Artifact artifact) {
+            return option(entries.get(artifact)).filter(Promise::isResolved)
+                                                .flatMap(promise -> promise.await().option())
+                                                .flatMap(LoadedSliceEntry::sliceConfig);
         }
 
         private Promise<Location> locateInRepositories(Artifact artifact) {

@@ -44,6 +44,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.config.ConfigService;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumDisappeared;
@@ -233,6 +235,20 @@ import org.slf4j.LoggerFactory;
                                              .stream()
                                              .filter(ls -> ls.artifact().equals(artifact))
                                              .findFirst());
+        }
+
+        /// Look up the slice-composite for `artifact` and wrap it as a `ConfigService`.
+        ///
+        /// Returns `Option.none()` when the slice has no composite (e.g. node was started
+        /// without a node-composite, slice isn't loaded yet, or load failed). Callers must
+        /// fall back to global `ConfigService.instance()` or treat as missing config.
+        private Option<ConfigService> sliceConfigService(Artifact artifact) {
+            return ctx.sliceStore().sliceComposite(artifact)
+                                              .map(Active::wrapAsConfigService);
+        }
+
+        private static ConfigService wrapAsConfigService(ConfigurationProvider provider) {
+            return ProviderBasedConfigService.providerBasedConfigService(provider);
         }
 
         private void fastTransitionToActive(SliceNodeKey sliceKey) {
@@ -578,7 +594,7 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<Unit> doPublishTopicSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readSubscriptionsFromManifest(slice);
+            var entries = readSubscriptionsFromManifest(artifact, slice);
             if (entries.isEmpty()) {return Promise.unitPromise();}
             var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildTopicSubscriptionPutCommand(artifact,
                                                                                                                 entry))
@@ -607,7 +623,7 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<Unit> doUnpublishTopicSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readSubscriptionsFromManifest(slice);
+            var entries = readSubscriptionsFromManifest(artifact, slice);
             if (entries.isEmpty()) {return Promise.unitPromise();}
             var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
                                                                                                                    entry))
@@ -671,10 +687,10 @@ import org.slf4j.LoggerFactory;
             }
         }
 
-        @SuppressWarnings("JBCT-EX-01") private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Slice slice) {
+        @SuppressWarnings("JBCT-EX-01") private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Artifact artifact, Slice slice) {
             var reactive = readReactiveBindingsFromManifest(slice);
             var result = new ArrayList<SubscriptionManifestEntry>();
-            for (var entry : reactive) {if ("subscription".equals(entry.category())) {resolveTopicName(entry.config()).flatMap(topicName -> MethodName.methodName(entry.method())
+            for (var entry : reactive) {if ("subscription".equals(entry.category())) {resolveTopicName(artifact, entry.config()).flatMap(topicName -> MethodName.methodName(entry.method())
                                                                                                                                                                  .map(method -> new SubscriptionManifestEntry(topicName,
                                                                                                                                                                                                               method)))
                                                                                                       .option()
@@ -682,10 +698,11 @@ import org.slf4j.LoggerFactory;
             return result;
         }
 
-        private Result<String> resolveTopicName(String configSection) {
-            return ConfigService.instance().toResult(Causes.cause("ConfigService not available for topic resolution"))
-                                         .flatMap(svc -> svc.config(configSection, TopicConfig.class))
-                                         .map(TopicConfig::topicName);
+        private Result<String> resolveTopicName(Artifact artifact, String configSection) {
+            return sliceConfigService(artifact).orElse(ConfigService::instance)
+                                               .toResult(Causes.cause("ConfigService not available for topic resolution"))
+                                               .flatMap(svc -> svc.config(configSection, TopicConfig.class))
+                                               .map(TopicConfig::topicName);
         }
 
         private Promise<SliceNodeKey> publishScheduledTasks(SliceNodeKey sliceKey) {
@@ -700,7 +717,7 @@ import org.slf4j.LoggerFactory;
             var entries = readScheduledTasksFromManifest(slice);
             if (entries.isEmpty()) {return Promise.unitPromise();}
             var commands = new ArrayList<KVCommand<AetherKey>>();
-            for (var entry : entries) {resolveScheduleConfig(entry.configSection()).onPresent(config -> commands.add(buildScheduledTaskPutCommand(artifact,
+            for (var entry : entries) {resolveScheduleConfig(artifact, entry.configSection()).onPresent(config -> commands.add(buildScheduledTaskPutCommand(artifact,
                                                                                                                                                   entry,
                                                                                                                                                   config)));}
             if (commands.isEmpty()) {return Promise.unitPromise();}
@@ -767,7 +784,7 @@ import org.slf4j.LoggerFactory;
             configNotificationManager.register(artifact, sliceInstance, classLoader, factoryClassName);
             var sections = entries.stream().map(ConfigUpdateManifestEntry::configSection)
                                          .toList();
-            configNotificationManager.notifyInitial(artifact, sections, buildConfigFacade());
+            configNotificationManager.notifyInitial(artifact, sections, buildConfigFacade(artifact));
             log.debug("Registered slice {} for config updates on sections: {}", artifact, sections);
         }
 
@@ -815,9 +832,10 @@ import org.slf4j.LoggerFactory;
             }
         }
 
-        private ConfigFacade buildConfigFacade() {
-            return ConfigService.instance().map(org.pragmatica.aether.deployment.node.NodeDeploymentManager::configServiceToFacade)
-                                         .or(org.pragmatica.aether.deployment.node.NodeDeploymentManager.NO_OP_CONFIG);
+        private ConfigFacade buildConfigFacade(Artifact artifact) {
+            return sliceConfigService(artifact).orElse(ConfigService::instance)
+                                               .map(org.pragmatica.aether.deployment.node.NodeDeploymentManager::configServiceToFacade)
+                                               .or(org.pragmatica.aether.deployment.node.NodeDeploymentManager.NO_OP_CONFIG);
         }
 
         @SuppressWarnings("JBCT-EX-01") private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
@@ -830,8 +848,9 @@ import org.slf4j.LoggerFactory;
             return result;
         }
 
-        private Option<ScheduleConfig> resolveScheduleConfig(String configSection) {
-            return ConfigService.instance().flatMap(svc -> svc.config(configSection, ScheduleConfig.class).option());
+        private Option<ScheduleConfig> resolveScheduleConfig(Artifact artifact, String configSection) {
+            return sliceConfigService(artifact).orElse(ConfigService::instance)
+                                               .flatMap(svc -> svc.config(configSection, ScheduleConfig.class).option());
         }
 
         private Promise<SliceNodeKey> publishStreamSubscriptions(SliceNodeKey sliceKey) {
@@ -843,7 +862,7 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<Unit> doPublishStreamSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readStreamSubscriptionsFromManifest(slice);
+            var entries = readStreamSubscriptionsFromManifest(artifact, slice);
             if (entries.isEmpty()) {return Promise.unitPromise();}
             var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildStreamSubscriptionPutCommand(artifact,
                                                                                                                  entry))
@@ -880,7 +899,7 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<Unit> doUnpublishStreamSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readStreamSubscriptionsFromManifest(slice);
+            var entries = readStreamSubscriptionsFromManifest(artifact, slice);
             if (entries.isEmpty()) {return Promise.unitPromise();}
             var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildStreamSubscriptionRemoveCommand(artifact,
                                                                                                                     entry))
@@ -909,13 +928,13 @@ import org.slf4j.LoggerFactory;
                                                        boolean batchMode,
                                                        String eventType){}
 
-        @SuppressWarnings("JBCT-EX-01") private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Slice slice) {
+        @SuppressWarnings("JBCT-EX-01") private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Artifact artifact, Slice slice) {
             var reactive = readReactiveBindingsFromManifest(slice);
             var result = new ArrayList<StreamSubscriptionManifestEntry>();
             for (var entry : reactive) {if ("stream".equals(entry.category())) {
                 var batchMode = Boolean.parseBoolean(entry.getProperty("batch"));
                 var eventType = entry.getProperty("eventType");
-                resolveStreamName(entry.config()).flatMap(streamName -> MethodName.methodName(entry.method())
+                resolveStreamName(artifact, entry.config()).flatMap(streamName -> MethodName.methodName(entry.method())
                                                                                              .map(method -> new StreamSubscriptionManifestEntry(streamName,
                                                                                                                                                 entry.config(),
                                                                                                                                                 method,
@@ -927,10 +946,11 @@ import org.slf4j.LoggerFactory;
             return result;
         }
 
-        private Result<String> resolveStreamName(String configSection) {
-            return ConfigService.instance().toResult(Causes.cause("ConfigService not available for stream name resolution"))
-                                         .flatMap(svc -> svc.config(configSection, StreamNameConfig.class))
-                                         .map(StreamNameConfig::streamName);
+        private Result<String> resolveStreamName(Artifact artifact, String configSection) {
+            return sliceConfigService(artifact).orElse(ConfigService::instance)
+                                               .toResult(Causes.cause("ConfigService not available for stream name resolution"))
+                                               .flatMap(svc -> svc.config(configSection, StreamNameConfig.class))
+                                               .map(StreamNameConfig::streamName);
         }
 
         private void handleFailed(SliceNodeKey sliceKey) {
