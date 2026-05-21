@@ -1310,6 +1310,55 @@ aether streams read my-events 0
 aether streams read my-events 0 --since 100 --limit 50
 ```
 
+### `aether streams create <name> [--partitions N]`
+
+Create a new event stream. The optional `--partitions N` flag overrides the server-side
+default partition count. The underlying `POST /api/streams` route is idempotent — calling
+`create` on an existing stream returns the existing metadata (status `exists`).
+
+```bash
+aether streams create my-events
+aether streams create my-events --partitions 8
+```
+
+### `aether streams delete <name> [--force]`
+
+Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied.
+
+```bash
+aether streams delete my-events
+aether streams delete my-events --force
+```
+
+### `aether streams consumer-group join <group> <stream> --consumer-id <id> [--partitions N]`
+
+Register a consumer in a consumer group on the given stream. `--consumer-id` is the unique
+identifier of the consumer within the group. `--partitions N` (default `1`) is the partition
+count the consumer expects to be assigned to.
+
+```bash
+aether streams consumer-group join orders-workers orders --consumer-id worker-1 --partitions 4
+```
+
+### `aether streams consumer-group leave <group> <stream> --consumer-id <id>`
+
+Remove a consumer from a consumer group on the given stream.
+
+```bash
+aether streams consumer-group leave orders-workers orders --consumer-id worker-1
+```
+
+### `aether streams consumer-group status <group> [<stream>]`
+
+Show the per-stream consumer assignments for the given group. The optional `<stream>`
+positional is informational — the server-side `/api/streams/groups/{id}` returns the full
+multi-stream group status.
+
+```bash
+aether streams consumer-group status orders-workers
+aether streams consumer-group status orders-workers orders
+```
+
 ### Examples
 
 ```bash

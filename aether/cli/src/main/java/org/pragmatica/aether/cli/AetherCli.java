@@ -3363,7 +3363,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class})
+    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.ConsumerGroupCommand.class})
     static class StreamCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -3454,6 +3454,165 @@ public class AetherCli implements Runnable {
                 return Stream.of(option(since).map(v -> "from=" + v), option(limit).map(v -> "max=" + v))
                              .flatMap(Option::stream)
                              .collect(Collectors.joining("&"));
+            }
+        }
+
+        @Command(name = "create", description = "Create a new event stream")
+        static class CreateCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Parameters(index = "0", description = "Stream name")
+            private String name;
+
+            @CommandLine.Option(names = "--partitions", description = "Number of partitions (default: server-side)")
+            private Integer partitions;
+
+            @Override
+            public Integer call() {
+                var body = buildCreateBody();
+                var response = streamParent.parent.post(STREAM_CREATE, List.of(), body);
+
+                return OutputFormatter.printAction(response,
+                                                   streamParent.parent.outputOptions(),
+                                                   "Created stream " + name);
+            }
+
+            private String buildCreateBody() {
+                return option(partitions).map(p -> "{\"name\":\"" + name + "\",\"partitions\":" + p + "}")
+                                         .or("{\"name\":\"" + name + "\"}");
+            }
+        }
+
+        @Command(name = "delete", description = "Delete an event stream")
+        static class DeleteCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Parameters(index = "0", description = "Stream name")
+            private String name;
+
+            @CommandLine.Option(names = {"--force", "-f"}, description = "Skip confirmation prompt")
+            private boolean force;
+
+            @Override
+            @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+            public Integer call() {
+                if (!force) {
+                    var confirmed = confirmDeletion(name);
+                    if (!confirmed) {return ExitCode.SUCCESS;}
+                }
+
+                var response = streamParent.parent.delete(STREAM_DELETE, List.of(name));
+                var errorCode = OutputFormatter.checkResponseError(response,
+                                                                   streamParent.parent.outputOptions(),
+                                                                   "Failed to delete stream");
+
+                if (errorCode >= 0) {return errorCode;}
+
+                return OutputFormatter.printAction(response,
+                                                   streamParent.parent.outputOptions(),
+                                                   "Deleted stream: " + name);
+            }
+
+            @SuppressWarnings("JBCT-SEQ-01")
+            private static boolean confirmDeletion(String streamName) {
+                System.out.print("Are you sure you want to delete stream '" + streamName + "'? (y/N) ");
+                try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
+                    return option(reader.readLine()).map(String::trim)
+                                 .filter(s -> s.equalsIgnoreCase("y"))
+                                 .isPresent();
+                } catch (IOException _) {
+                    return false;
+                }
+            }
+        }
+
+        @Command(name = "consumer-group", description = "Manage stream consumer groups", subcommands = {ConsumerGroupCommand.JoinCommand.class, ConsumerGroupCommand.LeaveCommand.class, ConsumerGroupCommand.StatusCommand.class})
+        static class ConsumerGroupCommand implements Runnable {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Contract
+            @Override
+            public void run() {
+                CommandLine.usage(this, System.out);
+            }
+
+            @Command(name = "join", description = "Join a consumer group on a stream")
+            static class JoinCommand implements Callable<Integer> {
+                @CommandLine.ParentCommand
+                private ConsumerGroupCommand groupParent;
+
+                @Parameters(index = "0", description = "Consumer group ID")
+                private String groupId;
+
+                @Parameters(index = "1", description = "Stream name")
+                private String streamName;
+
+                @CommandLine.Option(names = "--consumer-id", required = true, description = "Consumer identifier within the group")
+                private String consumerId;
+
+                @CommandLine.Option(names = "--partitions", description = "Partition count expected by the consumer (default: 1)")
+                private Integer partitionCount;
+
+                @Override
+                public Integer call() {
+                    var partitions = option(partitionCount).or(1);
+                    var body = "{\"groupId\":\"" + groupId + "\",\"streamName\":\"" + streamName
+                               + "\",\"partitionCount\":" + partitions
+                               + ",\"consumerId\":\"" + consumerId + "\"}";
+                    var response = groupParent.streamParent.parent.post(CONSUMER_GROUP_JOIN, List.of(), body);
+
+                    return OutputFormatter.printAction(response,
+                                                       groupParent.streamParent.parent.outputOptions(),
+                                                       "Consumer " + consumerId + " joined group " + groupId);
+                }
+            }
+
+            @Command(name = "leave", description = "Leave a consumer group on a stream")
+            static class LeaveCommand implements Callable<Integer> {
+                @CommandLine.ParentCommand
+                private ConsumerGroupCommand groupParent;
+
+                @Parameters(index = "0", description = "Consumer group ID")
+                private String groupId;
+
+                @Parameters(index = "1", description = "Stream name")
+                private String streamName;
+
+                @CommandLine.Option(names = "--consumer-id", required = true, description = "Consumer identifier within the group")
+                private String consumerId;
+
+                @Override
+                public Integer call() {
+                    var body = "{\"groupId\":\"" + groupId + "\",\"streamName\":\"" + streamName
+                               + "\",\"consumerId\":\"" + consumerId + "\"}";
+                    var response = groupParent.streamParent.parent.post(CONSUMER_GROUP_LEAVE, List.of(), body);
+
+                    return OutputFormatter.printAction(response,
+                                                       groupParent.streamParent.parent.outputOptions(),
+                                                       "Consumer " + consumerId + " left group " + groupId);
+                }
+            }
+
+            @Command(name = "status", description = "Show consumer group status")
+            static class StatusCommand implements Callable<Integer> {
+                @CommandLine.ParentCommand
+                private ConsumerGroupCommand groupParent;
+
+                @Parameters(index = "0", description = "Consumer group ID")
+                private String groupId;
+
+                @Parameters(index = "1", arity = "0..1", description = "Stream name (informational; status is per-group)")
+                private String streamName;
+
+                @Override
+                public Integer call() {
+                    var response = groupParent.streamParent.parent.fetch(CONSUMER_GROUP_STATUS, List.of(groupId));
+
+                    return OutputFormatter.printQuery(response, groupParent.streamParent.parent.outputOptions());
+                }
             }
         }
     }

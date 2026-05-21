@@ -3243,6 +3243,123 @@ aether streams read <name> <partition> [--since <offset>] [--limit <count>]
 }
 ```
 
+### Delete Stream
+
+```
+DELETE /api/streams/{name}
+```
+
+**Auth:** OPERATOR_AND_ABOVE
+
+Removes the stream and all of its partitions.
+
+**CLI:**
+```bash
+aether streams delete <name> [--force]
+```
+
+**Response:**
+```json
+{
+  "name": "my-stream",
+  "status": "deleted"
+}
+```
+
+### Join Consumer Group
+
+```
+POST /api/streams/groups/join
+```
+
+**Auth:** OPERATOR_AND_ABOVE
+
+Registers a consumer in a consumer group on the given stream. Idempotent — re-joining the same
+`(groupId, consumerId)` pair refreshes the binding.
+
+**Request:**
+```json
+{
+  "groupId": "orders-workers",
+  "streamName": "orders",
+  "partitionCount": 4,
+  "consumerId": "worker-1"
+}
+```
+
+**CLI:**
+```bash
+aether streams consumer-group join <group> <stream> --consumer-id <id> [--partitions <N>]
+```
+
+**Response:**
+```json
+{
+  "groupId": "orders-workers",
+  "streams": {
+    "orders": [
+      {"consumerId": "worker-1", "partitions": [0, 1, 2, 3]}
+    ]
+  }
+}
+```
+
+### Leave Consumer Group
+
+```
+POST /api/streams/groups/leave
+```
+
+**Auth:** OPERATOR_AND_ABOVE
+
+Removes a consumer from a consumer group on the given stream. Idempotent — leaving an
+already-absent consumer is a no-op.
+
+**Request:**
+```json
+{
+  "groupId": "orders-workers",
+  "streamName": "orders",
+  "consumerId": "worker-1"
+}
+```
+
+**CLI:**
+```bash
+aether streams consumer-group leave <group> <stream> --consumer-id <id>
+```
+
+**Response:** Same envelope as join — the post-departure `GroupStatusResponse`.
+
+### Consumer Group Status
+
+```
+GET /api/streams/groups/{id}
+```
+
+**Auth:** ALL_AUTHENTICATED
+
+Returns the per-stream consumer assignments for the given group. The response covers
+every stream the group is bound to.
+
+**CLI:**
+```bash
+aether streams consumer-group status <group> [<stream>]
+```
+
+**Response:**
+```json
+{
+  "groupId": "orders-workers",
+  "streams": {
+    "orders": [
+      {"consumerId": "worker-1", "partitions": [0, 1]},
+      {"consumerId": "worker-2", "partitions": [2, 3]}
+    ]
+  }
+}
+```
+
 ---
 
 All errors return JSON with an `error` field:
