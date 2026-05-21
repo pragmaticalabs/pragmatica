@@ -581,6 +581,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public boolean tlsEnabled() {
+                return config.tls().isPresent();
+            }
+
+            @Override
             public TopologyManager topologyManager() {
                 return clusterNode.topologyManager();
             }

@@ -354,14 +354,20 @@ public final class StatusRoutes implements RouteSource {
     }
 
     private CertificateStatusResponse buildCertificateStatusResponse() {
-        return nodeSupplier.get()
-                           .certRenewalScheduler()
-                           .map(StatusRoutes::toCertificateStatus)
-                           .or(new CertificateStatusResponse("N/A", 0, "N/A", "NOT_CONFIGURED"));
+        var node = nodeSupplier.get();
+        return certificateStatus(node.tlsEnabled(), node.certRenewalScheduler());
     }
 
-    private static CertificateStatusResponse toCertificateStatus(CertificateRenewalScheduler scheduler) {
-        return new CertificateStatusResponse(scheduler.currentNotAfter().toString(),
+    static CertificateStatusResponse certificateStatus(boolean tlsEnabled,
+                                                       Option<CertificateRenewalScheduler> scheduler) {
+        return scheduler.map(s -> toCertificateStatus(tlsEnabled, s))
+                        .or(new CertificateStatusResponse(tlsEnabled, "N/A", 0, "N/A", "NOT_CONFIGURED"));
+    }
+
+    private static CertificateStatusResponse toCertificateStatus(boolean tlsEnabled,
+                                                                 CertificateRenewalScheduler scheduler) {
+        return new CertificateStatusResponse(tlsEnabled,
+                                             scheduler.currentNotAfter().toString(),
                                              scheduler.secondsUntilExpiry(),
                                              scheduler.lastRenewalAt().toString(),
                                              scheduler.renewalStatus().name());

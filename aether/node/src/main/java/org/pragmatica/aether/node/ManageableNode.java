@@ -87,6 +87,15 @@ public interface ManageableNode {
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<ClusterTopologyManager> clusterTopologyManager();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
+
+    /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
+    /// (equivalent to `AetherNodeConfig.tls().isPresent()` — i.e. `AetherConfig.tlsEnabled()`
+    /// was true at startup and a `CertificateProvider` resolved). Surfaced through
+    /// `GET /api/certificates` so integration tooling can assert active TLS without
+    /// inferring it from the `renewalStatus` placeholder. See
+    /// `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2.
+    boolean tlsEnabled();
+
     Option<ClusterGenerationSnapshot> currentGenerationSnapshot();
 
     @SuppressWarnings("JBCT-RET-01")

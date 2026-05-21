@@ -316,6 +316,44 @@ curl "http://localhost:8080/api/events?sinceEpoch=3&sinceSeq=42"
 
 ---
 
+### GET /api/certificates
+
+Return the node's certificate status and runtime TLS posture. Used by operators
+and the CLI (`aether certs status`) to verify TLS is active and to inspect the
+active certificate's expiry and most recent renewal.
+
+**Response:**
+```json
+{
+  "tlsEnabled": true,
+  "expiresAt": "2026-06-20T12:00:00Z",
+  "secondsUntilExpiry": 2591999,
+  "lastRenewalAt": "2026-05-21T12:00:00Z",
+  "renewalStatus": "HEALTHY"
+}
+```
+
+**Fields:**
+- `tlsEnabled` -- `true` when the app-HTTP server is bound with TLS at this node
+  (i.e. `[cluster] tls = true` was honoured at startup and a `CertificateProvider`
+  resolved). This is the authoritative active-TLS signal — integration tooling
+  should assert on this field rather than inferring from `renewalStatus`.
+- `expiresAt` -- ISO-8601 `notAfter` of the currently-served certificate, or
+  `"N/A"` when no renewal scheduler is wired.
+- `secondsUntilExpiry` -- Seconds remaining until `expiresAt`. `0` when not
+  configured.
+- `lastRenewalAt` -- ISO-8601 timestamp of the most recent successful renewal,
+  or `"N/A"` when no renewal scheduler is wired.
+- `renewalStatus` -- `RenewalStatus` enum from `CertificateRenewalScheduler`:
+  `INITIALIZING`, `HEALTHY`, `RENEWING`, `FAILED`, `STOPPED`, or
+  `NOT_CONFIGURED` (placeholder when no scheduler is wired).
+
+When `tlsEnabled` is `false`, the remaining fields are set to placeholders
+(`"N/A"` / `0` / `"NOT_CONFIGURED"`) — operators consuming this endpoint should
+gate on `tlsEnabled` before reading the cert metadata.
+
+---
+
 ## Slice Management
 
 > **Blueprint-only deployment model:** Slices are deployed and undeployed exclusively through blueprints.

@@ -226,11 +226,12 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     private static Option<CertificateStatusResponse> buildCertificateExpiry(ManageableNode node) {
         return node.certRenewalScheduler()
-                   .map(ClusterConfigRoutes::toCertStatus);
+                   .map(scheduler -> toCertStatus(node.tlsEnabled(), scheduler));
     }
 
-    private static CertificateStatusResponse toCertStatus(CertificateRenewalScheduler scheduler) {
-        return new CertificateStatusResponse(scheduler.currentNotAfter().toString(),
+    private static CertificateStatusResponse toCertStatus(boolean tlsEnabled, CertificateRenewalScheduler scheduler) {
+        return new CertificateStatusResponse(tlsEnabled,
+                                             scheduler.currentNotAfter().toString(),
                                              scheduler.secondsUntilExpiry(),
                                              scheduler.lastRenewalAt().toString(),
                                              scheduler.renewalStatus().name());

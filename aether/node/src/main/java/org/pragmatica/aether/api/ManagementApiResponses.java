@@ -62,7 +62,15 @@ public sealed interface ManagementApiResponses {
 
     record ComponentHealth(String name, String status, String detail) {}
 
-    record CertificateStatusResponse(String expiresAt,
+    /// Wire shape for `GET /api/certificates`. `tlsEnabled` reflects the node's runtime
+    /// TLS posture (the app HTTP server is bound with TLS when `AetherNodeConfig.tls()`
+    /// is present). The remaining four fields describe the active cert when a
+    /// `CertificateRenewalScheduler` is wired; with TLS off they are placeholders
+    /// (`"N/A"` / `0` / `"NOT_CONFIGURED"`) so integration tooling can rely on
+    /// `tlsEnabled` alone as the authoritative active-TLS signal.
+    /// See `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2.
+    record CertificateStatusResponse(boolean tlsEnabled,
+                                     String expiresAt,
                                      long secondsUntilExpiry,
                                      String lastRenewalAt,
                                      String renewalStatus) {}
