@@ -18,92 +18,140 @@ test_scheduled_tasks_endpoint() {
 }
 
 test_task_last_execution_advances() {
-    local tasks_before tasks_after
-    tasks_before=$(api_get "/api/scheduled-tasks")
-    if [ -z "$tasks_before" ]; then
-        log_warn "No scheduled tasks configured — skipping advancement check"
-        log_pass "Endpoint responds (no tasks configured)"
-        return 0
+    local tasks
+    tasks=$(aether_json "scheduled-tasks list") || {
+        log_fail "aether scheduled-tasks list failed"
+        return 1
+    }
+    if [ -z "$tasks" ]; then
+        log_fail "No tasks returned by scheduled-tasks list"
+        return 1
     fi
-
-    local ts_before
-    ts_before=$(json_value "$tasks_before" "lastExecutionTime")
-    if [ -z "$ts_before" ]; then
-        ts_before=$(json_value "$tasks_before" "lastRun")
+    # Extract first task's (configSection, artifact, method) triple.
+    local section artifact method
+    section=$(aether_field "scheduled-tasks list" "tasks.0.configSection") || {
+        log_fail "Could not extract task configSection from list"
+        return 1
+    }
+    if [ -z "$section" ]; then
+        log_fail "No tasks present (tasks.0.configSection empty)"
+        return 1
     fi
-    ts_before="${ts_before:-0}"
-
-    # Wait for at least one execution cycle
-    log_info "Waiting 30s for scheduled task to execute"
-    sleep 30
-
-    tasks_after=$(api_get "/api/scheduled-tasks")
-    local ts_after
-    ts_after=$(json_value "$tasks_after" "lastExecutionTime")
-    if [ -z "$ts_after" ]; then
-        ts_after=$(json_value "$tasks_after" "lastRun")
+    artifact=$(aether_field "scheduled-tasks list" "tasks.0.artifact") || {
+        log_fail "Could not extract task artifact from list"
+        return 1
+    }
+    method=$(aether_field "scheduled-tasks list" "tasks.0.method") || {
+        log_fail "Could not extract task method from list"
+        return 1
+    }
+    # Capture pre-inject lastExecutionAt.
+    local pre_ts
+    pre_ts=$(aether_field "scheduled-tasks list" "tasks.0.lastExecutionAt")
+    pre_ts="${pre_ts:-0}"
+    # Inject (synchronously trigger the task and advance its lastExecutionAt).
+    local inject_response post_ts
+    inject_response=$(aether_json scheduled-tasks inject --section "$section" --artifact "$artifact" --method "$method") || {
+        log_fail "scheduled-tasks inject failed for ${section}/${artifact}/${method}"
+        return 1
+    }
+    # Post-inject: capture currentExecutionMs from response.
+    post_ts=$(echo "$inject_response" | grep -oE '"currentExecutionMs"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$')
+    post_ts="${post_ts:-0}"
+    if [ "$post_ts" -le "$pre_ts" ]; then
+        log_fail "Task last-execution did not advance: pre=$pre_ts post=$post_ts"
+        return 1
     fi
-    ts_after="${ts_after:-0}"
-
-    if [ "$ts_before" = "0" ] && [ "$ts_after" = "0" ]; then
-        log_warn "No task execution times available"
-        log_pass "Scheduled tasks endpoint stable"
-    elif [ "$ts_after" != "$ts_before" ]; then
-        log_pass "Last execution time advanced: ${ts_before} -> ${ts_after}"
-    else
-        log_warn "Last execution time unchanged — task interval may be longer than 30s"
-        log_pass "Scheduled tasks endpoint stable"
-    fi
+    log_pass "Task last-execution advanced via inject: $pre_ts -> $post_ts"
 }
 
 test_pause_task() {
-    local tasks
-    tasks=$(api_get "/api/scheduled-tasks")
-    local task_id
-    task_id=$(json_value "$tasks" "taskId")
-    if [ -z "$task_id" ]; then
-        task_id=$(json_value "$tasks" "id")
+    local section artifact method
+    section=$(aether_field "scheduled-tasks list" "tasks.0.configSection") || {
+        log_fail "Could not extract task configSection from list"
+        return 1
+    }
+    if [ -z "$section" ]; then
+        log_fail "No tasks present (tasks.0.configSection empty)"
+        return 1
+    fi
+    artifact=$(aether_field "scheduled-tasks list" "tasks.0.artifact") || {
+        log_fail "Could not extract task artifact from list"
+        return 1
+    }
+    method=$(aether_field "scheduled-tasks list" "tasks.0.method") || {
+        log_fail "Could not extract task method from list"
+        return 1
+    }
+
+    # Invoke pause via CLI; CLI returns non-zero on transport / non-2xx response.
+    local pause_response
+    pause_response=$(aether_failover scheduled-tasks pause "$section" "$artifact" "$method" --format json) || {
+        log_fail "scheduled-tasks pause CLI failed for ${section}/${artifact}/${method}"
+        return 1
+    }
+    if [ -z "$pause_response" ]; then
+        log_fail "scheduled-tasks pause returned empty response for ${section}/${artifact}/${method}"
+        return 1
+    fi
+    # The pause route returns TaskActionResult{success, configSection, artifact, method, action};
+    # assert success=true and action=paused so we don't pass on a 2xx error envelope.
+    if ! echo "$pause_response" | grep -qE '"success"[[:space:]]*:[[:space:]]*true'; then
+        log_fail "Pause response did not assert success=true: ${pause_response}"
+        return 1
     fi
 
-    if [ -z "$task_id" ]; then
-        log_warn "No task ID found — skipping pause test"
-        log_pass "Pause test skipped (no tasks)"
-        return 0
+    # Readback: confirm the task's `paused` field is now true.
+    local paused
+    paused=$(aether_field "scheduled-tasks list" "tasks.0.paused")
+    if [ "$paused" != "true" ]; then
+        log_fail "Post-pause readback: expected tasks.0.paused=true, got '${paused}'"
+        return 1
     fi
-
-    local result
-    result=$(api_post "/api/scheduled-tasks/${task_id}/pause" "{}")
-    if [ -n "$result" ]; then
-        log_pass "Task ${task_id} paused"
-    else
-        log_warn "Pause returned empty — endpoint may not support pause"
-        log_pass "Pause endpoint responds"
-    fi
+    log_pass "Task ${section}/${method} paused and readback confirms paused=true"
 }
 
 test_resume_task() {
-    local tasks
-    tasks=$(api_get "/api/scheduled-tasks")
-    local task_id
-    task_id=$(json_value "$tasks" "taskId")
-    if [ -z "$task_id" ]; then
-        task_id=$(json_value "$tasks" "id")
+    local section artifact method
+    section=$(aether_field "scheduled-tasks list" "tasks.0.configSection") || {
+        log_fail "Could not extract task configSection from list"
+        return 1
+    }
+    if [ -z "$section" ]; then
+        log_fail "No tasks present (tasks.0.configSection empty)"
+        return 1
+    fi
+    artifact=$(aether_field "scheduled-tasks list" "tasks.0.artifact") || {
+        log_fail "Could not extract task artifact from list"
+        return 1
+    }
+    method=$(aether_field "scheduled-tasks list" "tasks.0.method") || {
+        log_fail "Could not extract task method from list"
+        return 1
+    }
+
+    local resume_response
+    resume_response=$(aether_failover scheduled-tasks resume "$section" "$artifact" "$method" --format json) || {
+        log_fail "scheduled-tasks resume CLI failed for ${section}/${artifact}/${method}"
+        return 1
+    }
+    if [ -z "$resume_response" ]; then
+        log_fail "scheduled-tasks resume returned empty response for ${section}/${artifact}/${method}"
+        return 1
+    fi
+    if ! echo "$resume_response" | grep -qE '"success"[[:space:]]*:[[:space:]]*true'; then
+        log_fail "Resume response did not assert success=true: ${resume_response}"
+        return 1
     fi
 
-    if [ -z "$task_id" ]; then
-        log_warn "No task ID found — skipping resume test"
-        log_pass "Resume test skipped (no tasks)"
-        return 0
+    # Readback: confirm the task's `paused` field is now false.
+    local paused
+    paused=$(aether_field "scheduled-tasks list" "tasks.0.paused")
+    if [ "$paused" != "false" ]; then
+        log_fail "Post-resume readback: expected tasks.0.paused=false, got '${paused}'"
+        return 1
     fi
-
-    local result
-    result=$(api_post "/api/scheduled-tasks/${task_id}/resume" "{}")
-    if [ -n "$result" ]; then
-        log_pass "Task ${task_id} resumed"
-    else
-        log_warn "Resume returned empty — endpoint may not support resume"
-        log_pass "Resume endpoint responds"
-    fi
+    log_pass "Task ${section}/${method} resumed and readback confirms paused=false"
 }
 
 test_cluster_healthy_after_task_ops() {

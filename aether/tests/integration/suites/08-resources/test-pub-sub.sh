@@ -50,15 +50,38 @@ test_stream_info_after_publish() {
 }
 
 test_subscriber_receives_events() {
-    # Verify via stream info that events were ingested
-    local info
-    info=$(stream_info "$STREAM_NAME")
-    if [ -n "$info" ]; then
-        log_pass "Subscriber endpoint responds with stream data"
-    else
-        log_warn "Stream info empty — subscriber state cannot be verified via API"
-        log_pass "Stream info endpoint responds"
+    # Publish N events through partition 0 and verify them via streams read.
+    # Drives the canonical CLI surface (streams read) rather than re-asserting
+    # /api/streams/<name> info — the audit (RC1-blocker #15) flagged the prior
+    # version for never attaching a consumer.
+    local publish_count=10
+    local success=0
+    for i in $(seq 1 $publish_count); do
+        local payload="{\"key\":\"sub-${i}\",\"data\":\"sub-event-${i}\",\"timestamp\":$(now_epoch)}"
+        if stream_publish "$STREAM_NAME" "$payload" > /dev/null; then
+            success=$((success + 1))
+        fi
+    done
+    assert_eq "$success" "$publish_count" "All $publish_count subscriber-batch publishes succeeded"
+
+    # Allow replication / partition routing to settle.
+    sleep 2
+
+    # Read events back via the streams read CLI (STREAM_READ → /api/streams/read/<name>/<partition>).
+    local result event_count
+    result=$(aether_json streams read "$STREAM_NAME" 0) || {
+        log_fail "streams read failed for ${STREAM_NAME} partition 0"
+        return 1
+    }
+    if [ -z "$result" ]; then
+        log_fail "streams read returned empty response for ${STREAM_NAME} partition 0"
+        return 1
     fi
+    # ReadEventsResponse → {"events":[{"offset":..., "data":..., "timestamp":...}]}.
+    # Count per-event "offset" occurrences (one per record); the outer envelope has
+    # no field named "offset" so this is one-to-one with delivered events.
+    event_count=$(echo "$result" | grep -oE '"offset"[[:space:]]*:' | wc -l | tr -d ' ')
+    assert_ge "$event_count" "$publish_count" "Subscriber received >= $publish_count events (got $event_count)"
 }
 
 test_competing_consumers_multi_instance() {
