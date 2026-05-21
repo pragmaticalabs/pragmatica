@@ -56,7 +56,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.DhtCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -2588,6 +2588,52 @@ public class AetherCli implements Runnable {
             private static String escapeJson(String s) {
                 return s.replace("\\", "\\\\")
                         .replace("\"", "\\\"");
+            }
+        }
+    }
+
+    @Command(name = "dht", description = "DHT inspection and operations", subcommands = {DhtCommand.ReplicationMapCommand.class})
+    static class DhtCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Contract
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "replication-map", description = "Show DHT replication map (which keys live on which nodes)")
+        static class ReplicationMapCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private DhtCommand dhtParent;
+
+            @CommandLine.Option(names = {"-l", "--limit"}, description = "Max entries to return (default 100)")
+            private Integer limit;
+
+            @CommandLine.Option(names = {"-p", "--prefix"}, description = "Only include keys matching this prefix")
+            private String prefix;
+
+            @Override
+            public Integer call() {
+                var response = dhtParent.parent.fetch(DHT_REPLICATION_MAP, List.of(), buildQueryString());
+
+                return OutputFormatter.printQuery(response, dhtParent.parent.outputOptions());
+            }
+
+            @SuppressWarnings("JBCT-UTIL-02")
+            private String buildQueryString() {
+                var sb = new StringBuilder();
+                option(limit).onPresent(v -> appendParam(sb, "limit", String.valueOf(v)));
+                option(prefix).onPresent(v -> appendParam(sb, "prefix", v));
+
+                return sb.toString();
+            }
+
+            @SuppressWarnings("JBCT-UTIL-02")
+            private static void appendParam(StringBuilder sb, String name, String value) {
+                if (sb.length() > 0) {sb.append("&");}
+                sb.append(name).append("=").append(value);
             }
         }
     }

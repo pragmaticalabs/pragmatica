@@ -1447,6 +1447,91 @@ Insert a synthetic trace entry directly into the node-local trace store. The ent
 
 ---
 
+## DHT (Distributed Hash Table)
+
+### GET /api/dht/replication-map
+
+Operator-facing inspection of the active DHT replication topology — which keys
+live on which nodes under the current replication factor. The endpoint walks
+the local DHT storage tier (one node's view; for cluster-wide audits query
+every node and union) and reports, for each key, the ordered list of node IDs
+responsible for replication.
+
+**Query parameters (optional):**
+- `limit` — max entries to return (default 100, capped at 10000).
+- `prefix` — only include keys whose UTF-8 byte prefix matches.
+
+**Response:**
+```json
+{
+  "replicationFactor": 3,
+  "totalKeys":         142,
+  "returned":          100,
+  "entries": [
+    {"key": "user:1",  "nodes": ["node-1", "node-2", "node-3"]},
+    {"key": "user:2",  "nodes": ["node-2", "node-3", "node-1"]},
+    {"key": "order:1", "nodes": ["node-3", "node-1", "node-2"]}
+  ]
+}
+```
+
+`nodes[0]` is the primary; subsequent entries are replicas walking the
+consistent-hash ring clockwise. `totalKeys` reflects the count of keys
+matching the supplied `prefix` (or full storage size when no prefix is
+given); `returned` is bounded by `limit`. See
+`aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-F.
+
+### POST /api/dht/inject
+
+**Dev-mode-only.** Writes a value into the local DHT storage tier with an
+operator-supplied HLC timestamp, bypassing the regular `DHTClient.put` path
+that always advances the node's clock to `now()`. Enables TC-10-G2 (DHT
+versioned writes) to build deterministic version-conflict scenarios without
+racing the live clock.
+
+Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
+`/api/alerts/inject`, `/api/scheduled-tasks/inject`, and
+`/api/metrics/backfill`. Route target is `LOCAL` — tests POST directly to
+the node they wish to mutate (no leader forwarding).
+
+**Request body:**
+```json
+{
+  "key":   "user:1",
+  "value": "alice",
+  "hlc":   {"physical": 1716280000000000, "logical": 0}
+}
+```
+
+Fields:
+- `key` — DHT key (UTF-8); MUST be non-blank.
+- `value` — DHT value (UTF-8 string; serialized to bytes server-side).
+- `hlc.physical` — physical-microseconds component of the explicit timestamp.
+- `hlc.logical` — logical-counter component of the explicit timestamp.
+
+**Response:**
+```json
+{
+  "key":          "user:1",
+  "committedHlc": {"physical": 1716280000000000, "logical": 0},
+  "written":      true
+}
+```
+
+`committedHlc` is the timestamp actually recorded for the write. It MAY be
+advanced relative to the request when the node's local clock had already
+moved past the supplied timestamp (HLC merge rule guarantees monotonic
+advancement). `written` is `true` when the storage layer accepted the value
+as the newest version, `false` when a stale-version write was suppressed.
+
+**Error responses (all surface a structured cause message):**
+- Missing/blank `key` field → `key field is required`.
+- Missing/null `value` field → `value field is required`.
+- Missing/null `hlc` field → `hlc field is required`.
+- `AETHER_INSECURE_DEV_MODE` unset / `false` → `dht inject requires AETHER_INSECURE_DEV_MODE=true`.
+
+---
+
 ## Observability Depth
 
 ### GET /api/observability/depth
@@ -2744,6 +2829,8 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/observability/depth` | Observability Depth |
 | POST | `/api/observability/depth` | Observability Depth |
 | DELETE | `/api/observability/depth/{artifact}/{method}` | Observability Depth |
+| GET | `/api/dht/replication-map` | DHT |
+| POST | `/api/dht/inject` | DHT (dev-mode only) |
 | GET | `/api/logging/levels` | Log Level Management |
 | POST | `/api/logging/levels` | Log Level Management |
 | DELETE | `/api/logging/levels/{logger}` | Log Level Management |

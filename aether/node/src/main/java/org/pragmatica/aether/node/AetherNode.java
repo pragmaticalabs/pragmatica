@@ -571,6 +571,8 @@ public interface AetherNode extends ManageableNode {
                           NodeLifecycle nodeLifecycle,
                           MembershipFsm membershipFsm,
                           HlcClock hlcClock,
+                          Option<DHTClient> dhtClient,
+                          Option<DHTNode> dhtNode,
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
@@ -1871,6 +1873,8 @@ public interface AetherNode extends ManageableNode {
                                   nodeLifecycle,
                                   membershipFsm,
                                   hlcClock,
+                                  dhtClientOption,
+                                  Option.some(dhtNode),
                                   effectivePhaseSupplier,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
@@ -1977,6 +1981,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                       nodeLifecycle,
                                                                                                       membershipFsm,
                                                                                                       hlcClock,
+                                                                                                      dhtClientOption,
+                                                                                                      Option.some(dhtNode),
                                                                                                       effectivePhaseSupplier,
                                                                                                       startTimeMs);
                                                                             }

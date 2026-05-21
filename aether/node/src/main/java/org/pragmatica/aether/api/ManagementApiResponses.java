@@ -525,4 +525,49 @@ public sealed interface ManagementApiResponses {
     /// rendered inline in `MavenProtocolHandlerImpl.renderPushJson` to avoid a
     /// Jackson dependency at the artifact-repo layer.
     record ArtifactPushResponse(String status, String coords, long size, String md5, String sha1) {}
+
+    /// Wire shape for `POST /api/dht/inject` (P-NEW-B, RC1, 2026-05-21; dev-mode-only).
+    /// Writes a value into the local DHT storage tier with an operator-supplied HLC
+    /// timestamp, bypassing the regular `DHTClient.put` path that always advances the
+    /// node's clock to `now()`. Enables TC-10-G2 (DHT versioned writes) to set up
+    /// deterministic version-conflict scenarios without racing the live clock.
+    ///
+    /// Fields:
+    /// - `key` — DHT key (UTF-8); MUST be non-blank.
+    /// - `value` — DHT value (UTF-8 string; serialized to bytes on the server).
+    /// - `hlc.physical` — physical-microseconds component of the explicit timestamp.
+    /// - `hlc.logical` — logical-counter component of the explicit timestamp.
+    ///
+    /// Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
+    /// `/api/alerts/inject`, `/api/scheduled-tasks/inject`, `/api/metrics/backfill`.
+    /// Local-only route (no leader forwarding) — tests POST directly to the node
+    /// they wish to mutate. See `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-B.
+    record DhtInjectRequest(String key, String value, HlcShape hlc) {}
+
+    /// Compact wire form for an `HlcTimestamp` (physical micros + logical counter),
+    /// shared by `DhtInjectRequest` (input) and `DhtInjectResponse` (output).
+    record HlcShape(long physical, int logical) {}
+
+    /// Response for `POST /api/dht/inject`. `committedHlc` is the HLC actually
+    /// recorded for the write — may be advanced relative to the request when the
+    /// node's local clock had already moved past the supplied timestamp (HLC merge
+    /// rule). `written` is `true` when the storage layer accepted the value as the
+    /// newest version, `false` when a stale-version write was suppressed.
+    record DhtInjectResponse(String key, HlcShape committedHlc, boolean written) {}
+
+    /// Wire shape for `GET /api/dht/replication-map` (P-NEW-F, RC1, 2026-05-21).
+    /// Surfaces the current DHT replication topology — which keys are replicated to
+    /// which nodes under the active replication factor. Operator-facing (no dev-mode
+    /// gate). Optional query parameters: `limit` (max entries, default 100), `prefix`
+    /// (UTF-8 key prefix filter).
+    record DhtReplicationMapResponse(int replicationFactor,
+                                     int totalKeys,
+                                     int returned,
+                                     List<DhtReplicationEntry> entries) {}
+
+    /// Per-key replication mapping. `nodes` is the ordered list of node IDs
+    /// responsible for the key under the active replication factor — index 0 is
+    /// the primary; subsequent entries are replicas walking the consistent-hash
+    /// ring clockwise.
+    record DhtReplicationEntry(String key, List<String> nodes) {}
 }

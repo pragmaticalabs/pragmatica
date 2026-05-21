@@ -190,7 +190,9 @@ public enum ManagementRoute {
     TRACE_BY_REQUEST_ID(GET, "/api/traces", List.of("id"), ANY),
     OBSERVABILITY_DEPTH_GET(GET, "/api/observability/depth", List.of(), ANY),
     OBSERVABILITY_DEPTH_SET(POST, "/api/observability/depth", List.of(), ANY),
-    OBSERVABILITY_DEPTH_DELETE(DELETE, "/api/observability/depth", List.of("artifact", "methodName"), ANY);
+    OBSERVABILITY_DEPTH_DELETE(DELETE, "/api/observability/depth", List.of("artifact", "methodName"), ANY),
+    DHT_INJECT(POST, "/api/dht/inject", List.of(), LOCAL),
+    DHT_REPLICATION_MAP(GET, "/api/dht/replication-map", List.of(), ANY);
     private final HttpMethod method;
     private final String prefix;
     private final List<String> paramNames;

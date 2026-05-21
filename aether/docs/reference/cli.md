@@ -1764,6 +1764,31 @@ aether ttm training-data
 
 ---
 
+## DHT
+
+### `aether dht replication-map [--limit N] [--prefix P]`
+
+Show the active DHT replication map — which keys live on which nodes under
+the current replication factor. Operator-facing inspection. Wraps
+`GET /api/dht/replication-map`.
+
+Options:
+- `-l`, `--limit N` — max entries to return (default 100, capped at 10000).
+- `-p`, `--prefix P` — only include keys whose UTF-8 prefix matches.
+
+```bash
+aether dht replication-map
+aether dht replication-map --limit 50 --prefix user:
+aether dht replication-map --format json
+```
+
+Each entry's `nodes[0]` is the primary; subsequent entries are replicas
+walking the consistent-hash ring clockwise. The endpoint reports one node's
+storage view — for cluster-wide audits invoke the same command against every
+node and union the results.
+
+---
+
 ## Exit Codes
 
 | Code | Meaning |

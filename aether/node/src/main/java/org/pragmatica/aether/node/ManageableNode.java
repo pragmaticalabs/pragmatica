@@ -44,6 +44,8 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.DHTNode;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -126,6 +128,19 @@ public interface ManageableNode {
     /// with the same clock the `MembershipFsm` uses, preserving causal ordering across the
     /// admission and FSM-write paths.
     HlcClock hlcClock();
+
+    /// P-NEW-B / P-NEW-F (RC1, 2026-05-21) — exposes the node's local DHT client so management
+    /// routes (`DhtRoutes`) can issue versioned puts with explicit HLC for deterministic
+    /// version-conflict tests, and surface the active replication map for operator inspection.
+    /// `Option.none()` only in tests that wire a `ManageableNode` proxy without DHT.
+    Option<DHTClient> dhtClient();
+
+    /// P-NEW-B / P-NEW-F (RC1, 2026-05-21) — exposes the local `DHTNode` for storage iteration
+    /// (`storage().keys()` powers the replication-map inspector) and direct versioned local
+    /// puts (`putLocalVersioned`, used by the dev-mode `/api/dht/inject` test hook to write a
+    /// value with an explicit HLC, bypassing the live-clock advancement the regular `put` path
+    /// performs). `Option.none()` only in tests that wire a `ManageableNode` proxy without DHT.
+    Option<DHTNode> dhtNode();
 
     /// H.1 (spec §H): derived cluster-membership view. Computed from the local SWIM
     /// `HealthSnapshot` plus `NodeLifecycleKey` KV overrides — SWIM is authoritative for
