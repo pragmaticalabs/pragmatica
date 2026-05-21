@@ -44,20 +44,27 @@ test_swim_detection_time() {
     KILLED_VICTIM="$victim"
     kill_node "$victim"
 
-    if wait_for_node_departure "$victim" "$baseline" 60; then
-        local elapsed
-        elapsed=$(elapsed_since "$start_epoch")
-        log_info "NODE_LEFT/NODE_FAILED observed for ${victim} after ${elapsed}s"
-        if [ "$elapsed" -le "$DETECTION_TIMEOUT" ]; then
-            log_pass "SWIM detection within ${DETECTION_TIMEOUT}s: ${elapsed}s"
-        else
-            log_warn "SWIM detection took ${elapsed}s (threshold: ${DETECTION_TIMEOUT}s)"
-            log_pass "Departure event recorded (${elapsed}s)"
-        fi
-    else
-        log_fail "No NODE_LEFT/NODE_FAILED event for ${victim} within 60s"
+    # Scale the prod 15s budget by TIMEOUT_SCALE so cloud (TIMEOUT_SCALE=3 → 45s)
+    # still gets a HARD ceiling, matching wait_for_node_departure's own scaling
+    # convention in lib/topology.sh. Docker/localhost (scale=1) keeps the strict
+    # 15s target. Detection in [budget+1, 60*scale] is a regression, not a warn.
+    local effective_budget=$((DETECTION_TIMEOUT * ${TIMEOUT_SCALE:-1}))
+
+    if ! wait_for_node_departure "$victim" "$baseline" 60; then
+        log_fail "No NODE_LEFT/NODE_FAILED event for ${victim} within 60s (scaled by TIMEOUT_SCALE=${TIMEOUT_SCALE:-1})"
         return 1
     fi
+
+    local elapsed
+    elapsed=$(elapsed_since "$start_epoch")
+    log_info "NODE_LEFT/NODE_FAILED observed for ${victim} after ${elapsed}s (budget: ${effective_budget}s)"
+
+    if [ "$elapsed" -gt "$effective_budget" ]; then
+        log_fail "SWIM detection took ${elapsed}s, exceeds budget ${effective_budget}s — production target is sub-${DETECTION_TIMEOUT}s detection (scaled ×${TIMEOUT_SCALE:-1})"
+        return 1
+    fi
+
+    log_pass "SWIM detected node failure in ${elapsed}s (budget ${effective_budget}s)"
 }
 
 test_recovery_after_detection() {
