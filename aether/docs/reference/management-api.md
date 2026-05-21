@@ -807,6 +807,95 @@ curl "http://localhost:8080/api/metrics/history?range=15m"
 }
 ```
 
+### GET /api/metrics/timeouts
+
+Get per-subsystem cumulative timeout-fired counters. One entry per
+`TimeoutsConfig` subsystem group (14 subsystems mirroring the
+`[timeouts.*]` TOML sections in `aether.toml`). Counters are
+`LongAdder`-backed, monotonically increasing for the lifetime of the node
+process; subsystems with zero fires are still present in the response.
+
+Used by TC-07-G3 (integration test) to verify that operator-configured
+timeout settings actually fire when exercised — currently the only
+observable signal for `[timeouts.*]` taking effect.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/metrics/timeouts
+```
+
+**Response:**
+```json
+{
+  "subsystems": {
+    "invocation":    {"firedCount": 0},
+    "forwarding":    {"firedCount": 0},
+    "deployment":    {"firedCount": 0},
+    "rollingUpdate": {"firedCount": 0},
+    "cluster":       {"firedCount": 0},
+    "consensus":     {"firedCount": 12},
+    "election":      {"firedCount": 0},
+    "swim":          {"firedCount": 0},
+    "observability": {"firedCount": 0},
+    "dht":           {"firedCount": 3},
+    "worker":        {"firedCount": 0},
+    "security":      {"firedCount": 0},
+    "repository":    {"firedCount": 0},
+    "scaling":       {"firedCount": 0}
+  }
+}
+```
+
+### POST /api/metrics/backfill
+
+**Dev-mode-only.** Seeds synthetic historical-metric samples into the local
+node's `ClusterSyncCollector` ring buffer so historical-range queries
+(`/api/metrics/history?range=...`) can be exercised deterministically
+without waiting hours for the sliding window to populate organically.
+Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
+`/api/scheduled-tasks/inject` and `/api/alerts/inject`.
+
+Used by TC-11-H1 (historical-metrics range queries) to make the 5m, 15m,
+1h, 2h range assertions deterministic.
+
+**Request body:**
+```json
+{
+  "metric": "cpu.usage",
+  "startTimeMs": 1704067200000,
+  "endTimeMs":   1704074400000,
+  "intervalMs":  60000,
+  "valueFn":     "linear"
+}
+```
+
+Fields:
+- `metric` — metric key written into each synthetic snapshot's map; non-blank.
+- `startTimeMs` / `endTimeMs` — inclusive epoch-millis window; `startTimeMs < endTimeMs`.
+- `intervalMs` — spacing between successive samples; `> 0`.
+- `valueFn` — synthetic-value generator. One of:
+  - `"constant:<double>"` (e.g. `constant:42.5`) — emits the same value at every sample.
+  - `"linear"` — 0 at `startTimeMs`, 1 at `endTimeMs`, linear in between.
+  - `"sine"` — `0.5 + 0.5·sin(2π·progress)`.
+  - Any unknown value falls back to `constant:0.0`.
+
+**Response:**
+```json
+{
+  "nodeId":         "node-1",
+  "metric":         "cpu.usage",
+  "samplesWritten": 121,
+  "startTimeMs":    1704067200000,
+  "endTimeMs":      1704074400000
+}
+```
+
+**Error responses (all surface a structured cause message):**
+- Missing/blank `metric` field → `metric field is required`.
+- `startTimeMs >= endTimeMs` → `startTimeMs must be strictly less than endTimeMs`.
+- `intervalMs <= 0` → `intervalMs must be greater than 0`.
+- `AETHER_INSECURE_DEV_MODE` unset / `false` → `metrics backfill requires AETHER_INSECURE_DEV_MODE=true`.
+
 ### GET /api/nodes/metrics
 
 Get per-node CPU and heap metrics.
@@ -2625,6 +2714,8 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/metrics/prometheus` | Metrics |
 | GET | `/api/metrics/transport` | Metrics |
 | GET | `/api/metrics/history` | Metrics |
+| GET | `/api/metrics/timeouts` | Metrics |
+| POST | `/api/metrics/backfill` | Metrics (dev-mode only) |
 | GET | `/api/nodes/metrics` | Metrics |
 | GET | `/api/artifacts/metrics` | Metrics |
 | GET | `/api/invocations/metrics` | Metrics |

@@ -13,16 +13,18 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /// Regression tests for `aether metrics <variant>` — Phase 3 item C1
-/// (unblocks integration-test-audit-2026-05-21 §3.3 B).
+/// (unblocks integration-test-audit-2026-05-21 §3.3 B). Updated 2026-05-21 to
+/// cover the new `timeouts` subcommand (P-NEW-A — per-subsystem
+/// timeout-fired counters).
 ///
-/// Verifies that the picocli wiring registers all 5 metrics variant subcommands
-/// (`prometheus`, `transport`, `comprehensive`, `derived`, `history`) under the
-/// `metrics` parent command, and that `history` correctly binds + composes its
-/// optional `--range` / `--since` query parameters.
+/// Verifies that the picocli wiring registers all 6 metrics variant subcommands
+/// (`prometheus`, `transport`, `comprehensive`, `derived`, `history`,
+/// `timeouts`) under the `metrics` parent command, and that `history` correctly
+/// binds + composes its optional `--range` / `--since` query parameters.
 class MetricsVariantsCommandTest {
 
     @Test
-    void metricsCommand_hasAllFiveVariantSubcommands() {
+    void metricsCommand_hasAllSixVariantSubcommands() {
         var cmd = new CommandLine(new AetherCli.MetricsCommand());
         var subcommands = cmd.getSubcommands();
 
@@ -31,6 +33,7 @@ class MetricsVariantsCommandTest {
         assertNotNull(subcommands.get("comprehensive"));
         assertNotNull(subcommands.get("derived"));
         assertNotNull(subcommands.get("history"));
+        assertNotNull(subcommands.get("timeouts"));
     }
 
     @Test
@@ -57,6 +60,13 @@ class MetricsVariantsCommandTest {
     @Test
     void derivedCommand_isInstantiable() {
         var cmd = new AetherCli.MetricsCommand.DerivedCommand();
+        new CommandLine(cmd).parseArgs();
+        assertNotNull(cmd);
+    }
+
+    @Test
+    void timeoutsCommand_isInstantiable() {
+        var cmd = new AetherCli.MetricsCommand.TimeoutsCommand();
         new CommandLine(cmd).parseArgs();
         assertNotNull(cmd);
     }

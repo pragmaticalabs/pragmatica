@@ -833,7 +833,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "metrics", description = "Show cluster metrics", subcommands = {MetricsCommand.PrometheusCommand.class, MetricsCommand.TransportCommand.class, MetricsCommand.ComprehensiveCommand.class, MetricsCommand.DerivedCommand.class, MetricsCommand.HistoryCommand.class})
+    @Command(name = "metrics", description = "Show cluster metrics", subcommands = {MetricsCommand.PrometheusCommand.class, MetricsCommand.TransportCommand.class, MetricsCommand.ComprehensiveCommand.class, MetricsCommand.DerivedCommand.class, MetricsCommand.HistoryCommand.class, MetricsCommand.TimeoutsCommand.class})
     static class MetricsCommand implements Callable<Integer> {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -917,6 +917,19 @@ public class AetherCli implements Runnable {
 
             String buildHistoryQuery() {
                 return option(range).orElse(() -> option(since)).map(v -> "range=" + v).or("");
+            }
+        }
+
+        @Command(name = "timeouts", description = "Show per-subsystem timeout-fired counters")
+        static class TimeoutsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private MetricsCommand metricsParent;
+
+            @Override
+            public Integer call() {
+                var response = metricsParent.parent.fetch(METRICS_TIMEOUTS);
+
+                return OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
             }
         }
     }

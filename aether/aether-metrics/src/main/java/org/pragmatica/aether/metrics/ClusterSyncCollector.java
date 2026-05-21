@@ -63,6 +63,16 @@ public interface ClusterSyncCollector {
 
     record MetricsSnapshot(long timestamp, Map<String, Double> metrics){}
 
+    /// Test-only synthetic-history injection. Appends `snapshot` to the
+    /// historical ring buffer for `nodeId` without going through the normal
+    /// `collectLocal()` → `addToHistory(self, ...)` path. Used by the
+    /// `/api/metrics/backfill` dev-mode endpoint (P-NEW-D, 2026-05-21) to
+    /// seed deterministic historical samples for TC-11-H1-historical-metrics-range
+    /// without waiting hours for the sliding window to populate organically.
+    /// Default no-op so the dozens of test stubs that implement this
+    /// interface don't all need an override.
+    @Contract default void injectHistoricalSnapshot(NodeId nodeId, MetricsSnapshot snapshot) {}
+
     @Contract void removeNode(NodeId nodeId);
     @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
     @MessageReceiver@Contract void onClusterSyncPing(ClusterSyncPing ping);
@@ -227,6 +237,13 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     @Override@Contract public void removeNode(NodeId nodeId) {
         remoteMetrics.remove(nodeId);
         historicalMetricsMap.remove(nodeId);
+    }
+
+    @Override
+    @Contract
+    public void injectHistoricalSnapshot(NodeId nodeId, MetricsSnapshot snapshot) {
+        var ringBuffer = historicalMetricsMap.computeIfAbsent(nodeId, _ -> RingBuffer.ringBuffer(ringBufferCapacity));
+        ringBuffer.add(snapshot);
     }
 
     @Override@Contract public void onMembershipDecision(MembershipDecision decision) {

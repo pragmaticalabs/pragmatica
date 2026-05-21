@@ -304,6 +304,9 @@ aether metrics derived
 aether metrics history                  # default range (1h)
 aether metrics history --range 15m      # 5m | 15m | 1h | 2h
 aether metrics history --since 5m       # --since is an alias for --range
+
+# Per-subsystem timeout-fired counters (one entry per [timeouts.*] section)
+aether metrics timeouts
 ```
 
 #### events

@@ -150,6 +150,8 @@ public enum ManagementRoute {
     METRICS_PROMETHEUS(GET, "/api/metrics/prometheus", List.of(), ANY),
     METRICS_HISTORY(GET, "/api/metrics/history", List.of(), ANY),
     METRICS_TRANSPORT(GET, "/api/metrics/transport", List.of(), ANY),
+    METRICS_TIMEOUTS(GET, "/api/metrics/timeouts", List.of(), ANY),
+    METRICS_BACKFILL(POST, "/api/metrics/backfill", List.of(), LOCAL),
     NODE_METRICS(GET, "/api/nodes/metrics", List.of(), ANY),
     NODE_METRICS_GET(GET, "/api/nodes/metrics", List.of("id"), RouteTarget.nodeIdParam(0)),
     ARTIFACT_METRICS(GET, "/api/artifacts/metrics", List.of(), ANY),

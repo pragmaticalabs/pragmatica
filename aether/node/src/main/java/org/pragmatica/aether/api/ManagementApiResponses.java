@@ -172,6 +172,48 @@ public sealed interface ManagementApiResponses {
                                    int deployedCount,
                                    List<String> deployedArtifacts) {}
 
+    /// Wire shape for `GET /api/metrics/timeouts` (P-NEW-A, 2026-05-21).
+    /// Maps each `TimeoutSubsystem` (14 entries mirroring `TimeoutsConfig`'s
+    /// nested records) to its cumulative timeout-fired count for the life of
+    /// the node process. Counters are LongAdder-backed and never reset.
+    /// Subsystems with zero fires are still emitted (presence guarantee
+    /// simplifies integration-test assertions on shape).
+    /// See `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-A
+    /// and TC-07-G3-timeouts-config.
+    record TimeoutMetricsResponse(Map<String, SubsystemTimeoutCount> subsystems) {}
+
+    record SubsystemTimeoutCount(long firedCount) {}
+
+    /// Request shape for `POST /api/metrics/backfill` (P-NEW-D, 2026-05-21;
+    /// dev-mode-only). Seeds synthetic historical-metric samples into the
+    /// local node's `ClusterSyncCollector` ring buffer so TC-11-H1
+    /// (historical-metrics range queries: 5m/15m/1h/2h) can assert
+    /// deterministically without waiting hours for the sliding window to
+    /// accumulate organically. Fields:
+    /// - `metric` — metric key written into each synthetic snapshot's map
+    ///   (e.g. `cpu.usage`); MUST be non-blank.
+    /// - `startTimeMs` / `endTimeMs` — inclusive epoch-millis window;
+    ///   `startTimeMs < endTimeMs` required.
+    /// - `intervalMs` — spacing between successive samples; MUST be > 0.
+    /// - `valueFn` — synthetic-value generator: one of
+    ///   `"constant:<double>"` (e.g. `constant:42.5`), `"linear"` (0..1
+    ///   ramp across the window), `"sine"` (0.5+0.5·sin(2π·t/window)).
+    ///   Unknown values fall back to constant 0.0.
+    /// Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
+    /// `/api/scheduled-tasks/inject` and `/api/alerts/inject`.
+    record BackfillMetricsRequest(String metric,
+                                  long startTimeMs,
+                                  long endTimeMs,
+                                  long intervalMs,
+                                  String valueFn) {}
+
+    /// Response shape for `POST /api/metrics/backfill`. `samplesWritten` is
+    /// the number of synthetic snapshots appended to the ring buffer for the
+    /// local node; `nodeId` identifies which node received the backfill (the
+    /// route is `LOCAL`, so this is always the entry-point node). Tests can
+    /// assert `samplesWritten == floor((endTimeMs - startTimeMs) / intervalMs) + 1`.
+    record BackfillMetricsResponse(String nodeId, String metric, long samplesWritten, long startTimeMs, long endTimeMs) {}
+
     record InvocationMetricsResponse(List<InvocationSnapshot> snapshots) {}
 
     record InvocationSnapshot(String artifact,
