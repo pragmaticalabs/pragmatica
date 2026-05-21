@@ -252,7 +252,11 @@ import static org.pragmatica.lang.utils.Causes.cause;
                 return Option.some(IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(), Map.of()));
             }
             return tomlContent.flatMap(content -> parseToFlatMap(artifact, content))
-                              .map(values -> IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(), values));
+                              .map(values -> {
+                                  log.info("Slice {} intrinsic config loaded from {}: {} keys",
+                                           artifact, SLICE_RESOURCES_TOML, values.size());
+                                  return IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(), values);
+                              });
         }
 
         @SuppressWarnings("JBCT-EX-01")
