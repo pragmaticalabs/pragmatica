@@ -18,58 +18,115 @@ test_cluster_ready() {
     log_pass "Cluster ready for cert rotation test"
 }
 
+# Verify the TLS contract via /api/certificates.
+#
+# Audit RC1-blocker #3: the previous body asserted `cluster_config` non-empty,
+# which conflates "endpoint live" with "TLS active". Per P3 the certificates
+# API now exposes a `tlsEnabled` boolean alongside `renewalStatus`. We branch
+# on that field and assert state consistency between the two:
+#   - tlsEnabled=true  ⇒ renewalStatus ∈ {HEALTHY, RENEWING, RENEWAL_FAILED}
+#   - tlsEnabled=false ⇒ renewalStatus == NOT_CONFIGURED
+#   - missing tlsEnabled field          ⇒ API contract violation (hard fail)
+#   - tlsEnabled=true with NOT_CONFIGURED ⇒ contradictory state (hard fail)
 test_tls_active() {
-    # Verify TLS is enabled by checking cluster config
-    local config
-    config=$(cluster_config)
-    assert_ne "$config" "" "Cluster config available"
+    local cert_info tls_enabled status
+    cert_info=$(aether_json certs status)
+    tls_enabled=$(aether_field certs status tlsEnabled)
+    status=$(aether_field certs status renewalStatus)
+
+    if [ -z "$tls_enabled" ]; then
+        log_fail "TLS contract violation: /api/certificates response missing tlsEnabled field (got: $(printf '%s' "$cert_info" | head -c 200))"
+        return 1
+    fi
+
+    case "$tls_enabled" in
+        true)
+            case "$status" in
+                HEALTHY|RENEWING|RENEWAL_FAILED)
+                    log_pass "TLS enabled, renewalStatus=${status}"
+                    ;;
+                NOT_CONFIGURED)
+                    log_fail "Contradictory TLS state: tlsEnabled=true but renewalStatus=NOT_CONFIGURED"
+                    return 1
+                    ;;
+                *)
+                    log_fail "TLS enabled but renewalStatus=${status} is not in {HEALTHY, RENEWING, RENEWAL_FAILED}"
+                    return 1
+                    ;;
+            esac
+            ;;
+        false)
+            if [ "$status" = "NOT_CONFIGURED" ]; then
+                log_pass "TLS not configured for this cluster (renewalStatus=NOT_CONFIGURED)"
+            else
+                log_fail "TLS disabled but renewalStatus=${status} (expected NOT_CONFIGURED)"
+                return 1
+            fi
+            ;;
+        *)
+            log_fail "Unexpected tlsEnabled value: '${tls_enabled}' (expected 'true' or 'false')"
+            return 1
+            ;;
+    esac
 }
 
+# Rotate certificates while authenticated mgmt traffic flows through the TLS
+# handshake; assert error rate stays below MAX_ERROR_RATE.
+#
+# Audit RC1-blocker #4: the previous body (a) declared a vacuous pass on
+# NOT_CONFIGURED instead of skipping, and (b) drove load against /health/live
+# (no auth, no cert path). The new shape:
+#   - tlsEnabled=false  ⇒ clean skip_test (not a vacuous pass)
+#   - tlsEnabled=true   ⇒ drive load against /api/cluster/status (auth-gated,
+#                          flows through the TLS handshake), POST the rotation
+#                          directive, then assert error rate < MAX_ERROR_RATE.
+# Load uses api_get-style _api_call semantics so 4xx/5xx surface as failures
+# (start_load classifies status >=400 as failure, see load.sh:35).
 test_rotation_under_load() {
-    # Start load
-    # Use management endpoint for health check — APP_ENDPOINT may not serve /health/live
-    APP_ENDPOINT="${CLUSTER_ENDPOINT}" start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/health/live"
+    local tls_enabled
+    tls_enabled=$(aether_field certs status tlsEnabled)
+
+    if [ -z "$tls_enabled" ]; then
+        log_fail "TLS contract violation: /api/certificates response missing tlsEnabled field"
+        return 1
+    fi
+
+    if [ "$tls_enabled" = "false" ]; then
+        skip_test "Rotation under load" "TLS not configured (NOT_CONFIGURED renewalStatus)"
+        return 0
+    fi
+
+    if [ "$tls_enabled" != "true" ]; then
+        log_fail "Unexpected tlsEnabled value: '${tls_enabled}' (expected 'true' or 'false')"
+        return 1
+    fi
+
+    # Drive load against an authenticated mgmt endpoint that flows through TLS.
+    # APP_ENDPOINT is overridden to CLUSTER_ENDPOINT (mgmt host) so start_load's
+    # internal http_status calls hit the TLS-served mgmt port.
+    APP_ENDPOINT="${CLUSTER_ENDPOINT}" start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/cluster/status"
     sleep 5
 
-    # Check if TLS is configured before attempting rotation
-    local cert_info
-    cert_info=$(api_get "/api/certificates" 2>/dev/null)
-    local renewal_status
-    renewal_status=$(json_value "$cert_info" "renewalStatus")
-    local rotation_triggered=false
-    if [ "$renewal_status" = "NOT_CONFIGURED" ]; then
-        log_info "TLS not configured — skipping rotation trigger"
-    else
-        log_info "Triggering certificate rotation"
-        local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/config" \
-            -X POST \
-            -H "X-API-Key: ${ADMIN_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d '{"tls":{"rotate":true}}')
-        log_info "Cert rotation response: ${status}"
-        rotation_triggered=true
+    log_info "Triggering certificate rotation"
+    local rotation_status
+    rotation_status=$(http_status "${CLUSTER_ENDPOINT}/api/config" \
+        -X POST \
+        -H "X-API-Key: ${ADMIN_API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d '{"tls":{"rotate":true}}')
+    log_info "Cert rotation response: ${rotation_status}"
+    if [ "$rotation_status" -lt 200 ] || [ "$rotation_status" -ge 400 ]; then
+        log_fail "Cert rotation request failed: HTTP ${rotation_status}"
+        # Continue to drain load so we don't leak background processes.
     fi
 
     # Wait for load to finish
     for pid in "${LOAD_PIDS[@]}"; do
-        wait "$pid" 2>/dev/null || true
+        wait "$pid" || true  # background process may have exited normally before we wait
     done
 
     local result
     result=$(stop_load)
-    # The error-rate assertion measures the impact of cert rotation on in-flight
-    # requests. When no rotation occurred (TLS auto_generate=false in this cluster's
-    # config — see cloud-hetzner-b.toml) there's no event to disrupt traffic, and
-    # baseline cloud connection-noise (~10% transient drops at low RPS over a
-    # 60-second window) would trip a 5% threshold without anything having happened.
-    #
-    # Real cert-rotation E2E coverage on a TLS-enabled fixture is tracked in #209.
-    # CertificateRenewalScheduler unit tests exercise the rotation logic itself.
-    if [ "$rotation_triggered" = "false" ]; then
-        log_pass "No rotation triggered (TLS not configured) — assertion vacuously satisfied (load result: ${result}). See #209 for real coverage."
-        return 0
-    fi
     assert_error_rate_below "$result" "$MAX_ERROR_RATE" "Error rate during cert rotation < ${MAX_ERROR_RATE}%"
 }
 
