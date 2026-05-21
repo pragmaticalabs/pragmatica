@@ -108,12 +108,21 @@ test_both_blueprints_visible() {
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "post-publish quiesce not reached"
     local slices
     slices=$(cluster_slices)
-    if [ -n "$slices" ]; then
-        log_pass "Slices endpoint returns data after concurrent operations"
-    else
-        log_warn "Slices endpoint empty"
-        log_pass "Slices endpoint responds"
+    if [ -z "$slices" ]; then
+        log_fail "Slices endpoint returned empty payload after two blueprints deployed; expected at least one ACTIVE slice"
+        return 1
     fi
+    # Assert at least 1 ACTIVE slice instance — the two deployments in
+    # test_cluster_ready should have produced live instances by now. An empty
+    # or all-inactive registry after concurrent deploys is a real product
+    # failure, not "endpoint responds" success.
+    local active_count
+    active_count=$(slices_active_instances)
+    if [ "$active_count" -lt 1 ]; then
+        log_fail "No ACTIVE slice instances after concurrent deploys; cluster_slices=${slices:0:300}"
+        return 1
+    fi
+    log_pass "Both blueprints visible with ${active_count} active instance(s)"
 }
 
 test_slices_active_after_concurrent_deploy() {
