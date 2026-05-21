@@ -1,0 +1,49 @@
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:411 — warn-then-pass-demotion (preceding log_warn at line 408)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:416 — warn-then-pass-demotion (preceding log_warn at line 413)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:439 — warn-then-pass-demotion (preceding log_warn at line 437)
+[R1] aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh:445 — warn-then-pass-demotion (preceding log_warn at line 443)
+[R1] aether/tests/integration/suites/04-streaming/test-stream-consumer.sh:14 — warn-then-pass-demotion (preceding log_warn at line 13)
+[R1] aether/tests/integration/suites/04-streaming/test-stream-publish.sh:14 — warn-then-pass-demotion (preceding log_warn at line 13)
+[R1] aether/tests/integration/suites/04-streaming/test-stream-replication.sh:15 — warn-then-pass-demotion (preceding log_warn at line 14)
+[R1] aether/tests/integration/suites/04-streaming/test-stream-under-load.sh:25 — warn-then-pass-demotion (preceding log_warn at line 24)
+[R1] aether/tests/integration/suites/06-deployment/test-deploy-blue-green.sh:15 — warn-then-pass-demotion (preceding log_warn at line 14)
+[R1] aether/tests/integration/suites/06-deployment/test-deploy-canary.sh:20 — warn-then-pass-demotion (preceding log_warn at line 19)
+[R1] aether/tests/integration/suites/06-deployment/test-deploy-rolling.sh:15 — warn-then-pass-demotion (preceding log_warn at line 14)
+[R1] aether/tests/integration/suites/07-cluster-mgmt/test-bootstrap.sh:38 — warn-then-pass-demotion (preceding log_warn at line 37)
+[R1] aether/tests/integration/suites/07-cluster-mgmt/test-destroy.sh:95 — warn-then-pass-demotion (preceding log_warn at line 94)
+[R1] aether/tests/integration/suites/08-resources/test-http-client.sh:12 — warn-then-pass-demotion (preceding log_warn at line 11)
+[R1] aether/tests/integration/suites/08-resources/test-pub-sub.sh:106 — warn-then-pass-demotion (preceding log_warn at line 105)
+[R1] aether/tests/integration/suites/08-resources/test-streaming-resources.sh:33 — warn-then-pass-demotion (preceding log_warn at line 32)
+[R1] aether/tests/integration/suites/08-resources/test-streaming-resources.sh:86 — warn-then-pass-demotion (preceding log_warn at line 81)
+[R1] aether/tests/integration/suites/08-resources/test-streaming-resources.sh:89 — warn-then-pass-demotion (preceding log_warn at line 88)
+[R1] aether/tests/integration/suites/09-artifacts/test-artifact-push-resolve.sh:27 — warn-then-pass-demotion (preceding log_warn at line 26)
+[R1] aether/tests/integration/suites/09-artifacts/test-artifact-replication.sh:68 — warn-then-pass-demotion (preceding log_warn at line 67)
+[R1] aether/tests/integration/suites/09-artifacts/test-large-artifact.sh:21 — warn-then-pass-demotion (preceding log_warn at line 20)
+[R1] aether/tests/integration/suites/12-network/test-quic-connectivity.sh:22 — warn-then-pass-demotion (preceding log_warn at line 21)
+[R1] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:30 — warn-then-pass-demotion (preceding log_warn at line 29)
+[R1] aether/tests/integration/suites/13-edge-cases/test-stale-route-cleanup.sh:21 — warn-then-pass-demotion (preceding log_warn at line 20)
+[R1] aether/tests/integration/suites/13-edge-cases/test-stale-route-cleanup.sh:80 — warn-then-pass-demotion (preceding log_warn at line 79)
+[R2] aether/tests/integration/suites/01-stability/test-soak-4h.sh:95 — wait "$pid" 2>/dev/null || true
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:119 — body=$(api_get "/api/nodes/lifecycle/${target}" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:215 — name=$(remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:252 — priming_victim=$(cat "$PRIMING_VICTIM_FILE" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:424 — candidates=$(pick_non_leader "$leader" 3 2>/dev/null || true)
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:97 — 2>/dev/null || true
+[R2] aether/tests/integration/suites/02-chaos/test-kill-under-load.sh:69 — wait "$pid" 2>/dev/null || true
+[R2] aether/tests/integration/suites/03-scaling/test-03-scale-down.sh:99 — wait "$pid" 2>/dev/null || true
+[R2] aether/tests/integration/suites/06-deployment/test-schema-migration.sh:111 — body=$(api_post "/api/schema/retry/${DATASOURCE}" "{}" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/07-cluster-mgmt/test-destroy.sh:35 — # Don't `2>/dev/null || true` — that hides stderr AND ignores rc, so a
+[R2] aether/tests/integration/suites/11-observability/test-events-cluster-ordering.sh:59 — "http://${TARGET_HOST}:${port}/api/events" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:105 — body=$(api_get "/api/nodes/lifecycle/${target}" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:125 — remote_exec "docker ps --filter 'label=aether.node-id=${nid}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:289 — m1=$(sed -n '1p' "$MINORITY_FILE" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/12-network/test-partition-quorum-gate.sh:290 — m2=$(sed -n '2p' "$MINORITY_FILE" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:77 — kill "$pid_a" 2>/dev/null; wait "$pid_a" 2>/dev/null || true
+[R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:78 — kill "$pid_b" 2>/dev/null; wait "$pid_b" 2>/dev/null || true
+[R3] aether/tests/integration/suites/04-streaming/test-stream-replication.sh:126 — tautological assert_ne on raw response (var $result from line 117)
+[R3] aether/tests/integration/suites/07-cluster-mgmt/test-bootstrap.sh:69 — tautological assert_ne on raw response (var $status from line 68)
+[R3] aether/tests/integration/suites/08-resources/test-scheduled-tasks.sh:17 — tautological assert_ne on raw response (var $tasks from line 16)
+[R3] aether/tests/integration/suites/11-observability/test-prometheus-metrics.sh:28 — tautological assert_ne on raw response (var $body from line 27)
+[R3] aether/tests/integration/suites/11-observability/test-transport-metrics.sh:17 — tautological assert_ne on raw response (var $metrics from line 16)
+[R4] aether/tests/integration/suites/08-resources/test-sql-connector.sh:50 — if [ "$result" -ge 200 ] && [ "$result" -lt 400 ] 2>/dev/null; then
+[R4] aether/tests/integration/suites/08-resources/test-sql-connector.sh:92 — if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then

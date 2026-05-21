@@ -666,6 +666,11 @@ print_results() {
 log_info "Integration test runner -- env=${ENV_TYPE}"
 START_TIME=$(date +%s)
 
+# --- Step 0: Lint integration test infra (always; cheap; protects against
+#     test-side regressions even when --skip-build is used) ---
+log_step "Lint integration tests"
+"${SCRIPT_DIR}/lint-tests.sh"
+
 # --- Step 1: Build ---
 if [ "$SKIP_BUILD" = false ] && [ -x "${REPO_ROOT}/build.sh" ]; then
     log_step "Building project"
