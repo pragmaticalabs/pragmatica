@@ -217,7 +217,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         // indefinitely. The 30s bound at the outer level guarantees the HTTP handler
         // resolves with success or failure before the test harness's curl times out.
         return Promise.allOf(blockIdPromises)
-                            .flatMap(ArtifactStoreImpl::firstFailureOrAll)
+                            .flatMap(results -> Result.firstFailureOf(results).async())
                             .flatMap(blockIds -> storeMetadataAndVersions(artifact,
                                                                           blockIds,
                                                                           chunks.size(),
@@ -280,7 +280,7 @@ class ArtifactStoreImpl implements ArtifactStore {
                                          .map(hex -> fetchSingleBlock(hex, corruptedError))
                                          .toList();
         return Promise.allOf(fetchPromises)
-                            .flatMap(ArtifactStoreImpl::firstFailureOrAll)
+                            .flatMap(results -> Result.firstFailureOf(results).async())
                             .map(blocks -> reassembleChunks(blocks, (int) meta.size()))
                             .flatMap(content -> verifyIntegrity(artifact, content, meta));
     }
@@ -345,22 +345,6 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private static boolean isTransientDhtFailure(Cause cause) {
         return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached;
-    }
-
-    /// Aggregate a `List<Result<T>>` into a `Promise<List<T>>` that fails with the
-    /// **first** chunk's cause rather than a composite. The composite from
-    /// `Result.allOf` hides the chunk-level cause type from operators and breaks
-    /// `instanceof` dispatch — a transient `DHTError.PeerUnreachable` should
-    /// propagate as such, not as a wrapper.
-    private static <T> Promise<List<T>> firstFailureOrAll(List<Result<T>> results) {
-        var values = new ArrayList<T>(results.size());
-        for (var result : results) {
-            switch (result) {
-                case Result.Success<T> success -> values.add(success.value());
-                case Result.Failure<T> failure -> { return failure.cause().promise(); }
-            }
-        }
-        return Promise.success(values);
     }
 
     /// Per-chunk variant of `dhtPutWithRetry` for the deploy fan-out. The artifact
