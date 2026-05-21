@@ -56,7 +56,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.DhtCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.BackupSingularCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.DhtCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -3143,6 +3143,148 @@ public class AetherCli implements Runnable {
                 return OutputFormatter.printAction(response,
                                                    backupParent.parent.outputOptions(),
                                                    "Restore initiated from " + commitId);
+            }
+        }
+    }
+
+    /// Singular `aether backup` parent — operator-facing alias of `aether backups`
+    /// with verb-style `create` / `restore` subcommands as called out in
+    /// `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-C
+    /// (test target `TC-NEW-G4-kv-store-backup`). Shares the same REST routes
+    /// (`POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups`) as
+    /// the existing plural form — this is an additional CLI surface, not a new
+    /// server endpoint.
+    @Command(name = "backup", description = "Operator-facing backup commands (create/restore/list)", subcommands = {BackupSingularCommand.CreateCommand.class, BackupSingularCommand.RestoreCommand.class, BackupSingularCommand.ListCommand.class})
+    static class BackupSingularCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Contract
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "create", description = "Create a new backup (synchronous; --wait polls for visibility)")
+        @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
+        static class CreateCommand implements Callable<Integer> {
+            private static final int POLL_INTERVAL_MS = 1000;
+
+            @CommandLine.ParentCommand
+            private BackupSingularCommand backupParent;
+
+            @CommandLine.Option(names = "--wait", description = "Poll /api/backups until the new backup appears (or --timeout elapses)")
+            private boolean waitForCompletion;
+
+            @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when --wait is set", defaultValue = "60")
+            private int timeoutSeconds;
+
+            @Override
+            public Integer call() {
+                var existingCount = waitForCompletion
+                                    ? countExistingBackups()
+                                    : -1;
+                var response = backupParent.parent.post(BACKUP_TRIGGER, "{}");
+                var result = OutputFormatter.printAction(response,
+                                                         backupParent.parent.outputOptions(),
+                                                         "Backup created");
+
+                if (result != ExitCode.SUCCESS || !waitForCompletion) {return result;}
+
+                return pollUntilBackupVisible(existingCount);
+            }
+
+            private int countExistingBackups() {
+                var response = backupParent.parent.fetch(BACKUPS_LIST);
+
+                return countBackupEntries(response);
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private int pollUntilBackupVisible(int baselineCount) {
+                System.out.printf("Waiting for backup to appear in /api/backups (timeout: %ds)...%n", timeoutSeconds);
+                var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
+
+                while (System.currentTimeMillis() < deadline) {
+                    var currentCount = countExistingBackups();
+
+                    if (currentCount > baselineCount) {
+                        System.out.printf("Backup visible: %d entries in /api/backups.%n", currentCount);
+
+                        return ExitCode.SUCCESS;
+                    }
+
+                    sleepQuietly();
+                }
+
+                System.err.printf("Timeout: backup did not become visible within %ds.%n", timeoutSeconds);
+
+                return ExitCode.TIMEOUT;
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private static void sleepQuietly() {
+                try {
+                    Thread.sleep(POLL_INTERVAL_MS);
+                } catch (InterruptedException _) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            /// Best-effort count of `"commitId"` occurrences in the BACKUPS_LIST JSON
+            /// envelope. Falls back to 0 on parse error so a missing/empty list does
+            /// not collide with the "saw new entry" condition.
+            static int countBackupEntries(String response) {
+                if (response == null || response.isBlank() || response.contains("\"error\"")) {return 0;}
+
+                var marker = "\"commitId\"";
+                var idx = 0;
+                var count = 0;
+
+                while ((idx = response.indexOf(marker, idx)) >= 0) {
+                    count++;
+                    idx += marker.length();
+                }
+
+                return count;
+            }
+        }
+
+        @Command(name = "restore", description = "Restore the cluster from a backup commit (synchronous)")
+        static class RestoreCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BackupSingularCommand backupParent;
+
+            @Parameters(index = "0", description = "Git commit ID to restore from")
+            private String commitId;
+
+            @CommandLine.Option(names = "--wait", description = "Reserved for future async-restore support (currently a no-op — restore is synchronous server-side)")
+            private boolean waitForCompletion;
+
+            @Override
+            public Integer call() {
+                var response = backupParent.parent.post(BACKUP_RESTORE, buildRestoreBody());
+
+                return OutputFormatter.printAction(response,
+                                                   backupParent.parent.outputOptions(),
+                                                   "Restore initiated from " + commitId);
+            }
+
+            String buildRestoreBody() {
+                return "{\"commit\":\"" + escapeJsonValue(commitId) + "\"}";
+            }
+        }
+
+        @Command(name = "list", description = "List available backups")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BackupSingularCommand backupParent;
+
+            @Override
+            public Integer call() {
+                var response = backupParent.parent.fetch(BACKUPS_LIST);
+
+                return OutputFormatter.printQuery(response, backupParent.parent.outputOptions());
             }
         }
     }

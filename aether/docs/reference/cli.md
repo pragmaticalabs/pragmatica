@@ -1203,18 +1203,36 @@ aether scheduled-tasks inject \
 
 ### backup
 
-Manage cluster backups.
+Manage cluster backups. Two surfaces are available: the **singular** `aether backup` parent
+with verb-style subcommands (`create`, `restore`, `list`) introduced for operator-facing
+workflows in P-NEW-C, and the legacy **plural** `aether backups` parent with the original
+`trigger`/`list`/`restore` subcommands. Both call the same REST routes
+(`POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups`) — pick whichever
+reads more naturally for your scripts.
 
 ```bash
-# Trigger a manual backup
+# Singular surface (P-NEW-C, recommended for new scripts)
+aether backup create                   # create a new backup (synchronous)
+aether backup create --wait            # create + poll /api/backups until the new entry appears
+aether backup create --wait --timeout 120
+aether backup restore <commit-id>      # restore from a specific backup commit
+aether backup list                     # list available backups
+
+# Plural surface (legacy alias, identical routes)
 aether backups trigger
-
-# List available backups
 aether backups list
-
-# Restore from a specific backup commit
 aether backups restore <commit-id>
 ```
+
+#### `aether backup` subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `create [--wait] [--timeout N]` | Create a new backup (`POST /api/backups`). With `--wait`, polls `GET /api/backups` until the new entry appears or `--timeout` (default 60s) elapses. |
+| `restore <commit>` | Restore the cluster KV-Store from the named backup commit (`POST /api/backups/restore`). |
+| `list` | List available backups (`GET /api/backups`). |
+
+#### `aether backups` subcommands (legacy)
 
 | Subcommand | Description |
 |------------|-------------|
