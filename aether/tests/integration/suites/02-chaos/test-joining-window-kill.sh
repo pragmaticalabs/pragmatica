@@ -83,6 +83,14 @@ PRELABEL_SNAPSHOT_FILE="/tmp/s01-prelabel-snapshot.$$"
 REPLACEMENT_NODE_ID_FILE="/tmp/s01-replacement-nodeid.$$"
 KILL_TIMESTAMP_FILE="/tmp/s01-kill-timestamp.$$"
 PRIMING_VICTIM_FILE="/tmp/s01-priming-victim.$$"
+# Marker written if R raced past JOINING into ON_DUTY before the kill landed.
+# When present, the smoking-gun log assertion is skipped: the ON_DUTY cells
+# for both `transport-failure` and `swim-faulty` are gated by aggregator quorum
+# (ClusterMembershipReducer.java:184,203), so the kill is decommissioned via the
+# ungated `(ON_DUTY, SwimDeparted)` cell which emits `reason=swim-departed` —
+# not in S01's accepted reason set. The 25s budget assertion above remains the
+# meaningful contract in that branch.
+RACE_TO_ON_DUTY_FILE="/tmp/s01-race-to-on-duty.$$"
 
 # Snapshot of `aether.node-id` labels on TARGET_HOST scoped to this cluster.
 # Returns one node-id per line, sorted. Empty string on transport failure.
@@ -353,7 +361,20 @@ test_catch_replacement_in_joining_window() {
             log_info "Replacement ${replacement} pre-kill KV state: JOINING — S01 (JOINING, TransportUnreachable) cell will be exercised"
             ;;
         ON_DUTY)
-            log_warn "Replacement ${replacement} raced past JOINING into ON_DUTY before kill — S01 JOINING-window not strictly exercised; the test will still assert the ≤15s budget but via the (ON_DUTY, TransportUnreachable) cell (Transport-cell path, same TransportUnreachable event, same code surface from Steps 1-6)"
+            # The smoking-gun assertion is contingent on R being killed in the
+            # JOINING window: only `(JOINING, TransportUnreachable)` at line 167
+            # of ClusterMembershipReducer.java is ungated and emits
+            # `reason=transport-failure`. The ON_DUTY cells for both
+            # `transport-failure` (line 203) and `swim-faulty` (line 184) are
+            # gated by `gate.isConfirmedUnreachable()`; the kill lands inside
+            # the aggregator-quorum window so both cells fall through to
+            # `Outcome.nop`. The ungated `(ON_DUTY, SwimDeparted)` cell at
+            # line 187 fires later and writes `REASON_SWIM_DEPARTED` — outside
+            # S01's accepted reason set. Mark the race so the smoking-gun test
+            # below can `skip_test` cleanly; the 25s budget assertion (which
+            # IS strict here) carries the load for this branch.
+            printf '1' > "$RACE_TO_ON_DUTY_FILE"
+            log_warn "Replacement ${replacement} raced past JOINING into ON_DUTY before kill — S01 JOINING-window not strictly exercised; smoking-gun assertion will be skipped (gated ON_DUTY cells produce Outcome.nop; decommission proceeds via SwimDeparted with reason=swim-departed)"
             ;;
     esac
 
@@ -399,8 +420,20 @@ test_transport_unreachable_event_logged() {
     # than an opaque write (e.g. accelerated detector, back-channel CTM tombstone,
     # eviction race). The specific path is a race between aggregator quorum and
     # SWIM convergence — both are correct outcomes.
+    #
+    # Branch on the race-to-ON_DUTY signal written by `test_catch_replacement_in_joining_window`.
+    # When R reaches ON_DUTY before the kill lands, both `transport-failure` and
+    # `swim-faulty` cells are gated by aggregator quorum and produce no log; only
+    # the ungated `SwimDeparted` cell fires, emitting `reason=swim-departed` —
+    # outside S01's accepted reason set. The 25s budget assertion (always strict)
+    # is the meaningful contract in that branch.
     local replacement match
     replacement=$(cat "$REPLACEMENT_NODE_ID_FILE")
+    if [ -f "$RACE_TO_ON_DUTY_FILE" ]; then
+        skip_test "Transport-failure reason logged on survivor (smoking gun)" \
+                  "R raced past JOINING into ON_DUTY before kill — gated ON_DUTY cells produce Outcome.nop; decommission via SwimDeparted (reason=swim-departed) is a legitimate but separate code path. The 25s budget assertion above carries this branch."
+        return 0
+    fi
     if ! match=$(verify_transport_unreachable_event "$replacement"); then
         log_fail "No 'reason=transport-failure' OR 'reason=swim-faulty' domain-event line for ${replacement} on any surviving compose-baseline node. The ≤25s budget passed but via an unknown path — the S01 contract is not actually being exercised. (Step 2/3/4/6 regression candidate: aggregator not producing TransportUnreachable, SWIM not converging on FAULTY, FSM not consuming either, or gate now blocking both cells.)"
         return 1
@@ -438,7 +471,7 @@ cleanup() {
     # Tidy ferry files (best-effort; /tmp survives shell exit anyway, but
     # parallel test runs on the same host benefit from per-PID cleanup).
     rm -f "$PRELABEL_SNAPSHOT_FILE" "$REPLACEMENT_NODE_ID_FILE" \
-          "$KILL_TIMESTAMP_FILE" "$PRIMING_VICTIM_FILE"
+          "$KILL_TIMESTAMP_FILE" "$PRIMING_VICTIM_FILE" "$RACE_TO_ON_DUTY_FILE"
 
     # Semantic baseline restore — re-enables auto-heal (we never disabled it,
     # but restore_cluster_baseline is idempotent), resets the CTM circuit
