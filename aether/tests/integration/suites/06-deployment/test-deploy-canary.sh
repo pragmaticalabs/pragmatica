@@ -46,10 +46,27 @@ test_canary_list() {
 test_canary_promote() {
     assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
     deploy_promote "$DEPLOYMENT_ID"
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "promote did not quiesce"
-    local status_result
-    status_result=$(deploy_status "$DEPLOYMENT_ID" 2>/dev/null || echo "")
-    log_info "Deployment status after promote: $status_result"
+    if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then
+        log_fail "Canary promote of ${DEPLOYMENT_ID} did not quiesce within 30s"
+        return 1
+    fi
+    # Strict post-promote state check. Canary promote() either advances the stage
+    # (state=ROUTING) when intermediate stages remain, or transitions to PROMOTING
+    # when ALL_NEW is reached (DeploymentManagerImpl.transitionForPromote). Accept
+    # the union of legal forward states; PROMOTING may async-advance to
+    # DRAINING/COMPLETED before this assertion observes it.
+    local status_result state
+    status_result=$(deploy_status "$DEPLOYMENT_ID")
+    state=$(json_value "$status_result" "state")
+    case "$state" in
+        ROUTING|PROMOTING|DRAINING|COMPLETED)
+            log_pass "Canary promote of ${DEPLOYMENT_ID} reached post-promote state=${state}"
+            ;;
+        *)
+            log_fail "Canary promote of ${DEPLOYMENT_ID} did not reach a post-promote state — got state='${state}'; deploy_status: $(printf '%s' "$status_result" | head -c 500)"
+            return 1
+            ;;
+    esac
 }
 
 test_canary_complete() {
