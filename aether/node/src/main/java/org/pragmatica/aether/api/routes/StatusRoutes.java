@@ -17,10 +17,14 @@ import org.pragmatica.aether.api.ManagementApiResponses.NodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.WhoamiResponse;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
+import org.pragmatica.aether.http.handler.security.Role;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.lifecycle.NodeState;
@@ -60,42 +64,50 @@ public final class StatusRoutes implements RouteSource {
         return new StatusRoutes(nodeSupplier, appHttpServerSupplier);
     }
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<StatusResponse>route(ManagementRoute.NODE_STATUS)
-                                         .toJson(this::buildStatusResponse),
-                         ManagementRoutes.<StatusResponse>route(ManagementRoute.NODE_STATUS_GET)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<StatusResponse> route(ManagementRoute.NODE_STATUS).toJson(this::buildStatusResponse),
+                         ManagementRoutes.<StatusResponse> route(ManagementRoute.NODE_STATUS_GET)
                                          .withPath(org.pragmatica.http.routing.PathParameter.aString())
                                          .to(__ -> org.pragmatica.lang.Promise.success(buildStatusResponse()))
                                          .asJson(),
-                         ManagementRoutes.<NodesResponse>route(ManagementRoute.NODES_LIST)
-                                         .toJson(this::buildNodesResponse),
-                         ManagementRoutes.<HealthResponse>route(ManagementRoute.CLUSTER_HEALTH)
-                                         .toJson(this::buildHealthResponse),
-                         ManagementRoutes.<LivenessResponse>route(ManagementRoute.HEALTH_LIVE)
-                                         .toJson(this::buildLivenessResponse),
-                         ManagementRoutes.<LivenessResponse>route(ManagementRoute.HEALTH_LIVE_GET)
+                         ManagementRoutes.<NodesResponse> route(ManagementRoute.NODES_LIST).toJson(this::buildNodesResponse),
+                         ManagementRoutes.<HealthResponse> route(ManagementRoute.CLUSTER_HEALTH).toJson(this::buildHealthResponse),
+                         ManagementRoutes.<LivenessResponse> route(ManagementRoute.HEALTH_LIVE).toJson(this::buildLivenessResponse),
+                         ManagementRoutes.<LivenessResponse> route(ManagementRoute.HEALTH_LIVE_GET)
                                          .withPath(org.pragmatica.http.routing.PathParameter.aString())
                                          .to(__ -> org.pragmatica.lang.Promise.success(buildLivenessResponse()))
                                          .asJson(),
-                         ManagementRoutes.<ReadinessResponse>route(ManagementRoute.HEALTH_READY)
-                                         .toJson(this::buildReadinessResponse),
-                         ManagementRoutes.<ReadinessResponse>route(ManagementRoute.HEALTH_READY_GET)
+                         ManagementRoutes.<ReadinessResponse> route(ManagementRoute.HEALTH_READY).toJson(this::buildReadinessResponse),
+                         ManagementRoutes.<ReadinessResponse> route(ManagementRoute.HEALTH_READY_GET)
                                          .withPath(org.pragmatica.http.routing.PathParameter.aString())
                                          .to(__ -> org.pragmatica.lang.Promise.success(buildReadinessResponse()))
                                          .asJson(),
-                         ManagementRoutes.<List<ClusterEvent>>route(ManagementRoute.EVENTS)
-                                         .withQuery(QueryParameter.aLong("sinceEpoch"), QueryParameter.aLong("sinceSeq"))
+                         ManagementRoutes.<List<ClusterEvent>> route(ManagementRoute.EVENTS)
+                                         .withQuery(QueryParameter.aLong("sinceEpoch"),
+                                                    QueryParameter.aLong("sinceSeq"))
                                          .toValue(this::buildEventsResponse)
                                          .asJson(),
-                         ManagementRoutes.<CertificateStatusResponse>route(ManagementRoute.CERTIFICATES_LIST)
-                                         .toJson(this::buildCertificateStatusResponse));
+                         ManagementRoutes.<CertificateStatusResponse> route(ManagementRoute.CERTIFICATES_LIST).toJson(this::buildCertificateStatusResponse),
+                         ManagementRoutes.<WhoamiResponse> route(ManagementRoute.WHOAMI).toJson(StatusRoutes::buildWhoamiResponse));
+    }
+
+    static WhoamiResponse buildWhoamiResponse() {
+        var ctx = SecurityContextHolder.currentContext().or(SecurityContext::securityContext);
+
+        return new WhoamiResponse(ctx.principal().value(),
+                                  ctx.authorizationRole().name(),
+                                  ctx.roles().stream().map(Role::value).sorted().toList(),
+                                  ctx.isAuthenticated());
     }
 
     private List<ClusterEvent> buildEventsResponse(Option<Long> sinceEpochParam, Option<Long> sinceSeqParam) {
         var aggregator = nodeSupplier.get().eventAggregator();
+
         if (sinceEpochParam.isEmpty() && sinceSeqParam.isEmpty()) {
             return aggregator.events();
         }
+
         return aggregator.eventsSince(sinceEpochParam.or(0L), sinceSeqParam.or(-1L));
     }
 
@@ -133,33 +145,33 @@ public final class StatusRoutes implements RouteSource {
                                                                      leader,
                                                                      reachabilitySnapshot,
                                                                      selfId,
-                                                                     kvStateMap.getOrDefault(nodeId, "")))
-                                            .toList();
+                                                                     kvStateMap.getOrDefault(nodeId, ""))).toList();
         var quorate = leader.isPresent() && nodeInfos.size() >= quorumOf(nodeInfos.size());
         var cluster = new ClusterInfo(nodeInfos.size(), leaderId, quorate, nodeInfos);
         var derived = node.snapshotCollector().derivedMetrics();
         var metrics = new MetricsSummary(derived.requestRate(),
                                          100.0 - derived.errorRate() * 100.0,
                                          derived.latencyP50());
+
         return new StatusResponse(uptimeSeconds,
                                   cluster,
-                                  node.sliceStore().loaded()
-                                                 .size(),
+                                  node.sliceStore().loaded().size(),
                                   metrics,
                                   node.self().id(),
                                   "running",
-                                  // runtimeState — JVM/process-level state from the in-memory lifecycle
-                                  // state machine (NodeState: STARTING/JOINING/ACTIVE/DRAINING/STOPPED).
-                                  // Describes "is the process up and serving"; orthogonal to the FSM intent
-                                  // captured in `lifecycleState` below.
-                                  node.nodeLifecycle().currentState()
-                                                    .name(),
-                                  // lifecycleState — cluster-level FSM intent from KV-Store
-                                  // (NodeLifecycleState: JOINING/ON_DUTY/DRAINING/DECOMMISSIONED/FAILED_DRAIN).
-                                  // SHUTTING_DOWN is normalized to DRAINING per state-authority spec.
-                                  // Empty string when no KV entry exists yet (cold-start transient window).
-                                  // Mirrors `cluster.nodes[selfId].kvState` for top-level ergonomic access.
-                                  kvStateMap.getOrDefault(selfId, ""),
+
+        // runtimeState — JVM/process-level state from the in-memory lifecycle
+        // state machine (NodeState: STARTING/JOINING/ACTIVE/DRAINING/STOPPED).
+        // Describes "is the process up and serving"; orthogonal to the FSM intent
+        // captured in `lifecycleState` below.
+        node.nodeLifecycle().currentState().name(),
+
+        // lifecycleState — cluster-level FSM intent from KV-Store
+        // (NodeLifecycleState: JOINING/ON_DUTY/DRAINING/DECOMMISSIONED/FAILED_DRAIN).
+        // SHUTTING_DOWN is normalized to DRAINING per state-authority spec.
+        // Empty string when no KV entry exists yet (cold-start transient window).
+        // Mirrors `cluster.nodes[selfId].kvState` for top-level ergonomic access.
+        kvStateMap.getOrDefault(selfId, ""),
                                   readClusterPhase(node),
                                   node.isLeader(),
                                   leaderId,
@@ -167,8 +179,11 @@ public final class StatusRoutes implements RouteSource {
                                   BuildInfo.buildInfo().buildVersion());
     }
 
-    private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader,
-                                       Option<AggregatedReachabilitySnapshot> reachabilitySnapshot, NodeId selfId,
+    private static NodeInfo toNodeInfo(MembershipView view,
+                                       NodeId nodeId,
+                                       Option<NodeId> leader,
+                                       Option<AggregatedReachabilitySnapshot> reachabilitySnapshot,
+                                       NodeId selfId,
                                        String kvState) {
         var isLeader = leader.map(l -> l.equals(nodeId)).or(false);
         var status = view.statusOf(nodeId);
@@ -181,13 +196,17 @@ public final class StatusRoutes implements RouteSource {
         // UNKNOWN here so operator dashboards stop trusting a peer the cluster has consensus-lost. The FSM
         // hasn't yet written a transition (DRAINING/DECOMMISSIONED), so kvState above still reflects
         // ON_DUTY — the divergence is intentional and the two fields disambiguate.
-        var transportLag = status == MembershipView.MemberStatus.ON_DUTY
-                           && !nodeId.equals(selfId)
-                           && reachabilitySnapshot.fold(() -> false, s -> !s.isReachable(nodeId));
+        var transportLag = status == MembershipView.MemberStatus.ON_DUTY && !nodeId.equals(selfId) && reachabilitySnapshot.fold(() -> false,
+                                                                                                                                s -> !s.isReachable(nodeId));
+
         if (transportLag) {
             return new NodeInfo(nodeId.id(), isLeader, kvState, "UNKNOWN");
         }
-        var derivedStatus = status == MembershipView.MemberStatus.UNTRACKED ? "UNKNOWN" : status.name();
+
+        var derivedStatus = status == MembershipView.MemberStatus.UNTRACKED
+                            ? "UNKNOWN"
+                            : status.name();
+
         return new NodeInfo(nodeId.id(), isLeader, kvState, derivedStatus);
     }
 
@@ -195,8 +214,8 @@ public final class StatusRoutes implements RouteSource {
     /// `NodeLifecycleRoutes.externalStateName`. See `aether/docs/specs/state-authority.md`.
     private static String externalStateName(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState state) {
         return state == org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.SHUTTING_DOWN
-              ? org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.DRAINING.name()
-              : state.name();
+               ? org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.DRAINING.name()
+               : state.name();
     }
 
     /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the
@@ -204,7 +223,9 @@ public final class StatusRoutes implements RouteSource {
     /// is on, and the legacy `ClusterPhaseKey` cache when it's off — a single migration
     /// switch covers all consumers.
     private static String readClusterPhase(ManageableNode node) {
-        return node.clusterPhaseSupplier().get().name();
+        return node.clusterPhaseSupplier()
+                   .get()
+                   .name();
     }
 
     private static int quorumOf(int n) {
@@ -217,24 +238,26 @@ public final class StatusRoutes implements RouteSource {
         var nodeIds = new LinkedHashSet<String>();
         nodeIds.add(node.self().id());
         node.connectedPeerIds().forEach(nid -> nodeIds.add(nid.id()));
+
         for (NodeId nodeId : metrics.keySet()) {nodeIds.add(nodeId.id());}
+
         node.kvStore().forEach(SliceNodeKey.class,
                                SliceNodeValue.class,
                                (key, _) -> nodeIds.add(key.nodeId().id()));
         var roleMap = collectNodeRoles(node);
         var leaderId = node.leader().map(NodeId::id);
-        var enrichedNodes = nodeIds.stream().map(id -> toEnrichedNodeInfo(id, roleMap, leaderId))
-                                          .toList();
+        var enrichedNodes = nodeIds.stream().map(id -> toEnrichedNodeInfo(id, roleMap, leaderId)).toList();
+
         return new NodesResponse(enrichedNodes);
     }
 
     private static Map<String, String> collectNodeRoles(ManageableNode node) {
         var roleMap = new HashMap<String, String>();
-        node.kvStore()
-                    .forEach(ActivationDirectiveKey.class,
-                             ActivationDirectiveValue.class,
-                             (key, value) -> roleMap.put(key.nodeId().id(),
-                                                         value.role()));
+        node.kvStore().forEach(ActivationDirectiveKey.class,
+                               ActivationDirectiveValue.class,
+                               (key, value) -> roleMap.put(key.nodeId().id(),
+                                                           value.role()));
+
         return roleMap;
     }
 
@@ -243,6 +266,7 @@ public final class StatusRoutes implements RouteSource {
                                                        Option<String> leaderId) {
         var role = roleMap.getOrDefault(id, ActivationDirectiveValue.CORE);
         var isLeader = leaderId.map(id::equals).or(false);
+
         return new EnrichedNodeInfo(id, role, isLeader);
     }
 
@@ -251,14 +275,14 @@ public final class StatusRoutes implements RouteSource {
         var metrics = node.metricsCollector().allMetrics();
         var metricsNodeCount = metrics.size();
         var connectedNodeCount = node.connectedNodeCount();
-        var sliceCount = node.sliceStore().loaded()
-                                        .size();
+        var sliceCount = node.sliceStore().loaded().size();
         var ready = node.isReady();
         var totalNodes = connectedNodeCount + 1;
         var hasQuorum = totalNodes >= 2;
         var status = !ready || !hasQuorum
-                    ? "unhealthy"
-                    : "healthy";
+                     ? "unhealthy"
+                     : "healthy";
+
         return new HealthResponse(status,
                                   ready,
                                   hasQuorum,
@@ -274,12 +298,14 @@ public final class StatusRoutes implements RouteSource {
         var nodeId = node.self().id();
         var state = node.nodeLifecycle().currentState();
         var status = state.isLive()
-                    ? "UP"
-                    : "DOWN";
+                     ? "UP"
+                     : "DOWN";
+
         return new LivenessResponse(status, nodeId, state.name(), state.isReady());
     }
 
-    @SuppressWarnings("JBCT-PAT-01") public ReadinessResponse buildReadinessResponse() {
+    @SuppressWarnings("JBCT-PAT-01")
+    public ReadinessResponse buildReadinessResponse() {
         var node = nodeSupplier.get();
         var nodeId = node.self().id();
         var state = node.nodeLifecycle().currentState();
@@ -289,19 +315,23 @@ public final class StatusRoutes implements RouteSource {
         components.add(buildRoutesHealth());
         components.add(buildQuorumHealth(node));
         var status = state.isReady()
-                    ? "UP"
-                    : "DOWN";
+                     ? "UP"
+                     : "DOWN";
+
         return new ReadinessResponse(status, nodeId, state.name(), state.isReady(), List.copyOf(components));
     }
 
     private static ComponentHealth buildLifecycleHealth(NodeState state) {
-        return new ComponentHealth("lifecycle", state.isReady()
-                                               ? "UP"
-                                               : "DOWN", "NodeLifecycle state: " + state.name());
+        return new ComponentHealth("lifecycle",
+                                   state.isReady()
+                                   ? "UP"
+                                   : "DOWN",
+                                   "NodeLifecycle state: " + state.name());
     }
 
     private static ComponentHealth buildConsensusHealth(ManageableNode node) {
         var consensusReady = node.isReady();
+
         return new ComponentHealth("consensus",
                                    consensusReady
                                    ? "UP"
@@ -313,6 +343,7 @@ public final class StatusRoutes implements RouteSource {
 
     private ComponentHealth buildRoutesHealth() {
         var routesReady = appHttpServerSupplier.get().isRouteReady();
+
         return new ComponentHealth("routes",
                                    routesReady
                                    ? "UP"
@@ -323,9 +354,10 @@ public final class StatusRoutes implements RouteSource {
     }
 
     private CertificateStatusResponse buildCertificateStatusResponse() {
-        return nodeSupplier.get().certRenewalScheduler()
-                               .map(StatusRoutes::toCertificateStatus)
-                               .or(new CertificateStatusResponse("N/A", 0, "N/A", "NOT_CONFIGURED"));
+        return nodeSupplier.get()
+                           .certRenewalScheduler()
+                           .map(StatusRoutes::toCertificateStatus)
+                           .or(new CertificateStatusResponse("N/A", 0, "N/A", "NOT_CONFIGURED"));
     }
 
     private static CertificateStatusResponse toCertificateStatus(CertificateRenewalScheduler scheduler) {
@@ -338,8 +370,11 @@ public final class StatusRoutes implements RouteSource {
     private static ComponentHealth buildQuorumHealth(ManageableNode node) {
         var connectedCount = node.connectedNodeCount();
         var hasQuorum = connectedCount + 1 >= 2;
-        return new ComponentHealth("quorum", hasQuorum
-                                            ? "UP"
-                                            : "DOWN", "Connected peers: " + connectedCount);
+
+        return new ComponentHealth("quorum",
+                                   hasQuorum
+                                   ? "UP"
+                                   : "DOWN",
+                                   "Connected peers: " + connectedCount);
     }
 }

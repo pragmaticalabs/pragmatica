@@ -34,6 +34,7 @@ public enum ManagementRoute {
     NODE_STATUS(GET, "/api/nodes/status", List.of(), ANY),
     NODE_STATUS_GET(GET, "/api/nodes/status", List.of("id"), RouteTarget.nodeIdParam(0)),
     NODES_LIST(GET, "/api/nodes", List.of(), ANY),
+    WHOAMI(GET, "/api/whoami", List.of(), LOCAL),
     CLUSTER_HEALTH(GET, "/api/health", List.of(), ANY),
     EVENTS(GET, "/api/events", List.of(), ANY),
     CERTIFICATES_LIST(GET, "/api/certificates", List.of(), ANY),

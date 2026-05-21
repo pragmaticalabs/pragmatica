@@ -117,6 +117,40 @@ Cluster Status:
   Healthy: true
 ```
 
+#### whoami
+
+Show the authenticated principal, authorization role, and roles attached to the request. Useful for integration-test identity assertions and operator triage — confirms which API key (or anonymous viewer fallback) the management plane resolved for the caller.
+
+```bash
+aether whoami
+```
+
+Output (authenticated admin API key):
+```json
+{
+  "principal": "api-key:ops-admin",
+  "authorizationRole": "ADMIN",
+  "roles": ["admin", "service"],
+  "authenticated": true
+}
+```
+
+Output (no API key supplied; anonymous viewer):
+```json
+{
+  "principal": "anonymous",
+  "authorizationRole": "VIEWER",
+  "roles": [],
+  "authenticated": false
+}
+```
+
+Fields:
+- `principal` — `api-key:<keyName>` / `user:<subject>` / `service:<name>` / `anonymous`.
+- `authorizationRole` — `ADMIN`, `OPERATOR`, or `VIEWER`.
+- `roles` — sorted, lower-case role values (e.g. `admin`, `service`, `user`).
+- `authenticated` — `false` for the anonymous viewer fallback.
+
 #### nodes
 
 List cluster nodes:

@@ -231,6 +231,37 @@ List all known cluster nodes with role and leader status.
 
 - `role`: `"CORE"` (consensus participant) or `"WORKER"` (passive compute). Defaults to `"CORE"` if no `ActivationDirective` exists.
 
+### GET /api/whoami
+
+Returns the principal, authorization role, and roles attached to the request's authentication context. Useful for integration-test identity assertions and operator triage — confirms which API key (or anonymous viewer fallback) the management plane resolved for the caller.
+
+**Response (authenticated admin API key):**
+```json
+{
+  "principal": "api-key:ops-admin",
+  "authorizationRole": "ADMIN",
+  "roles": ["admin", "service"],
+  "authenticated": true
+}
+```
+
+**Response (no API key supplied; anonymous viewer):**
+```json
+{
+  "principal": "anonymous",
+  "authorizationRole": "VIEWER",
+  "roles": [],
+  "authenticated": false
+}
+```
+
+- `principal` — `api-key:<keyName>` / `user:<subject>` / `service:<name>` / `anonymous`. Identifies the entity the cluster authenticated.
+- `authorizationRole` — coarse RBAC tier: `ADMIN`, `OPERATOR`, or `VIEWER`. See [Authorization (RBAC)](#authorization-rbac).
+- `roles` — sorted, lower-case role values granted to the principal (e.g. `admin`, `service`, `user`).
+- `authenticated` — `false` for the anonymous viewer fallback, `true` for any non-anonymous principal.
+
+Route is `LOCAL` (no forwarding) — the answer is per-request, not per-cluster.
+
 ### GET /api/events
 
 Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
