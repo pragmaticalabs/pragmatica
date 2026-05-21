@@ -222,6 +222,23 @@ public sealed interface ManagementApiResponses {
                                int depth,
                                String timestamp) {}
 
+    /// Request shape for `POST /api/scheduled-tasks/inject` (dev-mode only).
+    /// Identifies the task to fire by the same `(configSection, artifact, method)` triple
+    /// used by `/api/scheduled-tasks/state/...` and `/api/scheduled-tasks/pause/...`.
+    /// See `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2 item 16.
+    record ScheduledTaskInjectRequest(String section, String artifact, String method) {}
+
+    /// Response shape for `POST /api/scheduled-tasks/inject`. Surfaces the prior and
+    /// freshly-stamped `lastExecutionAt` values so integration tests can assert strict
+    /// monotonic advancement without relying on the warn-then-pass demotion the route
+    /// was designed to replace. `previousExecutionMs == 0` when the task had no prior
+    /// state entry; `currentExecutionMs` is always `> previousExecutionMs` on success.
+    record ScheduledTaskInjectResponse(String section,
+                                       String artifact,
+                                       String method,
+                                       long previousExecutionMs,
+                                       long currentExecutionMs) {}
+
     record LogLevelSetResponse(String status, String logger, String level) {}
 
     record LogLevelResetResponse(String status, String logger) {}

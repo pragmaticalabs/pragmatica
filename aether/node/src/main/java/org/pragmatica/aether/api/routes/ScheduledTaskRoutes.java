@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectRequest;
+import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectResponse;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
@@ -15,41 +17,49 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
+@SuppressWarnings("JBCT-RET-01")
 public final class ScheduledTaskRoutes implements RouteSource {
     private static final Cause TASK_NOT_FOUND = Causes.cause("Scheduled task not found");
+    private static final String DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
 
     private final ScheduledTaskRegistry registry;
     private final ScheduledTaskManager manager;
     private final Supplier<ManageableNode> nodeSupplier;
     private final SliceInvoker invoker;
     private final ScheduledTaskStateRegistry stateRegistry;
+    private final BooleanSupplier devModeEnabled;
 
     private ScheduledTaskRoutes(ScheduledTaskRegistry registry,
                                 ScheduledTaskManager manager,
                                 Supplier<ManageableNode> nodeSupplier,
                                 SliceInvoker invoker,
-                                ScheduledTaskStateRegistry stateRegistry) {
+                                ScheduledTaskStateRegistry stateRegistry,
+                                BooleanSupplier devModeEnabled) {
         this.registry = registry;
         this.manager = manager;
         this.nodeSupplier = nodeSupplier;
         this.invoker = invoker;
         this.stateRegistry = stateRegistry;
+        this.devModeEnabled = devModeEnabled;
     }
 
     public static ScheduledTaskRoutes scheduledTaskRoutes(ScheduledTaskRegistry registry,
@@ -57,7 +67,35 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                           Supplier<ManageableNode> nodeSupplier,
                                                           SliceInvoker invoker,
                                                           ScheduledTaskStateRegistry stateRegistry) {
-        return new ScheduledTaskRoutes(registry, manager, nodeSupplier, invoker, stateRegistry);
+        return new ScheduledTaskRoutes(registry,
+                                       manager,
+                                       nodeSupplier,
+                                       invoker,
+                                       stateRegistry,
+                                       ScheduledTaskRoutes::devModeFromEnv);
+    }
+
+    /// Test-friendly factory: callers (unit tests) inject the dev-mode flag directly
+    /// rather than mutating the JVM-wide environment. Production callers use the
+    /// no-supplier overload which defers to `AETHER_INSECURE_DEV_MODE`.
+    public static ScheduledTaskRoutes scheduledTaskRoutes(ScheduledTaskRegistry registry,
+                                                          ScheduledTaskManager manager,
+                                                          Supplier<ManageableNode> nodeSupplier,
+                                                          SliceInvoker invoker,
+                                                          ScheduledTaskStateRegistry stateRegistry,
+                                                          BooleanSupplier devModeEnabled) {
+        return new ScheduledTaskRoutes(registry, manager, nodeSupplier, invoker, stateRegistry, devModeEnabled);
+    }
+
+    private static boolean devModeFromEnv() {
+        return "true".equalsIgnoreCase(System.getenv(DEV_MODE_ENV));
+    }
+
+    /// Package-private accessor for unit tests that exercise the inject handler
+    /// without standing up the full HTTP layer. Production callers go through the
+    /// `routes()` stream registered with the management server.
+    Promise<ScheduledTaskInjectResponse> handleInjectForTest(ScheduledTaskInjectRequest req) {
+        return handleInject(req);
     }
 
     record TaskSummary(String configSection,
@@ -119,7 +157,82 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                    aString(),
                                                    aString())
                                          .to(this::triggerTask)
-                                         .asJson());
+                                         .asJson(),
+                         ManagementRoutes.<ScheduledTaskInjectResponse> route(ManagementRoute.SCHEDULED_TASK_INJECT)
+                                         .withBody(ScheduledTaskInjectRequest.class)
+                                         .toJson(this::handleInject));
+    }
+
+    /// Synchronous test-only fire path. Gated by `AETHER_INSECURE_DEV_MODE` (or the
+    /// supplier injected at construction time for unit tests). On success: invokes the
+    /// task body, persists a fresh `successState` (or `failureState` on invocation
+    /// failure) via consensus apply, and returns the prior + current `lastExecutionAt`
+    /// so the caller can assert strict monotonic advancement.
+    ///
+    /// Differs from `triggerTask`:
+    ///   - dev-mode gated (production clusters reject with 403-equivalent failure)
+    ///   - synchronously writes state (trigger relies on `ScheduledTaskManager`'s
+    ///     timer-driven success/failure write, which is asynchronous and may not
+    ///     have landed by the time the caller reads `/api/scheduled-tasks/state`)
+    ///   - returns previousExecutionMs in the response (enables strict-advancement
+    ///     assertions in integration tests; see RC1-blocker #16)
+    private Promise<ScheduledTaskInjectResponse> handleInject(ScheduledTaskInjectRequest req) {
+        if (!devModeEnabled.getAsBoolean()) {
+            return InjectError.DEV_MODE_DISABLED.promise();
+        }
+        return validateInjectRequest(req).flatMap(this::executeInject);
+    }
+
+    private Promise<ScheduledTaskInjectRequest> validateInjectRequest(ScheduledTaskInjectRequest req) {
+        if (req == null) {return InjectError.MISSING_BODY.promise();}
+        if (req.section() == null || req.section().isBlank()) {return InjectError.MISSING_SECTION.promise();}
+        if (req.artifact() == null || req.artifact().isBlank()) {return InjectError.MISSING_ARTIFACT.promise();}
+        if (req.method() == null || req.method().isBlank()) {return InjectError.MISSING_METHOD.promise();}
+        return Promise.success(req);
+    }
+
+    private Promise<ScheduledTaskInjectResponse> executeInject(ScheduledTaskInjectRequest req) {
+        return findTask(req.section(), req.artifact(), req.method())
+                       .flatMap(task -> invokeAndAdvanceState(task, req));
+    }
+
+    private Promise<ScheduledTaskInjectResponse> invokeAndAdvanceState(ScheduledTask task,
+                                                                       ScheduledTaskInjectRequest req) {
+        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                   task.artifact(),
+                                                                   task.methodName());
+        var priorState = stateRegistry.stateFor(stateKey);
+        var previousExecutionMs = priorState.map(ScheduledTaskStateValue::lastExecutionAt).or(0L);
+        return invoker.invoke(task.artifact(), task.methodName(), Unit.unit())
+                      .onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause))
+                      .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs));
+    }
+
+    private Promise<ScheduledTaskInjectResponse> writeSuccessAndRespond(ScheduledTaskStateKey stateKey,
+                                                                        Option<ScheduledTaskStateValue> priorState,
+                                                                        ScheduledTaskInjectRequest req,
+                                                                        long previousExecutionMs) {
+        var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
+        var value = ScheduledTaskStateValue.successState(0, priorTotal + 1);
+        KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
+
+        return nodeSupplier.get()
+                           .apply(List.of(command))
+                           .map(_ -> new ScheduledTaskInjectResponse(req.section(),
+                                                                     req.artifact(),
+                                                                     req.method(),
+                                                                     previousExecutionMs,
+                                                                     value.lastExecutionAt()));
+    }
+
+    private void writeFailureBestEffort(ScheduledTaskStateKey stateKey,
+                                        Option<ScheduledTaskStateValue> priorState,
+                                        Cause cause) {
+        var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
+        var priorFailures = priorState.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
+        var value = ScheduledTaskStateValue.failureState(0, priorFailures + 1, priorTotal, cause.message());
+        KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
+        nodeSupplier.get().apply(List.of(command));
     }
 
     private ScheduledTasksResponse buildTasksResponse() {
@@ -263,5 +376,21 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {
         return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0);
+    }
+
+    private enum InjectError implements Cause {
+        DEV_MODE_DISABLED("scheduled-tasks inject requires AETHER_INSECURE_DEV_MODE=true"),
+        MISSING_BODY("Request body is required"),
+        MISSING_SECTION("section field is required"),
+        MISSING_ARTIFACT("artifact field is required"),
+        MISSING_METHOD("method field is required");
+        private final String message;
+        InjectError(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
     }
 }

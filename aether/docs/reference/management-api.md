@@ -2667,6 +2667,7 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/resume` | Scheduled Tasks |
 | POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/trigger` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/state` | Scheduled Tasks |
+| POST | `/api/scheduled-tasks/inject` | Scheduled Tasks (dev-mode only) |
 | GET | `/api/workers` | Worker Pools |
 | GET | `/api/workers/health` | Worker Pools |
 | GET | `/api/workers/endpoints` | Worker Pools |
@@ -2877,6 +2878,38 @@ Get detailed execution state for a specific scheduled task.
   "updatedAt": 1710345600000
 }
 ```
+
+### POST /api/scheduled-tasks/inject
+
+**Dev-mode only.** Synchronously fire a scheduled task and advance its `lastExecutionAt` timestamp, bypassing the normal schedule. Used by integration tests that need a deterministic way to drive scheduled-task assertions — replaces the warn-then-pass demotion described in `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2 (RC1-blocker #16).
+
+Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the task is not invoked.
+
+**RBAC:** OPERATOR · **Routing:** LOCAL (operates on the node receiving the request)
+
+**Request:**
+```json
+{
+  "section": "scheduling.cleanup",
+  "artifact": "com.example:my-slice:1.0.0",
+  "method": "cleanup"
+}
+```
+
+All three fields are required. The `(section, artifact, method)` triple identifies the task using the same coordinates as `/api/scheduled-tasks/{configSection}/{artifact}/{method}/*`.
+
+**Response:**
+```json
+{
+  "section": "scheduling.cleanup",
+  "artifact": "com.example:my-slice:1.0.0",
+  "method": "cleanup",
+  "previousExecutionMs": 1710345600000,
+  "currentExecutionMs": 1710345605123
+}
+```
+
+`previousExecutionMs` is `0` when no prior state entry exists; otherwise it equals the `lastExecutionAt` value visible via `/api/scheduled-tasks/.../state` immediately before the injection. `currentExecutionMs > previousExecutionMs` is guaranteed on success — tests may assert strict monotonic advancement without polling.
 
 ---
 
@@ -3154,7 +3187,7 @@ Auto-creates the stream with default config if it does not exist.
 ### Read Events
 
 ```
-GET /api/streams/{name}/{partition}/read?from={offset}&max={count}
+GET /api/streams/read/{name}/{partition}?from={offset}&max={count}
 ```
 
 **Auth:** ALL_AUTHENTICATED
@@ -3162,6 +3195,12 @@ GET /api/streams/{name}/{partition}/read?from={offset}&max={count}
 **Query Parameters:**
 - `from` (optional, default 0) -- Starting offset
 - `max` (optional, default 100) -- Maximum number of events to return
+- `readPreference` (optional) -- Replica read preference hint
+
+**CLI:**
+```bash
+aether streams read <name> <partition> [--since <offset>] [--limit <count>]
+```
 
 **Response:**
 ```json

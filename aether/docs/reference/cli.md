@@ -1100,6 +1100,12 @@ aether scheduled-tasks resume <configSection> <artifact> <method>
 
 # Manually trigger a scheduled task
 aether scheduled-tasks trigger <configSection> <artifact> <method>
+
+# Synchronously fire a task and advance its lastExecutionTime (dev-mode only)
+aether scheduled-tasks inject \
+    --section <configSection> \
+    --artifact <artifact> \
+    --method <method>
 ```
 
 Example:
@@ -1118,6 +1124,15 @@ aether scheduled-tasks resume scheduling.cleanup com.example:my-slice:1.0.0 clea
 
 # Manually trigger a task
 aether scheduled-tasks trigger scheduling.cleanup com.example:my-slice:1.0.0 cleanup
+
+# Synchronously inject a task execution (dev-mode only — requires AETHER_INSECURE_DEV_MODE=true
+# on the target node). Returns previousExecutionMs + currentExecutionMs so integration tests
+# can assert strict monotonic advancement. Unblocks 08-resources scheduled-task assertions
+# (RC1-blocker #16 in aether/docs/internal/audits/integration-test-audit-2026-05-21.md §2.2).
+aether scheduled-tasks inject \
+    --section scheduling.cleanup \
+    --artifact com.example:my-slice:1.0.0 \
+    --method cleanup
 ```
 
 ---
@@ -1226,6 +1241,17 @@ Publish a text message to a stream. The message is base64-encoded automatically.
 aether streams publish my-events "Hello, world!"
 ```
 
+### `aether streams read <name> <partition>`
+
+Read events from a specific partition of a stream. Optional `--since <offset>` selects
+the starting offset (maps to `?from=`), and `--limit <N>` caps the number of events
+returned (maps to `?max=`).
+
+```bash
+aether streams read my-events 0
+aether streams read my-events 0 --since 100 --limit 50
+```
+
 ### Examples
 
 ```bash
@@ -1237,6 +1263,9 @@ aether streams status user-events
 
 # Publish a message
 aether streams publish user-events "order_created:12345"
+
+# Read events from partition 0, starting at offset 100, max 50 events
+aether streams read user-events 0 --since 100 --limit 50
 ```
 
 ---

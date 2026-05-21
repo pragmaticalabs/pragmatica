@@ -138,6 +138,7 @@ public enum ManagementRoute {
                            "/api/scheduled-tasks/trigger",
                            List.of("section", "artifact", "methodName"),
                            taskGroup(STRATEGIES)),
+    SCHEDULED_TASK_INJECT(POST, "/api/scheduled-tasks/inject", List.of(), LOCAL),
     ARTIFACT_GET(GET, "/repository", List.of("groupPath", "artifactId", "version", "file"), taskGroup(DEPLOYMENT)),
     ARTIFACT_PUT(PUT, "/repository", List.of("groupPath", "artifactId", "version", "file"), taskGroup(DEPLOYMENT)),
     ARTIFACT_POST(POST, "/repository", List.of("groupPath", "artifactId", "version", "file"), taskGroup(DEPLOYMENT)),

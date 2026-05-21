@@ -39,6 +39,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.jar.JarFile;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -2569,7 +2571,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "scheduled-tasks", description = "Scheduled task management", subcommands = {ScheduledTasksCommand.ListCommand.class, ScheduledTasksCommand.GetCommand.class, ScheduledTasksCommand.PauseCommand.class, ScheduledTasksCommand.ResumeCommand.class, ScheduledTasksCommand.TriggerCommand.class})
+    @Command(name = "scheduled-tasks", description = "Scheduled task management", subcommands = {ScheduledTasksCommand.ListCommand.class, ScheduledTasksCommand.GetCommand.class, ScheduledTasksCommand.PauseCommand.class, ScheduledTasksCommand.ResumeCommand.class, ScheduledTasksCommand.TriggerCommand.class, ScheduledTasksCommand.InjectCommand.class})
     static class ScheduledTasksCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -2682,6 +2684,34 @@ public class AetherCli implements Runnable {
                 return OutputFormatter.printAction(response,
                                                    tasksParent.parent.outputOptions(),
                                                    "Task triggered: " + method);
+            }
+        }
+
+        @Command(name = "inject", description = "Synchronously fire a scheduled task and advance its lastExecutionTime (dev-mode only)")
+        static class InjectCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @CommandLine.Option(names = {"--section"}, description = "Config section (required)", required = true)
+            private String section;
+
+            @CommandLine.Option(names = {"--artifact"}, description = "Artifact coordinates groupId:artifactId (required)", required = true)
+            private String artifact;
+
+            @CommandLine.Option(names = {"--method"}, description = "Method name (required)", required = true)
+            private String method;
+
+            @Override
+            public Integer call() {
+                var body = "{\"section\":\"" + escapeJson(section)
+                         + "\",\"artifact\":\"" + escapeJson(artifact)
+                         + "\",\"method\":\"" + escapeJson(method) + "\"}";
+                var response = tasksParent.parent.post(SCHEDULED_TASK_INJECT, body);
+                return OutputFormatter.printQuery(response, tasksParent.parent.outputOptions());
+            }
+
+            private static String escapeJson(String s) {
+                return s.replace("\\", "\\\\").replace("\"", "\\\"");
             }
         }
     }
@@ -3060,7 +3090,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class})
+    @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class})
     static class StreamCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -3120,6 +3150,37 @@ public class AetherCli implements Runnable {
                 return OutputFormatter.printAction(response,
                                                    streamParent.parent.outputOptions(),
                                                    "Published to stream " + name);
+            }
+        }
+
+        @Command(name = "read", description = "Read events from a stream partition")
+        static class ReadCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Parameters(index = "0", description = "Stream name")
+            private String name;
+
+            @Parameters(index = "1", description = "Partition number")
+            private String partition;
+
+            @CommandLine.Option(names = "--since", description = "Starting offset (maps to ?from=)")
+            private Long since;
+
+            @CommandLine.Option(names = "--limit", description = "Maximum number of events (maps to ?max=)")
+            private Integer limit;
+
+            @Override
+            public Integer call() {
+                var response = streamParent.parent.fetch(STREAM_READ, List.of(name, partition), buildReadQuery());
+
+                return OutputFormatter.printQuery(response, streamParent.parent.outputOptions());
+            }
+
+            private String buildReadQuery() {
+                return Stream.of(option(since).map(v -> "from=" + v), option(limit).map(v -> "max=" + v))
+                             .flatMap(Option::stream)
+                             .collect(Collectors.joining("&"));
             }
         }
     }
