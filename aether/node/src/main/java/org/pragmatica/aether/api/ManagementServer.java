@@ -259,6 +259,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                         .appHttpServer());
         routeSources.add(statusRoutes);
         routeSources.add(AlertRoutes.alertRoutes(alertManager));
+        routeSources.add(org.pragmatica.aether.api.routes.CertificateRoutes.certificateRoutes(nodeSupplier));
         routeSources.add(LogLevelRoutes.logLevelRoutes(logLevelRegistry));
         routeSources.add(ObservabilityRoutes.observabilityRoutes(depthRegistry, traceStore));
         routeSources.add(ControllerRoutes.controllerRoutes(nodeSupplier));

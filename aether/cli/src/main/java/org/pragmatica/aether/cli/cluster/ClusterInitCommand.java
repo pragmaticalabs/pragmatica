@@ -48,6 +48,14 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--force", description = "Overwrite existing output file")
     private boolean force;
 
+    /// P-NEW-G (2026-05-21): Forces non-interactive (batch) mode and disables all prompts.
+    /// When set, `--target` defaults to `docker` if not provided, and any missing required
+    /// flag fails fast with a `MissingField` cause rather than prompting interactively.
+    /// Enables CI / integration-test usage (TC-07-J3) — see
+    /// `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-G.
+    @Option(names = "--non-interactive", description = "Force non-interactive mode; fail if required flags are missing")
+    private boolean nonInteractive;
+
     @Option(names = "--name", description = "Cluster name")
     private String name;
 
@@ -136,11 +144,14 @@ class ClusterInitCommand implements Callable<Integer> {
     }
 
     private boolean isBatchMode() {
-        return target != null;
+        return target != null || nonInteractive;
     }
 
     private Result<ClusterConfigAnswers> buildFromFlags() {
-        return parseTarget(target).flatMap(t -> InputValidators.validateClusterName(name == null
+        var effectiveTarget = target != null
+                              ? target
+                              : "docker";
+        return parseTarget(effectiveTarget).flatMap(t -> InputValidators.validateClusterName(name == null
                                                                                     ? ""
                                                                                     : name).flatMap(validName -> buildAnswersForTarget(validName,
                                                                                                                                        t)));

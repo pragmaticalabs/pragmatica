@@ -1167,6 +1167,9 @@ aether scheduled-tasks inject \
     --section <configSection> \
     --artifact <artifact> \
     --method <method>
+
+# Surface per-node execution attribution for a scheduled task (P-NEW-H)
+aether scheduled-tasks executions-by-node <configSection> <artifact> <method>
 ```
 
 Example:
@@ -1381,6 +1384,40 @@ aether streams read user-events 0 --since 100 --limit 50
 ---
 
 ## Cluster Management
+
+### `aether cluster init`
+
+Generate a `cluster-config.toml` interactively (default) or in batch mode driven by flags. Used as the first step of cluster setup; the resulting file is consumed by `aether cluster bootstrap`.
+
+```bash
+# Interactive wizard (default)
+aether cluster init --output cluster-config.toml
+
+# Batch mode — driven by --target plus per-target flags
+aether cluster init --target docker --name test-cluster --nodes 5 --output cluster-config.toml
+
+# Strict non-interactive mode — fails fast if required flags are missing (P-NEW-G)
+aether cluster init --non-interactive --name test-cluster --nodes 5 --output cluster-config.toml
+```
+
+| Option | Description |
+|--------|-------------|
+| `--output` | Output path (default `cluster-config.toml`) |
+| `--force` | Overwrite existing output file |
+| `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
+| `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
+| `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |
+| `--nodes` | Total node count (>= 3 for non-SSH targets) |
+| `--hosts` | SSH hosts (ssh target only), comma-separated |
+| `--ssh-user`, `--ssh-key`, `--ssh-port` | SSH credentials (ssh target only) |
+| `--provider`, `--region`, `--instance-type`, `--credential-env` | Cloud target only |
+| `--db-host`, `--db-port`, `--db-name`, `--db-user`, `--db-password-env` | Optional Postgres backing store |
+| `--firewall` | Firewall preset: `standard`, `restrictive`, `open`, `custom` |
+| `--admin-cidr`, `--internal-cidr` | Restrictive firewall preset only |
+| `--tls`, `--tls-cert-env`, `--tls-key-env` | TLS mode: `auto` (default) or `env` |
+| `--secret`, `--secret-env` | Cluster secret mode: `auto` (default) or `env` |
+
+When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
 
 ### `aether cluster scaffold`
 

@@ -352,6 +352,35 @@ When `tlsEnabled` is `false`, the remaining fields are set to placeholders
 (`"N/A"` / `0` / `"NOT_CONFIGURED"`) — operators consuming this endpoint should
 gate on `tlsEnabled` before reading the cert metadata.
 
+### POST /api/certificates/configure-short-validity
+
+**Dev-mode only.** Reconfigures the `CertificateRenewalScheduler` so the active certificate appears to expire in `validitySeconds` from now, causing the renewal timer to reschedule at the recomputed 40%-of-remaining mark (24s for `validitySeconds=60`). Used by `Strengthen-cert-rotation-trigger` integration tests (see `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-I) to observe automatic cert rotation in seconds rather than waiting hours.
+
+Gated by the `AETHER_INSECURE_DEV_MODE=true` environment variable on the node. When the gate is closed the endpoint returns a failure response and the scheduler is untouched.
+
+**RBAC:** OPERATOR · **Routing:** LOCAL (operates on the node receiving the request)
+
+**Request:**
+```json
+{
+  "validitySeconds": 60
+}
+```
+
+`validitySeconds` must be in the range `1..86400` (24h ceiling — defensive against absurd inputs). The endpoint fails with a validation error outside that range.
+
+**Response:**
+```json
+{
+  "status": "short_validity_configured",
+  "validitySeconds": 60,
+  "newExpiresAt": "2026-05-21T12:01:00Z",
+  "secondsUntilExpiry": 60
+}
+```
+
+The endpoint also fails when no `CertificateRenewalScheduler` is configured (TLS disabled at startup).
+
 ---
 
 ## Slice Management
@@ -2874,6 +2903,8 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/trigger` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/state` | Scheduled Tasks |
 | POST | `/api/scheduled-tasks/inject` | Scheduled Tasks (dev-mode only) |
+| GET | `/api/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}` | Scheduled Tasks |
+| POST | `/api/certificates/configure-short-validity` | Certificates (dev-mode only) |
 | GET | `/api/workers` | Worker Pools |
 | GET | `/api/workers/health` | Worker Pools |
 | GET | `/api/workers/endpoints` | Worker Pools |
@@ -3116,6 +3147,26 @@ All three fields are required. The `(section, artifact, method)` triple identifi
 ```
 
 `previousExecutionMs` is `0` when no prior state entry exists; otherwise it equals the `lastExecutionAt` value visible via `/api/scheduled-tasks/.../state` immediately before the injection. `currentExecutionMs > previousExecutionMs` is guaranteed on success — tests may assert strict monotonic advancement without polling.
+
+### GET /api/scheduled-tasks/executions-by-node/{configSection}/{artifact}/{method}
+
+Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` to distinguish SINGLE-mode tasks (exactly one node executes per fire) from ALL-mode tasks (every cluster member executes per fire).
+
+**RBAC:** OPERATOR · **Routing:** ANY (the receiving node services the request)
+
+**Response:**
+```json
+{
+  "section": "scheduling.cleanup",
+  "artifact": "com.example:my-slice:1.0.0",
+  "method": "cleanup",
+  "executions": [
+    {"nodeId": "node-1", "count": 12, "lastExecutionMs": 1710345600000}
+  ]
+}
+```
+
+`executions` is empty when the task has no prior state. Otherwise each entry pairs a `nodeId` with the number of executions attributed to it and the millisecond epoch of the most recent execution. **RC1 limitation:** the current implementation reports the task's `registeredBy` node as the sole executor (count = `totalExecutions`, lastExecutionMs = `lastExecutionAt`). A follow-up tracks adding per-node execution counters to the KV state so ALL-mode tasks can produce true per-node breakdowns. Tests should currently assert on cumulative totals via this endpoint or via `/api/scheduled-tasks/{configSection}/{artifact}/{method}/state`.
 
 ---
 

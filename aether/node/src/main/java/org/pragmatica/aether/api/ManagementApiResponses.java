@@ -281,6 +281,47 @@ public sealed interface ManagementApiResponses {
                                        long previousExecutionMs,
                                        long currentExecutionMs) {}
 
+    /// Wire shape for `GET /api/scheduled-tasks/executions-by-node` (P-NEW-H, 2026-05-21).
+    /// Surfaces per-node execution attribution for a scheduled task identified by the
+    /// `(section, artifact, method)` triple. Each entry pairs a `nodeId` with the number
+    /// of executions attributed to it and the millisecond epoch of the most recent
+    /// execution. Tests for SINGLE-mode tasks assert exactly one entry has a non-zero
+    /// `count`; ALL-mode tests assert every cluster member appears with `count > 0`.
+    ///
+    /// Sourced from `ScheduledTaskStateRegistry` — RC1 tracks task state globally rather
+    /// than per-node, so the current implementation reports the task's `registeredBy`
+    /// node as the sole executor. A follow-up issue tracks adding per-node execution
+    /// counters to the KV state so this endpoint can produce true per-node breakdowns.
+    /// See `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-H.
+    record ScheduledTaskExecutionsByNodeResponse(String section,
+                                                  String artifact,
+                                                  String method,
+                                                  List<ScheduledTaskNodeExecution> executions) {}
+
+    record ScheduledTaskNodeExecution(String nodeId, int count, long lastExecutionMs) {}
+
+    /// Request shape for `POST /api/certificates/configure-short-validity` (P-NEW-I,
+    /// 2026-05-21; dev-mode-only). Configures the `CertificateRenewalScheduler` to
+    /// behave as though the active certificate has only `validitySeconds` of remaining
+    /// validity, causing the next renewal Tick to fire promptly (40% of remaining =
+    /// 24s for `validitySeconds=60`). Enables `Strengthen-cert-rotation-trigger`
+    /// to observe an automatic rotation without waiting hours.
+    ///
+    /// Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
+    /// `/api/alerts/inject`, `/api/scheduled-tasks/inject`, `/api/dht/inject`,
+    /// `/api/metrics/backfill`. Local-only route (no leader forwarding) — tests POST
+    /// directly to the node whose scheduler they wish to mutate.
+    record CertConfigureShortValidityRequest(int validitySeconds) {}
+
+    /// Response shape for `POST /api/certificates/configure-short-validity`.
+    /// `newExpiresAt` is the ISO-8601 expiry timestamp the scheduler now sees;
+    /// `secondsUntilExpiry` is the post-configuration delta. The scheduler advances
+    /// to its `Renewing` state on the next Tick (40% of `validitySeconds` later).
+    record CertConfigureShortValidityResponse(String status,
+                                               int validitySeconds,
+                                               String newExpiresAt,
+                                               long secondsUntilExpiry) {}
+
     record LogLevelSetResponse(String status, String logger, String level) {}
 
     record LogLevelResetResponse(String status, String logger) {}

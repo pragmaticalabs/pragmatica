@@ -2903,7 +2903,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "scheduled-tasks", description = "Scheduled task management", subcommands = {ScheduledTasksCommand.ListCommand.class, ScheduledTasksCommand.GetCommand.class, ScheduledTasksCommand.PauseCommand.class, ScheduledTasksCommand.ResumeCommand.class, ScheduledTasksCommand.TriggerCommand.class, ScheduledTasksCommand.InjectCommand.class})
+    @Command(name = "scheduled-tasks", description = "Scheduled task management", subcommands = {ScheduledTasksCommand.ListCommand.class, ScheduledTasksCommand.GetCommand.class, ScheduledTasksCommand.PauseCommand.class, ScheduledTasksCommand.ResumeCommand.class, ScheduledTasksCommand.TriggerCommand.class, ScheduledTasksCommand.InjectCommand.class, ScheduledTasksCommand.ExecutionsByNodeCommand.class})
     static class ScheduledTasksCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -3044,6 +3044,28 @@ public class AetherCli implements Runnable {
 
             private static String escapeJson(String s) {
                 return s.replace("\\", "\\\\").replace("\"", "\\\"");
+            }
+        }
+
+        @Command(name = "executions-by-node", description = "Get per-node execution counts for a scheduled task (P-NEW-H)")
+        static class ExecutionsByNodeCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Parameters(index = "0", description = "Config section")
+            private String configSection;
+
+            @Parameters(index = "1", description = "Artifact coordinates (groupId:artifactId:version)")
+            private String artifact;
+
+            @Parameters(index = "2", description = "Method name")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.fetch(SCHEDULED_TASK_EXECUTIONS_BY_NODE,
+                                                         List.of(configSection, artifact, method));
+                return OutputFormatter.printQuery(response, tasksParent.parent.outputOptions());
             }
         }
     }

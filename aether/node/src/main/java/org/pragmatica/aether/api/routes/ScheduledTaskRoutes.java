@@ -4,8 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskExecutionsByNodeResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskNodeExecution;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
@@ -160,7 +162,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                          .asJson(),
                          ManagementRoutes.<ScheduledTaskInjectResponse> route(ManagementRoute.SCHEDULED_TASK_INJECT)
                                          .withBody(ScheduledTaskInjectRequest.class)
-                                         .toJson(this::handleInject));
+                                         .toJson(this::handleInject),
+                         ManagementRoutes.<ScheduledTaskExecutionsByNodeResponse> route(ManagementRoute.SCHEDULED_TASK_EXECUTIONS_BY_NODE)
+                                         .withPath(aString(),
+                                                   aString(),
+                                                   aString())
+                                         .to(this::getExecutionsByNode)
+                                         .asJson());
     }
 
     /// Synchronous test-only fire path. Gated by `AETHER_INSECURE_DEV_MODE` (or the
@@ -376,6 +384,38 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {
         return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0);
+    }
+
+    /// P-NEW-H (2026-05-21): Surfaces per-node execution attribution for a scheduled task.
+    /// RC1 implementation uses the global state's `registeredBy` node as the sole executor —
+    /// per-node counter aggregation requires schema changes to `ScheduledTaskStateValue`
+    /// tracked as a follow-up. Tests using ALL-mode tasks must assert on the global
+    /// `totalExecutions` rather than per-node attribution until that is implemented.
+    private Promise<ScheduledTaskExecutionsByNodeResponse> getExecutionsByNode(String configSection,
+                                                                                String artifactStr,
+                                                                                String methodStr) {
+        return findTask(configSection, artifactStr, methodStr)
+                       .map(task -> buildExecutionsByNode(task, configSection, artifactStr, methodStr));
+    }
+
+    private ScheduledTaskExecutionsByNodeResponse buildExecutionsByNode(ScheduledTask task,
+                                                                        String configSection,
+                                                                        String artifactStr,
+                                                                        String methodStr) {
+        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                    task.artifact(),
+                                                                    task.methodName());
+        return stateRegistry.stateFor(stateKey)
+                            .fold(() -> new ScheduledTaskExecutionsByNodeResponse(configSection,
+                                                                                   artifactStr,
+                                                                                   methodStr,
+                                                                                   List.of()),
+                                  state -> new ScheduledTaskExecutionsByNodeResponse(configSection,
+                                                                                      artifactStr,
+                                                                                      methodStr,
+                                                                                      List.of(new ScheduledTaskNodeExecution(task.registeredBy().id(),
+                                                                                                                              state.totalExecutions(),
+                                                                                                                              state.lastExecutionAt()))));
     }
 
     private enum InjectError implements Cause {
