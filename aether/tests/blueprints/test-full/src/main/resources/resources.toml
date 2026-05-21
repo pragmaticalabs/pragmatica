@@ -1,0 +1,23 @@
+# Application-level (blueprint) resources for test-full.
+#
+# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT
+# maven-plugin (GenerateBlueprintMojo / PackageBlueprintMojo). At deploy
+# time, BlueprintService stores this content in the KV-Store under
+# BlueprintResourcesKey(blueprintId); each node's slice loader then
+# resolves @ResourceQualifier(config = "scheduling.heartbeat") lookups
+# against this content.
+#
+# See @Heartbeat qualifier in this project; the slice processor emits a
+# reactive manifest entry that the runtime publishes to the
+# ScheduledTasks KV namespace on slice activation.
+
+[scheduling.heartbeat]
+# Fixed-rate interval — leader-only (default). Short period so suite 08's
+# `test_task_last_execution_advances` observes a >0 lastExecutionAt soon
+# after slice activation. Pause/resume tests do not depend on the value.
+# `cron` must be present (even empty) because ProviderBasedConfigService's
+# record-binding requires every component to be resolvable from TOML
+# (it has no DEFAULT-field fallback for ScheduleConfig).
+interval = "10s"
+cron = ""
+executionMode = "SINGLE"

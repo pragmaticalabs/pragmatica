@@ -107,6 +107,8 @@ import static org.pragmatica.lang.Result.success;
     Promise<PublishResponse> publish(PublishRequest request);
     Promise<ReadResponse> read(ReadRequest request);
 
+    @Heartbeat Promise<Unit> heartbeat();
+
     static PersistenceSlice persistenceSlice(KvPersistence kv,
                                              @EventStreamPublisher StreamPublisher<String> publisher,
                                              @EventStreamReader StreamAccess<String> streamAccess) {
@@ -136,6 +138,10 @@ import static org.pragmatica.lang.Result.success;
             return streamAccess.fetch(request.fromOffset(), request.maxEvents())
                                .map(events -> events.stream().map(StreamEvent::<String>fromStreamEvent).toList())
                                .map(ReadResponse::readResponse);
+        }
+
+        @Override public Promise<Unit> heartbeat() {
+            return Promise.unitPromise();
         }
     }
 }

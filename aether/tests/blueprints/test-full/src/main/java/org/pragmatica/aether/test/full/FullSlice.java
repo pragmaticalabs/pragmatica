@@ -10,6 +10,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
@@ -54,6 +55,8 @@ import static org.pragmatica.lang.Result.success;
     Promise<ConfigResponse> config();
     Promise<InvokeResponse> invoke(InvokeRequest request);
 
+    @Heartbeat Promise<Unit> heartbeat();
+
     static FullSlice fullSlice() {
         return new fullSlice();
     }
@@ -69,6 +72,10 @@ import static org.pragmatica.lang.Result.success;
 
         @Override public Promise<InvokeResponse> invoke(InvokeRequest request) {
             return Promise.success(InvokeResponse.invokeResponse(request.target(), "invoked"));
+        }
+
+        @Override public Promise<Unit> heartbeat() {
+            return Promise.unitPromise();
         }
     }
 }
