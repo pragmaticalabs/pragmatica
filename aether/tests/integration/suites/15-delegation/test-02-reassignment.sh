@@ -150,11 +150,15 @@ test_node_failure_reassignment() {
     status=$(task_group_status "SCALING")
     assert_eq "$status" "ACTIVE" "SCALING is ACTIVE on assigned node ${new_node} (id may match killed slot if CTM provisioned a replacement at the same logical id)"
 
-    # Restart the killed node
-    log_info "Restarting killed node: ${scaling_node}"
-    start_node "$scaling_node"
-    wait_for_cluster_ready 120
-    log_pass "Cluster recovered after node restart"
+    # Wait for CTM auto-heal to provision a replacement and the cluster to converge
+    # back to N healthy ON_DUTY cores. Do NOT call `start_node` to revive the original
+    # container: the cluster has already DECOMMISSIONED the killed NodeId under the
+    # single-writer rule, and CTM has provisioned a replacement at a fresh port
+    # (5156+). The restarted-original would be a stale-id zombie that prevents
+    # convergence. See lib/cluster.sh deprecation notice for start_node (chaos path).
+    # 240s budget covers CTM provisioning latency under load.
+    wait_for_cluster_ready 240
+    log_pass "Cluster recovered to N healthy cores via CTM auto-heal"
 }
 
 run_test "Prerequisites" test_prerequisite
