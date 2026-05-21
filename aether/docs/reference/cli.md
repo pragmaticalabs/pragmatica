@@ -1094,6 +1094,10 @@ aether nodes activate <nodeId>
 
 # Shut down a node (any → SHUTTING_DOWN)
 aether nodes shutdown <nodeId>
+
+# Promote a node to a new role (CORE or WORKER) via consensus
+aether nodes promote <nodeId> --role WORKER
+aether nodes promote <nodeId> --role CORE
 ```
 
 Example workflow:
@@ -1112,6 +1116,9 @@ aether nodes activate node-2
 
 # Initiate shutdown
 aether nodes shutdown node-3
+
+# Promote node-4 to a WORKER role at runtime (CORE → WORKER); reverse with --role CORE
+aether nodes promote node-4 --role WORKER
 ```
 
 #### workers

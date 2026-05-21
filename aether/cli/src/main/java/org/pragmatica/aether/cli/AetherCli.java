@@ -583,7 +583,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection", subcommands = {NodesCommand.LifecycleCommand.class, NodesCommand.DrainCommand.class, NodesCommand.ActivateCommand.class, NodesCommand.ShutdownCommand.class, NodesCommand.SlicesCommand.class, NodesCommand.RoutesCommand.class, NodesCommand.InflightCommand.class, NodesCommand.MetricsCommand.class, NodesCommand.HealthCommand.class})
+    @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection", subcommands = {NodesCommand.LifecycleCommand.class, NodesCommand.DrainCommand.class, NodesCommand.ActivateCommand.class, NodesCommand.ShutdownCommand.class, NodesCommand.PromoteCommand.class, NodesCommand.SlicesCommand.class, NodesCommand.RoutesCommand.class, NodesCommand.InflightCommand.class, NodesCommand.MetricsCommand.class, NodesCommand.HealthCommand.class})
     static class NodesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -669,6 +669,31 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodesParent);
+            }
+        }
+
+        @Command(name = "promote", description = "Promote a node to a new role (CORE or WORKER) via consensus")
+        static class PromoteCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID to promote")
+            private String nodeId;
+
+            @CommandLine.Option(names = {"--role"}, required = true, description = "Target role: CORE or WORKER (case-insensitive)")
+            private String role;
+
+            @Override
+            public Integer call() {
+                var body = "{\"targetRole\":\"" + role.trim().toUpperCase() + "\"}";
+                var response = nodesParent.parent.post(NODE_PROMOTE, List.of(nodeId), body);
+                var errorCode = OutputFormatter.checkResponseError(response,
+                                                                    nodesParent.parent.outputOptions(),
+                                                                    "Failed to promote node " + nodeId);
+
+                if (errorCode >= 0) {return errorCode;}
+
+                return OutputFormatter.printAction(response, nodesParent.parent.outputOptions(), "promote node " + nodeId + " to " + role.trim().toUpperCase());
             }
         }
 

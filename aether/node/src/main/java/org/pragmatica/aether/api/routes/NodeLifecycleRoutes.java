@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeRequest;
+import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeResponse;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
@@ -13,9 +15,13 @@ import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.HttpError;
 import org.pragmatica.http.routing.HttpStatus;
@@ -25,12 +31,14 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -80,6 +88,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                          .withPath(aString())
                                          .to(this::shutdownNode)
                                          .asJson(),
+                         ManagementRoutes.<PromoteNodeResponse> route(ManagementRoute.NODE_PROMOTE)
+                                         .withPath(aString())
+                                         .withBody(PromoteNodeRequest.class)
+                                         .toJson(this::promoteNode),
                          ManagementRoutes.<InFlightResponse> route(ManagementRoute.NODE_INFLIGHT).toJson(this::getInFlightCount),
                          ManagementRoutes.<InFlightResponse> route(ManagementRoute.NODE_INFLIGHT_GET)
                                          .withPath(aString())
@@ -323,6 +335,111 @@ public final class NodeLifecycleRoutes implements RouteSource {
                      .async()
                      .flatMap(this::initiateDecommission)
                      .map(_ -> shutdownSuccessResult(nodeIdStr));
+    }
+
+    /// Promote a node from its current role to `targetRole` (CORE or WORKER) by
+    /// writing a fresh `ActivationDirectiveValue` under
+    /// `ActivationDirectiveKey(nodeId)` via consensus. Downstream consumers
+    /// (`ClusterDeploymentManager`) observe the `ActivationDirectivePutReceived`
+    /// notification and align the role-aware node machinery
+    /// (`ForwardingClusterNode` / `SwitchableClusterNode`) to the new role.
+    ///
+    /// Validation:
+    ///   - request body MUST contain a non-blank `targetRole` field
+    ///   - `targetRole` MUST normalise to `"CORE"` or `"WORKER"` (case-insensitive)
+    ///   - `nodeIdStr` MUST be a parseable `NodeId`
+    ///   - if the node already carries an `ActivationDirective` whose role
+    ///     equals the requested target, the route is a no-op and reports
+    ///     `success=true` with `previousRole == newRole`
+    ///
+    /// Route target is `LEADER` — the management plane forwards the request to
+    /// the consensus writer automatically when the caller hits a follower. See
+    /// `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-E.
+    Promise<PromoteNodeResponse> promoteNode(String nodeIdStr, PromoteNodeRequest request) {
+        return validatePromote(request).flatMap(role -> resolveAndPromote(nodeIdStr, role))
+                                       .async()
+                                       .flatMap(plan -> applyPromotion(nodeIdStr, plan));
+    }
+
+    private static Result<String> validatePromote(PromoteNodeRequest request) {
+        if (request == null || request.targetRole() == null || request.targetRole().isBlank()) {
+            return PromoteError.MISSING_TARGET_ROLE.result();
+        }
+        var normalised = request.targetRole().trim().toUpperCase(Locale.ROOT);
+
+        return switch (normalised) {
+            case ActivationDirectiveValue.CORE, ActivationDirectiveValue.WORKER -> Result.success(normalised);
+            default -> PromoteError.UNSUPPORTED_TARGET_ROLE.result();
+        };
+    }
+
+    private Result<PromotePlan> resolveAndPromote(String nodeIdStr, String targetRole) {
+        return NodeId.nodeId(nodeIdStr).map(id -> new PromotePlan(id, readCurrentRole(id), targetRole));
+    }
+
+    private String readCurrentRole(NodeId nodeId) {
+        return nodeSupplier.get()
+                           .kvStore()
+                           .get(ActivationDirectiveKey.activationDirectiveKey(nodeId))
+                           .filter(v -> v instanceof ActivationDirectiveValue)
+                           .map(v -> ((ActivationDirectiveValue) v).role())
+                           .or(ActivationDirectiveValue.CORE);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Promise<PromoteNodeResponse> applyPromotion(String nodeIdStr, PromotePlan plan) {
+        if (plan.previousRole().equals(plan.targetRole())) {
+            return Promise.success(noopPromotionResponse(nodeIdStr, plan));
+        }
+        var key = ActivationDirectiveKey.activationDirectiveKey(plan.nodeId());
+        var value = new ActivationDirectiveValue(plan.targetRole());
+        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<>(key, value);
+
+        return nodeSupplier.get()
+                           .<Object> apply(List.of(command))
+                           .map(_ -> successPromotionResponse(nodeIdStr, plan))
+                           .onSuccess(_ -> auditAndEmitRoleTransition(nodeIdStr, plan));
+    }
+
+    private static PromoteNodeResponse noopPromotionResponse(String nodeIdStr, PromotePlan plan) {
+        return new PromoteNodeResponse(true,
+                                        nodeIdStr,
+                                        plan.previousRole(),
+                                        plan.targetRole(),
+                                        "Node already has role " + plan.targetRole());
+    }
+
+    private static PromoteNodeResponse successPromotionResponse(String nodeIdStr, PromotePlan plan) {
+        return new PromoteNodeResponse(true,
+                                        nodeIdStr,
+                                        plan.previousRole(),
+                                        plan.targetRole(),
+                                        "Promoted node from " + plan.previousRole() + " to " + plan.targetRole());
+    }
+
+    private void auditAndEmitRoleTransition(String nodeIdStr, PromotePlan plan) {
+        AuditLog.nodeLifecycleTransition(nodeIdStr,
+                                          "ROLE:" + plan.targetRole(),
+                                          true,
+                                          "Promoted from " + plan.previousRole() + " to " + plan.targetRole());
+        nodeSupplier.get().route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(nodeIdStr,
+                                                                                             "ROLE:" + plan.targetRole(),
+                                                                                             "api.promote"));
+    }
+
+    private record PromotePlan(NodeId nodeId, String previousRole, String targetRole) {}
+
+    private enum PromoteError implements Cause {
+        MISSING_TARGET_ROLE("targetRole field is required"),
+        UNSUPPORTED_TARGET_ROLE("targetRole must be one of CORE, WORKER");
+        private final String message;
+        PromoteError(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
     }
 
     /// Decommission entry point. Routes through `MembershipFsm` with `OperatorDecommission(force=true)`

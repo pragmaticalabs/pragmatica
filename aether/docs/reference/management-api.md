@@ -3009,6 +3009,34 @@ Transition a node from any state to `SHUTTING_DOWN`.
 }
 ```
 
+### POST /api/nodes/promote/{id}
+
+Promote a node to a new role (CORE or WORKER) by writing a fresh `ActivationDirective` for the node through consensus. The downstream `ClusterDeploymentManager` consumes the resulting `ActivationDirectivePutReceived` event and drives the role-aware node machinery (`ForwardingClusterNode` / `SwitchableClusterNode`) to align runtime behavior to the new role.
+
+Route target is `LEADER` — the management plane forwards the request to the consensus writer automatically when the caller hits a follower. Requests with an unsupported `targetRole`, a missing body, or an unparseable `{id}` segment fail with a 400-style validation error.
+
+**Authorization:** ADMIN (role transitions are a topology operation).
+
+**Request:**
+```json
+{
+  "targetRole": "WORKER"
+}
+```
+
+Accepted values for `targetRole` (case-insensitive): `"CORE"`, `"WORKER"`. Promoting a node to the role it already carries is a no-op and reports `success=true` with `previousRole == newRole` without emitting a consensus write.
+
+**Response:**
+```json
+{
+  "success": true,
+  "nodeId": "node-2",
+  "previousRole": "CORE",
+  "newRole": "WORKER",
+  "message": "Promoted node from CORE to WORKER"
+}
+```
+
 ---
 
 ## Scheduled Tasks

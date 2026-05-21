@@ -611,4 +611,35 @@ public sealed interface ManagementApiResponses {
     /// the primary; subsequent entries are replicas walking the consistent-hash
     /// ring clockwise.
     record DhtReplicationEntry(String key, List<String> nodes) {}
+
+    /// Request shape for `POST /api/nodes/promote/{id}` (P-NEW-E, 2026-05-21).
+    /// Promotes a single node from its current role to `targetRole`, by writing a
+    /// fresh `ActivationDirectiveValue` under `ActivationDirectiveKey(nodeId)`
+    /// via consensus. The downstream `ClusterDeploymentManager` consumes the
+    /// `ActivationDirectivePutReceived` event and drives the role-aware node
+    /// machinery (`ForwardingClusterNode` / `SwitchableClusterNode`) to align
+    /// runtime behavior to the new role.
+    ///
+    /// Accepted `targetRole` values: `"CORE"` (case-insensitive `"core"`),
+    /// `"WORKER"` (case-insensitive `"worker"`). Any other value yields a
+    /// 400-style validation failure. The CORE → WORKER and WORKER → CORE
+    /// transitions are both supported.
+    ///
+    /// Route target is `LEADER` — the leader is the consensus writer; the
+    /// management plane forwards the request automatically when posted to a
+    /// follower. See `aether/docs/internal/production-readiness-followup-2026-05-21.md`
+    /// P-NEW-E.
+    record PromoteNodeRequest(String targetRole) {}
+
+    /// Response shape for `POST /api/nodes/promote/{id}`. `previousRole` reflects
+    /// the role observed in the KV-Store ActivationDirective at the start of the
+    /// request (`"CORE"` when no directive existed — every joining node defaults
+    /// to CORE until an operator promotes it). `newRole` is the role just
+    /// written. `nodeId` is the target node. `success=true` is returned only
+    /// once the consensus write succeeds.
+    record PromoteNodeResponse(boolean success,
+                                String nodeId,
+                                String previousRole,
+                                String newRole,
+                                String message) {}
 }
