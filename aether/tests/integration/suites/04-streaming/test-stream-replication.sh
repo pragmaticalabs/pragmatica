@@ -40,12 +40,34 @@ test_stream_visible_on_governor() {
 }
 
 test_read_events_from_partition() {
-    local result
-    result=$(api_get "/api/streams/read/${STREAM_NAME}/0?from=0&max=10")
-    # Empty response IS the failure mode — after publishing 10 events the read
-    # endpoint must return a non-empty payload containing the "events" field.
-    assert_ne "$result" "" "Read endpoint returns non-empty payload after publish"
-    assert_contains "$result" "events" "Events readable from partition 0"
+    # RC1-blocker fix (audit 2026-05-21 §2.2 #1): the prior implementation
+    # accepted `{"events":[]}` as success because `assert_contains "$result" "events"`
+    # matches the field name regardless of array contents. The publish→read
+    # invariant was unverified — a broken read path that always returned an
+    # empty events array would have passed.
+    #
+    # New behavior: drive the read through the `aether streams read` CLI
+    # (commit 04ebd4482) so we exercise the same surface operators use, and
+    # count event records server-side. The ReadEventsResponse shape is
+    # `{"events":[{"offset":N,"data":"...","timestamp":N}, ...]}` (see
+    # aether/node/.../StreamRoutes.java::EventRecord). Every event carries
+    # exactly one `"offset"` field, so a count of `"offset"` occurrences inside
+    # the events array equals the number of returned events.
+    local result event_count
+    result=$(aether_failover streams read "$STREAM_NAME" 0 --limit 50 --format json) || {
+        log_fail "aether streams read ${STREAM_NAME} 0 failed (exit non-zero)"
+        return 1
+    }
+    if [ -z "$result" ]; then
+        log_fail "aether streams read ${STREAM_NAME} 0 returned empty body"
+        return 1
+    fi
+    event_count=$(printf '%s' "$result" | grep -oE '"offset"[[:space:]]*:' | wc -l | tr -d ' ')
+    event_count="${event_count:-0}"
+    # Publish phase issued 10 events; require at least 1 to land (strict-N
+    # would race replication ack timing, but >=1 is the publish→read invariant
+    # we set out to verify).
+    assert_ge "$event_count" "1" "streams read returned >=1 event after publish (got ${event_count}; first 300 chars: ${result:0:300})"
 }
 
 # Attempt to read stream data via a non-leader node.

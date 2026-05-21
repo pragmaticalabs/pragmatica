@@ -15,32 +15,61 @@ test_cluster_ready() {
 }
 
 test_publish_and_verify_count() {
-    # Publish known number of events
-    local count=20
-    for i in $(seq 1 "$count"); do
-        local payload="{\"key\":\"consumer-test-${i}\",\"data\":\"msg-${i}\",\"timestamp\":$(now_epoch)}"
-        stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1
+    # RC1-blocker fix (audit 2026-05-21 §2.2 #2): the prior implementation
+    # silenced `stream_publish ... > /dev/null 2>&1` and only asserted that the
+    # read-back totalEvents was > 0. A broken publish path that quietly errored
+    # on every call would still PASS because the read-side count check was
+    # decoupled from publish outcomes.
+    #
+    # New behavior:
+    #   1. Capture publish exit codes; track per-call success.
+    #   2. Assert ALL publishes succeeded (success == expected).
+    #   3. After replication settles, assert the read-back totalEvents is at
+    #      least the published count (>= rather than == because the stream may
+    #      retain events from earlier tests in the suite; the floor is the
+    #      invariant under test).
+    local publish_count=20
+    local success=0
+    local publish_errfile
+    publish_errfile=$(mktemp)
+    local i payload publish_rc
+    for i in $(seq 1 "$publish_count"); do
+        payload="{\"key\":\"consumer-test-${i}\",\"data\":\"msg-${i}\",\"timestamp\":$(now_epoch)}"
+        if stream_publish "$STREAM_NAME" "$payload" >/dev/null 2>"$publish_errfile"; then
+            success=$((success + 1))
+        else
+            publish_rc=$?
+            log_fail "stream_publish ${STREAM_NAME} #${i} failed (rc=${publish_rc}): $(cat "$publish_errfile" 2>/dev/null | head -c 200)"
+        fi
     done
-    log_info "Published ${count} events"
+    rm -f "$publish_errfile"
+    assert_eq "$success" "$publish_count" "All ${publish_count} publishes succeeded"
 
-    # Check stream info for message count
+    # Replication settle window — stream_info is read from the governor, which
+    # observes the partition's totalEvents counter advanced by the local writer.
+    # 2s is the same budget the prior test used; we keep it so the only behavior
+    # change here is the strictness of the assertions.
     sleep 2
-    local info
-    info=$(stream_info "$STREAM_NAME")
-    assert_ne "$info" "" "Stream info available after publish"
 
-    # Verify messages are tracked — endpoint may return flat object or {streams: [...]} array
+    local info
+    info=$(stream_info "$STREAM_NAME") || {
+        log_fail "stream_info ${STREAM_NAME} failed (exit non-zero)"
+        return 1
+    }
+    if [ -z "$info" ]; then
+        log_fail "stream_info ${STREAM_NAME} returned empty body"
+        return 1
+    fi
+
+    # Endpoint may return flat object or {streams:[...]} array — match either.
     local msg_count
     msg_count=$(json_value "$info" "totalEvents")
-    if [ -z "$msg_count" ]; then
-        # Try extracting from streams array — look for totalEvents near stream name
-        if echo "$info" | grep -q "\"streams\""; then
-            msg_count=$(echo "$info" | grep -o "\"totalEvents\"[[:space:]]*:[[:space:]]*[0-9]*" | head -1 | sed 's/.*:[[:space:]]*//')
-        fi
+    if [ -z "$msg_count" ] && echo "$info" | grep -q "\"streams\""; then
+        msg_count=$(echo "$info" | grep -o "\"totalEvents\"[[:space:]]*:[[:space:]]*[0-9]*" | head -1 | sed 's/.*:[[:space:]]*//')
     fi
     msg_count="${msg_count:-0}"
 
-    assert_gt "$msg_count" "0" "Stream has messages: ${msg_count}"
+    assert_ge "$msg_count" "$publish_count" "totalEvents (${msg_count}) >= published (${publish_count})"
 }
 
 test_stream_metadata() {
