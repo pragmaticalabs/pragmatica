@@ -205,6 +205,22 @@ Multi-state union via `+`:
 aether slices --state LOADED+ACTIVE
 ```
 
+#### slices status
+
+Show the aggregate slice state breakdown across the cluster — counts by lifecycle state, per-slice rollup. Wraps `GET /api/slices/status`.
+
+```bash
+aether slices status
+```
+
+#### slices topology
+
+Show the slice topology — the per-slice governor mapping across the cluster (which node currently owns each slice's governor assignment). Wraps `GET /api/slices/topology`.
+
+```bash
+aether slices topology
+```
+
 #### nodes slices
 
 Show slices loaded on the connected node (flat list of artifact names). Pass `[id]` for a specific node:
@@ -267,6 +283,27 @@ Metrics:
   Deployments (last 10):
     org.example:order:1.0.0  node-1  1234ms  SUCCESS
     org.example:order:1.0.0  node-2  1156ms  SUCCESS
+```
+
+Variants (wrap `/api/metrics/*` REST routes):
+
+```bash
+# Prometheus-format scrape (text/plain exposition)
+aether metrics prometheus
+
+# Transport-layer metrics (QUIC/Netty connection + I/O counters)
+aether metrics transport
+
+# Minute-aggregated comprehensive snapshot (most recent minute)
+aether metrics comprehensive
+
+# Derived/computed: trends, saturation, cluster health score
+aether metrics derived
+
+# Historical metrics over a time range
+aether metrics history                  # default range (1h)
+aether metrics history --range 15m      # 5m | 15m | 1h | 2h
+aether metrics history --since 5m       # --since is an alias for --range
 ```
 
 #### events
@@ -365,6 +402,9 @@ aether artifacts versions <group:artifact>
 # Show artifact metadata
 aether artifacts info <group:artifact:version>
 
+# Download an artifact file (writes to stdout or --out)
+aether artifacts get <group:artifact:version> [--out=<file>] [--file=<filename>]
+
 # Delete an artifact
 aether artifacts delete <group:artifact:version>
 
@@ -395,6 +435,15 @@ aether artifacts push org.pragmatica.aether.example:url-shortener:1.0.0-rc1
 # View artifact details
 aether artifacts info com.example:my-slice:1.0.0
 
+# Download an artifact (default file: <artifactId>-<version>.jar)
+aether artifacts get com.example:my-slice:1.0.0 --out=/tmp/my-slice.jar
+
+# Stream artifact bytes to stdout (defaults to <artifactId>-<version>.jar)
+aether artifacts get com.example:my-slice:1.0.0 > my-slice.jar
+
+# Download a specific file from the artifact (e.g. sources jar)
+aether artifacts get com.example:my-slice:1.0.0 --file=my-slice-1.0.0-sources.jar --out=src.jar
+
 # Remove an artifact
 aether artifacts delete com.example:my-slice:1.0.0
 ```
@@ -424,6 +473,9 @@ aether blueprints delete <blueprintId> [-f|--force]
 
 # Deploy a blueprint from an artifact in the cluster repository
 aether blueprints deploy <coords>
+
+# Publish a blueprint already present in the artifact repository
+aether blueprints publish <coords>
 
 # Upload a blueprint JAR file and deploy it
 aether blueprints upload <file> -g <groupId> -a <artifactId> -v <version>
@@ -464,6 +516,9 @@ aether blueprints delete order-system:1.0.0 -f
 
 # Deploy from artifact coordinates
 aether blueprints deploy org.example:my-app:1.0.0
+
+# Publish a blueprint already present in the repository (POST /api/blueprints/publish)
+aether blueprints publish org.example:my-app:1.0.0
 
 # Upload a blueprint JAR and deploy it
 aether blueprints upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
@@ -1422,6 +1477,14 @@ Example output:
 {"enabled": true, "previousState": false}
 ```
 
+### `aether cluster governors`
+
+Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/cluster/governors`.
+
+```bash
+aether cluster governors
+```
+
 ### `aether cluster tasks`
 
 Inspect and reassign task group delegation. Without a subcommand, lists all assignments (same as `list`).
@@ -1623,6 +1686,26 @@ aether cluster list-keys [--audit]
 | Option | Description |
 |--------|-------------|
 | `--audit` | Show full key operation history (create, rotate, revoke, expire) |
+
+---
+
+## TTM (Foundation Model)
+
+### `aether ttm status`
+
+Show the foundation-model / TTM (training & model) runtime status. Wraps `GET /api/ttm/status`.
+
+```bash
+aether ttm status
+```
+
+### `aether ttm training-data`
+
+Show the foundation-model / TTM training-data snapshot. Wraps `GET /api/ttm/training-data`.
+
+```bash
+aether ttm training-data
+```
 
 ---
 

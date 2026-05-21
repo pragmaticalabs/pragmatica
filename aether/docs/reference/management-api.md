@@ -605,6 +605,22 @@ Deploy a blueprint from an artifact in the cluster's artifact repository.
 }
 ```
 
+### POST /api/blueprints/publish
+
+Publish a blueprint from an artifact already present in the cluster's artifact
+repository. Orthogonal to `POST /api/blueprints` (which takes raw blueprint
+content in the body). Same body shape as `POST /api/blueprints/deploy`.
+
+**Request Body:**
+```json
+{
+  "artifact": "org.example:my-app:1.0.0"
+}
+```
+
+CLI: `aether blueprints publish <group:artifact:version>` appends the
+`:blueprint` qualifier automatically when constructing the body.
+
 ### POST /api/blueprints/validate
 
 Validate a blueprint without applying it.
@@ -758,6 +774,11 @@ Get derived (computed) metrics including trends, saturation, and health score.
 Get Prometheus-format metrics for scraping.
 
 **Content-Type**: `text/plain; version=0.0.4; charset=utf-8`
+
+### GET /api/metrics/transport
+
+Get transport-layer metrics: per-peer QUIC/Netty connection state, I/O counters,
+backpressure indicators, reconnect attempts.
 
 ### GET /api/metrics/history
 
@@ -2239,6 +2260,11 @@ Download an artifact file from the repository.
 
 **Content-Type**: Determined dynamically by file extension.
 
+CLI: `aether artifacts get <group:artifact:version> [--out=<file>] [--file=<filename>]`
+streams the response bytes to stdout (default) or to the `--out` file. The
+`--file` option overrides the default `<artifactId>-<version>.jar` filename
+segment.
+
 ### PUT /repository/{groupPath}/{artifactId}/{version}/{filename}
 
 Upload an artifact file to the repository. Maximum upload size: 64 MB.
@@ -2591,11 +2617,13 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/blueprints/{id}/status` | Blueprint Management |
 | DELETE | `/api/blueprints/{id}` | Blueprint Management |
 | POST | `/api/blueprints/deploy` | Blueprint Management |
+| POST | `/api/blueprints/publish` | Blueprint Management |
 | POST | `/api/blueprints/validate` | Blueprint Management |
 | GET | `/api/metrics` | Metrics |
 | GET | `/api/metrics/comprehensive` | Metrics |
 | GET | `/api/metrics/derived` | Metrics |
 | GET | `/api/metrics/prometheus` | Metrics |
+| GET | `/api/metrics/transport` | Metrics |
 | GET | `/api/metrics/history` | Metrics |
 | GET | `/api/nodes/metrics` | Metrics |
 | GET | `/api/artifacts/metrics` | Metrics |

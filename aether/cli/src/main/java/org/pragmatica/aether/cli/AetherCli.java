@@ -56,7 +56,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -333,6 +333,16 @@ public class AetherCli implements Runnable {
         return assembleOr(route, params, this::rawGet);
     }
 
+    /// Fetches the body of the given route as raw bytes — for binary endpoints
+    /// (e.g. artifact downloads) where the response is not a JSON string.
+    /// Returns failure if the route cannot be assembled, the HTTP send fails,
+    /// or the response status is not 2xx.
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
+    public Result<byte[]> fetchBytes(ManagementRoute route, List<String> params) {
+        return route.assemble(params)
+                    .flatMap(this::rawGetBytes);
+    }
+
     public String fetch(ManagementRoute route) {
         return fetch(route, List.of());
     }
@@ -391,6 +401,48 @@ public class AetherCli implements Runnable {
                       .await()
                       .fold(cause -> "{\"error\":\"" + cause.message() + "\"}",
                             AetherCli::extractResponseBody);
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
+    private Result<byte[]> rawGetBytes(String path) {
+        var uri = resolveNodeUri(path);
+        var request = buildGetRequest(uri);
+
+        return httpOps.sendBytes(request)
+                      .await()
+                      .flatMap(AetherCli::extractBytesBody);
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static Result<byte[]> extractBytesBody(HttpResult<byte[]> response) {
+        var status = response.statusCode();
+
+        if (status >= 200 && status <300) {return Result.success(response.body());}
+        if (status == 401) {return BytesFetchError.General.UNAUTHORIZED.result();}
+        if (status == 403) {return BytesFetchError.General.FORBIDDEN.result();}
+        if (status == 404) {return BytesFetchError.General.NOT_FOUND.result();}
+
+        return new BytesFetchError.HttpStatus(status).result();
+    }
+
+    sealed interface BytesFetchError extends Cause {
+        enum General implements BytesFetchError {
+            UNAUTHORIZED("Authentication required. Use --api-key or set AETHER_API_KEY environment variable."),
+            FORBIDDEN("Access denied. The provided API key does not have sufficient permissions."),
+            NOT_FOUND("Artifact not found");
+
+            private final String message;
+
+            General(String message) {this.message = message;}
+
+            @Override
+            public String message() {return message;}
+        }
+
+        record HttpStatus(int statusCode) implements BytesFetchError {
+            @Override
+            public String message() {return "HTTP " + statusCode;}
+        }
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
@@ -721,7 +773,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "slices", description = "Show all slices across the cluster")
+    @Command(name = "slices", description = "Show all slices across the cluster", subcommands = {SlicesCommand.StatusCommand.class, SlicesCommand.TopologyCommand.class})
     static class SlicesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -740,6 +792,32 @@ public class AetherCli implements Runnable {
             return option(state).map(s -> "state=" + s)
                          .or("");
         }
+
+        @Command(name = "status", description = "Show aggregate slice status across the cluster (per-slice state breakdown)")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private SlicesCommand slicesParent;
+
+            @Override
+            public Integer call() {
+                var response = slicesParent.parent.fetch(SLICES_STATUS);
+
+                return OutputFormatter.printQuery(response, slicesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "topology", description = "Show slice topology — per-slice governor mapping across the cluster")
+        static class TopologyCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private SlicesCommand slicesParent;
+
+            @Override
+            public Integer call() {
+                var response = slicesParent.parent.fetch(SLICE_TOPOLOGY);
+
+                return OutputFormatter.printQuery(response, slicesParent.parent.outputOptions());
+            }
+        }
     }
 
     @Command(name = "routes", description = "Show HTTP routes across the cluster")
@@ -755,7 +833,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "metrics", description = "Show cluster metrics")
+    @Command(name = "metrics", description = "Show cluster metrics", subcommands = {MetricsCommand.PrometheusCommand.class, MetricsCommand.TransportCommand.class, MetricsCommand.ComprehensiveCommand.class, MetricsCommand.DerivedCommand.class, MetricsCommand.HistoryCommand.class})
     static class MetricsCommand implements Callable<Integer> {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -765,6 +843,81 @@ public class AetherCli implements Runnable {
             var response = parent.fetch(METRICS);
 
             return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+
+        @Command(name = "prometheus", description = "Show Prometheus-format metrics")
+        static class PrometheusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private MetricsCommand metricsParent;
+
+            @Override
+            public Integer call() {
+                var response = metricsParent.parent.fetch(METRICS_PROMETHEUS);
+
+                return OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "transport", description = "Show transport-layer metrics")
+        static class TransportCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private MetricsCommand metricsParent;
+
+            @Override
+            public Integer call() {
+                var response = metricsParent.parent.fetch(METRICS_TRANSPORT);
+
+                return OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "comprehensive", description = "Show comprehensive minute-aggregated metrics")
+        static class ComprehensiveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private MetricsCommand metricsParent;
+
+            @Override
+            public Integer call() {
+                var response = metricsParent.parent.fetch(METRICS_COMPREHENSIVE);
+
+                return OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "derived", description = "Show derived (computed) metrics: trends, saturation, health score")
+        static class DerivedCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private MetricsCommand metricsParent;
+
+            @Override
+            public Integer call() {
+                var response = metricsParent.parent.fetch(METRICS_DERIVED);
+
+                return OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "history", description = "Show historical metrics over a time range")
+        static class HistoryCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private MetricsCommand metricsParent;
+
+            @CommandLine.Option(names = "--range", description = "Time range. Values: 5m, 15m, 1h (default), 2h")
+            private String range;
+
+            @CommandLine.Option(names = "--since", description = "Alias for --range")
+            private String since;
+
+            @Override
+            public Integer call() {
+                var response = metricsParent.parent.fetch(METRICS_HISTORY, List.of(), buildHistoryQuery());
+
+                return OutputFormatter.printQuery(response, metricsParent.parent.outputOptions());
+            }
+
+            String buildHistoryQuery() {
+                return option(range).orElse(() -> option(since)).map(v -> "range=" + v).or("");
+            }
         }
     }
 
@@ -890,7 +1043,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "artifacts", description = "Artifact repository management", subcommands = {ArtifactCommand.DeployArtifactCommand.class, ArtifactCommand.PushArtifactCommand.class, ArtifactCommand.ListArtifactsCommand.class, ArtifactCommand.VersionsCommand.class, ArtifactCommand.InfoCommand.class, ArtifactCommand.DeleteCommand.class, ArtifactCommand.MetricsCommand.class})
+    @Command(name = "artifacts", description = "Artifact repository management", subcommands = {ArtifactCommand.DeployArtifactCommand.class, ArtifactCommand.PushArtifactCommand.class, ArtifactCommand.ListArtifactsCommand.class, ArtifactCommand.VersionsCommand.class, ArtifactCommand.InfoCommand.class, ArtifactCommand.GetArtifactCommand.class, ArtifactCommand.DeleteCommand.class, ArtifactCommand.MetricsCommand.class})
     static class ArtifactCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -1308,6 +1461,83 @@ public class AetherCli implements Runnable {
             }
         }
 
+        @Command(name = "get", description = "Download an artifact file from the repository (writes to stdout or --out)")
+        static class GetArtifactCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ArtifactCommand artifactParent;
+
+            @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
+            private String coordinates;
+
+            @CommandLine.Option(names = "--out", description = "Write artifact bytes to this file (default: stdout)")
+            private Path outPath;
+
+            @CommandLine.Option(names = "--file", description = "Filename within the artifact (default: <artifactId>-<version>.jar)")
+            private String file;
+
+            @Override
+            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
+            public Integer call() {
+                var parts = coordinates.split(":");
+
+                if (parts.length != 3) {
+                    System.err.println("Invalid coordinates format. Expected: group:artifact:version");
+
+                    return ExitCode.ERROR;
+                }
+
+                var groupPath = parts[0].replace('.', '/');
+                var artifactId = parts[1];
+                var version = parts[2];
+                var filename = option(file).filter(s -> !s.isBlank())
+                                           .or(artifactId + "-" + version + ".jar");
+                var bytes = artifactParent.parent.fetchBytes(ARTIFACT_GET,
+                                                             List.of(groupPath, artifactId, version, filename));
+
+                return bytes.fold(this::reportFetchFailure, this::writeBytes);
+            }
+
+            private Integer reportFetchFailure(Cause cause) {
+                System.err.println("Failed to fetch artifact: " + cause.message());
+
+                return ExitCode.ERROR;
+            }
+
+            @SuppressWarnings({"JBCT-EX-01", "JBCT-UTIL-02"})
+            private Integer writeBytes(byte[] content) {
+                return option(outPath).map(path -> writeToFile(path, content))
+                                      .or(() -> writeToStdout(content));
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private Integer writeToFile(Path path, byte[] content) {
+                try {
+                    Files.write(path, content);
+                    System.err.println("Wrote " + content.length + " bytes to " + path);
+
+                    return ExitCode.SUCCESS;
+                } catch (IOException e) {
+                    System.err.println("Failed to write file " + path + ": " + e.getMessage());
+
+                    return ExitCode.ERROR;
+                }
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private static Integer writeToStdout(byte[] content) {
+                try {
+                    System.out.write(content);
+                    System.out.flush();
+
+                    return ExitCode.SUCCESS;
+                } catch (IOException e) {
+                    System.err.println("Failed to write to stdout: " + e.getMessage());
+
+                    return ExitCode.ERROR;
+                }
+            }
+        }
+
         @Command(name = "delete", description = "Delete an artifact from the repository")
         static class DeleteCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
@@ -1359,7 +1589,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "blueprints", description = "Blueprint management", subcommands = {BlueprintCommand.ApplyCommand.class, BlueprintCommand.ListCommand.class, BlueprintCommand.GetCommand.class, BlueprintCommand.DeleteCommand.class, BlueprintCommand.StatusCommand.class, BlueprintCommand.ValidateCommand.class, BlueprintCommand.DeployArtifactCommand.class, BlueprintCommand.UploadCommand.class})
+    @Command(name = "blueprints", description = "Blueprint management", subcommands = {BlueprintCommand.ApplyCommand.class, BlueprintCommand.ListCommand.class, BlueprintCommand.GetCommand.class, BlueprintCommand.DeleteCommand.class, BlueprintCommand.StatusCommand.class, BlueprintCommand.ValidateCommand.class, BlueprintCommand.DeployArtifactCommand.class, BlueprintCommand.PublishCommand.class, BlueprintCommand.UploadCommand.class})
     static class BlueprintCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -1736,6 +1966,40 @@ public class AetherCli implements Runnable {
                 } catch (InterruptedException _) {
                     Thread.currentThread().interrupt();
                 }
+            }
+        }
+
+        @Command(name = "publish", description = "Publish a blueprint already present in the artifact repository (POST /api/blueprints/publish)")
+        static class PublishCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueprintCommand blueprintParent;
+
+            @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
+            private String coordinates;
+
+            @Override
+            @SuppressWarnings("JBCT-UTIL-02")
+            public Integer call() {
+                var parts = coordinates.split(":");
+
+                if (parts.length != 3) {
+                    System.err.println("Invalid coordinates format. Expected: group:artifact:version");
+
+                    return ExitCode.ERROR;
+                }
+
+                var fullCoords = coordinates + ":blueprint";
+                var body = "{\"artifact\":\"" + escapeJsonValue(fullCoords) + "\"}";
+                var response = blueprintParent.parent.post(BLUEPRINT_PUBLISH_ARTIFACT, body);
+                var errorCode = OutputFormatter.checkResponseError(response,
+                                                                   blueprintParent.parent.outputOptions(),
+                                                                   "Failed to publish blueprint");
+
+                if (errorCode >= 0) {return errorCode;}
+
+                return OutputFormatter.printAction(response,
+                                                   blueprintParent.parent.outputOptions(),
+                                                   "Published blueprint: " + coordinates);
             }
         }
 
