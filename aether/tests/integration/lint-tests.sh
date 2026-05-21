@@ -106,7 +106,7 @@ done < <(find "$SUITES_DIR" -name "*.sh" -exec bash -c "$(declare -f lint_r1_war
 while IFS=: read -r file lineno match; do
     [ -z "$file" ] && continue
     emit_finding R2 "$file" "$lineno" "$(echo "$match" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-done < <(grep -rnE '2>/dev/null[[:space:]]*\|\|[[:space:]]*true' "$SUITES_DIR" 2>/dev/null)
+done < <(grep -rnE --include='*.sh' '2>/dev/null[[:space:]]*\|\|[[:space:]]*true' "$SUITES_DIR" 2>/dev/null)
 
 # ============================================================
 # R3 — assert_ne on raw HTTP response
@@ -154,7 +154,7 @@ done < <(find "$SUITES_DIR" -name "*.sh" -exec bash -c "$(declare -f lint_r3_raw
 while IFS=: read -r file lineno match; do
     [ -z "$file" ] && continue
     emit_finding R4 "$file" "$lineno" "$(echo "$match" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-done < <(grep -rnE '\[[[:space:]]*"?\$?[a-zA-Z_]+"?[[:space:]]+-ge[[:space:]]+200[[:space:]]*\][[:space:]]*&&[[:space:]]*\[[[:space:]]*"?\$?[a-zA-Z_]+"?[[:space:]]+-lt[[:space:]]+400[[:space:]]*\]' "$SUITES_DIR" 2>/dev/null)
+done < <(grep -rnE --include='*.sh' '\[[[:space:]]*"?\$?[a-zA-Z_]+"?[[:space:]]+-ge[[:space:]]+200[[:space:]]*\][[:space:]]*&&[[:space:]]*\[[[:space:]]*"?\$?[a-zA-Z_]+"?[[:space:]]+-lt[[:space:]]+400[[:space:]]*\]' "$SUITES_DIR" 2>/dev/null)
 
 # ============================================================
 # R5 — test_* defined but never invoked
