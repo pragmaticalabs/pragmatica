@@ -42,7 +42,6 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.RateLimiter;
 import org.pragmatica.serialization.Deserializer;
@@ -131,13 +130,12 @@ public final class NettySwimTransport implements SwimTransport {
     /// Check whether the given source IP is within its per-source ANNOUNCE rate limit.
     /// Returns {@code true} if the message should be processed, {@code false} if it should be dropped.
     /// Evicts entries that have been idle longer than {@value #ANNOUNCE_LIMITER_IDLE_EVICT_MS} ms.
-    /// The rate-limiter promise resolves synchronously; {@code await()} never blocks here.
-    @TerminalOperation
+    /// Lock-free, allocation-free admission check.
     boolean isAnnounceAllowed(InetAddress source) {
         evictIdleAnnounceLimiters();
         var entry = announceRateLimiters.computeIfAbsent(source, this::newAnnounceEntry);
         entry.touch();
-        return entry.limiter().execute(Promise::unitPromise).await().isSuccess();
+        return entry.limiter().tryAcquire();
     }
 
     /// Resolve DNS asynchronously if target is unresolved, then send.
