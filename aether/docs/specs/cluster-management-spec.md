@@ -709,6 +709,7 @@ Run without --dry-run to apply.
 aether cluster export                          # Print TOML to stdout
 aether cluster export > cluster-backup.toml    # Save to file
 aether cluster export --with-status            # Include runtime state as TOML comments
+aether cluster export --format json            # Emit the JSON envelope (tomlContent + metadata)
 ```
 
 ### 6.2 Behavior
@@ -730,6 +731,8 @@ type = "hetzner"
 ```
 
 REQ-EXPORT-03: The exported TOML is a valid `aether-cluster.toml` that can be used with `apply` or `bootstrap` (for a new cluster).
+
+REQ-EXPORT-04: With `--format json` (and `--field`, which implies JSON), emit the raw management-API envelope verbatim — the JSON object returned by `GET /api/cluster/config` (`tomlContent`, `clusterName`, `configVersion`, `coreCount`). The TOML body remains accessible as the `tomlContent` field for downstream tooling. `--with-status` is a TOML-format affordance and is ignored under JSON.
 
 ---
 

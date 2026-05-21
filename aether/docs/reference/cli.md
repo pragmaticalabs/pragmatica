@@ -399,6 +399,9 @@ aether artifacts list
 # List versions
 aether artifacts versions <group:artifact>
 
+# List versions as a structured JSON envelope (groupId / artifactId / versions[])
+aether artifacts versions <group:artifact> --format json
+
 # Show artifact metadata
 aether artifacts info <group:artifact:version>
 

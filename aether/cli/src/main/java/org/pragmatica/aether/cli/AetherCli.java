@@ -1404,7 +1404,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "versions", description = "List versions of an artifact")
+        @Command(name = "versions", description = "List versions of an artifact (default: maven-metadata.xml; --format json emits a structured envelope)")
         static class VersionsCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1432,7 +1432,16 @@ public class AetherCli implements Runnable {
 
                 if (errorCode >= 0) {return errorCode;}
 
-                return OutputFormatter.printQuery(response, artifactParent.parent.outputOptions());
+                return artifactParent.parent.outputOptions().format() == OutputFormat.TABLE
+                       ? printRawXml(response)
+                       : OutputFormatter.printQuery(MavenMetadataFormatter.toJson(response),
+                                                    artifactParent.parent.outputOptions());
+            }
+
+            private static int printRawXml(String response) {
+                System.out.println(response);
+
+                return ExitCode.SUCCESS;
             }
         }
 
