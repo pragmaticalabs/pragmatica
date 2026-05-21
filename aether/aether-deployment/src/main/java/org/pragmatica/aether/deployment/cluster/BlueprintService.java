@@ -17,11 +17,9 @@ import org.pragmatica.aether.slice.blueprint.PubSubValidator;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintResourcesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.repository.Location;
@@ -213,7 +211,10 @@ public interface BlueprintService {
                                                         String artifactCoords) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
         commands.add(buildBlueprintPutCommand(expanded));
-        resourcesConfig.onPresent(content -> commands.add(buildResourcesPutCommand(expanded, content)));
+        // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
+        // each node and applied via the per-slice intrinsic config layer at slice load
+        // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
+        // ExpandedBlueprint already embeds it for downstream consumers (e.g., schema gating).
         if (!migrations.isEmpty()) {commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));}
         return commands;
     }
@@ -221,11 +222,6 @@ public interface BlueprintService {
     private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded) {
         return new Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
                          AppBlueprintValue.appBlueprintValue(expanded));
-    }
-
-    private static KVCommand<AetherKey> buildResourcesPutCommand(ExpandedBlueprint expanded, String content) {
-        return new Put<>(BlueprintResourcesKey.blueprintResourcesKey(expanded.id()),
-                         BlueprintResourcesValue.blueprintResourcesValue(content));
     }
 
     private Promise<ExpandedBlueprint> applyResourcesConfig(ExpandedBlueprint expanded,

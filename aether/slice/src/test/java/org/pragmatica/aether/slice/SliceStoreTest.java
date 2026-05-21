@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.SliceStore.EntryState;
 import org.pragmatica.aether.slice.SliceStore.LoadedSliceEntry;
 import org.pragmatica.aether.slice.SliceStore.sliceStore;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -53,7 +54,7 @@ class SliceStoreTest {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, Option.empty(), EntryState.LOADED);
 
         assertThat(entry.artifact()).isEqualTo(artifact);
     }
@@ -63,7 +64,7 @@ class SliceStoreTest {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, Option.empty(), EntryState.LOADED);
 
         assertThat(entry.slice()).isSameAs(slice);
     }
@@ -73,7 +74,7 @@ class SliceStoreTest {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, Option.empty(), EntryState.LOADED);
 
         var activeEntry = entry.withState(EntryState.ACTIVE);
 
@@ -344,7 +345,7 @@ class SliceStoreTest {
         var impl = (sliceStore) store;
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, state);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, Option.empty(), state);
         impl.entries().put(artifact, Promise.success(entry));
     }
 }

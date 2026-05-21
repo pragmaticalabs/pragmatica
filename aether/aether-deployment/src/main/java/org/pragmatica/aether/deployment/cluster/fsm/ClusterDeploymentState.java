@@ -42,7 +42,6 @@ import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintResourcesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
@@ -58,7 +57,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -927,11 +925,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private boolean resolveSchemaRequired(BlueprintId blueprintId) {
-            var resourcesKey = BlueprintResourcesKey.blueprintResourcesKey(blueprintId);
-            return ctx.kvStore().get(resourcesKey)
-                              .filter(BlueprintResourcesValue.class::isInstance)
-                              .map(BlueprintResourcesValue.class::cast)
-                              .map(BlueprintResourcesValue::tomlContent)
+            // After the Batch 1 envelope cleanup, slice META-INF/resources.toml no longer round-trips
+            // through KV (BlueprintResourcesKey/Value were removed). The resources TOML is now
+            // embedded directly on the persisted ExpandedBlueprint, so we read it from AppBlueprint.
+            var blueprintKey = AppBlueprintKey.appBlueprintKey(blueprintId);
+            return ctx.kvStore().get(blueprintKey)
+                              .filter(AppBlueprintValue.class::isInstance)
+                              .map(AppBlueprintValue.class::cast)
+                              .flatMap(value -> value.blueprint().resourcesConfig())
                               .flatMap(toml -> BlueprintParser.parse(toml).option())
                               .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
                               .map(DeploymentConfig::schemaRequired)

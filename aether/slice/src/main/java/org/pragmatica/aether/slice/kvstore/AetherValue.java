@@ -902,12 +902,6 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    record BlueprintResourcesValue(String tomlContent) implements AetherValue {
-        public static BlueprintResourcesValue blueprintResourcesValue(String tomlContent) {
-            return new BlueprintResourcesValue(tomlContent);
-        }
-    }
-
     record SchemaVersionValue(String datasourceName,
                               int currentVersion,
                               String lastMigration,

@@ -18,6 +18,7 @@ import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.DynamicConfigurationProvider;
+import org.pragmatica.config.LayeredConfigProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
@@ -501,7 +502,8 @@ public interface AetherNode extends ManageableNode {
                                                sharedLibraryLoader,
                                                deferredInvoker,
                                                resourceProviderSetup.facade(),
-                                               config.sliceAction());
+                                               config.sliceAction(),
+                                               resourceProviderSetup.nodeComposite());
         var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
@@ -1724,9 +1726,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.SliceNodeKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.AppBlueprintKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.AppBlueprintKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.BlueprintResourcesKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.BlueprintResourcesKey.class,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.DhtPartitionOwnershipKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.DhtPartitionOwnershipKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.DhtPartitionOwnershipKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   _ -> generationSnapshotPublisher.markDirty()).build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
@@ -2708,9 +2708,7 @@ public interface AetherNode extends ManageableNode {
                                                             .onRemove(AetherKey.NodeRoutesKey.class,
                                                                       lbm::onNodeRoutesRemove));
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
-                                                             .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove)
-                                                             .onPut(AetherKey.BlueprintResourcesKey.class,
-                                                                    dcm::onBlueprintResourcesPut));
+                                                             .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
         kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentPut);
         kvRouterBuilder.onRemove(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentRemove);
         kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupAssignmentRegistry::onTaskAssignmentPut);
@@ -2966,6 +2964,7 @@ public interface AetherNode extends ManageableNode {
 
     record ResourceProviderSetup(ResourceProviderFacade facade,
                                  Option<DynamicConfigurationProvider> dynamicProvider,
+                                 Option<ConfigurationProvider> nodeComposite,
                                  Option<SpiResourceProvider> spiProvider) {}
 
     private static ResourceProviderSetup createResourceProviderFacade(AetherNodeConfig config) {
@@ -2975,6 +2974,7 @@ public interface AetherNode extends ManageableNode {
                      .fold(() -> {
                                log.debug("No configuration provider configured, resource provisioning disabled");
                                return new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                Option.empty(),
                                                                 Option.empty(),
                                                                 Option.empty());
                            },
@@ -2990,15 +2990,26 @@ public interface AetherNode extends ManageableNode {
                                                                           cause.message());
                                                                 return new ResourceProviderSetup(noOpResourceProviderFacade(),
                                                                                                  Option.empty(),
+                                                                                                 Option.empty(),
                                                                                                  Option.empty());
                                                             },
                                                             provider -> {
-                                                                var dynamicProvider = DynamicConfigurationProvider.dynamicConfigurationProvider(provider);
-                                                                var configService = ProviderBasedConfigService.providerBasedConfigService(dynamicProvider);
+                                                                // KV-overlay layer: holds operator config puts only.
+                                                                // Base is empty — the merged view is composed below via
+                                                                // LayeredConfigProvider, so the dynamic overlay sees no
+                                                                // node.toml fall-through and DynamicConfigManager can
+                                                                // operate on the overlay in isolation (Batch 1 of the
+                                                                // hierarchical config refactor).
+                                                                var emptyBase = ConfigurationProvider.builder().build();
+                                                                var dynamicProvider = DynamicConfigurationProvider.dynamicConfigurationProvider(emptyBase);
+                                                                // node-composite = KV-overlay ⊕ node.toml
+                                                                ConfigurationProvider nodeComposite = LayeredConfigProvider.layered(java.util.List.of(dynamicProvider,
+                                                                                                                                                       provider));
+                                                                var configService = ProviderBasedConfigService.providerBasedConfigService(nodeComposite);
                                                                 ConfigService.setInstance(configService);
                                                                 var resourceProvider = SpiResourceProvider.spiResourceProvider();
                                                                 ResourceProvider.setInstance(resourceProvider);
-                                                                log.info("ConfigService and ResourceProvider initialized with dynamic overlay");
+                                                                log.info("ConfigService and ResourceProvider initialized with hierarchical composite (KV-overlay + node.toml)");
                                                                 return new ResourceProviderSetup(new ResourceProviderFacade() {
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
@@ -3014,6 +3025,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                  }
         },
                                                                                                  Option.some(dynamicProvider),
+                                                                                                 Option.some(nodeComposite),
                                                                                                  Option.some(resourceProvider));
                                                             });
                            });

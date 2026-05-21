@@ -146,7 +146,6 @@ import static org.pragmatica.lang.Result.success;
             case GovernorAnnouncementKey _ -> "governor-announcement";
             case NodeArtifactKey _ -> "node-artifact";
             case NodeRoutesKey _ -> "node-routes";
-            case BlueprintResourcesKey _ -> "blueprint-resources";
             case SchemaVersionKey _ -> "schema-version";
             case SchemaMigrationLockKey _ -> "schema-lock";
             case AbTestKey _ -> "ab-test";
@@ -215,7 +214,6 @@ import static org.pragmatica.lang.Result.success;
             case NodeArtifactValue v -> serializeNodeArtifact(v);
             case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";
-            case BlueprintResourcesValue v -> v.tomlContent();
             case SchemaVersionValue v -> serializeSchemaVersion(v);
             case SchemaMigrationLockValue v -> serializeSchemaMigrationLock(v);
             case AbTestValue v -> serializeAbTest(v);
@@ -406,7 +404,6 @@ import static org.pragmatica.lang.Result.success;
             case "governor-announcement" -> parseGovernorAnnouncementEntry(identity, rawValue);
             case "node-artifact" -> parseNodeArtifactEntry(identity, rawValue);
             case "node-routes" -> parseNodeRoutesEntry(identity, rawValue);
-            case "blueprint-resources" -> parseBlueprintResourcesEntry(identity, rawValue);
             case "schema-version" -> parseSchemaVersionEntry(identity, rawValue);
             case "schema-lock" -> parseSchemaMigrationLockEntry(identity, rawValue);
             case "ab-test" -> parseAbTestEntry(identity, rawValue);
@@ -767,12 +764,6 @@ import static org.pragmatica.lang.Result.success;
 
     private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
         return v.datasourceName() + PIPE + v.heldBy().id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt();
-    }
-
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseBlueprintResourcesEntry(String identity, String raw) {
-        return BlueprintResourcesKey.blueprintResourcesKey("blueprint-resources/" + identity)
-                                                          .map(key -> entry(key,
-                                                                            new BlueprintResourcesValue(raw)));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaVersionEntry(String identity, String raw) {

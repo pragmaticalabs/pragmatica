@@ -540,28 +540,6 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
-    record BlueprintResourcesKey(BlueprintId blueprintId) implements AetherKey {
-        private static final String PREFIX = "blueprint-resources/";
-
-        @Override public String asString() {
-            return PREFIX + blueprintId.asString();
-        }
-
-        @Override public String toString() {
-            return asString();
-        }
-
-        public static BlueprintResourcesKey blueprintResourcesKey(BlueprintId blueprintId) {
-            return new BlueprintResourcesKey(blueprintId);
-        }
-
-        public static Result<BlueprintResourcesKey> blueprintResourcesKey(String key) {
-            if (!key.startsWith(PREFIX)) {return BLUEPRINT_RESOURCES_KEY_FORMAT_ERROR.apply(key).result();}
-            var idPart = key.substring(PREFIX.length());
-            return BlueprintId.blueprintId(idPart).map(BlueprintResourcesKey::new);
-        }
-    }
-
     record SchemaVersionKey(String datasourceName) implements AetherKey {
         private static final String PREFIX = "schema-version/";
 
@@ -802,8 +780,6 @@ import static org.pragmatica.lang.Result.success;
     Fn1<Cause, String> WORKER_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid worker-directive key format: %s");
 
     Fn1<Cause, String> ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid activation key format: %s");
-
-    Fn1<Cause, String> BLUEPRINT_RESOURCES_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint-resources key format: %s");
 
     Fn1<Cause, String> SCHEMA_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid schema-version key format: %s");
 

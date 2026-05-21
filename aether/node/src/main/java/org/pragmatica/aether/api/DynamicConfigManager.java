@@ -5,12 +5,9 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.config.DynamicConfigurationProvider;
-import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintResourcesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -19,7 +16,6 @@ import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -100,24 +96,6 @@ public class DynamicConfigManager {
             provider.remove(configKey.key());
             log.debug("Config removed from cluster: {}", configKey.key());
         }
-    }
-
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    public void onBlueprintResourcesPut(ValuePut<BlueprintResourcesKey, BlueprintResourcesValue> valuePut) {
-        var tomlContent = valuePut.cause().value().tomlContent();
-        TomlParser.parse(tomlContent).onSuccess(this::applyBlueprintResources).onFailure(cause -> log.error("Failed to parse blueprint resources TOML: {}",
-                                                                                                            cause.message()));
-    }
-
-    @SuppressWarnings("JBCT-PAT-01")
-    private void applyBlueprintResources(org.pragmatica.config.toml.TomlDocument doc) {
-        for (var sectionName : doc.sectionNames()) {
-            if (sectionName.isEmpty()) {continue;}
-            doc.getSection(sectionName).forEach((key, value) -> provider.put(sectionName + "." + key, value));
-        }
-        log.info("Blueprint resources loaded into configuration overlay ({} sections)",
-                 doc.sectionNames().size());
     }
 
     @SuppressWarnings("unchecked")
