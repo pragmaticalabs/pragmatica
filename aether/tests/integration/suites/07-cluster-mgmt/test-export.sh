@@ -52,19 +52,46 @@ test_reapply_exported_config() {
 }
 
 test_config_identical_after_reapply() {
-    sleep 5
-    local new_config
-    new_config=$(config_export)
-    assert_ne "$new_config" "" "Config still retrievable after re-apply"
-
-    # Compare key fields
-    local orig_len new_len
-    orig_len=$(wc -c < "$EXPORT_FILE" | tr -d ' ')
-    new_len=$(echo "$new_config" | wc -c | tr -d ' ')
-
-    # Configs should be similar size (exact match may differ due to timestamps)
-    log_info "Original config: ${orig_len} bytes, New config: ${new_len} bytes"
-    log_pass "Config re-export after re-apply successful"
+    # Audit fix (#14): the prior shape logged a byte-count diff and always
+    # passed. Now we assert round-trip identity: capture the post-reapply
+    # export, re-apply the same {key,value} a second time (idempotent), and
+    # compare the next export. Any divergence in the canonical key/value
+    # set is a hard failure.
+    sleep 2
+    local first
+    first=$(config_export)
+    if [ -z "$first" ]; then
+        log_fail "Post-reapply config export #1 returned empty"
+        return 1
+    fi
+    # Re-apply the same key/value (idempotent — already applied in the prior
+    # test_reapply_exported_config step).
+    local body='{"key":"test.export.roundtrip","value":"reapplied"}'
+    local result
+    result=$(config_apply "$body")
+    if [ -z "$result" ]; then
+        log_fail "Idempotent re-apply of {key,value} returned empty"
+        return 1
+    fi
+    sleep 2
+    local second
+    second=$(config_export)
+    if [ -z "$second" ]; then
+        log_fail "Post-reapply config export #2 returned empty"
+        return 1
+    fi
+    # Canonicalize: split JSON entries on `,`, normalize whitespace, sort.
+    # `/api/config` returns a flat Map<String,String> serialized by
+    # DynamicConfigManager#mapToJson; iteration order is not guaranteed stable
+    # across calls so we sort the entries before comparing.
+    local first_canonical second_canonical
+    first_canonical=$(printf '%s' "$first" | tr ',' '\n' | tr -d '[:space:]' | sort)
+    second_canonical=$(printf '%s' "$second" | tr ',' '\n' | tr -d '[:space:]' | sort)
+    if ! assert_eq "$second_canonical" "$first_canonical" "Config round-trip canonical-form equality"; then
+        log_info "first (canonical): $(printf '%s' "$first_canonical" | head -c 500)"
+        log_info "second (canonical): $(printf '%s' "$second_canonical" | head -c 500)"
+        return 1
+    fi
 }
 
 test_cluster_healthy_after_roundtrip() {
