@@ -8,7 +8,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public final class AuditLog {
+@SuppressWarnings("JBCT-RET-01")
+public final class AuditLog {
     private static final Logger AUDIT = LoggerFactory.getLogger("org.pragmatica.aether.audit");
 
     private AuditLog() {}

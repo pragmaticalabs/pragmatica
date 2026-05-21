@@ -21,9 +21,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface WorkerBootstrap {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+public interface WorkerBootstrap {
     Logger LOG = LoggerFactory.getLogger(WorkerBootstrap.class);
-
     long snapshotSequence();
     void requestSnapshot(Option<NodeId> source);
     Promise<Unit> onSnapshotReceived(SnapshotResponse response);
@@ -39,20 +39,23 @@ import org.slf4j.LoggerFactory;
                                AtomicBoolean bootstrapped,
                                AtomicLong snapshotSequenceHolder,
                                AtomicInteger retryCounter) implements WorkerBootstrap {
-            @Override public long snapshotSequence() {
+            @Override
+            public long snapshotSequence() {
                 return snapshotSequenceHolder.get();
             }
 
-            @Override public void requestSnapshot(Option<NodeId> source) {
-                source.onPresent(this::sendSnapshotRequest)
-                                .onEmpty(() -> LOG.warn("No snapshot source available for bootstrap"));
+            @Override
+            public void requestSnapshot(Option<NodeId> source) {
+                source.onPresent(this::sendSnapshotRequest).onEmpty(() -> LOG.warn("No snapshot source available for bootstrap"));
             }
 
-            @Override public Promise<Unit> onSnapshotReceived(SnapshotResponse response) {
+            @Override
+            public Promise<Unit> onSnapshotReceived(SnapshotResponse response) {
                 return Promise.lift(WorkerError.NetworkFailure::new, () -> applySnapshot(response));
             }
 
-            @Override public void onSnapshotRequest(SnapshotRequest request, byte[] kvState, long sequenceNumber) {
+            @Override
+            public void onSnapshotRequest(SnapshotRequest request, byte[] kvState, long sequenceNumber) {
                 var response = SnapshotResponse.snapshotResponse(kvState, sequenceNumber);
                 delegateRouter.route(new NetworkServiceMessage.Send(request.requester(), response));
                 LOG.info("Sent snapshot to {} at sequence {}",
@@ -60,15 +63,18 @@ import org.slf4j.LoggerFactory;
                          sequenceNumber);
             }
 
-            @Override public boolean isBootstrapped() {
+            @Override
+            public boolean isBootstrapped() {
                 return bootstrapped.get();
             }
 
-            @Override public void markBootstrapped() {
+            @Override
+            public void markBootstrapped() {
                 bootstrapped.set(true);
             }
 
-            @Override public int incrementRetry() {
+            @Override
+            public int incrementRetry() {
                 return retryCounter.incrementAndGet();
             }
 
@@ -82,8 +88,8 @@ import org.slf4j.LoggerFactory;
                 LOG.info("Applying snapshot at sequence {}, size={} bytes",
                          response.sequenceNumber(),
                          response.kvState().length);
-                kvStore.restoreSnapshot(response.kvState()).onSuccess(_ -> markSnapshotApplied(response.sequenceNumber()))
-                                       .onFailure(cause -> LOG.error("Failed to apply snapshot: {}", cause));
+                kvStore.restoreSnapshot(response.kvState()).onSuccess(_ -> markSnapshotApplied(response.sequenceNumber())).onFailure(cause -> LOG.error("Failed to apply snapshot: {}",
+                                                                                                                                                        cause));
             }
 
             private void markSnapshotApplied(long sequenceNumber) {
@@ -96,7 +102,7 @@ import org.slf4j.LoggerFactory;
                                    delegateRouter,
                                    kvStore,
                                    new AtomicBoolean(false),
-                                   new AtomicLong(- 1),
+                                   new AtomicLong(-1),
                                    new AtomicInteger(0));
     }
 }

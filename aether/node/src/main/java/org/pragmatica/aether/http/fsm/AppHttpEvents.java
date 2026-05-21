@@ -12,17 +12,17 @@ import org.pragmatica.net.tcp.security.CertificateBundle;
 
 
 public interface AppHttpEvents extends ClusterFsmEvent {
-    record StartRequested() implements AppHttpEvents{}
+    record StartRequested() implements AppHttpEvents {}
 
-    record H1Ready(HttpServer server) implements AppHttpEvents{}
+    record H1Ready(HttpServer server) implements AppHttpEvents {}
 
-    record H3Ready(HttpServer server) implements AppHttpEvents{}
+    record H3Ready(HttpServer server) implements AppHttpEvents {}
 
-    record RouteTablePublished(RouteTable routes) implements AppHttpEvents{}
+    record RouteTablePublished(RouteTable routes) implements AppHttpEvents {}
 
-    record CertRotationRequested(CertificateBundle bundle) implements AppHttpEvents{}
+    record CertRotationRequested(CertificateBundle bundle) implements AppHttpEvents {}
 
-    record CertRotationApplied(Option<HttpServer> newServer, Option<HttpServer> newH3, RouteTable routes) implements AppHttpEvents{}
+    record CertRotationApplied(Option<HttpServer> newServer, Option<HttpServer> newH3, RouteTable routes) implements AppHttpEvents {}
 
-    record StopRequested() implements AppHttpEvents{}
+    record StopRequested() implements AppHttpEvents {}
 }

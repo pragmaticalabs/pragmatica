@@ -8,7 +8,8 @@ import picocli.CommandLine.ITypeConverter;
 
 
 public class OutputFormatConverter implements ITypeConverter<OutputFormat> {
-    @Override public OutputFormat convert(String value) {
+    @Override
+    public OutputFormat convert(String value) {
         return OutputFormat.valueOf(value.toUpperCase());
     }
 }

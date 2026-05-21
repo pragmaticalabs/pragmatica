@@ -26,23 +26,24 @@ public record SshPublicKey(String value) {
     }
 
     public static Result<List<SshPublicKey>> parseAll(List<String> rawLines) {
-        return Result.allOf(rawLines.stream().map(SshPublicKey::sshPublicKey)
-                                           .toList());
+        return Result.allOf(rawLines.stream().map(SshPublicKey::sshPublicKey).toList());
     }
 
     public String hetznerKeyName(String prefix) {
         var blob = blob();
         var suffix = blob.length() >= 8
-                    ? blob.substring(0, 8)
-                    : blob;
+                     ? blob.substring(0, 8)
+                     : blob;
+
         return prefix + "-" + suffix;
     }
 
     public String comment() {
         var parts = value.split("\\s+", 3);
+
         return parts.length >= 3
-              ? parts[2]
-              : "";
+               ? parts[2]
+               : "";
     }
 
     public String algorithm() {
@@ -55,8 +56,11 @@ public record SshPublicKey(String value) {
 
     private static Result<String> validateNonNull(String raw) {
         if (raw == null) {return new InvalidPublicKey("Public key is null").result();}
+
         var trimmed = raw.trim();
+
         if (trimmed.isEmpty()) {return new InvalidPublicKey("Public key is blank").result();}
+
         return Result.success(trimmed);
     }
 
@@ -67,14 +71,18 @@ public record SshPublicKey(String value) {
 
     private static Result<String> validateAlgorithm(String raw) {
         var parts = raw.split("\\s+", 3);
+
         if (parts.length <2) {return new InvalidPublicKey("Public key must have format '<algo> <base64-blob> [<comment>]'").result();}
-        if (!SUPPORTED_ALGORITHMS.contains(parts[0])) {return new InvalidPublicKey("Unsupported SSH key algorithm '" + parts[0] + "'. Supported: " + SUPPORTED_ALGORITHMS).result();}
+        if (!SUPPORTED_ALGORITHMS.contains(parts[0])) {return new InvalidPublicKey("Unsupported SSH key algorithm '" + parts[0]
+                                                                                  + "'. Supported: " + SUPPORTED_ALGORITHMS).result();}
         if (parts[1].isBlank()) {return new InvalidPublicKey("Public key blob is blank").result();}
+
         return Result.success(raw);
     }
 
     public record InvalidPublicKey(String detail) implements Cause {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Invalid SSH public key: " + detail;
         }
     }

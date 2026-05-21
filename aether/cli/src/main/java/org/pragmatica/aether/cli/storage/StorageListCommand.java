@@ -18,16 +18,20 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STO
 import static org.pragmatica.aether.management.route.ManagementRoute.STORAGE_LIST;
 
 
-@Command(name = "list", description = "List storage instances") @SuppressWarnings("JBCT-RET-01") class StorageListCommand implements Callable<Integer> {
-    @CommandLine.ParentCommand private StorageCommand parent;
+@Command(name = "list", description = "List storage instances")
+@SuppressWarnings("JBCT-RET-01")
+class StorageListCommand implements Callable<Integer> {
+    @CommandLine.ParentCommand
+    private StorageCommand parent;
 
-    @CommandLine.Option(names = "--node", description = "Target specific node") private String nodeId;
+    @CommandLine.Option(names = "--node", description = "Target specific node")
+    private String nodeId;
 
-    @Override public Integer call() {
+    @Override
+    public Integer call() {
         ManagementRoute route = Option.option(nodeId).fold(() -> CLUSTER_STORAGE_LIST, _ -> STORAGE_LIST);
-        return ClusterHttpClient.fetch(route)
-                                      .fold(StorageCliHelper::onFailure,
-                                            json -> OutputFormatter.printQuery(json,
-                                                                               parent.outputOptions()));
+
+        return ClusterHttpClient.fetch(route).fold(StorageCliHelper::onFailure,
+                                                   json -> OutputFormatter.printQuery(json, parent.outputOptions()));
     }
 }

@@ -58,73 +58,69 @@ public final class MetricsRoutes implements RouteSource {
         return new MetricsRoutes(nodeSupplier, observability);
     }
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<MetricsFullResponse>route(ManagementRoute.METRICS)
-                                         .toJson(this::buildMetricsResponse),
-                         ManagementRoutes.<ComprehensiveMetricsResponse>route(ManagementRoute.METRICS_COMPREHENSIVE)
-                                         .toJson(this::buildComprehensiveMetricsResponse),
-                         ManagementRoutes.<DerivedMetricsResponse>route(ManagementRoute.METRICS_DERIVED)
-                                         .toJson(this::buildDerivedMetricsResponse),
-                         ManagementRoutes.<String>route(ManagementRoute.METRICS_PROMETHEUS)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<MetricsFullResponse> route(ManagementRoute.METRICS).toJson(this::buildMetricsResponse),
+                         ManagementRoutes.<ComprehensiveMetricsResponse> route(ManagementRoute.METRICS_COMPREHENSIVE).toJson(this::buildComprehensiveMetricsResponse),
+                         ManagementRoutes.<DerivedMetricsResponse> route(ManagementRoute.METRICS_DERIVED).toJson(this::buildDerivedMetricsResponse),
+                         ManagementRoutes.<String> route(ManagementRoute.METRICS_PROMETHEUS)
                                          .to(_ -> Promise.success(observability.scrape()))
                                          .as(PROMETHEUS_CONTENT_TYPE),
-                         ManagementRoutes.<List<NodeMetric>>route(ManagementRoute.NODE_METRICS)
-                                         .toJson(this::buildNodeMetricsResponse),
-                         ManagementRoutes.<List<NodeMetric>>route(ManagementRoute.NODE_METRICS_GET)
+                         ManagementRoutes.<List<NodeMetric>> route(ManagementRoute.NODE_METRICS).toJson(this::buildNodeMetricsResponse),
+                         ManagementRoutes.<List<NodeMetric>> route(ManagementRoute.NODE_METRICS_GET)
                                          .withPath(org.pragmatica.http.routing.PathParameter.aString())
                                          .to(__ -> org.pragmatica.lang.Promise.success(buildNodeMetricsResponse()))
                                          .asJson(),
-                         ManagementRoutes.<ArtifactMetricsResponse>route(ManagementRoute.ARTIFACT_METRICS)
-                                         .toJson(this::buildArtifactMetricsResponse),
-                         ManagementRoutes.<InvocationMetricsResponse>route(ManagementRoute.INVOCATION_METRICS)
+                         ManagementRoutes.<ArtifactMetricsResponse> route(ManagementRoute.ARTIFACT_METRICS).toJson(this::buildArtifactMetricsResponse),
+                         ManagementRoutes.<InvocationMetricsResponse> route(ManagementRoute.INVOCATION_METRICS)
                                          .withQuery(aString("artifact"),
                                                     aString("method"))
                                          .toValue(this::buildInvocationMetricsResponse)
                                          .asJson(),
-                         ManagementRoutes.<SlowInvocationsResponse>route(ManagementRoute.INVOCATION_METRICS_SLOW)
-                                         .toJson(this::buildSlowInvocationsResponse),
-                         ManagementRoutes.<StrategyResponse>route(ManagementRoute.INVOCATION_METRICS_STRATEGY_GET)
-                                         .toJson(this::buildStrategyResponse),
-                         ManagementRoutes.<ErrorResponse>route(ManagementRoute.INVOCATION_METRICS_STRATEGY_SET)
+                         ManagementRoutes.<SlowInvocationsResponse> route(ManagementRoute.INVOCATION_METRICS_SLOW).toJson(this::buildSlowInvocationsResponse),
+                         ManagementRoutes.<StrategyResponse> route(ManagementRoute.INVOCATION_METRICS_STRATEGY_GET).toJson(this::buildStrategyResponse),
+                         ManagementRoutes.<ErrorResponse> route(ManagementRoute.INVOCATION_METRICS_STRATEGY_SET)
                                          .to(_ -> HttpError.httpError(HttpStatus.NOT_IMPLEMENTED,
-                                                                      MetricsError.StrategyChangeNotSupported.INSTANCE)
-        .<ErrorResponse>promise())
+                                                                      MetricsError.StrategyChangeNotSupported.INSTANCE).<ErrorResponse> promise())
                                          .asJson(),
-                         ManagementRoutes.<Object>route(ManagementRoute.METRICS_HISTORY)
+                         ManagementRoutes.<Object> route(ManagementRoute.METRICS_HISTORY)
                                          .withQuery(aString("range"))
                                          .toValue(this::buildHistoryResponse)
                                          .asJson(),
-                         ManagementRoutes.<Map<String, Number>>route(ManagementRoute.METRICS_TRANSPORT)
-                                         .toJson(this::buildTransportMetricsResponse));
+                         ManagementRoutes.<Map<String, Number>> route(ManagementRoute.METRICS_TRANSPORT).toJson(this::buildTransportMetricsResponse));
     }
 
     private Map<String, Number> buildTransportMetricsResponse() {
-        return nodeSupplier.get().transportMetrics();
+        return nodeSupplier.get()
+                           .transportMetrics();
     }
 
     private MetricsFullResponse buildMetricsResponse() {
         var node = nodeSupplier.get();
+
         return new MetricsFullResponse(buildLoadMetrics(node), buildDeploymentMetrics(node));
     }
 
     private Map<String, Map<String, Double>> buildLoadMetrics(ManageableNode node) {
         Map<String, Map<String, Double>> load = new HashMap<>();
-        for (var entry : node.metricsCollector().allMetrics()
-                                              .entrySet()) {load.put(entry.getKey().id(),
-                                                                     entry.getValue());}
+
+        for (var entry : node.metricsCollector().allMetrics().entrySet()) {
+            load.put(entry.getKey().id(),
+                     entry.getValue());
+        }
+
         return load;
     }
 
     private Map<String, List<DeploymentMetrics>> buildDeploymentMetrics(ManageableNode node) {
         Map<String, List<DeploymentMetrics>> deployments = new HashMap<>();
-        for (var entry : node.deploymentMetricsCollector().allDeploymentMetrics()
-                                                        .entrySet()) {
-            var metricsList = entry.getValue().stream()
-                                            .map(this::toDeploymentMetrics)
-                                            .toList();
+
+        for (var entry : node.deploymentMetricsCollector().allDeploymentMetrics().entrySet()) {
+            var metricsList = entry.getValue().stream().map(this::toDeploymentMetrics).toList();
             deployments.put(entry.getKey().asString(),
                             metricsList);
         }
+
         return deployments;
     }
 
@@ -140,10 +136,12 @@ public final class MetricsRoutes implements RouteSource {
 
     private ComprehensiveMetricsResponse buildComprehensiveMetricsResponse() {
         var node = nodeSupplier.get();
-        var recent = node.snapshotCollector().minuteAggregator()
-                                           .recent(1);
+        var recent = node.snapshotCollector().minuteAggregator().recent(1);
+
         if (recent.isEmpty()) {return new ComprehensiveMetricsResponse(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);}
+
         var agg = recent.getFirst();
+
         return new ComprehensiveMetricsResponse(agg.minuteTimestamp(),
                                                 agg.avgCpuUsage(),
                                                 agg.avgHeapUsage(),
@@ -162,6 +160,7 @@ public final class MetricsRoutes implements RouteSource {
     private DerivedMetricsResponse buildDerivedMetricsResponse() {
         var node = nodeSupplier.get();
         var derived = node.snapshotCollector().derivedMetrics();
+
         return new DerivedMetricsResponse(derived.requestRate(),
                                           derived.errorRate(),
                                           derived.gcRate(),
@@ -182,6 +181,7 @@ public final class MetricsRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var allMetrics = node.metricsCollector().allMetrics();
         var result = new ArrayList<NodeMetric>();
+
         for (var entry : allMetrics.entrySet()) {
             var nodeId = entry.getKey();
             var metrics = entry.getValue();
@@ -190,6 +190,7 @@ public final class MetricsRoutes implements RouteSource {
                                       metrics.getOrDefault("heapUsedMb", 0.0).longValue(),
                                       metrics.getOrDefault("heapMaxMb", 0.0).longValue()));
         }
+
         return result;
     }
 
@@ -199,42 +200,41 @@ public final class MetricsRoutes implements RouteSource {
         var storeMetrics = collector.storeMetrics();
         var deployedArtifacts = collector.deployedArtifacts();
         var memoryMB = storeMetrics.memoryBytes() / (1024.0 * 1024.0);
+
         return new ArtifactMetricsResponse(storeMetrics.artifactCount(),
                                            storeMetrics.chunkCount(),
                                            storeMetrics.memoryBytes(),
                                            String.format("%.2f", memoryMB),
                                            deployedArtifacts.size(),
-                                           deployedArtifacts.stream().map(a -> a.asString())
-                                                                   .toList());
+                                           deployedArtifacts.stream().map(a -> a.asString()).toList());
     }
 
     private InvocationMetricsResponse buildInvocationMetricsResponse(Option<String> artifactFilter,
                                                                      Option<String> methodFilter) {
-        var snapshots = nodeSupplier.get().invocationMetrics()
-                                        .snapshot()
-                                        .stream()
-                                        .filter(snapshot -> matchesFilters(snapshot, artifactFilter, methodFilter))
-                                        .map(this::toInvocationSnapshot)
-                                        .toList();
+        var snapshots = nodeSupplier.get().invocationMetrics().snapshot().stream().filter(snapshot -> matchesFilters(snapshot,
+                                                                                                                     artifactFilter,
+                                                                                                                     methodFilter)).map(this::toInvocationSnapshot).toList();
         return new InvocationMetricsResponse(snapshots);
     }
 
     private boolean matchesFilters(InvocationMetricsCollector.MethodSnapshot snapshot,
                                    Option<String> artifactFilter,
                                    Option<String> methodFilter) {
-        boolean matchesArtifact = artifactFilter.map(filter -> snapshot.artifact().asString()
-                                                                                .contains(filter))
-        .or(true);
-        boolean matchesMethod = methodFilter.map(filter -> snapshot.methodName().name()
-                                                                              .equals(filter)).or(true);
+        boolean matchesArtifact = artifactFilter.map(filter -> snapshot.artifact()
+                                                                       .asString()
+                                                                       .contains(filter)).or(true);
+        boolean matchesMethod = methodFilter.map(filter -> snapshot.methodName()
+                                                                   .name()
+                                                                   .equals(filter)).or(true);
         return matchesArtifact && matchesMethod;
     }
 
     private InvocationSnapshot toInvocationSnapshot(InvocationMetricsCollector.MethodSnapshot snapshot) {
         var metrics = snapshot.metrics();
         var avgDurationMs = metrics.count() > 0
-                           ? metrics.totalDurationNs() / metrics.count() / 1_000_000.0
-                           : 0;
+                            ? metrics.totalDurationNs() / metrics.count() / 1_000_000.0
+                            : 0;
+
         return new InvocationSnapshot(snapshot.artifact().asString(),
                                       snapshot.methodName().name(),
                                       metrics.count(),
@@ -248,13 +248,10 @@ public final class MetricsRoutes implements RouteSource {
     }
 
     private SlowInvocationsResponse buildSlowInvocationsResponse() {
-        var slowInvocations = nodeSupplier.get().invocationMetrics()
-                                              .snapshot()
-                                              .stream()
-                                              .flatMap(snapshot -> snapshot.slowInvocations().stream()
-                                                                                           .map(slow -> toSlowInvocation(snapshot,
-                                                                                                                         slow)))
-                                              .toList();
+        var slowInvocations = nodeSupplier.get().invocationMetrics().snapshot().stream().flatMap(snapshot -> snapshot.slowInvocations()
+                                                                                                                     .stream()
+                                                                                                                     .map(slow -> toSlowInvocation(snapshot,
+                                                                                                                                                   slow))).toList();
         return new SlowInvocationsResponse(slowInvocations);
     }
 
@@ -275,23 +272,29 @@ public final class MetricsRoutes implements RouteSource {
         var historicalData = node.metricsCollector().historicalMetrics();
         var cutoff = System.currentTimeMillis() - parseTimeRange(range);
         Map<String, List<Map<String, Object>>> nodes = new HashMap<>();
+
         for (var nodeEntry : historicalData.entrySet()) {
             var snapshots = new ArrayList<Map<String, Object>>();
+
             for (var snapshot : nodeEntry.getValue()) {
                 if (snapshot.timestamp() <cutoff) continue;
+
                 var point = new HashMap<String, Object>();
                 point.put("timestamp", snapshot.timestamp());
                 point.put("metrics", snapshot.metrics());
                 snapshots.add(point);
             }
-            if (!snapshots.isEmpty()) {nodes.put(nodeEntry.getKey().id(),
-                                                 snapshots);}
+            if (!snapshots.isEmpty()) {
+                nodes.put(nodeEntry.getKey().id(),
+                          snapshots);
+            }
         }
+
         return Map.of("timeRange", range, "nodes", nodes);
     }
 
     private static long parseTimeRange(String range) {
-        return switch (range){
+        return switch (range) {
             case "5m" -> 5 * 60 * 1000L;
             case "15m" -> 15 * 60 * 1000L;
             case "1h" -> 60 * 60 * 1000L;
@@ -303,7 +306,8 @@ public final class MetricsRoutes implements RouteSource {
     private StrategyResponse buildStrategyResponse() {
         var node = nodeSupplier.get();
         var strategy = node.invocationMetrics().thresholdStrategy();
-        return switch (strategy){
+
+        return switch (strategy) {
             case ThresholdStrategy.Fixed f -> new StrategyResponse.Fixed("fixed", f.thresholdNs() / 1_000_000);
             case ThresholdStrategy.Adaptive a -> new StrategyResponse.Adaptive("adaptive",
                                                                                a.minThresholdNs() / 1_000_000,

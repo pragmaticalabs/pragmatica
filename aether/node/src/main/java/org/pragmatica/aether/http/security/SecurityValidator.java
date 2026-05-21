@@ -47,8 +47,7 @@ public interface SecurityValidator {
 
     static SecurityValidator noOpValidator() {
         var systemContext = SecurityContext.securityContext(Principal.principal("system",
-                                                                                Principal.PrincipalType.SERVICE)
-        .unwrap(),
+                                                                                Principal.PrincipalType.SERVICE).unwrap(),
                                                             Set.of(Role.ADMIN, Role.SERVICE),
                                                             Map.of());
         return (_, _) -> Result.success(systemContext);

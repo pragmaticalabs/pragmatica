@@ -29,8 +29,9 @@ import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
 
-@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class}) public sealed interface NodeCodecs {
-    record unused() implements NodeCodecs{}
+@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class})
+public sealed interface NodeCodecs {
+    record unused() implements NodeCodecs {}
 
     static SliceCodec nodeCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();
@@ -61,6 +62,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         all.add(uuidCodec());
         all.add(isoDateTimeCodec());
         var requiredTypes = collectRequiredTypes();
+
         return SliceCodec.sliceCodec(parent, all, requiredTypes);
     }
 
@@ -75,6 +77,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         types.add(NonBlankString.class);
         types.add(Uuid.class);
         types.add(IsoDateTime.class);
+
         return types;
     }
 

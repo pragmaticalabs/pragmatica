@@ -9,6 +9,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+
 /// Shared parsers for `?state=<x>[+<y>+...]`-style query filters used by management routes.
 ///
 /// The wire contract: a single-state filter (`?state=ACTIVE`) is the common case; multi-state
@@ -34,7 +35,8 @@ public final class RouteFilters {
     /// record. Empty set (e.g. `?state=+`) matches nothing.
     public static Set<String> parseStateFilter(String input) {
         return Arrays.stream(input.split("[+,\\s]+"))
-                     .map(s -> s.trim().toUpperCase(Locale.ROOT))
+                     .map(s -> s.trim()
+                                .toUpperCase(Locale.ROOT))
                      .filter(s -> !s.isEmpty())
                      .collect(Collectors.toUnmodifiableSet());
     }

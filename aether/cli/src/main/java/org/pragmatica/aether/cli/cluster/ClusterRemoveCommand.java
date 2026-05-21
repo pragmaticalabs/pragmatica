@@ -15,16 +15,22 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
 
-@Command(name = "remove", description = "Remove a cluster from the registry") @SuppressWarnings("JBCT-RET-01") class ClusterRemoveCommand implements Callable<Integer> {
-    @Parameters(index = "0", description = "Cluster name to remove") private String name;
+@Command(name = "remove", description = "Remove a cluster from the registry")
+@SuppressWarnings("JBCT-RET-01")
+class ClusterRemoveCommand implements Callable<Integer> {
+    @Parameters(index = "0", description = "Cluster name to remove")
+    private String name;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Override public Integer call() {
-        return ClusterRegistry.load().flatMap(registry -> registry.remove(name))
-                                   .flatMap(ClusterRegistry::save)
-                                   .fold(ClusterRemoveCommand::onFailure,
-                                         _ -> onSuccess());
+    @Override
+    public Integer call() {
+        return ClusterRegistry.load()
+                              .flatMap(registry -> registry.remove(name))
+                              .flatMap(ClusterRegistry::save)
+                              .fold(ClusterRemoveCommand::onFailure,
+                                    _ -> onSuccess());
     }
 
     private int onSuccess() {
@@ -35,6 +41,7 @@ import picocli.CommandLine.Parameters;
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

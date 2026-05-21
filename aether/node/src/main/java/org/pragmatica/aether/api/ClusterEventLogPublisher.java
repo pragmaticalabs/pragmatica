@@ -76,9 +76,9 @@ public final class ClusterEventLogPublisher {
     }
 
     public static ClusterEventLogPublisher clusterEventLogPublisher(NodeId selfId,
-                                                                     HlcClock hlcClock,
-                                                                     LongSupplier epochSupplier,
-                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+                                                                    HlcClock hlcClock,
+                                                                    LongSupplier epochSupplier,
+                                                                    Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         return new ClusterEventLogPublisher(selfId,
                                             hlcClock,
                                             epochSupplier,
@@ -89,12 +89,12 @@ public final class ClusterEventLogPublisher {
     }
 
     public static ClusterEventLogPublisher clusterEventLogPublisher(NodeId selfId,
-                                                                     HlcClock hlcClock,
-                                                                     LongSupplier epochSupplier,
-                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                                                     int tokensPerSec,
-                                                                     int burst,
-                                                                     LongSupplier nanoClock) {
+                                                                    HlcClock hlcClock,
+                                                                    LongSupplier epochSupplier,
+                                                                    Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                                    int tokensPerSec,
+                                                                    int burst,
+                                                                    LongSupplier nanoClock) {
         return new ClusterEventLogPublisher(selfId, hlcClock, epochSupplier, applier, tokensPerSec, burst, nanoClock);
     }
 
@@ -106,7 +106,8 @@ public final class ClusterEventLogPublisher {
 
     /// Reset the seq counter to 0. Called by `ClusterEventLogSweeper` on epoch advance so
     /// `(epoch, seq)` pairs stay tight within an epoch window.
-    @Contract public void resetSeqForNewEpoch() {
+    @Contract
+    public void resetSeqForNewEpoch() {
         seq.set(0L);
     }
 
@@ -120,26 +121,35 @@ public final class ClusterEventLogPublisher {
                                  Map<String, String> metadata) {
         if (!bucket.tryAcquire()) {
             var dropped = droppedCount.incrementAndGet();
+
             if (dropped == 1 || (dropped % 100) == 0) {
                 log.warn("ClusterEventLogPublisher: rate-cap exceeded, event dropped (total dropped={}, type={})",
-                         dropped, type);
+                         dropped,
+                         type);
             }
+
             return Promise.success(Unit.unit());
         }
+
         var at = hlcClock.now();
         var epoch = epochSupplier.getAsLong();
         var nextSeq = seq.getAndIncrement();
         var key = ClusterEventLogKey.clusterEventLogKey(epoch, selfId, nextSeq);
         var value = ClusterEventValue.clusterEventValue(at, type, severity, selfId.id(), message, metadata);
+
         return applier.apply(List.of(asAetherCommand(key, value)))
                       .mapToUnit()
                       .onFailure(cause -> log.warn("ClusterEventLogPublisher: apply failed for type={} epoch={} nodeId={} seq={}: {}",
-                                                    type, epoch, selfId.id(), nextSeq, cause.message()));
+                                                   type,
+                                                   epoch,
+                                                   selfId.id(),
+                                                   nextSeq,
+                                                   cause.message()));
     }
 
-    @SuppressWarnings("unchecked") private static KVCommand<AetherKey> asAetherCommand(ClusterEventLogKey key,
-                                                                                        ClusterEventValue value) {
-        return (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(key, value);
+    @SuppressWarnings("unchecked")
+    private static KVCommand<AetherKey> asAetherCommand(ClusterEventLogKey key, ClusterEventValue value) {
+        return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(key, value);
     }
 
     /// Lock-free token bucket. `tokens` holds an integer scaled by `NANOS_PER_SEC` so
@@ -165,7 +175,8 @@ public final class ClusterEventLogPublisher {
             refill();
             while (true) {
                 var current = scaledTokens.get();
-                if (current < NANOS_PER_SEC) {return false;}
+
+                if (current <NANOS_PER_SEC) {return false;}
                 if (scaledTokens.compareAndSet(current, current - NANOS_PER_SEC)) {return true;}
             }
         }
@@ -174,7 +185,9 @@ public final class ClusterEventLogPublisher {
             var now = nanoClock.getAsLong();
             var last = lastRefillNanos.getAndSet(now);
             var elapsed = now - last;
+
             if (elapsed <= 0L) {return;}
+
             var added = elapsed * refillPerNano;
             scaledTokens.accumulateAndGet(added, (cur, add) -> Math.min(capacity, cur + add));
         }

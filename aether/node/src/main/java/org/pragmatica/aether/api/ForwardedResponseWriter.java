@@ -16,28 +16,27 @@ import java.util.concurrent.ConcurrentHashMap;
 
 final class ForwardedResponseWriter implements ResponseWriter {
     private final Map<String, String> responseHeaders = new ConcurrentHashMap<>();
-
     private final Promise<HttpResponseData> completionPromise = Promise.promise();
-
     private volatile int statusCode = HttpStatus.INTERNAL_SERVER_ERROR.code();
-
     private volatile byte[] responseBody = new byte[0];
 
     static ForwardedResponseWriter forwardedResponseWriter() {
         return new ForwardedResponseWriter();
     }
 
-    @SuppressWarnings("JBCT-RET-01") @Override public void write(HttpStatus status,
-                                                                 byte[] body,
-                                                                 ContentType contentType) {
+    @SuppressWarnings("JBCT-RET-01")
+    @Override
+    public void write(HttpStatus status, byte[] body, ContentType contentType) {
         this.statusCode = status.code();
         this.responseBody = body;
         responseHeaders.put("Content-Type", contentType.headerText());
         completionPromise.succeed(new HttpResponseData(statusCode, Map.copyOf(responseHeaders), responseBody));
     }
 
-    @Override public ResponseWriter header(String name, String value) {
+    @Override
+    public ResponseWriter header(String name, String value) {
         responseHeaders.put(name, value);
+
         return this;
     }
 

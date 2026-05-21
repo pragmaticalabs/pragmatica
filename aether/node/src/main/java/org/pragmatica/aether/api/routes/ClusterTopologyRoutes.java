@@ -56,54 +56,56 @@ public final class ClusterTopologyRoutes implements RouteSource {
         return new ClusterTopologyRoutes(nodeSupplier);
     }
 
-    @Override public Stream<Route<?>> routes() {
+    @Override
+    public Stream<Route<?>> routes() {
         Handler<ClusterTopologyStatusResponse> topologyHandler = _ -> buildTopologyStatus();
-        return Stream.of(ManagementRoutes.<ClusterTopologyStatusResponse>route(ManagementRoute.CLUSTER_TOPOLOGY)
-                                         .toJson(topologyHandler),
-                         ManagementRoutes.<GovernorsResponse>route(ManagementRoute.CLUSTER_GOVERNORS)
-                                         .toJson(this::buildGovernorsResponse),
-                         ManagementRoutes.<CircuitBreakerStatusResponse>route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS)
-                                         .toJson(_ -> buildCircuitBreakerStatus()),
-                         ManagementRoutes.<CircuitBreakerResetResponse>route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET)
-                                         .toJson(_ -> resetCircuitBreaker()),
-                         ManagementRoutes.<AutoHealStatusResponse>route(ManagementRoute.CLUSTER_AUTO_HEAL_STATUS)
-                                         .toJson(_ -> buildAutoHealStatus()),
-                         ManagementRoutes.<AutoHealToggleResponse>route(ManagementRoute.CLUSTER_AUTO_HEAL_ENABLE)
-                                         .toJson(_ -> setAutoHeal(true)),
-                         ManagementRoutes.<AutoHealToggleResponse>route(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE)
-                                         .toJson(_ -> setAutoHeal(false)));
+
+        return Stream.of(ManagementRoutes.<ClusterTopologyStatusResponse> route(ManagementRoute.CLUSTER_TOPOLOGY).toJson(topologyHandler),
+                         ManagementRoutes.<GovernorsResponse> route(ManagementRoute.CLUSTER_GOVERNORS).toJson(this::buildGovernorsResponse),
+                         ManagementRoutes.<CircuitBreakerStatusResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS).toJson(_ -> buildCircuitBreakerStatus()),
+                         ManagementRoutes.<CircuitBreakerResetResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET).toJson(_ -> resetCircuitBreaker()),
+                         ManagementRoutes.<AutoHealStatusResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_STATUS).toJson(_ -> buildAutoHealStatus()),
+                         ManagementRoutes.<AutoHealToggleResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_ENABLE).toJson(_ -> setAutoHeal(true)),
+                         ManagementRoutes.<AutoHealToggleResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE).toJson(_ -> setAutoHeal(false)));
     }
 
     private Promise<CircuitBreakerStatusResponse> buildCircuitBreakerStatus() {
         return ctmOpt().map(ctm -> {
-            var state = ctm.circuitBreakerState();
-            return new CircuitBreakerStatusResponse(state.consecutiveFailures(),
-                                                    state.trippedAt(),
-                                                    state.nextAllowedMs(),
-                                                    state.tripped());
-        }).async(CTM_UNAVAILABLE);
+                                var state = ctm.circuitBreakerState();
+                                return new CircuitBreakerStatusResponse(state.consecutiveFailures(),
+                                                                        state.trippedAt(),
+                                                                        state.nextAllowedMs(),
+                                                                        state.tripped());
+                            })
+                     .async(CTM_UNAVAILABLE);
     }
 
     private Promise<CircuitBreakerResetResponse> resetCircuitBreaker() {
         return ctmOpt().map(ctm -> {
-            var prior = ctm.resetCircuitBreaker("/api/cluster/topology/circuit-breaker/reset");
-            return new CircuitBreakerResetResponse("reset", prior);
-        }).async(CTM_UNAVAILABLE);
+                                var prior = ctm.resetCircuitBreaker("/api/cluster/topology/circuit-breaker/reset");
+                                return new CircuitBreakerResetResponse("reset", prior);
+                            })
+                     .async(CTM_UNAVAILABLE);
     }
 
     private Promise<AutoHealStatusResponse> buildAutoHealStatus() {
         return ctmOpt().map(ctm -> new AutoHealStatusResponse(ctm.isAutoHealEnabled()))
-                              .async(CTM_UNAVAILABLE);
+                     .async(CTM_UNAVAILABLE);
     }
 
     private Promise<AutoHealToggleResponse> setAutoHeal(boolean enabled) {
-        var reason = "/api/cluster/topology/auto-heal/" + (enabled ? "enable" : "disable");
-        return ctmOpt().map(ctm -> new AutoHealToggleResponse(enabled, ctm.setAutoHealEnabled(enabled, reason)))
-                              .async(CTM_UNAVAILABLE);
+        var reason = "/api/cluster/topology/auto-heal/" + (enabled
+                                                           ? "enable"
+                                                           : "disable");
+
+        return ctmOpt().map(ctm -> new AutoHealToggleResponse(enabled,
+                                                              ctm.setAutoHealEnabled(enabled, reason)))
+                     .async(CTM_UNAVAILABLE);
     }
 
     private Option<ClusterTopologyManager> ctmOpt() {
-        return nodeSupplier.get().clusterTopologyManager();
+        return nodeSupplier.get()
+                           .clusterTopologyManager();
     }
 
     private static final Cause CTM_UNAVAILABLE = Causes.cause("Cluster topology manager not available on this node (not the leader, or node not yet activated)");
@@ -111,17 +113,15 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private GovernorsResponse buildGovernorsResponse() {
         var node = nodeSupplier.get();
         var governors = new ArrayList<GovernorInfo>();
-        node.kvStore()
-                    .forEach(GovernorAnnouncementKey.class,
-                             GovernorAnnouncementValue.class,
-                             (key, value) -> governors.add(toGovernorInfo(key, value)));
+        node.kvStore().forEach(GovernorAnnouncementKey.class,
+                               GovernorAnnouncementValue.class,
+                               (key, value) -> governors.add(toGovernorInfo(key, value)));
+
         return new GovernorsResponse(List.copyOf(governors));
     }
 
     private static GovernorInfo toGovernorInfo(GovernorAnnouncementKey key, GovernorAnnouncementValue value) {
-        var memberIds = value.members().stream()
-                                     .map(NodeId::id)
-                                     .toList();
+        var memberIds = value.members().stream().map(NodeId::id).toList();
         return new GovernorInfo(value.governorId().id(),
                                 key.communityId(),
                                 value.memberCount(),
@@ -130,8 +130,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
     private Promise<ClusterTopologyStatusResponse> buildTopologyStatus() {
         var node = nodeSupplier.get();
-        return Promise.success(node.currentGenerationSnapshot().map(snapshot -> assembleTopologyStatus(node, snapshot))
-                                                             .or(() -> assembleFromTopologyManager(node)));
+
+        return Promise.success(node.currentGenerationSnapshot()
+                                   .map(snapshot -> assembleTopologyStatus(node, snapshot))
+                                   .or(() -> assembleFromTopologyManager(node)));
     }
 
     private static ClusterTopologyStatusResponse assembleFromTopologyManager(ManageableNode node) {
@@ -146,11 +148,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
         // yet. Without this filter, killed-then-replaced peers leak into the topology
         // response as ACTIVE/HEALTHY, breaking `pick_non_leader` and any consumer that
         // counts on-duty cores from the topology projection (12-network, 02-chaos).
-        var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
-                                           .filter(id -> isHealthy(topologyManager, id))
-                                           .filter(id -> isLiveLifecycle(membershipView, id))
-                                           .map(NodeId::id)
-                                           .toList();
+        var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id)).filter(id -> isHealthy(topologyManager,
+                                                                                                                  id)).filter(id -> isLiveLifecycle(membershipView,
+                                                                                                                                                    id)).map(NodeId::id).toList();
         // H.2 (spec §H): coreCount derives from MembershipView (SWIM ∪ KV-overrides).
         // RC1 reachability-aggregator landing: replace per-reader local QUIC view
         // (network.connectedPeers()) with the leader-broadcast cluster-canonical
@@ -161,11 +161,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                              node.metricsCollector().lastReachabilitySnapshot(),
                                              selfId);
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
-        var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id))
-                                           .map(id -> buildNodeDetail(topologyManager,
-                                                                        id,
-                                                                        connectedPeers.contains(id)))
-                                           .toList();
+        var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id)).map(id -> buildNodeDetail(topologyManager,
+                                                                                                                          id,
+                                                                                                                          connectedPeers.contains(id))).toList();
+
         return new ClusterTopologyStatusResponse(coreCount,
                                                  topologyConfig.coreMax(),
                                                  topologyConfig.coreMin(),
@@ -174,7 +173,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  coreNodeIds,
                                                  connectedPeers.size(),
                                                  nodeDetails,
-                                                 Option.<String>none(),
+                                                 Option.<String> none(),
                                                  topologyMode(topologyManager));
     }
 
@@ -186,11 +185,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var selfId = node.self();
         var allNodeIds = topologyManager.topology();
         var membershipView = node.membershipView();
-        var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
-                                           .filter(id -> isHealthy(topologyManager, id))
-                                           .filter(id -> isLiveLifecycle(membershipView, id))
-                                           .map(NodeId::id)
-                                           .toList();
+        var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id)).filter(id -> isHealthy(topologyManager,
+                                                                                                                  id)).filter(id -> isLiveLifecycle(membershipView,
+                                                                                                                                                    id)).map(NodeId::id).toList();
         // H.2 (spec §H): prefer the MembershipView-derived count; fall back to the snapshot
         // helper if the view is empty (e.g., during very-early bootstrap before SWIM has
         // admitted self). The snapshot helper also now honours SWIM-derived ON_DUTY via the
@@ -199,14 +196,15 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var viewCount = reachableOnDutyCount(node.membershipView(),
                                              node.metricsCollector().lastReachabilitySnapshot(),
                                              selfId);
-        var coreCount = viewCount > 0 ? viewCount : snapshotCoreCount(snapshot);
+        var coreCount = viewCount > 0
+                        ? viewCount
+                        : snapshotCoreCount(snapshot);
         var epoch = Option.some(snapshot.epoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
-        var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id))
-                                           .map(id -> buildNodeDetail(topologyManager,
-                                                                        id,
-                                                                        connectedPeers.contains(id)))
-                                           .toList();
+        var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id)).map(id -> buildNodeDetail(topologyManager,
+                                                                                                                          id,
+                                                                                                                          connectedPeers.contains(id))).toList();
+
         return new ClusterTopologyStatusResponse(coreCount,
                                                  topologyConfig.coreMax(),
                                                  topologyConfig.coreMin(),
@@ -234,11 +232,13 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                             Option<AggregatedReachabilitySnapshot> snapshot,
                                             NodeId selfId) {
         int count = 0;
+
         for (NodeId peer : view.onDutyPeers()) {
             if (peer.equals(selfId) || isReachable(snapshot, peer)) {
                 count++;
             }
         }
+
         return count;
     }
 
@@ -248,8 +248,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
     private static String topologyMode(TopologyManager tm) {
         return (tm instanceof TopologyObserver observer)
-              ? observer.topologyMode().name()
-              : TopologyObserver.TopologyMode.NORMAL.name();
+               ? observer.topologyMode()
+                         .name()
+               : TopologyObserver.TopologyMode.NORMAL.name();
     }
 
     private static int snapshotCoreCount(ClusterGenerationSnapshot snapshot) {
@@ -258,25 +259,24 @@ public final class ClusterTopologyRoutes implements RouteSource {
         // whose `healthHint` is `HEALTHY` (i.e. SWIM-derived: lifecycle may be absent or
         // any non-terminal state). Falls back to the legacy strict-`ON_DUTY` predicate
         // when neither is present.
-        return (int) snapshot.coreMembers().values()
-                                         .stream()
-                                         .filter(member -> isEffectiveOnDuty(member))
-                                         .count();
+        return (int) snapshot.coreMembers()
+                             .values()
+                             .stream()
+                             .filter(member -> isEffectiveOnDuty(member))
+                             .count();
     }
 
     private static boolean isEffectiveOnDuty(org.pragmatica.aether.slice.generation.CoreMember member) {
-        if (member.lifecycle() == NodeLifecycleState.DRAINING
-            || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED
-            || member.lifecycle() == NodeLifecycleState.FAILED_DRAIN
-            || member.lifecycle() == NodeLifecycleState.SHUTTING_DOWN) {
+        if (member.lifecycle() == NodeLifecycleState.DRAINING || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED || member.lifecycle() == NodeLifecycleState.FAILED_DRAIN || member.lifecycle() == NodeLifecycleState.SHUTTING_DOWN) {
             return false;
         }
         return member.healthHint() == HealthHint.HEALTHY || member.lifecycle() == NodeLifecycleState.ON_DUTY;
     }
 
     private static boolean isHealthy(TopologyManager tm, NodeId id) {
-        return tm.getState(id).map(state -> state.health() == NodeHealth.HEALTHY)
-                          .or(false);
+        return tm.getState(id)
+                 .map(state -> state.health() == NodeHealth.HEALTHY)
+                 .or(false);
     }
 
     /// True when the peer's effective lifecycle keeps it in the operational topology.
@@ -286,23 +286,22 @@ public final class ClusterTopologyRoutes implements RouteSource {
     /// targets, valid CTM provisioning slots, and valid `/api/cluster/topology` rows.
     private static boolean isLiveLifecycle(MembershipView membershipView, NodeId id) {
         var status = membershipView.statusOf(id);
-        return status == MemberStatus.JOINING
-            || status == MemberStatus.ON_DUTY
-            || status == MemberStatus.DRAINING;
+
+        return status == MemberStatus.JOINING || status == MemberStatus.ON_DUTY || status == MemberStatus.DRAINING;
     }
 
     private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected) {
         var info = tm.get(nodeId);
         var state = tm.getState(nodeId);
-        var role = info.map(NodeInfo::role).map(Enum::name)
-                           .or("UNKNOWN");
-        var health = state.map(NodeState::health).map(Enum::name)
-                              .or(connected
-                                  ? "CONNECTED"
-                                  : "UNKNOWN");
+        var role = info.map(NodeInfo::role).map(Enum::name).or("UNKNOWN");
+        var health = state.map(NodeState::health).map(Enum::name).or(connected
+                                                                     ? "CONNECTED"
+                                                                     : "UNKNOWN");
         var hostname = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_HOSTNAME))).or("");
         var zone = info.flatMap(i -> Option.option(i.labels().get(NodeInfo.LABEL_ZONE))).or("");
-        var address = info.map(i -> i.address().asString()).or("");
+        var address = info.map(i -> i.address()
+                                     .asString()).or("");
+
         return new TopologyNodeDetail(nodeId.id(), role, health, hostname, zone, address);
     }
 }

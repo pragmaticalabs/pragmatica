@@ -14,7 +14,8 @@ public sealed interface CreatedResource {
             return new ProvisionedVm(provider, resourceId, sourceName, role);
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "VM " + resourceId + " (" + sourceName + "/" + role + ")";
         }
     }
@@ -28,7 +29,8 @@ public sealed interface CreatedResource {
             return new FirewallRule(provider, resourceId, sourceName, port, protocol);
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Firewall rule " + resourceId + " (" + sourceName + " port " + port + "/" + protocol + ")";
         }
     }
@@ -38,15 +40,18 @@ public sealed interface CreatedResource {
             return new FloatingIpAssignment(provider, floatingIp, targetNodeId);
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Floating IP " + floatingIp + " -> " + targetNodeId;
         }
 
-        @Override public String resourceId() {
+        @Override
+        public String resourceId() {
             return floatingIp;
         }
 
-        @Override public String provider() {
+        @Override
+        public String provider() {
             return "cloud";
         }
     }
@@ -56,15 +61,18 @@ public sealed interface CreatedResource {
             return new DockerContainer(containerId, sourceName);
         }
 
-        @Override public String provider() {
+        @Override
+        public String provider() {
             return "docker";
         }
 
-        @Override public String resourceId() {
+        @Override
+        public String resourceId() {
             return containerId;
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Container " + containerId + " (" + sourceName + ")";
         }
     }
@@ -74,11 +82,13 @@ public sealed interface CreatedResource {
             return new SshKeyResource(provider, sshKeyId, name);
         }
 
-        @Override public String resourceId() {
+        @Override
+        public String resourceId() {
             return Long.toString(sshKeyId);
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "SSH key " + sshKeyId + " (" + name + ", provider=" + provider + ")";
         }
     }
@@ -88,15 +98,18 @@ public sealed interface CreatedResource {
             return new SshDeployedConfig(host, remotePath);
         }
 
-        @Override public String provider() {
+        @Override
+        public String provider() {
             return "ssh";
         }
 
-        @Override public String resourceId() {
+        @Override
+        public String resourceId() {
             return host + ":" + remotePath;
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Config " + remotePath + " on " + host;
         }
     }

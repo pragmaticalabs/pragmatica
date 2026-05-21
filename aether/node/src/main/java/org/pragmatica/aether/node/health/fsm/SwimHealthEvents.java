@@ -15,25 +15,25 @@ import org.pragmatica.swim.SwimTransport;
 
 
 public sealed interface SwimHealthEvents {
-    record StartRequested() implements SwimHealthEvents{}
+    record StartRequested() implements SwimHealthEvents {}
 
-    record ProtocolReady(SwimProtocol swim, SwimTransport transport, GossipEncryptor encryptor) implements SwimHealthEvents{}
+    record ProtocolReady(SwimProtocol swim, SwimTransport transport, GossipEncryptor encryptor) implements SwimHealthEvents {}
 
-    record StartFailed() implements SwimHealthEvents{}
+    record StartFailed() implements SwimHealthEvents {}
 
-    record StopRequested() implements SwimHealthEvents{}
+    record StopRequested() implements SwimHealthEvents {}
 
-    record PeerConnected(NodeId peer, Option<NodeInfo> info) implements SwimHealthEvents{}
+    record PeerConnected(NodeId peer, Option<NodeInfo> info) implements SwimHealthEvents {}
 
-    record PeerJoined(SwimMember member) implements SwimHealthEvents{}
+    record PeerJoined(SwimMember member) implements SwimHealthEvents {}
 
-    record PeerSuspect(SwimMember member) implements SwimHealthEvents{}
+    record PeerSuspect(SwimMember member) implements SwimHealthEvents {}
 
-    record PeerFaulty(SwimMember member) implements SwimHealthEvents{}
+    record PeerFaulty(SwimMember member) implements SwimHealthEvents {}
 
-    record PeerLeft(NodeId peer) implements SwimHealthEvents{}
+    record PeerLeft(NodeId peer) implements SwimHealthEvents {}
 
-    record LeaderChanged(Option<NodeId> leader) implements SwimHealthEvents{}
+    record LeaderChanged(Option<NodeId> leader) implements SwimHealthEvents {}
 
-    record ReportHint(NodeId peer, HealthHint hint) implements SwimHealthEvents{}
+    record ReportHint(NodeId peer, HealthHint hint) implements SwimHealthEvents {}
 }

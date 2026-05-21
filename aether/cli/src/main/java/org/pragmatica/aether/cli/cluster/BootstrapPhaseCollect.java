@@ -14,19 +14,18 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface BootstrapPhaseCollect {
-    record unused() implements BootstrapPhaseCollect{}
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+sealed interface BootstrapPhaseCollect {
+    record unused() implements BootstrapPhaseCollect {}
 
     static Result<BootstrapContext> execute(BootstrapContext ctx) {
         ClusterBootstrapOrchestrator.logPhase(COLLECT_ADDRESSES,
                                               "Collecting addresses from %d provisioned node(s)",
                                               ctx.nodes().size());
-        var addresses = ctx.nodes().stream()
-                                 .map(BootstrapPhaseCollect::nodeToAddress)
-                                 .toList();
-        var addressStrings = addresses.stream().map(NodeAddress::publicIp)
-                                             .toList();
+        var addresses = ctx.nodes().stream().map(BootstrapPhaseCollect::nodeToAddress).toList();
+        var addressStrings = addresses.stream().map(NodeAddress::publicIp).toList();
         var updatedState = ctx.state().withCollectedAddresses(addressStrings);
+
         return success(ctx.withAddresses(addresses).withState(updatedState));
     }
 

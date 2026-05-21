@@ -15,7 +15,8 @@ import java.util.List;
 import java.util.function.Function;
 
 
-@SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"}) public class Prompt {
+@SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01"})
+public class Prompt {
     private final BufferedReader reader;
     private final PrintStream out;
 
@@ -31,9 +32,10 @@ import java.util.function.Function;
     public String readLine() {
         try {
             var line = reader.readLine();
+
             return line == null
-                  ? ""
-                  : line.trim();
+                   ? ""
+                   : line.trim();
         } catch (IOException _) {
             return "";
         }
@@ -41,49 +43,58 @@ import java.util.function.Function;
 
     public String prompt(String question, String defaultValue) {
         var hint = defaultValue == null || defaultValue.isEmpty()
-                  ? ": "
-                  : " [" + defaultValue + "]: ";
+                   ? ": "
+                   : " [" + defaultValue + "]: ";
         out.print(question + hint);
         out.flush();
         var input = readLine();
+
         return input.isEmpty() && defaultValue != null
-              ? defaultValue
-              : input;
+               ? defaultValue
+               : input;
     }
 
     public boolean confirm(String question, boolean defaultYes) {
         var hint = defaultYes
-                  ? "[Y/n]"
-                  : "[y/N]";
+                   ? "[Y/n]"
+                   : "[y/N]";
         out.print(question + " " + hint + " ");
         out.flush();
         var input = readLine().toLowerCase();
+
         if (input.isEmpty()) {return defaultYes;}
+
         return "y".equals(input) || "yes".equals(input);
     }
 
     public <T> T choice(String question, List<T> options, T defaultOption) {
         if (options.isEmpty()) {throw new IllegalArgumentException("choice() requires at least one option");}
+
         var defaultIdx = options.indexOf(defaultOption);
+
         while (true) {
             out.println(question);
+
             for (int i = 0;i <options.size();i++) {
                 var marker = i == defaultIdx
-                            ? "*"
-                            : " ";
+                             ? "*"
+                             : " ";
                 out.println("  " + marker + " " + (i + 1) + ") " + options.get(i));
             }
+
             var hint = defaultIdx >= 0
-                      ? " [" + (defaultIdx + 1) + "]: "
-                      : ": ";
+                       ? " [" + (defaultIdx + 1) + "]: "
+                       : ": ";
             out.print("Choice" + hint);
             out.flush();
             var input = readLine();
+
             if (input.isEmpty() && defaultIdx >= 0) {return options.get(defaultIdx);}
             try {
                 var idx = Integer.parseInt(input) - 1;
                 if (idx >= 0 && idx <options.size()) {return options.get(idx);}
             } catch (NumberFormatException ignored) {}
+
             out.println("  Please pick a number 1-" + options.size() + ".");
         }
     }
@@ -92,10 +103,14 @@ import java.util.function.Function;
         while (true) {
             var raw = prompt(question, defaultValue);
             var result = validator.apply(raw);
-            if (result.isSuccess()) {return result.fold(_ -> {
-                                                            throw new AssertionError("isSuccess but fold-failure ran");
-                                                        },
-                                                        value -> value);}
+
+            if (result.isSuccess()) {
+                return result.fold(_ -> {
+                                       throw new AssertionError("isSuccess but fold-failure ran");
+                                   },
+                                   value -> value);
+            }
+
             result.onFailure(cause -> out.println("  ✗ " + cause.message()));
         }
     }

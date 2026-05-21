@@ -59,25 +59,18 @@ import org.slf4j.LoggerFactory;
 /// `ConnectionFailed`) would N-fold duplicate if every node published them. Per spec §3.6
 /// only the leader publishes those — node-derived events (`AccessDenied`, etc.) publish from
 /// the originator and the key carries the originator nodeId for cluster-wide dedup.
-@SuppressWarnings("JBCT-RET-01") public final class ClusterEventAggregator {
+@SuppressWarnings("JBCT-RET-01")
+public final class ClusterEventAggregator {
     private static final Logger log = LoggerFactory.getLogger(ClusterEventAggregator.class);
-
     private static final IntSupplier UNKNOWN_CLUSTER_SIZE = () -> - 1;
-
     private static final BooleanSupplier ALWAYS_LEADER = () -> true;
 
     private final RingBuffer<ClusterEvent> buffer;
-
     private final AtomicLong quorumSequence = new AtomicLong();
-
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
-
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
-
     private final ConcurrentHashMap<NodeId, NodeLifecycleState> lastLifecycleState = new ConcurrentHashMap<>();
-
     private final IntSupplier clusterSizeSupplier;
-
     private final PublisherShape publisher;
 
     private final BooleanSupplier isLeaderSupplier;
@@ -108,10 +101,7 @@ import org.slf4j.LoggerFactory;
 
     public static ClusterEventAggregator clusterEventAggregator(ClusterEventAggregatorConfig config,
                                                                 IntSupplier clusterSizeSupplier) {
-        return new ClusterEventAggregator(config,
-                                          clusterSizeSupplier,
-                                          NullPublisher.INSTANCE,
-                                          ALWAYS_LEADER);
+        return new ClusterEventAggregator(config, clusterSizeSupplier, NullPublisher.INSTANCE, ALWAYS_LEADER);
     }
 
     /// Production factory: wires the cluster-scoped publisher and the isLeader gate (for
@@ -142,7 +132,9 @@ import org.slf4j.LoggerFactory;
     private static boolean isAfter(ClusterEvent event, long sinceEpoch, long sinceSeq) {
         var epoch = parseLongOrSentinel(event.details().get("originEpoch"));
         var seq = parseLongOrSentinel(event.details().get("originSeq"));
+
         if (epoch == Long.MIN_VALUE || seq == Long.MIN_VALUE) {return true;}
+
         return epoch > sinceEpoch || (epoch == sinceEpoch && seq > sinceSeq);
     }
 
@@ -151,13 +143,15 @@ import org.slf4j.LoggerFactory;
     /// throwing parse in a single-call boundary.
     private static long parseLongOrSentinel(String raw) {
         if (raw == null) {return Long.MIN_VALUE;}
-        return org.pragmatica.lang.parse.Number.parseLong(raw).or(Long.MIN_VALUE);
+        return org.pragmatica.lang.parse.Number.parseLong(raw)
+                                               .or(Long.MIN_VALUE);
     }
 
     /// Signal that snapshot replay is complete and subsequent commits should be treated as
     /// fresh post-startup events. Called by AetherNode lifecycle wiring once `clusterNode`
     /// reports replay-complete (or after a quiet-window heuristic).
-    @Contract public void markReplayComplete() {
+    @Contract
+    public void markReplayComplete() {
         if (replayActive) {
             replayActive = false;
             log.info("ClusterEventAggregator: snapshot replay complete, downstream sinks active");
@@ -169,7 +163,8 @@ import org.slf4j.LoggerFactory;
     /// started; `replayActive` is true throughout. After `markReplayComplete()` every
     /// arrival is post-startup and may fan out to downstream sinks (TODO: wire those once
     /// the OB1/OB2 integration test confirms the core ordering invariant).
-    @Contract public void onClusterEventLogPut(ValuePut<ClusterEventLogKey, ClusterEventValue> put) {
+    @Contract
+    public void onClusterEventLogPut(ValuePut<ClusterEventLogKey, ClusterEventValue> put) {
         var key = put.cause().key();
         var value = put.cause().value();
         var event = projectToEvent(key, value);
@@ -182,13 +177,17 @@ import org.slf4j.LoggerFactory;
     private static ClusterEvent projectToEvent(ClusterEventLogKey key, ClusterEventValue value) {
         var base = ClusterEvent.fromValue(value);
         var details = new java.util.HashMap<>(base.details());
-        details.put("originEpoch", Long.toString(key.epoch()));
-        details.put("originSeq", Long.toString(key.seq()));
+        details.put("originEpoch",
+                    Long.toString(key.epoch()));
+        details.put("originSeq",
+                    Long.toString(key.seq()));
         // RC1 follow-up — per-key originator nodeId. The key carries it for cross-node
         // disambiguation (eliminates `(epoch, seq)` collisions when concurrent writers share
         // a per-node seq counter). `originNodeId` from the VALUE remains the user-facing
         // attribution; `keyNodeId` exposes the keyspace owner for cursor diagnostics.
-        details.put("keyNodeId", key.nodeId().id());
+        details.put("keyNodeId",
+                    key.nodeId().id());
+
         return new ClusterEvent(base.timestamp(), base.type(), base.severity(), base.summary(), Map.copyOf(details));
     }
 
@@ -197,8 +196,11 @@ import org.slf4j.LoggerFactory;
     /// decisions. RC1 Step 1: only the LEADER publishes — otherwise every node would emit
     /// the same `PeerJoined` (same physical event) N times into the replicated log.
     public void onPeerJoined(TransportObservation.PeerJoined event) {
-        nodeJoinTimes.put(event.nodeId().id(), System.currentTimeMillis());
+        nodeJoinTimes.put(event.nodeId().id(),
+                          System.currentTimeMillis());
+
         if (!isLeaderSupplier.getAsBoolean()) {return;}
+
         publisher.publish(ClusterEventValue.EventType.NODE_JOINED,
                           ClusterEventValue.Severity.INFO,
                           "Node " + event.nodeId().id() + " joined cluster (now " + event.topology().size() + " nodes)",
@@ -208,21 +210,20 @@ import org.slf4j.LoggerFactory;
                                  String.valueOf(event.topology().size())));
     }
 
-    @Contract public void onSwimObservation(@SuppressWarnings("unused") org.pragmatica.swim.SwimObservation observation) {
-        // Intentional no-op — see ClusterEventAggregator class doc and AetherNode line
-        // ~1283 ("RC1-9 audit Step 4: ClusterEventAggregator no longer subscribes to SWIM
-        // observations directly"). Method retained for legacy wiring sites that still
-        // route the type through `eventAggregator::onSwimObservation`.
-    }
+    @Contract
+    public void onSwimObservation(@SuppressWarnings("unused") org.pragmatica.swim.SwimObservation observation) {}
 
-    @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
+    @Contract
+    public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
         // Membership KV-puts replicated to every node; only leader publishes the derived NODE_FAILED event to avoid cross-cluster fan-out + leader-bound applier failures during transitions.
         if (!isLeaderSupplier.getAsBoolean()) {return;}
+
         var nodeId = put.cause().key().nodeId();
         var newState = put.cause().value().state();
         var prior = lastLifecycleState.put(nodeId, newState);
+
         if (prior == newState) {return;}
-        switch (newState){
+        switch (newState) {
             case DECOMMISSIONED -> emitDecommissionEvent(nodeId.id(), prior);
             case DRAINING -> emitNodeLifecycleChangedEvent(nodeId.id(), prior, newState);
             default -> {}
@@ -241,54 +242,49 @@ import org.slf4j.LoggerFactory;
         publisher.publish(ClusterEventValue.EventType.NODE_LEFT,
                           ClusterEventValue.Severity.INFO,
                           "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
-                          Map.of("nodeId", nodeId,
-                                 "clusterSize", String.valueOf(clusterSize),
-                                 "source", source));
+                          Map.of("nodeId", nodeId, "clusterSize", String.valueOf(clusterSize), "source", source));
     }
 
     private void emitNodeFailedEvent(String nodeId, int clusterSize, String source) {
         publisher.publish(ClusterEventValue.EventType.NODE_FAILED,
                           ClusterEventValue.Severity.CRITICAL,
                           "Node " + nodeId + " failed (cluster size " + clusterSize + ")",
-                          Map.of("nodeId", nodeId,
-                                 "clusterSize", String.valueOf(clusterSize),
-                                 "source", source));
+                          Map.of("nodeId", nodeId, "clusterSize", String.valueOf(clusterSize), "source", source));
     }
 
     private void emitNodeLifecycleChangedEvent(String nodeId, NodeLifecycleState prior, NodeLifecycleState next) {
-        var transition = (prior == null ? "NONE" : prior.name()) + "->" + next.name();
+        var transition = (prior == null
+                          ? "NONE"
+                          : prior.name()) + "->" + next.name();
         publisher.publish(ClusterEventValue.EventType.NODE_LIFECYCLE_CHANGED,
                           ClusterEventValue.Severity.INFO,
                           "Node " + nodeId + " lifecycle: " + transition,
-                          Map.of("nodeId", nodeId,
-                                 "transition", transition,
-                                 "requestedBy", "MembershipFsm"));
+                          Map.of("nodeId", nodeId, "transition", transition, "requestedBy", "MembershipFsm"));
     }
 
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
         if (!isLeaderSupplier.getAsBoolean()) {return;}
         event.leaderId().onPresent(leaderId -> publisher.publish(ClusterEventValue.EventType.LEADER_ELECTED,
-                                                                  ClusterEventValue.Severity.INFO,
-                                                                  "Node " + leaderId.id() + " elected as leader",
-                                                                  Map.of("leaderId", leaderId.id())))
-                            .onEmpty(() -> publisher.publish(ClusterEventValue.EventType.LEADER_LOST,
-                                                              ClusterEventValue.Severity.WARNING,
-                                                              "Leadership lost, election in progress",
-                                                              Map.of()));
+                                                                 ClusterEventValue.Severity.INFO,
+                                                                 "Node " + leaderId.id() + " elected as leader",
+                                                                 Map.of("leaderId", leaderId.id()))).onEmpty(() -> publisher.publish(ClusterEventValue.EventType.LEADER_LOST,
+                                                                                                                                     ClusterEventValue.Severity.WARNING,
+                                                                                                                                     "Leadership lost, election in progress",
+                                                                                                                                     Map.of()));
     }
 
     public void onQuorumStateChange(QuorumStateNotification event) {
         if (!event.advanceSequence(quorumSequence)) {return;}
         if (!isLeaderSupplier.getAsBoolean()) {return;}
-        switch (event.state()){
+        switch (event.state()) {
             case ESTABLISHED -> publisher.publish(ClusterEventValue.EventType.QUORUM_ESTABLISHED,
-                                                   ClusterEventValue.Severity.INFO,
-                                                   "Quorum established",
-                                                   Map.of());
+                                                  ClusterEventValue.Severity.INFO,
+                                                  "Quorum established",
+                                                  Map.of());
             case DISAPPEARED -> publisher.publish(ClusterEventValue.EventType.QUORUM_LOST,
-                                                   ClusterEventValue.Severity.CRITICAL,
-                                                   "Quorum lost",
-                                                   Map.of());
+                                                  ClusterEventValue.Severity.CRITICAL,
+                                                  "Quorum lost",
+                                                  Map.of());
         }
     }
 
@@ -299,7 +295,8 @@ import org.slf4j.LoggerFactory;
         var nodeId = key.nodeId().id();
         var state = value.state();
         var trackingKey = artifact + ":" + nodeId;
-        switch (state){
+
+        switch (state) {
             case LOAD -> handleDeploymentStarted(trackingKey, artifact, nodeId);
             case ACTIVE -> handleDeploymentCompleted(trackingKey, artifact, nodeId);
             case FAILED -> handleDeploymentFailed(trackingKey, artifact, nodeId, value);
@@ -339,40 +336,67 @@ import org.slf4j.LoggerFactory;
         publisher.publish(ClusterEventValue.EventType.SLICE_FAILURE,
                           ClusterEventValue.Severity.CRITICAL,
                           "All instances of " + event.artifact().asString() + ":" + event.method().name() + " failed",
-                          Map.of("artifact", event.artifact().asString(),
-                                 "method", event.method().name(),
-                                 "attemptedNodes", String.valueOf(event.attemptedNodes().size())));
+                          Map.of("artifact",
+                                 event.artifact().asString(),
+                                 "method",
+                                 event.method().name(),
+                                 "attemptedNodes",
+                                 String.valueOf(event.attemptedNodes().size())));
     }
 
     public void onScaledUp(ScalingEvent.ScaledUp event) {
         publisher.publish(ClusterEventValue.EventType.SCALE_UP,
                           ClusterEventValue.Severity.INFO,
-                          event.artifact().asString() + " scaled up from " + event.previousInstances() + " to " + event.newInstances() + " instances",
-                          Map.of("artifact", event.artifact().asString(),
-                                 "previousInstances", String.valueOf(event.previousInstances()),
-                                 "newInstances", String.valueOf(event.newInstances())));
+                          event.artifact().asString()
+                         + " scaled up from " + event.previousInstances()
+                         + " to " + event.newInstances()
+                         + " instances",
+                          Map.of("artifact",
+                                 event.artifact().asString(),
+                                 "previousInstances",
+                                 String.valueOf(event.previousInstances()),
+                                 "newInstances",
+                                 String.valueOf(event.newInstances())));
     }
 
     public void onScaledDown(ScalingEvent.ScaledDown event) {
         publisher.publish(ClusterEventValue.EventType.SCALE_DOWN,
                           ClusterEventValue.Severity.INFO,
-                          event.artifact().asString() + " scaled down from " + event.previousInstances() + " to " + event.newInstances() + " instances",
-                          Map.of("artifact", event.artifact().asString(),
-                                 "previousInstances", String.valueOf(event.previousInstances()),
-                                 "newInstances", String.valueOf(event.newInstances())));
+                          event.artifact().asString()
+                         + " scaled down from " + event.previousInstances()
+                         + " to " + event.newInstances()
+                         + " instances",
+                          Map.of("artifact",
+                                 event.artifact().asString(),
+                                 "previousInstances",
+                                 String.valueOf(event.previousInstances()),
+                                 "newInstances",
+                                 String.valueOf(event.newInstances())));
     }
 
     public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
-        var scalingUp = event.currentInstances() < event.desiredInstances();
-        var direction = scalingUp ? "up" : "down";
-        var eventType = scalingUp ? ClusterEventValue.EventType.SCALE_UP : ClusterEventValue.EventType.SCALE_DOWN;
+        var scalingUp = event.currentInstances() <event.desiredInstances();
+        var direction = scalingUp
+                        ? "up"
+                        : "down";
+        var eventType = scalingUp
+                        ? ClusterEventValue.EventType.SCALE_UP
+                        : ClusterEventValue.EventType.SCALE_DOWN;
         publisher.publish(eventType,
                           ClusterEventValue.Severity.INFO,
-                          "Reconciliation: " + event.artifact().asString() + " adjusted " + direction + " from " + event.currentInstances() + " to " + event.desiredInstances() + " instances",
-                          Map.of("artifact", event.artifact().asString(),
-                                 "previousInstances", String.valueOf(event.currentInstances()),
-                                 "desiredInstances", String.valueOf(event.desiredInstances()),
-                                 "trigger", "reconciliation"));
+                          "Reconciliation: " + event.artifact().asString()
+                         + " adjusted " + direction
+                         + " from " + event.currentInstances()
+                         + " to " + event.desiredInstances()
+                         + " instances",
+                          Map.of("artifact",
+                                 event.artifact().asString(),
+                                 "previousInstances",
+                                 String.valueOf(event.currentInstances()),
+                                 "desiredInstances",
+                                 String.valueOf(event.desiredInstances()),
+                                 "trigger",
+                                 "reconciliation"));
     }
 
     public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
@@ -380,37 +404,50 @@ import org.slf4j.LoggerFactory;
         publisher.publish(ClusterEventValue.EventType.CONNECTION_ESTABLISHED,
                           ClusterEventValue.Severity.INFO,
                           "Connected to node " + event.nodeId().id(),
-                          Map.of("nodeId", event.nodeId().id()));
+                          Map.of("nodeId",
+                                 event.nodeId().id()));
     }
 
     public void onAccessDenied(OperationalEvent.AccessDenied event) {
         publisher.publish(ClusterEventValue.EventType.ACCESS_DENIED,
                           ClusterEventValue.Severity.WARNING,
                           "Access denied for " + event.principal() + " on " + event.method() + " " + event.path(),
-                          Map.of("principal", event.principal(),
-                                 "method", event.method(),
-                                 "path", event.path(),
-                                 "actualRole", event.actualRole(),
-                                 "requiredRole", event.requiredRole()));
+                          Map.of("principal",
+                                 event.principal(),
+                                 "method",
+                                 event.method(),
+                                 "path",
+                                 event.path(),
+                                 "actualRole",
+                                 event.actualRole(),
+                                 "requiredRole",
+                                 event.requiredRole()));
     }
 
     public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
         publisher.publish(ClusterEventValue.EventType.NODE_LIFECYCLE_CHANGED,
                           ClusterEventValue.Severity.INFO,
                           "Node " + event.nodeId() + " lifecycle: " + event.transition(),
-                          Map.of("nodeId", event.nodeId(),
-                                 "transition", event.transition(),
-                                 "requestedBy", event.requestedBy()));
+                          Map.of("nodeId",
+                                 event.nodeId(),
+                                 "transition",
+                                 event.transition(),
+                                 "requestedBy",
+                                 event.requestedBy()));
     }
 
     public void onConfigChanged(OperationalEvent.ConfigChanged event) {
         publisher.publish(ClusterEventValue.EventType.CONFIG_CHANGED,
                           ClusterEventValue.Severity.INFO,
                           "Config " + event.action() + ": " + event.key() + " (" + event.scope() + ")",
-                          Map.of("key", event.key(),
-                                 "scope", event.scope(),
-                                 "action", event.action(),
-                                 "requestedBy", event.requestedBy()));
+                          Map.of("key",
+                                 event.key(),
+                                 "scope",
+                                 event.scope(),
+                                 "action",
+                                 event.action(),
+                                 "requestedBy",
+                                 event.requestedBy()));
     }
 
     public void onBackupCreated(OperationalEvent.BackupCreated event) {
@@ -444,10 +481,11 @@ import org.slf4j.LoggerFactory;
     public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
         publisher.publish(ClusterEventValue.EventType.GENERATION_CHANGED,
                           ClusterEventValue.Severity.INFO,
-                          "Generation epoch advanced " + event.oldEpoch() + " -> " + event.newEpoch() + " (" + event.reason() + ")",
-                          Map.of("oldEpoch", event.oldEpoch(),
-                                 "newEpoch", event.newEpoch(),
-                                 "reason", event.reason()));
+                          "Generation epoch advanced " + event.oldEpoch()
+                         + " -> " + event.newEpoch()
+                         + " (" + event.reason()
+                         + ")",
+                          Map.of("oldEpoch", event.oldEpoch(), "newEpoch", event.newEpoch(), "reason", event.reason()));
     }
 
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
@@ -455,44 +493,59 @@ import org.slf4j.LoggerFactory;
         publisher.publish(ClusterEventValue.EventType.CONNECTION_FAILED,
                           ClusterEventValue.Severity.WARNING,
                           "Connection to node " + event.nodeId().id() + " failed: " + event.cause().message(),
-                          Map.of("nodeId", event.nodeId().id(),
-                                 "cause", event.cause().message()));
+                          Map.of("nodeId",
+                                 event.nodeId().id(),
+                                 "cause",
+                                 event.cause().message()));
     }
 
     /// Subscriber hook for `MembershipDecision` — kept as a no-op so route entries continue
     /// to compile if callers wire it; the canonical event source for membership-driven
     /// NODE_FAILED / NODE_LEFT is `onNodeLifecyclePut` per the existing RC1 audit comment.
-    @Contract public void onMembershipDecision(@SuppressWarnings("unused") MembershipDecision decision) {}
+    @Contract
+    public void onMembershipDecision(@SuppressWarnings("unused") MembershipDecision decision) {}
 
     private Option<Long> computeAndRemoveDuration(String trackingKey) {
-        return Option.option(deploymentStartTimes.remove(trackingKey))
-                            .map(startTime -> System.currentTimeMillis() - startTime);
+        return Option.option(deploymentStartTimes.remove(trackingKey)).map(startTime -> System.currentTimeMillis() - startTime);
     }
 
     private String buildNodeReadySuffix(String nodeId) {
         var nodeJoinTime = nodeJoinTimes.remove(nodeId);
+
         if (nodeJoinTime == null) {return "";}
+
         var joinToDeployMs = System.currentTimeMillis() - nodeJoinTime;
+
         return " (node ready in " + formatDuration(joinToDeployMs) + ")";
     }
 
     private static Map<String, String> buildCompletedMetadata(String artifact, String nodeId, Option<Long> durationMs) {
-        return durationMs.map(ms -> Map.of("artifact", artifact, "nodeId", nodeId, "durationMs", String.valueOf(ms)))
-                                 .or(Map.of("artifact", artifact, "nodeId", nodeId));
+        return durationMs.map(ms -> Map.of("artifact",
+                                           artifact,
+                                           "nodeId",
+                                           nodeId,
+                                           "durationMs",
+                                           String.valueOf(ms)))
+                         .or(Map.of("artifact", artifact, "nodeId", nodeId));
     }
 
-    private static Map<String, String> buildFailedMetadata(String artifact, String nodeId, String reason, Option<Long> durationMs) {
+    private static Map<String, String> buildFailedMetadata(String artifact,
+                                                           String nodeId,
+                                                           String reason,
+                                                           Option<Long> durationMs) {
         var base = Map.of("artifact", artifact, "nodeId", nodeId, "reason", reason);
+
         return durationMs.map(ms -> {
                                   var metadata = new java.util.HashMap<>(base);
-                                  metadata.put("durationMs", String.valueOf(ms));
+                                  metadata.put("durationMs",
+                                               String.valueOf(ms));
                                   return Map.copyOf(metadata);
                               })
-                                .or(base);
+                         .or(base);
     }
 
     private static String formatDuration(long durationMs) {
-        if (durationMs < 1000) {return durationMs + "ms";}
+        if (durationMs <1000) {return durationMs + "ms";}
         return String.format("%.1fs", durationMs / 1000.0);
     }
 
@@ -501,11 +554,11 @@ import org.slf4j.LoggerFactory;
     /// `onClusterEventLogPut`). Wired only via the deprecated two-arg factory.
     private enum NullPublisher implements PublisherShape {
         INSTANCE;
-
-        @Override public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> publish(ClusterEventValue.EventType type,
-                                                                                        ClusterEventValue.Severity severity,
-                                                                                        String message,
-                                                                                        Map<String, String> metadata) {
+        @Override
+        public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> publish(ClusterEventValue.EventType type,
+                                                                             ClusterEventValue.Severity severity,
+                                                                             String message,
+                                                                             Map<String, String> metadata) {
             return org.pragmatica.lang.Promise.success(org.pragmatica.lang.Unit.unit());
         }
     }
@@ -515,18 +568,19 @@ import org.slf4j.LoggerFactory;
     /// rate-cap or HLC machinery.
     private sealed interface PublisherShape permits NullPublisher, RealPublisher {
         org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> publish(ClusterEventValue.EventType type,
-                                                                       ClusterEventValue.Severity severity,
-                                                                       String message,
-                                                                       Map<String, String> metadata);
+                                                                      ClusterEventValue.Severity severity,
+                                                                      String message,
+                                                                      Map<String, String> metadata);
     }
 
     /// Thin wrapper around the production `ClusterEventLogPublisher` so the aggregator stays
     /// loose-coupled to the publisher's full type surface.
     private record RealPublisher(ClusterEventLogPublisher inner) implements PublisherShape {
-        @Override public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> publish(ClusterEventValue.EventType type,
-                                                                                        ClusterEventValue.Severity severity,
-                                                                                        String message,
-                                                                                        Map<String, String> metadata) {
+        @Override
+        public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> publish(ClusterEventValue.EventType type,
+                                                                             ClusterEventValue.Severity severity,
+                                                                             String message,
+                                                                             Map<String, String> metadata) {
             return inner.publish(type, severity, message, metadata);
         }
     }

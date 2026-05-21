@@ -22,27 +22,33 @@ record ForwardedRequestContext(HttpRequestContext source,
                                            QueryParams.queryParams(source.queryParams()));
     }
 
-    @Override public String requestId() {
+    @Override
+    public String requestId() {
         return source.requestId();
     }
 
-    @Override public HttpMethod method() {
+    @Override
+    public HttpMethod method() {
         return httpMethod;
     }
 
-    @Override public String path() {
+    @Override
+    public String path() {
         return source.path();
     }
 
-    @Override public Headers headers() {
+    @Override
+    public Headers headers() {
         return headers;
     }
 
-    @Override public QueryParams queryParams() {
+    @Override
+    public QueryParams queryParams() {
         return queryParams;
     }
 
-    @Override public byte[] body() {
+    @Override
+    public byte[] body() {
         return source.body();
     }
 }

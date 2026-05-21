@@ -39,11 +39,8 @@ import java.util.stream.Stream;
 
 public final class StreamRoutes implements RouteSource {
     private static final Cause STREAM_NOT_FOUND = Causes.cause("Stream not found");
-
     private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
-
     private static final int DEFAULT_MAX_EVENTS = 100;
-
     private static final int DEFAULT_PARTITIONS = 4;
 
     private final Supplier<ManageableNode> nodeSupplier;
@@ -64,7 +61,7 @@ public final class StreamRoutes implements RouteSource {
         return new StreamRoutes(nodeSupplier, coordinator, registry);
     }
 
-    record StreamListResponse(List<StreamSummary> streams){}
+    record StreamListResponse(List<StreamSummary> streams) {}
 
     record StreamSummary(String name, int partitions, long totalEvents, long totalBytes) {
         static StreamSummary fromStreamInfo(StreamInfo info) {
@@ -76,7 +73,7 @@ public final class StreamRoutes implements RouteSource {
                               int partitions,
                               long totalEvents,
                               long totalBytes,
-                              List<PartitionDetail> partitionDetails){}
+                              List<PartitionDetail> partitionDetails) {}
 
     record PartitionDetail(int partition, long headOffset, long tailOffset, long eventCount) {
         static PartitionDetail fromPartitionInfo(PartitionInfo info) {
@@ -84,13 +81,13 @@ public final class StreamRoutes implements RouteSource {
         }
     }
 
-    record PublishRequest(String data){}
+    record PublishRequest(String data) {}
 
-    record PublishResponse(long offset){}
+    record PublishResponse(long offset) {}
 
-    record StreamCreateRequest(String name, Integer partitions){}
+    record StreamCreateRequest(String name, Integer partitions) {}
 
-    record StreamCreateResponse(String name, int partitions, String status){}
+    record StreamCreateResponse(String name, int partitions, String status) {}
 
     record EventRecord(long offset, String data, long timestamp) {
         static EventRecord fromRawEvent(OffHeapRingBuffer.RawEvent event) {
@@ -100,40 +97,40 @@ public final class StreamRoutes implements RouteSource {
         }
     }
 
-    record ReadEventsResponse(List<EventRecord> events){}
+    record ReadEventsResponse(List<EventRecord> events) {}
 
-    record StreamDeleteResponse(String name, String status){}
+    record StreamDeleteResponse(String name, String status) {}
 
-    record StreamConsumersResponse(String name, List<PartitionInfo> partitions){}
+    record StreamConsumersResponse(String name, List<PartitionInfo> partitions) {}
 
-    record JoinGroupRequest(String groupId, String streamName, int partitionCount, String consumerId){}
+    record JoinGroupRequest(String groupId, String streamName, int partitionCount, String consumerId) {}
 
-    record LeaveGroupRequest(String groupId, String streamName, String consumerId){}
+    record LeaveGroupRequest(String groupId, String streamName, String consumerId) {}
 
-    record GroupStatusResponse(String groupId, Map<String, List<ConsumerInfo>> streams){}
+    record GroupStatusResponse(String groupId, Map<String, List<ConsumerInfo>> streams) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<StreamCreateResponse>route(ManagementRoute.STREAM_CREATE)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<StreamCreateResponse> route(ManagementRoute.STREAM_CREATE)
                                          .withBody(StreamCreateRequest.class)
                                          .toResult(this::createStream)
                                          .asJson(),
-                         ManagementRoutes.<StreamListResponse>route(ManagementRoute.STREAM_LIST)
-                                         .toJson(this::listStreams),
-                         ManagementRoutes.<StreamInfoResponse>route(ManagementRoute.STREAM_GET)
+                         ManagementRoutes.<StreamListResponse> route(ManagementRoute.STREAM_LIST).toJson(this::listStreams),
+                         ManagementRoutes.<StreamInfoResponse> route(ManagementRoute.STREAM_GET)
                                          .withPath(PathParameter.aString())
                                          .toResult(this::streamInfo)
                                          .asJson(),
-                         ManagementRoutes.<PartitionDetail>route(ManagementRoute.STREAM_PARTITION)
+                         ManagementRoutes.<PartitionDetail> route(ManagementRoute.STREAM_PARTITION)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aInteger())
                                          .toResult(this::partitionDetails)
                                          .asJson(),
-                         ManagementRoutes.<PublishResponse>route(ManagementRoute.STREAM_PUBLISH)
+                         ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAM_PUBLISH)
                                          .withPath(PathParameter.aString())
                                          .withBody(PublishRequest.class)
                                          .toResult(this::publishEvent)
                                          .asJson(),
-                         ManagementRoutes.<ReadEventsResponse>route(ManagementRoute.STREAM_READ)
+                         ManagementRoutes.<ReadEventsResponse> route(ManagementRoute.STREAM_READ)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aInteger())
                                          .withQuery(QueryParameter.aLong("from"),
@@ -141,33 +138,30 @@ public final class StreamRoutes implements RouteSource {
                                                     QueryParameter.aString("readPreference"))
                                          .to(this::readEvents)
                                          .asJson(),
-                         ManagementRoutes.<StreamDeleteResponse>route(ManagementRoute.STREAM_DELETE)
+                         ManagementRoutes.<StreamDeleteResponse> route(ManagementRoute.STREAM_DELETE)
                                          .withPath(PathParameter.aString())
                                          .toResult(this::deleteStream)
                                          .asJson(),
-                         ManagementRoutes.<StreamConsumersResponse>route(ManagementRoute.STREAM_CONSUMERS)
+                         ManagementRoutes.<StreamConsumersResponse> route(ManagementRoute.STREAM_CONSUMERS)
                                          .withPath(PathParameter.aString())
                                          .toResult(this::streamConsumers)
                                          .asJson(),
-                         ManagementRoutes.<GroupStatusResponse>route(ManagementRoute.CONSUMER_GROUP_JOIN)
+                         ManagementRoutes.<GroupStatusResponse> route(ManagementRoute.CONSUMER_GROUP_JOIN)
                                          .withBody(JoinGroupRequest.class)
                                          .toResult(this::joinGroup)
                                          .asJson(),
-                         ManagementRoutes.<GroupStatusResponse>route(ManagementRoute.CONSUMER_GROUP_LEAVE)
+                         ManagementRoutes.<GroupStatusResponse> route(ManagementRoute.CONSUMER_GROUP_LEAVE)
                                          .withBody(LeaveGroupRequest.class)
                                          .toResult(this::leaveGroup)
                                          .asJson(),
-                         ManagementRoutes.<GroupStatusResponse>route(ManagementRoute.CONSUMER_GROUP_STATUS)
+                         ManagementRoutes.<GroupStatusResponse> route(ManagementRoute.CONSUMER_GROUP_STATUS)
                                          .withPath(PathParameter.aString())
                                          .toResult(this::groupStatus)
                                          .asJson());
     }
 
     private StreamListResponse listStreams() {
-        var streams = streamManager().listStreams()
-                                   .stream()
-                                   .map(StreamSummary::fromStreamInfo)
-                                   .toList();
+        var streams = streamManager().listStreams().stream().map(StreamSummary::fromStreamInfo).toList();
         return new StreamListResponse(streams);
     }
 
@@ -179,8 +173,9 @@ public final class StreamRoutes implements RouteSource {
 
     private Result<StreamInfoResponse> buildStreamInfoResponse(String name, StreamInfo info) {
         return streamManager().allPartitionInfo(name)
-                            .map(partitions -> partitions.stream().map(PartitionDetail::fromPartitionInfo)
-                                                                .toList())
+                            .map(partitions -> partitions.stream()
+                                                         .map(PartitionDetail::fromPartitionInfo)
+                                                         .toList())
                             .map(details -> new StreamInfoResponse(info.name(),
                                                                    info.partitions(),
                                                                    info.totalEvents(),
@@ -189,7 +184,8 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private Result<PartitionDetail> partitionDetails(String name, Integer partition) {
-        return streamManager().partitionInfo(name, partition).map(PartitionDetail::fromPartitionInfo);
+        return streamManager().partitionInfo(name, partition)
+                            .map(PartitionDetail::fromPartitionInfo);
     }
 
     private Result<PublishResponse> publishEvent(String name, PublishRequest request) {
@@ -198,6 +194,7 @@ public final class StreamRoutes implements RouteSource {
 
     private Result<PublishResponse> publishToPartition(String name, PublishRequest request) {
         var payload = request.data().getBytes(StandardCharsets.UTF_8);
+
         return ensureStreamExists(name).flatMap(_ -> streamManager().publishLocal(name,
                                                                                   0,
                                                                                   payload,
@@ -206,12 +203,14 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
-        return Option.option(request.name()).toResult(MISSING_STREAM_NAME)
-                            .flatMap(name -> createStreamWithConfig(name, request));
+        return Option.option(request.name())
+                     .toResult(MISSING_STREAM_NAME)
+                     .flatMap(name -> createStreamWithConfig(name, request));
     }
 
     private Result<StreamCreateResponse> createStreamWithConfig(String name, StreamCreateRequest request) {
         var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
+
         return streamManager().streamInfo(name)
                             .map(existing -> Result.success(new StreamCreateResponse(name,
                                                                                      existing.partitions(),
@@ -221,7 +220,9 @@ public final class StreamRoutes implements RouteSource {
 
     private Result<StreamCreateResponse> createFreshStream(String name, int partitions) {
         var config = StreamConfig.streamConfig(name, partitions, MANAGEMENT_API_RETENTION, "latest");
-        return streamManager().createStream(config).map(_ -> new StreamCreateResponse(name, partitions, "created"));
+
+        return streamManager().createStream(config)
+                            .map(_ -> new StreamCreateResponse(name, partitions, "created"));
     }
 
     private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(10_000,
@@ -244,6 +245,7 @@ public final class StreamRoutes implements RouteSource {
         var fromOffset = fromOpt.or(0L);
         var maxEvents = maxOpt.or(DEFAULT_MAX_EVENTS);
         var preference = readPreferenceOpt.map(StreamRoutes::parseReadPreference).or(ReadPreference.GOVERNOR);
+
         return readWithPreference(name, partition, fromOffset, maxEvents, preference);
     }
 
@@ -253,13 +255,14 @@ public final class StreamRoutes implements RouteSource {
                                                            int maxEvents,
                                                            ReadPreference preference) {
         return streamReadRouter().read(name, partition, fromOffset, maxEvents, preference)
-                               .map(list -> list.stream().map(EventRecord::fromRawEvent)
-                                                       .toList())
+                               .map(list -> list.stream()
+                                                .map(EventRecord::fromRawEvent)
+                                                .toList())
                                .map(ReadEventsResponse::new);
     }
 
     private static ReadPreference parseReadPreference(String value) {
-        return switch (value.toUpperCase()){
+        return switch (value.toUpperCase()) {
             case "ANY_REPLICA", "ANY-REPLICA" -> ReadPreference.ANY_REPLICA;
             case "NEAREST" -> ReadPreference.NEAREST;
             default -> ReadPreference.GOVERNOR;
@@ -267,11 +270,13 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private Result<StreamDeleteResponse> deleteStream(String name) {
-        return streamManager().destroyStream(name).map(_ -> new StreamDeleteResponse(name, "deleted"));
+        return streamManager().destroyStream(name)
+                            .map(_ -> new StreamDeleteResponse(name, "deleted"));
     }
 
     private Result<StreamConsumersResponse> streamConsumers(String name) {
-        return streamManager().allPartitionInfo(name).map(partitions -> new StreamConsumersResponse(name, partitions));
+        return streamManager().allPartitionInfo(name)
+                            .map(partitions -> new StreamConsumersResponse(name, partitions));
     }
 
     private Result<GroupStatusResponse> joinGroup(JoinGroupRequest request) {
@@ -280,16 +285,16 @@ public final class StreamRoutes implements RouteSource {
                                      request.partitionCount(),
                                      request.consumerId(),
                                      nodeSupplier.get().self())
-        .map(_ -> new GroupStatusResponse(request.groupId(),
-                                          coordinator.groupStatus(request.groupId())));
+                          .map(_ -> new GroupStatusResponse(request.groupId(),
+                                                            coordinator.groupStatus(request.groupId())));
     }
 
     private Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
         return coordinator.leaveGroup(request.groupId(),
                                       request.streamName(),
                                       request.consumerId())
-        .map(_ -> new GroupStatusResponse(request.groupId(),
-                                          coordinator.groupStatus(request.groupId())));
+                          .map(_ -> new GroupStatusResponse(request.groupId(),
+                                                            coordinator.groupStatus(request.groupId())));
     }
 
     private Result<GroupStatusResponse> groupStatus(String groupId) {
@@ -297,10 +302,12 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private StreamPartitionManager streamManager() {
-        return nodeSupplier.get().streamPartitionManager();
+        return nodeSupplier.get()
+                           .streamPartitionManager();
     }
 
     private StreamReadRouter streamReadRouter() {
-        return nodeSupplier.get().streamReadRouter();
+        return nodeSupplier.get()
+                           .streamReadRouter();
     }
 }

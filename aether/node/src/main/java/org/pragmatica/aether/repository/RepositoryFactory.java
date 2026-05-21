@@ -19,13 +19,14 @@ public interface RepositoryFactory {
     Repository create(RepositoryType type);
 
     default List<Repository> createAll(SliceConfig config) {
-        return config.repositories().stream()
-                                  .map(this::create)
-                                  .toList();
+        return config.repositories()
+                     .stream()
+                     .map(this::create)
+                     .toList();
     }
 
     static RepositoryFactory repositoryFactory(ArtifactStore artifactStore) {
-        return type -> switch (type){
+        return type -> switch (type) {
             case RepositoryType.Local _ -> localRepository();
             case RepositoryType.Builtin _ -> BuiltinRepository.builtinRepository(artifactStore);
             case RepositoryType.Remote remote -> RemoteRepository.remoteRepository(remote.id(), remote.url());

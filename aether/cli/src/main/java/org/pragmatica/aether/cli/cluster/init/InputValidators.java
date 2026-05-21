@@ -22,41 +22,49 @@ public sealed interface InputValidators {
 
     static Result<String> validateCidr(String raw) {
         var value = raw == null
-                   ? ""
-                   : raw.trim();
+                    ? ""
+                    : raw.trim();
         var matcher = CIDR_PATTERN.matcher(value);
-        if (!matcher.matches()) {return new ClusterInitError.InvalidValue("CIDR",
-                                                                          value,
-                                                                          "expected a.b.c.d/N (e.g. 10.0.0.0/8)").result();}
+
+        if (!matcher.matches()) {
+            return new ClusterInitError.InvalidValue("CIDR", value, "expected a.b.c.d/N (e.g. 10.0.0.0/8)").result();
+        }
         for (int i = 1;i <= 4;i++) {
             var octet = Integer.parseInt(matcher.group(i));
-            if (octet > 255) {return new ClusterInitError.InvalidValue("CIDR",
-                                                                       value,
-                                                                       "octet " + i + " out of range (0-255)").result();}
+            if (octet > 255) {
+                return new ClusterInitError.InvalidValue("CIDR", value, "octet " + i + " out of range (0-255)").result();
+            }
         }
+
         var prefix = Integer.parseInt(matcher.group(5));
-        if (prefix > 32) {return new ClusterInitError.InvalidValue("CIDR",
-                                                                   value,
-                                                                   "prefix /" + prefix + " out of range (0-32)").result();}
+
+        if (prefix > 32) {
+            return new ClusterInitError.InvalidValue("CIDR", value, "prefix /" + prefix + " out of range (0-32)").result();
+        }
+
         return Result.success(value);
     }
 
     static Result<String> validateHostnameOrIp(String raw) {
         var value = raw == null
-                   ? ""
-                   : raw.trim();
+                    ? ""
+                    : raw.trim();
+
         if (value.isEmpty()) {return new ClusterInitError.InvalidValue("host", "", "must not be empty").result();}
         if (IPV4_PATTERN.matcher(value).matches() || HOSTNAME_PATTERN.matcher(value).matches()) {return Result.success(value);}
+
         return new ClusterInitError.InvalidValue("host", value, "expected hostname or IPv4 address").result();
     }
 
     static Result<Integer> validatePort(String raw) {
         var value = raw == null
-                   ? ""
-                   : raw.trim();
+                    ? ""
+                    : raw.trim();
         try {
             var port = Integer.parseInt(value);
+
             if (port <1 || port > 65535) {return new ClusterInitError.InvalidValue("port", value, "must be 1-65535").result();}
+
             return Result.success(port);
         } catch (@SuppressWarnings("JBCT-EX-01") NumberFormatException e) {
             return new ClusterInitError.InvalidValue("port", value, "expected integer 1-65535").result();
@@ -65,23 +73,29 @@ public sealed interface InputValidators {
 
     static Result<String> validateEnvVarName(String raw) {
         var value = raw == null
-                   ? ""
-                   : raw.trim();
-        if (!ENV_VAR_PATTERN.matcher(value).matches()) {return new ClusterInitError.InvalidValue("env var name",
-                                                                                                 value,
-                                                                                                 "must match [A-Z_][A-Z0-9_]*").result();}
+                    ? ""
+                    : raw.trim();
+
+        if (!ENV_VAR_PATTERN.matcher(value).matches()) {
+            return new ClusterInitError.InvalidValue("env var name", value, "must match [A-Z_][A-Z0-9_]*").result();
+        }
+
         return Result.success(value);
     }
 
     static Result<String> validateClusterName(String raw) {
         var value = raw == null
-                   ? ""
-                   : raw.trim();
-        if (!CLUSTER_NAME_PATTERN.matcher(value).matches()) {return new ClusterInitError.InvalidValue("cluster name",
-                                                                                                      value,
-                                                                                                      "must match [a-z][a-z0-9-]{1,62}[a-z0-9] (e.g. prod-eu)").result();}
+                    ? ""
+                    : raw.trim();
+
+        if (!CLUSTER_NAME_PATTERN.matcher(value).matches()) {
+            return new ClusterInitError.InvalidValue("cluster name",
+                                                     value,
+                                                     "must match [a-z][a-z0-9-]{1,62}[a-z0-9] (e.g. prod-eu)").result();
+        }
+
         return Result.success(value);
     }
 
-    record unused() implements InputValidators{}
+    record unused() implements InputValidators {}
 }

@@ -27,20 +27,28 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEYS_REVOKE;
 
 
-@Command(name = "rotate-key", description = "Rotate the cluster API key") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterRotateKeyCommand implements Callable<Integer> {
+@Command(name = "rotate-key", description = "Rotate the cluster API key")
+@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
+class ClusterRotateKeyCommand implements Callable<Integer> {
     private static final int KEY_BYTES = 32;
 
-    @Option(names = "--grace-period", description = "Grace period for old key (e.g., 5m, 1h)", defaultValue = "5m") private String gracePeriod;
+    @Option(names = "--grace-period", description = "Grace period for old key (e.g., 5m, 1h)", defaultValue = "5m")
+    private String gracePeriod;
 
-    @Option(names = "--role", description = "Authorization role for the new key: ADMIN, OPERATOR, or VIEWER (default: VIEWER)", defaultValue = "VIEWER") private String role;
+    @Option(names = "--role", description = "Authorization role for the new key: ADMIN, OPERATOR, or VIEWER (default: VIEWER)", defaultValue = "VIEWER")
+    private String role;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+    @Mixin
+    ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
-    @Override public Integer call() {
-        return clusterTarget.applyOverrides().flatMap(_ -> generateAndRotate())
-                                           .fold(ClusterRotateKeyCommand::onFailure, this::onSuccess);
+    @Override
+    public Integer call() {
+        return clusterTarget.applyOverrides()
+                            .flatMap(_ -> generateAndRotate())
+                            .fold(ClusterRotateKeyCommand::onFailure, this::onSuccess);
     }
 
     private Result<String> generateAndRotate() {
@@ -49,14 +57,14 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
         var newKeyId = "ak_" + newKeyHash.substring(0, 8);
         var gracePeriodMs = parseDurationMs(gracePeriod);
         var normalizedRole = role == null
-                            ? "VIEWER"
-                            : role.trim().toUpperCase();
+                             ? "VIEWER"
+                             : role.trim().toUpperCase();
+
         return findCurrentActiveKeyId().flatMap(oldKeyId -> createNewKey(newKeyId,
                                                                          newKeyHash,
                                                                          gracePeriodMs,
                                                                          normalizedRole).flatMap(_ -> revokeOldKey(oldKeyId,
-                                                                                                                   gracePeriodMs))
-                                                                        .flatMap(_ -> persistLocalKey(newKey))
+                                                                                                                   gracePeriodMs)).flatMap(_ -> persistLocalKey(newKey))
                                                                         .map(_ -> buildSuccessJson(newKeyId,
                                                                                                    oldKeyId,
                                                                                                    gracePeriodMs)));
@@ -72,6 +80,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
             if (idx >= 0) {
                 var start = json.indexOf("\"", idx + 7) + 1;
                 var end = json.indexOf("\"", start);
+
                 if (start > 0 && end > start) {return Result.success(json.substring(start, end));}
             }
         }
@@ -82,27 +91,37 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
                                                String keyHash,
                                                long gracePeriodMs,
                                                String authorizationRole) {
-        var json = "{\"keyId\":\"" + keyId + "\",\"keyHash\":\"" + keyHash + "\",\"gracePeriodMs\":" + gracePeriodMs + ",\"auditAction\":\"ROTATED\"" + ",\"operatorHint\":\"cli-rotate-key\"" + ",\"authorizationRole\":\"" + authorizationRole + "\"}";
+        var json = "{\"keyId\":\"" + keyId
+                 + "\",\"keyHash\":\"" + keyHash
+                 + "\",\"gracePeriodMs\":" + gracePeriodMs
+                 + ",\"auditAction\":\"ROTATED\""
+                 + ",\"operatorHint\":\"cli-rotate-key\""
+                 + ",\"authorizationRole\":\"" + authorizationRole
+                 + "\"}";
+
         return ClusterHttpClient.post(CLUSTER_KEYS_CREATE, json);
     }
 
     private static Result<String> revokeOldKey(String oldKeyId, long gracePeriodMs) {
         var json = "{\"immediate\":false,\"gracePeriodMs\":" + gracePeriodMs + ",\"operatorHint\":\"cli-rotate-key\"}";
+
         return ClusterHttpClient.post(CLUSTER_KEYS_REVOKE, List.of(oldKeyId), json);
     }
 
     private static Result<String> persistLocalKey(String newKey) {
-        return ClusterRegistry.load()
-                                   .flatMap(reg -> reg.current().toResult(ClusterHttpClient.HttpError.NO_ACTIVE_CLUSTER)
-                                                              .flatMap(entry -> writeKeyFile(entry.name(),
-                                                                                             newKey)));
+        return ClusterRegistry.load().flatMap(reg -> reg.current()
+                                                        .toResult(ClusterHttpClient.HttpError.NO_ACTIVE_CLUSTER)
+                                                        .flatMap(entry -> writeKeyFile(entry.name(),
+                                                                                       newKey)));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<String> writeKeyFile(String clusterName, String newKey) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<String> writeKeyFile(String clusterName, String newKey) {
         var keyFile = Path.of(System.getProperty("user.home"), ".aether", "clusters", clusterName, "api-key");
         try {
             Files.createDirectories(keyFile.getParent());
             Files.writeString(keyFile, newKey);
+
             return Result.success("ok");
         } catch (IOException e) {
             return new RotateKeyError.FilePersistFailed(keyFile.toString(), e.getMessage()).result();
@@ -110,7 +129,10 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
     }
 
     private static String buildSuccessJson(String newKeyId, String oldKeyId, long gracePeriodMs) {
-        return "{\"newKeyId\":\"" + newKeyId + "\",\"oldKeyId\":\"" + oldKeyId + "\",\"gracePeriodMs\":" + gracePeriodMs + ",\"status\":\"rotated\"}";
+        return "{\"newKeyId\":\"" + newKeyId
+             + "\",\"oldKeyId\":\"" + oldKeyId
+             + "\",\"gracePeriodMs\":" + gracePeriodMs
+             + ",\"status\":\"rotated\"}";
     }
 
     private int onSuccess(String json) {
@@ -121,21 +143,26 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 
     private static String generateApiKey() {
         var bytes = new byte[KEY_BYTES];
         new SecureRandom().nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding()
-                                   .encodeToString(bytes);
+
+        return Base64.getUrlEncoder()
+                     .withoutPadding()
+                     .encodeToString(bytes);
     }
 
     private static long parseDurationMs(String duration) {
         if (duration == null || duration.isEmpty()) {return 300_000;}
+
         var value = duration.substring(0, duration.length() - 1);
         var unit = duration.charAt(duration.length() - 1);
-        return switch (unit){
+
+        return switch (unit) {
             case 's' -> Long.parseLong(value) * 1000;
             case 'm' -> Long.parseLong(value) * 60_000;
             case 'h' -> Long.parseLong(value) * 3_600_000;
@@ -145,13 +172,15 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
 
     sealed interface RotateKeyError extends Cause {
         record NoActiveKey() implements RotateKeyError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "No active API key found in cluster. Bootstrap or create a key first.";
             }
         }
 
         record FilePersistFailed(String path, String reason) implements RotateKeyError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Failed to write key file " + path + ": " + reason;
             }
         }

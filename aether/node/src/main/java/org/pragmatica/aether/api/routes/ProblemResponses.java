@@ -33,6 +33,7 @@ import java.nio.charset.StandardCharsets;
 /// un-mapped causes — incrementally fixable per domain.
 public final class ProblemResponses {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
+
     private static final ContentType CONTENT_TYPE_PROBLEM = ContentType.contentType("application/problem+json",
                                                                                     ContentCategory.JSON);
 
@@ -62,12 +63,11 @@ public final class ProblemResponses {
                                     String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
         var serverStatus = toServerStatus(status.code());
-        MAPPER.writeAsString(problem)
-              .onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                                         .write(serverStatus,
-                                                json.getBytes(StandardCharsets.UTF_8),
-                                                CONTENT_TYPE_PROBLEM))
-              .onFailure(_ -> response.error(serverStatus, detail));
+        MAPPER.writeAsString(problem).onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                                                                .write(serverStatus,
+                                                                       json.getBytes(StandardCharsets.UTF_8),
+                                                                       CONTENT_TYPE_PROBLEM)).onFailure(_ -> response.error(serverStatus,
+                                                                                                                            detail));
     }
 
     /// Render a ProblemDetail as JSON bytes — used by paths that must bypass `ResponseWriter`
@@ -75,6 +75,7 @@ public final class ProblemResponses {
     /// Falls back to the legacy `{"error":"..."}` envelope on serialization failure.
     public static byte[] renderProblemBytes(HttpStatus status, String detail, String instance, String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
+
         return MAPPER.writeAsString(problem)
                      .map(json -> json.getBytes(StandardCharsets.UTF_8))
                      .or(() -> ("{\"error\":\"" + escapeJson(detail) + "\"}").getBytes(StandardCharsets.UTF_8));
@@ -85,7 +86,9 @@ public final class ProblemResponses {
     }
 
     private static HttpStatus resolveStatus(Cause cause) {
-        return cause instanceof HttpStatusAware ha ? ha.httpStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+        return cause instanceof HttpStatusAware ha
+               ? ha.httpStatus()
+               : HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {
@@ -96,6 +99,11 @@ public final class ProblemResponses {
     }
 
     private static String escapeJson(String s) {
-        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
+        return s == null
+               ? ""
+               : s.replace("\\", "\\\\")
+                  .replace("\"", "\\\"")
+                  .replace("\n", "\\n")
+                  .replace("\r", "\\r");
     }
 }

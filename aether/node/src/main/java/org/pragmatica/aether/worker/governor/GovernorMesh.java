@@ -12,9 +12,15 @@ import java.util.Map;
 
 
 public interface GovernorMesh {
-    @SuppressWarnings("JBCT-RET-01") void registerGovernor(String communityId, NodeId governorId);
-    @SuppressWarnings("JBCT-RET-01") void registerGovernor(String communityId, NodeId governorId, String tcpAddress);
-    @SuppressWarnings("JBCT-RET-01") void unregisterGovernor(String communityId);
+    @SuppressWarnings("JBCT-RET-01")
+    void registerGovernor(String communityId, NodeId governorId);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void registerGovernor(String communityId, NodeId governorId, String tcpAddress);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void unregisterGovernor(String communityId);
+
     Option<NodeId> governorFor(String communityId);
     Map<String, NodeId> allGovernors();
     boolean hasGovernor(String communityId);

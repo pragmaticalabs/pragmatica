@@ -20,7 +20,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public class EventWebSocketPublisher {
+@SuppressWarnings("JBCT-RET-01")
+public class EventWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(EventWebSocketPublisher.class);
 
     private final EventWebSocketHandler handler;
@@ -31,7 +32,6 @@ import org.slf4j.LoggerFactory;
     private final AtomicReference<Option<ScheduledFuture<?>>> taskRef = new AtomicReference<>(Option.none());
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-
     private final AtomicInteger lastPublishedCount = new AtomicInteger(0);
 
     private EventWebSocketPublisher(EventWebSocketHandler handler,
@@ -59,6 +59,7 @@ import org.slf4j.LoggerFactory;
 
     public void start() {
         if (!running.compareAndSet(false, true)) {return;}
+
         taskRef.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::publish,
                                                                     TimeSpan.timeSpan(intervalMs).millis())));
         log.info("Event WebSocket publisher started ({}ms interval)", intervalMs);
@@ -66,6 +67,7 @@ import org.slf4j.LoggerFactory;
 
     public void stop() {
         if (!running.compareAndSet(true, false)) {return;}
+
         taskRef.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         log.info("Event WebSocket publisher stopped");
     }
@@ -75,7 +77,8 @@ import org.slf4j.LoggerFactory;
         try {
             var all = allEventsProvider.get();
             var last = lastPublishedCount.get();
-            if (last < all.size()) {
+
+            if (last <all.size()) {
                 var newEvents = all.subList(last, all.size());
                 handler.broadcast(jsonSerializer.apply(newEvents));
                 lastPublishedCount.set(all.size());

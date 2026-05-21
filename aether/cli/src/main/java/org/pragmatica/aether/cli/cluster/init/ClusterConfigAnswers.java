@@ -28,14 +28,14 @@ public record ClusterConfigAnswers(String clusterName,
                                    SecretAnswers secret) {
     public ClusterConfigAnswers {
         customFirewallRules = customFirewallRules == null
-                             ? List.of()
-                             : List.copyOf(customFirewallRules);
+                              ? List.of()
+                              : List.copyOf(customFirewallRules);
     }
 
     public record CloudAnswers(CloudProviderName provider,
                                String region,
                                String instanceType,
-                               String credentialEnvVar){}
+                               String credentialEnvVar) {}
 
     public record SshAnswers(List<String> hosts, String user, Path keyPath, int port) {
         public SshAnswers {
@@ -45,25 +45,25 @@ public record ClusterConfigAnswers(String clusterName,
 
     public record DatabaseAnswers(String host, int port, String name, String user, PasswordSource password) {
         public sealed interface PasswordSource {
-            record FromEnv(String envVar) implements PasswordSource{}
+            record FromEnv(String envVar) implements PasswordSource {}
 
-            record Plaintext(String value) implements PasswordSource{}
+            record Plaintext(String value) implements PasswordSource {}
         }
     }
 
     public sealed interface TlsAnswers {
-        record AutoGenerate() implements TlsAnswers{}
+        record AutoGenerate() implements TlsAnswers {}
 
-        record Manual(String certPathEnvVar, String keyPathEnvVar) implements TlsAnswers{}
+        record Manual(String certPathEnvVar, String keyPathEnvVar) implements TlsAnswers {}
 
-        record Skipped() implements TlsAnswers{}
+        record Skipped() implements TlsAnswers {}
     }
 
     public sealed interface SecretAnswers {
-        record AutoGenerate() implements SecretAnswers{}
+        record AutoGenerate() implements SecretAnswers {}
 
-        record FromEnv(String envVar) implements SecretAnswers{}
+        record FromEnv(String envVar) implements SecretAnswers {}
 
-        record Skipped() implements SecretAnswers{}
+        record Skipped() implements SecretAnswers {}
     }
 }

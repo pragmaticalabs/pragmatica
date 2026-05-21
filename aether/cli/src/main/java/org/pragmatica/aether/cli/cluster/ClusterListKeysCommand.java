@@ -20,27 +20,37 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEYS_LIST;
 
 
-@Command(name = "list-keys", description = "List cluster API keys") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterListKeysCommand implements Callable<Integer> {
-    @Option(names = "--audit", description = "Show audit trail") private boolean showAudit;
+@Command(name = "list-keys", description = "List cluster API keys")
+@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
+class ClusterListKeysCommand implements Callable<Integer> {
+    @Option(names = "--audit", description = "Show audit trail")
+    private boolean showAudit;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+    @Mixin
+    ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
-    @Override public Integer call() {
-        return clusterTarget.applyOverrides().flatMap(_ -> fetchKeys())
-                                           .fold(ClusterListKeysCommand::onFailure, this::onSuccess);
+    @Override
+    public Integer call() {
+        return clusterTarget.applyOverrides()
+                            .flatMap(_ -> fetchKeys())
+                            .fold(ClusterListKeysCommand::onFailure, this::onSuccess);
     }
 
     private Result<String> fetchKeys() {
         var keysResult = ClusterHttpClient.fetch(CLUSTER_KEYS_LIST);
+
         if (!showAudit) {return keysResult;}
+
         return keysResult.flatMap(this::appendAudit);
     }
 
     private Result<String> appendAudit(String keysJson) {
-        return ClusterHttpClient.fetch(CLUSTER_KEYS_AUDIT)
-                                      .map(auditJson -> "{\"keys\":" + keysJson + ",\"audit\":" + auditJson + "}");
+        return ClusterHttpClient.fetch(CLUSTER_KEYS_AUDIT).map(auditJson -> "{\"keys\":" + keysJson
+                                                                           + ",\"audit\":" + auditJson
+                                                                           + "}");
     }
 
     private int onSuccess(String json) {
@@ -49,6 +59,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_KEY
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

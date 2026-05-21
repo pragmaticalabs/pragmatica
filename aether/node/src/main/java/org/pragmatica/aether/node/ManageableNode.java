@@ -88,7 +88,10 @@ public interface ManageableNode {
     Option<ClusterTopologyManager> clusterTopologyManager();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
     Option<ClusterGenerationSnapshot> currentGenerationSnapshot();
-    @SuppressWarnings("JBCT-RET-01") void requestGenerationSnapshotRefresh();
+
+    @SuppressWarnings("JBCT-RET-01")
+    void requestGenerationSnapshotRefresh();
+
     int connectedNodeCount();
     Map<String, Number> transportMetrics();
     Set<NodeId> connectedPeerIds();
@@ -106,6 +109,7 @@ public interface ManageableNode {
     InFlightRequestTracker inFlightRequestTracker();
     DrainCoordinator drainCoordinator();
     NodeLifecycle nodeLifecycle();
+
     MembershipFsm membershipFsm();
 
     /// RC1 Step 4 — exposes the node's canonical Hybrid Logical Clock so request-handling
@@ -126,5 +130,6 @@ public interface ManageableNode {
     /// should call this rather than reading the KV atom directly.
     Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier();
 
-    @SuppressWarnings("JBCT-RET-01") void route(Message message);
+    @SuppressWarnings("JBCT-RET-01")
+    void route(Message message);
 }

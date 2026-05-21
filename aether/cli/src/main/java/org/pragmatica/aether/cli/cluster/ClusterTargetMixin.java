@@ -22,14 +22,14 @@ public class ClusterTargetMixin {
     static final Pattern CLUSTER_NAME_PATTERN = Pattern.compile("^[a-z][a-z0-9-]{0,62}$");
 
     private static final String API_KEY_FILE_NAME = "api-key";
-
     static Supplier<Result<ClusterRegistry>> registryLoader = ClusterRegistry::load;
-
     static Function<String, Path> apiKeyPathResolver = ClusterTargetMixin::defaultApiKeyPath;
 
-    @Option(names = "--cluster", description = "Override active cluster — target named cluster instead (CLI > active-context)") private String clusterName;
+    @Option(names = "--cluster", description = "Override active cluster — target named cluster instead (CLI > active-context)")
+    private String clusterName;
 
-    @Contract void setClusterName(String value) {
+    @Contract
+    void setClusterName(String value) {
         this.clusterName = value;
     }
 
@@ -40,8 +40,10 @@ public class ClusterTargetMixin {
     public Result<Unit> applyOverrides() {
         if (clusterName == null || clusterName.isBlank()) {return Result.unitResult();}
         if (!CLUSTER_NAME_PATTERN.matcher(clusterName).matches()) {return new ClusterTargetError.InvalidClusterName(clusterName).result();}
-        return registryLoader.get().mapError(c -> new ClusterTargetError.RegistryUnavailable(c.message()))
-                                 .flatMap(this::resolveAndInstall);
+
+        return registryLoader.get()
+                             .mapError(c -> new ClusterTargetError.RegistryUnavailable(c.message()))
+                             .flatMap(this::resolveAndInstall);
     }
 
     boolean isOverrideAcceptable() {
@@ -54,41 +56,49 @@ public class ClusterTargetMixin {
     }
 
     private static Result<ClusterRegistry.ClusterEntry> findEntry(ClusterRegistry registry, String name) {
-        return registry.entries().stream()
-                               .filter(e -> e.name().equals(name))
-                               .findFirst()
-                               .map(Result::success)
-                               .orElseGet(() -> new ClusterTargetError.UnknownCluster(name).result());
+        return registry.entries()
+                       .stream()
+                       .filter(e -> e.name()
+                                     .equals(name))
+                       .findFirst()
+                       .map(Result::success)
+                       .orElseGet(() -> new ClusterTargetError.UnknownCluster(name).result());
     }
 
     private Unit installOverrides(ClusterRegistry.ClusterEntry entry) {
         installEndpoint(entry);
         installApiKey(entry.name());
+
         return Unit.unit();
     }
 
-    @Contract private static void installEndpoint(ClusterRegistry.ClusterEntry entry) {
+    @Contract
+    private static void installEndpoint(ClusterRegistry.ClusterEntry entry) {
         if (entry.endpoint() == null || entry.endpoint().isBlank()) {return;}
         ClusterHttpClient.setEndpointOverride(entry.endpoint());
     }
 
-    @Contract private static void installApiKey(String name) {
+    @Contract
+    private static void installApiKey(String name) {
         readApiKeyFile(name).onSuccess(ClusterHttpClient::setApiKeyOverride);
     }
 
-    @SuppressWarnings("JBCT-EX-01") static Result<String> readApiKeyFile(String name) {
+    @SuppressWarnings("JBCT-EX-01")
+    static Result<String> readApiKeyFile(String name) {
         var path = apiKeyPathResolver.apply(name);
+
         if (!Files.exists(path)) {return new ClusterTargetError.ApiKeyMissing(path.toString()).result();}
+
         return Result.lift(e -> new ClusterTargetError.ApiKeyReadFailed(path.toString(),
                                                                         e.getMessage()),
                            () -> Files.readString(path).trim())
-        .flatMap(ClusterTargetMixin::ensureNonBlank);
+                     .flatMap(ClusterTargetMixin::ensureNonBlank);
     }
 
     private static Result<String> ensureNonBlank(String content) {
         return content.isBlank()
-              ? new ClusterTargetError.ApiKeyEmpty().result()
-              : Result.success(content);
+               ? new ClusterTargetError.ApiKeyEmpty().result()
+               : Result.success(content);
     }
 
     private static Path defaultApiKeyPath(String name) {
@@ -97,37 +107,44 @@ public class ClusterTargetMixin {
 
     public sealed interface ClusterTargetError extends Cause {
         record InvalidClusterName(String value) implements ClusterTargetError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid --cluster value: '" + value + "': must match ^[a-z][a-z0-9-]{0,62}$";
             }
         }
 
         record UnknownCluster(String name) implements ClusterTargetError {
-            @Override public String message() {
-                return "Cluster '" + name + "' not found in registry. Run 'aether cluster list' to see registered clusters.";
+            @Override
+            public String message() {
+                return "Cluster '" + name
+                     + "' not found in registry. Run 'aether cluster list' to see registered clusters.";
             }
         }
 
         record RegistryUnavailable(String detail) implements ClusterTargetError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Cannot read cluster registry: " + detail;
             }
         }
 
         record ApiKeyMissing(String path) implements ClusterTargetError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "API key file not found: " + path;
             }
         }
 
         record ApiKeyEmpty() implements ClusterTargetError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "API key file is empty.";
             }
         }
 
         record ApiKeyReadFailed(String path, String detail) implements ClusterTargetError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Failed to read API key file " + path + ": " + detail;
             }
         }

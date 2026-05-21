@@ -19,19 +19,26 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STO
 import static org.pragmatica.aether.management.route.ManagementRoute.STORAGE_GET;
 
 
-@Command(name = "status", description = "Show storage instance status") @SuppressWarnings("JBCT-RET-01") class StorageStatusCommand implements Callable<Integer> {
-    @CommandLine.ParentCommand private StorageCommand parent;
+@Command(name = "status", description = "Show storage instance status")
+@SuppressWarnings("JBCT-RET-01")
+class StorageStatusCommand implements Callable<Integer> {
+    @CommandLine.ParentCommand
+    private StorageCommand parent;
 
-    @CommandLine.Parameters(index = "0", description = "Storage instance name") private String name;
+    @CommandLine.Parameters(index = "0", description = "Storage instance name")
+    private String name;
 
-    @CommandLine.Option(names = "--node", description = "Target specific node") private String nodeId;
+    @CommandLine.Option(names = "--node", description = "Target specific node")
+    private String nodeId;
 
-    @Override public Integer call() {
+    @Override
+    public Integer call() {
         ManagementRoute route = Option.option(nodeId).fold(() -> CLUSTER_STORAGE_GET, _ -> STORAGE_GET);
+
         return ClusterHttpClient.fetch(route,
                                        List.of(name))
-        .fold(StorageCliHelper::onFailure,
-              json -> OutputFormatter.printQuery(json,
-                                                 parent.outputOptions()));
+                                .fold(StorageCliHelper::onFailure,
+                                      json -> OutputFormatter.printQuery(json,
+                                                                         parent.outputOptions()));
     }
 }

@@ -30,34 +30,43 @@ public sealed interface WorkerError extends Cause, HttpStatusAware {
             this.message = message;
             this.status = status;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
-        @Override public HttpStatus httpStatus() {
+        @Override
+        public HttpStatus httpStatus() {
             return status;
         }
     }
 
     record NetworkFailure(Throwable cause) implements WorkerError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Worker network failure: " + Causes.fromThrowable(cause);
         }
-        @Override public HttpStatus httpStatus() {
+
+        @Override
+        public HttpStatus httpStatus() {
             return HttpStatus.SERVICE_UNAVAILABLE;
         }
     }
 
     record ConfigurationError(String detail) implements WorkerError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Worker configuration error: " + detail;
         }
-        @Override public HttpStatus httpStatus() {
+
+        @Override
+        public HttpStatus httpStatus() {
             return HttpStatus.BAD_REQUEST;
         }
     }
 
     record unused() implements WorkerError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "unused";
         }
     }

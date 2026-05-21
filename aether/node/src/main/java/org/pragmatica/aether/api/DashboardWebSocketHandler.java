@@ -15,11 +15,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public class DashboardWebSocketHandler implements WebSocketHandler {
+@SuppressWarnings("JBCT-RET-01")
+public class DashboardWebSocketHandler implements WebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(DashboardWebSocketHandler.class);
-
     private static final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
-
     private static final AtomicReference<WebSocketAuthenticator> authenticatorRef = new AtomicReference<>();
 
     private final DashboardMetricsPublisher metricsPublisher;
@@ -31,8 +30,9 @@ import org.slf4j.LoggerFactory;
         authenticatorRef.set(authenticator);
     }
 
-    @Override public void handle(WebSocketSession session, WebSocketMessage message) {
-        switch (message){
+    @Override
+    public void handle(WebSocketSession session, WebSocketMessage message) {
+        switch (message) {
             case WebSocketMessage.Open _ -> onOpen(session);
             case WebSocketMessage.Text text -> onText(session, text.content());
             case WebSocketMessage.Binary _ -> {}
@@ -43,16 +43,19 @@ import org.slf4j.LoggerFactory;
     private void onOpen(WebSocketSession session) {
         sessions.put(session.id(), session);
         log.info("Dashboard client connected: {}", session.id());
+
         if (authenticator.onOpen(session)) {session.send(metricsPublisher.buildInitialState());}
     }
 
     private void onText(WebSocketSession session, String message) {
         if (authenticator.onMessage(session, message)) {return;}
+
         log.debug("Received from dashboard client {}: {}", session.id(), message);
         handleClientMessage(session, message);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private void handleClientMessage(WebSocketSession session, String message) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private void handleClientMessage(WebSocketSession session, String message) {
         if (message.contains("\"type\":\"SUBSCRIBE\"")) {log.debug("Client {} subscribed to streams", session.id());} else if (message.contains("\"type\":\"SET_THRESHOLD\"")) {metricsPublisher.handleSetThreshold(message);} else if (message.contains("\"type\":\"GET_HISTORY\"")) {session.send(metricsPublisher.buildHistoryResponse(message));}
     }
 
@@ -72,8 +75,9 @@ import org.slf4j.LoggerFactory;
     }
 
     public static int connectedClients() {
-        return (int) sessions.values().stream()
-                                    .filter(WebSocketSession::isOpen)
-                                    .count();
+        return (int) sessions.values()
+                             .stream()
+                             .filter(WebSocketSession::isOpen)
+                             .count();
     }
 }

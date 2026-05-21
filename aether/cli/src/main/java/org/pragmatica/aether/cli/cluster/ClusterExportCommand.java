@@ -22,25 +22,35 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STATUS;
 
 
-@Command(name = "export", description = "Export cluster configuration as TOML") @SuppressWarnings("JBCT-RET-01") class ClusterExportCommand implements Callable<Integer> {
+@Command(name = "export", description = "Export cluster configuration as TOML")
+@SuppressWarnings("JBCT-RET-01")
+class ClusterExportCommand implements Callable<Integer> {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    @Option(names = "--with-status", description = "Include runtime state as comments") private boolean withStatus;
+    @Option(names = "--with-status", description = "Include runtime state as comments")
+    private boolean withStatus;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+    @Mixin
+    ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
-    @Override public Integer call() {
-        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_CONFIG_GET))
-                                           .flatMap(MAPPER::readTree)
-                                           .fold(ClusterExportCommand::onFailure, this::onSuccess);
+    @Override
+    public Integer call() {
+        return clusterTarget.applyOverrides()
+                            .flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_CONFIG_GET))
+                            .flatMap(MAPPER::readTree)
+                            .fold(ClusterExportCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(JsonNode root) {
         var tomlContent = root.path("tomlContent").asText("");
+
         if (withStatus) {printStatusHeader(root);}
+
         System.out.println(tomlContent);
+
         return ExitCode.SUCCESS;
     }
 
@@ -55,9 +65,9 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STA
         System.out.println();
     }
 
-    @Contract private void enrichWithLiveStatus() {
-        ClusterHttpClient.fetch(CLUSTER_STATUS).flatMap(MAPPER::readTree)
-                               .onSuccess(ClusterExportCommand::printLiveStatusComments);
+    @Contract
+    private void enrichWithLiveStatus() {
+        ClusterHttpClient.fetch(CLUSTER_STATUS).flatMap(MAPPER::readTree).onSuccess(ClusterExportCommand::printLiveStatusComments);
     }
 
     private static void printLiveStatusComments(JsonNode status) {
@@ -72,6 +82,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STA
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

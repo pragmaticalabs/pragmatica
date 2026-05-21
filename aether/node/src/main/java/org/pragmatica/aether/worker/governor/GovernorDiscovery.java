@@ -11,8 +11,12 @@ import java.util.Map;
 
 
 public interface GovernorDiscovery {
-    @SuppressWarnings("JBCT-RET-01") void onGovernorAnnounced(String communityId, NodeId governorId);
-    @SuppressWarnings("JBCT-RET-01") void onGovernorDeparted(String communityId);
+    @SuppressWarnings("JBCT-RET-01")
+    void onGovernorAnnounced(String communityId, NodeId governorId);
+
+    @SuppressWarnings("JBCT-RET-01")
+    void onGovernorDeparted(String communityId);
+
     Option<NodeId> currentGovernor(String communityId);
     Map<String, NodeId> allKnownGovernors();
 

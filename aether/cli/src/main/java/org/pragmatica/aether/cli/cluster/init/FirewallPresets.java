@@ -12,19 +12,14 @@ import java.util.List;
 
 public sealed interface FirewallPresets {
     int MGMT_PORT = 8080;
-
     int APP_HTTP_PORT = 8070;
-
     int CLUSTER_PORT = 7100;
-
     int SWIM_PORT = 7200;
-
     String ANY_CIDR = "0.0.0.0/0";
-
     String DEFAULT_INTERNAL_CIDR = "10.0.0.0/8";
 
     static List<FirewallRule> rulesFor(FirewallPreset preset, String adminCidr, String internalCidr) {
-        return switch (preset){
+        return switch (preset) {
             case STANDARD -> List.of(rule(MGMT_PORT, "tcp", ANY_CIDR, "Management API"),
                                      rule(APP_HTTP_PORT, "tcp", ANY_CIDR, "App HTTP"),
                                      rule(CLUSTER_PORT, "tcp", ANY_CIDR, "Cluster (Rabia consensus)"),
@@ -41,5 +36,5 @@ public sealed interface FirewallPresets {
         return FirewallRule.firewallRule(port, protocol, cidr, Option.some(description));
     }
 
-    record unused() implements FirewallPresets{}
+    record unused() implements FirewallPresets {}
 }

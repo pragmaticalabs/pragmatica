@@ -9,7 +9,8 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record SnapshotRequest(NodeId requester) implements Message.Wired {
+@Codec
+public record SnapshotRequest(NodeId requester) implements Message.Wired {
     public static SnapshotRequest snapshotRequest(NodeId requester) {
         return new SnapshotRequest(requester);
     }

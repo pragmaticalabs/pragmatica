@@ -31,8 +31,10 @@ import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
 
-@CodecFor(InetSocketAddress.class) @SuppressWarnings("JBCT-STY-03") public sealed interface WorkerCodecs {
-    record unused() implements WorkerCodecs{}
+@CodecFor(InetSocketAddress.class)
+@SuppressWarnings("JBCT-STY-03")
+public sealed interface WorkerCodecs {
+    record unused() implements WorkerCodecs {}
 
     static SliceCodec workerCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();
@@ -55,6 +57,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         all.addAll(SwimCodecs.CODECS);
         all.add(inetSocketAddressCodec());
         var requiredTypes = collectRequiredTypes();
+
         return SliceCodec.sliceCodec(parent, all, requiredTypes);
     }
 
@@ -62,6 +65,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         var types = new java.util.HashSet<Class<?>>();
         types.addAll(SwimCodecs.REQUIRED_TYPES);
         types.add(InetSocketAddress.class);
+
         return types;
     }
 

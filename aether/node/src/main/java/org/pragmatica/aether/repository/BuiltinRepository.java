@@ -24,28 +24,30 @@ public interface BuiltinRepository extends Repository {
     Logger log = LoggerFactory.getLogger(BuiltinRepository.class);
 
     static BuiltinRepository builtinRepository(ArtifactStore store) {
-        return artifact -> store.resolveWithMetadata(artifact).flatMap(resolved -> writeToTempFile(artifact, resolved));
+        return artifact -> store.resolveWithMetadata(artifact)
+                                .flatMap(resolved -> writeToTempFile(artifact, resolved));
     }
 
     private static Promise<Location> writeToTempFile(Artifact artifact, ResolvedArtifact resolved) {
         return createTempFile("aether-" + artifact.artifactId().id() + "-",
                               ".jar").flatMap(tempFile -> writeBytes(tempFile,
-                                                                     resolved.content()).map(_ -> tempFile))
-                             .mapError(e -> new RepositoryError.WriteFailed(artifact,
-                                                                            new RuntimeException(e.message())))
+                                                                     resolved.content()).map(_ -> tempFile)).mapError(e -> new RepositoryError.WriteFailed(artifact,
+                                                                                                                                                           new RuntimeException(e.message())))
                              .async()
                              .onSuccess(_ -> log.info("Resolved artifact {} (SHA1={}, {} bytes)",
                                                       artifact.asString(),
                                                       resolved.metadata().sha1(),
                                                       resolved.metadata().size()))
                              .flatMap(tempFile -> Promise.lift(cause -> new RepositoryError.WriteFailed(artifact, cause),
-                                                               () -> tempFile.toUri().toURL()))
+                                                               () -> tempFile.toUri()
+                                                                             .toURL()))
                              .flatMap(url -> location(artifact, url).async());
     }
 
     sealed interface RepositoryError extends Cause {
         record WriteFailed(Artifact artifact, Throwable cause) implements RepositoryError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Failed to write artifact " + artifact.asString() + " to temp file: " + cause.getMessage();
             }
         }

@@ -24,11 +24,8 @@ import static org.pragmatica.lang.Unit.unit;
 
 public final class AppHttpContext {
     private static final Logger log = LoggerFactory.getLogger(AppHttpContext.class);
-
     public static final Supplier<RouteTable> EMPTY_ROUTE_TABLE_SENTINEL = RouteTable::empty;
-
     private static final Supplier<RouteTable> EMPTY_ROUTE_TABLE = EMPTY_ROUTE_TABLE_SENTINEL;
-
     private static final BooleanSupplier QUORUM_NOT_ESTABLISHED = () -> false;
 
     private final Fsm<AppHttpState, ClusterFsmEvent> fsm;
@@ -55,7 +52,8 @@ public final class AppHttpContext {
         return fsm;
     }
 
-    @Contract public void dispatch(ClusterFsmEvent event) {
+    @Contract
+    public void dispatch(ClusterFsmEvent event) {
         fsm.dispatch(event);
     }
 
@@ -71,7 +69,8 @@ public final class AppHttpContext {
         return routeTableSupplier;
     }
 
-    @Contract public void publishRouteTable() {
+    @Contract
+    public void publishRouteTable() {
         var table = routeTableSupplier.get();
         log.debug("Router rebuilt: {} local routes, {} remote routes",
                   table.localRoutes().size(),
@@ -79,16 +78,19 @@ public final class AppHttpContext {
         fsm.dispatch(new AppHttpEvents.RouteTablePublished(table));
     }
 
-    @Contract public void publishQuorumStateIfEstablished() {
+    @Contract
+    public void publishQuorumStateIfEstablished() {
         if (quorumEstablishedSupplier.getAsBoolean()) {fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());}
     }
 
-    @Contract public void republishStateAfterBind() {
+    @Contract
+    public void republishStateAfterBind() {
         publishRouteTable();
         publishQuorumStateIfEstablished();
     }
 
-    @Contract public void stopServers(Option<HttpServer> server, Option<HttpServer> h3) {
+    @Contract
+    public void stopServers(Option<HttpServer> server, Option<HttpServer> h3) {
         server.onPresent(HttpServer::stop);
         h3.onPresent(HttpServer::stop);
     }
@@ -96,11 +98,12 @@ public final class AppHttpContext {
     public Promise<Unit> stopServersAsync(Option<HttpServer> server, Option<HttpServer> h3) {
         var h1Stop = server.map(HttpServer::stop).or(Promise.success(unit()));
         var h3Stop = h3.map(HttpServer::stop).or(Promise.success(unit()));
+
         return h1Stop.flatMap(_ -> h3Stop);
     }
 
     public RouteTable currentRoutes() {
-        return switch (fsm.current()){
+        return switch (fsm.current()) {
             case AppHttpState.RouteReady(_, _, _, RouteTable routes) -> routes;
             case AppHttpState.CertRotating(_, _, _, _, RouteTable routes) -> routes;
             case AppHttpState.Quiesced _ -> RouteTable.empty();
@@ -109,16 +112,13 @@ public final class AppHttpContext {
     }
 
     public Option<Integer> boundPort() {
-        return switch (fsm.current()){
+        return switch (fsm.current()) {
             case AppHttpState.H1Only(_, HttpServer server) -> Option.some(server.port());
             case AppHttpState.H3Only(_, HttpServer h3) -> Option.some(h3.port());
             case AppHttpState.Dual(_, HttpServer server, _) -> Option.some(server.port());
-            case AppHttpState.RouteReady(_, Option<HttpServer> server, Option<HttpServer> h3, _) -> server.map(HttpServer::port)
-                                                                                                              .orElse(() -> h3.map(HttpServer::port));
-            case AppHttpState.CertRotating(_, Option<HttpServer> server, Option<HttpServer> h3, _, _) -> server.map(HttpServer::port)
-                                                                                                                   .orElse(() -> h3.map(HttpServer::port));
-            case AppHttpState.Quiesced(_, Option<HttpServer> server, Option<HttpServer> h3) -> server.map(HttpServer::port)
-                                                                                                         .orElse(() -> h3.map(HttpServer::port));
+            case AppHttpState.RouteReady(_, Option<HttpServer> server, Option<HttpServer> h3, _) -> server.map(HttpServer::port).orElse(() -> h3.map(HttpServer::port));
+            case AppHttpState.CertRotating(_, Option<HttpServer> server, Option<HttpServer> h3, _, _) -> server.map(HttpServer::port).orElse(() -> h3.map(HttpServer::port));
+            case AppHttpState.Quiesced(_, Option<HttpServer> server, Option<HttpServer> h3) -> server.map(HttpServer::port).orElse(() -> h3.map(HttpServer::port));
             case AppHttpState.Stopped _, AppHttpState.Starting _ -> Option.none();
         };
     }
@@ -127,10 +127,10 @@ public final class AppHttpContext {
         return fsm.current() instanceof AppHttpState.RouteReady || fsm.current() instanceof AppHttpState.CertRotating;
     }
 
-    public record ServerPair(Option<HttpServer> server, Option<HttpServer> h3){}
+    public record ServerPair(Option<HttpServer> server, Option<HttpServer> h3) {}
 
     public ServerPair currentServers() {
-        return switch (fsm.current()){
+        return switch (fsm.current()) {
             case AppHttpState.H1Only(_, HttpServer server) -> new ServerPair(Option.some(server), Option.none());
             case AppHttpState.H3Only(_, HttpServer h3) -> new ServerPair(Option.none(), Option.some(h3));
             case AppHttpState.Dual(_, HttpServer server, HttpServer h3) -> new ServerPair(Option.some(server),

@@ -17,14 +17,20 @@ import picocli.CommandLine.Mixin;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STATUS;
 
 
-@Command(name = "status", description = "Show cluster status") @SuppressWarnings("JBCT-RET-01") class ClusterStatusCommand implements Callable<Integer> {
-    @CommandLine.ParentCommand private ClusterCommand parent;
+@Command(name = "status", description = "Show cluster status")
+@SuppressWarnings("JBCT-RET-01")
+class ClusterStatusCommand implements Callable<Integer> {
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+    @Mixin
+    ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
-    @Override public Integer call() {
-        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_STATUS))
-                                           .fold(ClusterStatusCommand::onFailure, this::onSuccess);
+    @Override
+    public Integer call() {
+        return clusterTarget.applyOverrides()
+                            .flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_STATUS))
+                            .fold(ClusterStatusCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {
@@ -33,6 +39,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_STA
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

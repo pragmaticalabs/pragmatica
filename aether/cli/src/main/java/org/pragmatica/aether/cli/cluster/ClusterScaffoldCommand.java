@@ -26,26 +26,35 @@ import picocli.CommandLine.Option;
 @Command(name = "scaffold", description = "Emit a deployment-manifest template with cluster-scoped labels pre-set")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"})
 class ClusterScaffoldCommand implements Callable<Integer> {
-    @Option(names = "--name", required = true, description = "Cluster name (regex: ^[a-z][a-z0-9-]{0,62}$)") private String name;
+    @Option(names = "--name", required = true, description = "Cluster name (regex: ^[a-z][a-z0-9-]{0,62}$)")
+    private String name;
 
-    @Option(names = "--template", required = true, description = "Output template: docker-compose") private String format;
+    @Option(names = "--template", required = true, description = "Output template: docker-compose")
+    private String format;
 
-    @Option(names = "--nodes", defaultValue = "5", description = "Number of compose-fixed nodes (default 5)") private int nodes;
+    @Option(names = "--nodes", defaultValue = "5", description = "Number of compose-fixed nodes (default 5)")
+    private int nodes;
 
-    @Option(names = "--image", defaultValue = "aether-node:local", description = "Container image to use (default aether-node:local)") private String image;
+    @Option(names = "--image", defaultValue = "aether-node:local", description = "Container image to use (default aether-node:local)")
+    private String image;
 
-    @Option(names = "--mgmt-port-base", defaultValue = "5150", description = "Host port base for management API (default 5150)") private int mgmtPortBase;
+    @Option(names = "--mgmt-port-base", defaultValue = "5150", description = "Host port base for management API (default 5150)")
+    private int mgmtPortBase;
 
-    @Option(names = "--app-port-base", defaultValue = "8070", description = "Host port base for application HTTP (default 8070)") private int appPortBase;
+    @Option(names = "--app-port-base", defaultValue = "8070", description = "Host port base for application HTTP (default 8070)")
+    private int appPortBase;
 
-    @Option(names = "--cluster-port", defaultValue = "6000", description = "QUIC cluster transport port (default 6000)") private int clusterPort;
+    @Option(names = "--cluster-port", defaultValue = "6000", description = "QUIC cluster transport port (default 6000)")
+    private int clusterPort;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Override public Integer call() {
+    @Override
+    public Integer call() {
         return validateName().flatMap(_ -> validateFormat())
-                                                 .flatMap(this::render)
-                                                 .fold(ClusterScaffoldCommand::onFailure, ClusterScaffoldCommand::onSuccess);
+                           .flatMap(this::render)
+                           .fold(ClusterScaffoldCommand::onFailure, ClusterScaffoldCommand::onSuccess);
     }
 
     private Result<String> validateName() {
@@ -60,27 +69,31 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     }
 
     private Result<String> render(String _format) {
-        if (nodes < 3) {return new ScaffoldError.InvalidNodeCount(nodes).result();}
+        if (nodes <3) {return new ScaffoldError.InvalidNodeCount(nodes).result();}
         return Result.success(DockerComposeTemplate.render(name, nodes, image, mgmtPortBase, appPortBase, clusterPort));
     }
 
     private static int onSuccess(String rendered) {
         System.out.print(rendered);
+
         return ExitCode.SUCCESS;
     }
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 
     sealed interface ScaffoldError extends Cause {
         record UnsupportedFormat(String format) implements ScaffoldError {
-            @Override public String message() {return "Unsupported --format '" + format + "' (supported: docker-compose)";}
+            @Override
+            public String message() {return "Unsupported --format '" + format + "' (supported: docker-compose)";}
         }
 
         record InvalidNodeCount(int nodes) implements ScaffoldError {
-            @Override public String message() {return "Invalid --nodes " + nodes + " (must be >= 3)";}
+            @Override
+            public String message() {return "Invalid --nodes " + nodes + " (must be >= 3)";}
         }
     }
 }

@@ -33,13 +33,9 @@ import org.slf4j.LoggerFactory;
 
 public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(ClusterAwaitQuiescedRoute.class);
-
     private static final TimeSpan POLL_INTERVAL = TimeSpan.timeSpan(200).millis();
-
     private static final int LOG_EVERY_N_POLLS = 25;
-
     private static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
-
     private static final TimeSpan MAX_TIMEOUT = TimeSpan.timeSpan(120).seconds();
 
     private static final Fn1<Cause, String> INVALID_EPOCH = Causes.forOneValue("Invalid epoch parameter [%s] (expected term:counter)");
@@ -58,10 +54,11 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
         return new ClusterAwaitQuiescedRoute(nodeSupplier);
     }
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<AwaitQuiescedResponse>route(ManagementRoute.CLUSTER_AWAIT_QUIESCED)
-                                         .<String, String>withQuery(QueryParameter.aString("epoch"),
-                                                                    QueryParameter.aString("timeout"))
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<AwaitQuiescedResponse> route(ManagementRoute.CLUSTER_AWAIT_QUIESCED)
+                                         .<String, String> withQuery(QueryParameter.aString("epoch"),
+                                                                     QueryParameter.aString("timeout"))
                                          .to(this::handle)
                                          .asJson());
     }
@@ -73,22 +70,26 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     }
 
     static Result<Epoch> parseEpoch(Option<String> raw) {
-        return raw.toResult(MISSING_EPOCH).flatMap(ClusterAwaitQuiescedRoute::parseEpochString);
+        return raw.toResult(MISSING_EPOCH)
+                  .flatMap(ClusterAwaitQuiescedRoute::parseEpochString);
     }
 
     private static Result<Epoch> parseEpochString(String raw) {
         var parts = raw.split(":");
+
         if (parts.length != 2) {return INVALID_EPOCH.apply(raw).result();}
+
         return parseLongPair(parts[0], parts[1]).mapError(_ -> INVALID_EPOCH.apply(raw));
     }
 
     private static Result<Epoch> parseLongPair(String termRaw, String counterRaw) {
-        return Number.parseLong(termRaw)
-                               .flatMap(term -> Number.parseLong(counterRaw).map(counter -> Epoch.epoch(term, counter)));
+        return Number.parseLong(termRaw).flatMap(term -> Number.parseLong(counterRaw).map(counter -> Epoch.epoch(term,
+                                                                                                                 counter)));
     }
 
     static Result<TimeSpan> parseTimeout(Option<String> raw) {
-        return raw.map(ClusterAwaitQuiescedRoute::parseTimeoutString).or(() -> Result.success(DEFAULT_TIMEOUT));
+        return raw.map(ClusterAwaitQuiescedRoute::parseTimeoutString)
+                  .or(() -> Result.success(DEFAULT_TIMEOUT));
     }
 
     private static Result<TimeSpan> parseTimeoutString(String raw) {
@@ -98,15 +99,15 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
 
     private static Result<Long> parseTimeoutSeconds(String raw) {
         var trimmed = raw.endsWith("s")
-                     ? raw.substring(0, raw.length() - 1)
-                     : raw;
+                      ? raw.substring(0, raw.length() - 1)
+                      : raw;
         return Number.parseLong(trimmed).mapError(_ -> INVALID_TIMEOUT.apply(raw));
     }
 
     private static TimeSpan clampTimeout(TimeSpan ts) {
         return ts.millis() > MAX_TIMEOUT.millis()
-              ? MAX_TIMEOUT
-              : ts;
+               ? MAX_TIMEOUT
+               : ts;
     }
 
     private Promise<AwaitQuiescedResponse> awaitQuiesced(Epoch requested, TimeSpan timeout) {
@@ -114,6 +115,7 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
         var deadlineNanos = startNanos + timeout.nanos();
         log.debug("await-quiesced: requested={}, timeout={}ms", requested, timeout.millis());
         nodeSupplier.get().requestGenerationSnapshotRefresh();
+
         return pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos, 0);
     }
 
@@ -122,9 +124,12 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                                                                    long deadlineNanos,
                                                                    int pollCount) {
         var snapshot = nodeSupplier.get().currentGenerationSnapshot();
+
         if (pollCount > 0 && pollCount % LOG_EVERY_N_POLLS == 0) {logProgress(requested, snapshot, pollCount, startNanos);}
-        return snapshot.filter(s -> matchesQuiesced(s, requested)).map(s -> Promise.success(buildResponse(s, startNanos)))
-                              .or(() -> waitOrTimeout(requested, startNanos, deadlineNanos, pollCount));
+
+        return snapshot.filter(s -> matchesQuiesced(s, requested))
+                       .map(s -> Promise.success(buildResponse(s, startNanos)))
+                       .or(() -> waitOrTimeout(requested, startNanos, deadlineNanos, pollCount));
     }
 
     private Promise<AwaitQuiescedResponse> waitOrTimeout(Epoch requested,
@@ -133,10 +138,11 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                                                          int pollCount) {
         if (System.nanoTime() >= deadlineNanos) {
             logTimeout(requested, pollCount, startNanos);
+
             return timeoutResponse();
         }
-        return Promise.<Boolean>promise(POLL_INTERVAL,
-                                        p -> p.succeed(true))
+        return Promise.<Boolean> promise(POLL_INTERVAL,
+                                         p -> p.succeed(true))
                       .flatMap(_ -> pollUntilReadyOrTimeout(requested, startNanos, deadlineNanos, pollCount + 1));
     }
 
@@ -150,11 +156,10 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                                          elapsedMs,
                                          requested,
                                          s.epoch(),
-                                         s.quiescence()))
-        .onEmpty(() -> log.info("await-quiesced still waiting (poll={}, elapsed={}ms): requested={}, observed=NO_SNAPSHOT",
-                                pollCount,
-                                elapsedMs,
-                                requested));
+                                         s.quiescence())).onEmpty(() -> log.info("await-quiesced still waiting (poll={}, elapsed={}ms): requested={}, observed=NO_SNAPSHOT",
+                                                                                 pollCount,
+                                                                                 elapsedMs,
+                                                                                 requested));
     }
 
     private void logTimeout(Epoch requested, int pollCount, long startNanos) {
@@ -165,19 +170,20 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
                                          elapsedMs,
                                          requested,
                                          s.epoch(),
-                                         s.quiescence()))
-        .onEmpty(() -> log.warn("await-quiesced TIMEOUT (polls={}, elapsed={}ms): requested={}, final=NO_SNAPSHOT",
-                                pollCount,
-                                elapsedMs,
-                                requested));
+                                         s.quiescence())).onEmpty(() -> log.warn("await-quiesced TIMEOUT (polls={}, elapsed={}ms): requested={}, final=NO_SNAPSHOT",
+                                                                                 pollCount,
+                                                                                 elapsedMs,
+                                                                                 requested));
     }
 
     private static boolean matchesQuiesced(ClusterGenerationSnapshot snapshot, Epoch requested) {
-        return snapshot.epoch().isAtLeast(requested) && snapshot.quiescence() == ClusterQuiescence.QUIESCED;
+        return snapshot.epoch()
+                       .isAtLeast(requested) && snapshot.quiescence() == ClusterQuiescence.QUIESCED;
     }
 
     private static AwaitQuiescedResponse buildResponse(ClusterGenerationSnapshot snapshot, long startNanos) {
         var waitedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+
         return new AwaitQuiescedResponse(snapshot.epoch().toString(),
                                          snapshot.quiescence().name(),
                                          waitedMs);
@@ -186,6 +192,6 @@ public final class ClusterAwaitQuiescedRoute implements RouteSource {
     private static Promise<AwaitQuiescedResponse> timeoutResponse() {
         return HttpError.httpError(HttpStatus.REQUEST_TIMEOUT,
                                    Causes.cause("await-quiesced timed out before reaching requested epoch"))
-        .promise();
+                        .promise();
     }
 }

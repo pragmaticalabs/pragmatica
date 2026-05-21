@@ -25,11 +25,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public class AlertForwarder {
+@SuppressWarnings("JBCT-RET-01")
+public class AlertForwarder {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
-
     private static final long RETRY_BASE_MS = 200L;
-
     private static final long RETRY_CAP_MS = 30_000L;
 
     private final WebhookConfig config;
@@ -39,6 +38,7 @@ import org.slf4j.LoggerFactory;
     private AlertForwarder(AlertConfig alertConfig) {
         this.config = alertConfig.webhook();
         this.enabled = alertConfig.enabled() && config.enabled();
+
         if (enabled && !config.urls().isEmpty()) {
             this.httpOps = Option.some(JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(config.timeout().millis()),
                                                                            java.net.http.HttpClient.Redirect.NORMAL,
@@ -57,21 +57,22 @@ import org.slf4j.LoggerFactory;
 
     public Promise<Unit> forward(AlertEvent event) {
         if (!enabled || httpOps.isEmpty()) {return Promise.success(Unit.unit());}
+
         var payload = toJson(event);
         log.debug("Forwarding alert to {} webhooks: {}",
                   config.urls().size(),
                   event.alertId());
-        return Promise.allOf(config.urls().stream()
-                                        .map(url -> sendToWebhook(url, payload))
-                                        .toList())
-        .map(_ -> Unit.unit());
+
+        return Promise.allOf(config.urls().stream().map(url -> sendToWebhook(url, payload)).toList()).map(_ -> Unit.unit());
     }
 
-    @MessageReceiver public void onSliceFailureAlert(AlertEvent.SliceFailureAlert alert) {
+    @MessageReceiver
+    public void onSliceFailureAlert(AlertEvent.SliceFailureAlert alert) {
         forward(alert).onFailure(cause -> log.error("Failed to forward slice failure alert: {}", cause.message()));
     }
 
-    @MessageReceiver public void onThresholdAlert(AlertEvent.ThresholdAlert alert) {
+    @MessageReceiver
+    public void onThresholdAlert(AlertEvent.ThresholdAlert alert) {
         forward(alert).onFailure(cause -> log.error("Failed to forward threshold alert: {}", cause.message()));
     }
 
@@ -85,12 +86,10 @@ import org.slf4j.LoggerFactory;
     }
 
     private Promise<Integer> doSend(HttpOperations ops, String url, String payload) {
-        var request = HttpRequest.newBuilder().uri(URI.create(url))
-                                            .timeout(Duration.ofMillis(config.timeout().millis()))
-                                            .header("Content-Type", "application/json")
-                                            .POST(HttpRequest.BodyPublishers.ofString(payload))
-                                            .build();
-        return ops.sendString(request).map(org.pragmatica.http.HttpResult::statusCode);
+        var request = HttpRequest.newBuilder().uri(URI.create(url)).timeout(Duration.ofMillis(config.timeout().millis())).header("Content-Type",
+                                                                                                                                 "application/json").POST(HttpRequest.BodyPublishers.ofString(payload)).build();
+        return ops.sendString(request)
+                  .map(org.pragmatica.http.HttpResult::statusCode);
     }
 
     private Promise<Unit> handleStatusCode(HttpOperations ops,
@@ -100,9 +99,12 @@ import org.slf4j.LoggerFactory;
                                            int statusCode) {
         if (statusCode >= 200 && statusCode <300) {
             log.debug("Alert forwarded to {}", url);
+
             return Promise.success(Unit.unit());
         }
+
         log.warn("Webhook {} returned status {}", url, statusCode);
+
         return retryOrFail(ops, url, payload, attempt, "HTTP " + statusCode);
     }
 
@@ -110,82 +112,82 @@ import org.slf4j.LoggerFactory;
         if (attempt <config.retryCount()) {
             var delayMs = jitteredBackoff(attempt);
             log.debug("Retrying webhook {} (attempt {}/{}) after {}ms", url, attempt + 1, config.retryCount(), delayMs);
-            var promise = Promise.<Unit>promise();
+            var promise = Promise.<Unit> promise();
             SharedScheduler.schedule(() -> sendWithRetry(ops, url, payload, attempt + 1).onResult(promise::resolve),
                                      TimeSpan.timeSpan(delayMs).millis());
+
             return promise;
         }
+
         log.error("Failed to send to webhook {} after {} attempts: {}", url, config.retryCount(), error);
+
         return AlertForwarderError.WebhookError.webhookError(url, error).promise();
     }
 
     static long jitteredBackoff(int attempt) {
         var base = Math.min(RETRY_BASE_MS * (1L<<attempt), RETRY_CAP_MS);
+
         return JitterUtil.applyJitter(base, JitterUtil.MIN_FACTOR_DEFAULT, JitterUtil.MAX_FACTOR_DEFAULT);
     }
 
     private String toJson(AlertEvent event) {
         var sb = new StringBuilder();
         sb.append("{");
-        sb.append("\"alertId\":\"").append(event.alertId())
-                 .append("\",");
-        sb.append("\"timestamp\":").append(event.timestamp())
-                 .append(",");
-        sb.append("\"severity\":\"").append(event.severity())
-                 .append("\",");
-        switch (event){
+        sb.append("\"alertId\":\"").append(event.alertId()).append("\",");
+        sb.append("\"timestamp\":").append(event.timestamp()).append(",");
+        sb.append("\"severity\":\"").append(event.severity()).append("\",");
+
+        switch (event) {
             case AlertEvent.SliceFailureAlert sfa -> appendSliceFailureFields(sb, sfa);
             case AlertEvent.ThresholdAlert ta -> appendThresholdFields(sb, ta);
             case AlertEvent.AlertResolved ar -> appendResolvedFields(sb, ar);
         }
+
         sb.append("}");
+
         return sb.toString();
     }
 
     private void appendSliceFailureFields(StringBuilder sb, AlertEvent.SliceFailureAlert sfa) {
         sb.append("\"type\":\"SLICE_ALL_INSTANCES_FAILED\",");
-        sb.append("\"artifact\":\"").append(sfa.artifact().asString())
-                 .append("\",");
-        sb.append("\"method\":\"").append(sfa.method().name())
-                 .append("\",");
-        sb.append("\"requestId\":\"").append(sfa.requestId())
-                 .append("\",");
+        sb.append("\"artifact\":\"").append(sfa.artifact().asString()).append("\",");
+        sb.append("\"method\":\"").append(sfa.method().name()).append("\",");
+        sb.append("\"requestId\":\"").append(sfa.requestId()).append("\",");
         sb.append("\"attemptedNodes\":[");
         var first = true;
+
         for (var nodeId : sfa.attemptedNodes()) {
             if (!first) sb.append(",");
-            sb.append("\"").append(nodeId.id())
-                     .append("\"");
+
+            sb.append("\"").append(nodeId.id()).append("\"");
             first = false;
         }
+
         sb.append("],");
-        sb.append("\"lastError\":\"").append(escapeJson(sfa.lastError()))
-                 .append("\"");
+        sb.append("\"lastError\":\"").append(escapeJson(sfa.lastError())).append("\"");
     }
 
     private void appendThresholdFields(StringBuilder sb, AlertEvent.ThresholdAlert ta) {
         sb.append("\"type\":\"THRESHOLD_EXCEEDED\",");
-        sb.append("\"metric\":\"").append(ta.metric())
-                 .append("\",");
-        sb.append("\"nodeId\":\"").append(ta.nodeId().id())
-                 .append("\",");
-        sb.append("\"value\":").append(ta.value())
-                 .append(",");
+        sb.append("\"metric\":\"").append(ta.metric()).append("\",");
+        sb.append("\"nodeId\":\"").append(ta.nodeId().id()).append("\",");
+        sb.append("\"value\":").append(ta.value()).append(",");
         sb.append("\"threshold\":").append(ta.threshold());
     }
 
     private void appendResolvedFields(StringBuilder sb, AlertEvent.AlertResolved ar) {
         sb.append("\"type\":\"ALERT_RESOLVED\",");
-        sb.append("\"resolvedBy\":\"").append(escapeJson(ar.resolvedBy()))
-                 .append("\"");
+        sb.append("\"resolvedBy\":\"").append(escapeJson(ar.resolvedBy())).append("\"");
     }
 
     private String escapeJson(String s) {
-        return Option.option(s).map(str -> str.replace("\\", "\\\\").replace("\"", "\\\"")
-                                                      .replace("\n", "\\n")
-                                                      .replace("\r", "\\r")
-                                                      .replace("\t", "\\t"))
-                            .or("");
+        return Option.option(s)
+                     .map(str -> str.replace("\\", "\\\\")
+                                    .replace("\"", "\\\"")
+                                    .replace("\n", "\\n")
+                                    .replace("\r", "\\r")
+                                    .replace("\t", "\\t"))
+                     .or("");
     }
 
     public void shutdown() {
@@ -198,7 +200,8 @@ import org.slf4j.LoggerFactory;
                 return new WebhookError(url, error);
             }
 
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Webhook " + url + " failed: " + error;
             }
         }

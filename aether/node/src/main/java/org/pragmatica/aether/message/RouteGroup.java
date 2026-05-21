@@ -19,7 +19,6 @@ public record RouteGroup(String name, List<MessageRouter.Entry<?>> entries) {
 
     public static final class Builder {
         private final String name;
-
         private final List<MessageRouter.Entry<?>> entries = new ArrayList<>();
 
         private Builder(String name) {
@@ -28,21 +27,25 @@ public record RouteGroup(String name, List<MessageRouter.Entry<?>> entries) {
 
         public <M extends Message> Builder route(Class<M> type, Consumer<M> handler) {
             entries.add(MessageRouter.Entry.route(type, handler));
+
             return this;
         }
 
-        @SafeVarargs public final <M extends Message> Builder fanOut(Class<M> type, Consumer<M>... handlers) {
+        @SafeVarargs
+        public final <M extends Message> Builder fanOut(Class<M> type, Consumer<M>... handlers) {
             for (var handler : handlers) {entries.add(MessageRouter.Entry.route(type, handler));}
             return this;
         }
 
         public Builder entry(MessageRouter.Entry<?> entry) {
             entries.add(entry);
+
             return this;
         }
 
         public Builder merge(RouteGroup other) {
             entries.addAll(other.entries());
+
             return this;
         }
 

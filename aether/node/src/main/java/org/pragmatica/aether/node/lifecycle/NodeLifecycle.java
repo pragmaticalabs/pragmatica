@@ -13,10 +13,17 @@ import java.util.function.Consumer;
 
 public interface NodeLifecycle {
     NodeState currentState();
-    @Contract void subsystemsReady();
-    @Contract void signalReady();
+
+    @Contract
+    void subsystemsReady();
+
+    @Contract
+    void signalReady();
+
     Promise<Unit> drain();
-    @Contract void addStateListener(Consumer<NodeStateChanged> listener);
+
+    @Contract
+    void addStateListener(Consumer<NodeStateChanged> listener);
 
     static NodeLifecycle nodeLifecycle() {
         return NodeLifecycleImpl.nodeLifecycleImpl();

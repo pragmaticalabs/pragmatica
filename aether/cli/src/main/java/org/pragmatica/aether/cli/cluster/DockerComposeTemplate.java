@@ -24,7 +24,13 @@ import java.util.stream.IntStream;
 final class DockerComposeTemplate {
     private DockerComposeTemplate() {}
 
-    @Contract static String render(String clusterName, int nodes, String image, int mgmtPortBase, int appPortBase, int clusterPort) {
+    @Contract
+    static String render(String clusterName,
+                         int nodes,
+                         String image,
+                         int mgmtPortBase,
+                         int appPortBase,
+                         int clusterPort) {
         var sb = new StringBuilder(2048);
         appendHeader(sb, clusterName, nodes);
         appendCommon(sb, clusterName, nodes, image, clusterPort);
@@ -33,6 +39,7 @@ final class DockerComposeTemplate {
         sb.append("\nnetworks:\n");
         sb.append("  aether-").append(clusterName).append("-network:\n");
         sb.append("    driver: bridge\n");
+
         return sb.toString();
     }
 
@@ -87,10 +94,12 @@ final class DockerComposeTemplate {
 
     private static String buildPeers(String clusterName, int nodes, int clusterPort) {
         var sb = new StringBuilder();
-        for (int i = 1; i <= nodes; i++) {
+
+        for (int i = 1;i <= nodes;i++) {
             if (i > 1) {sb.append(",");}
             sb.append("node-").append(i).append(":aether-").append(clusterName).append("-node-").append(i).append(":").append(clusterPort);
         }
+
         return sb.toString();
     }
 }

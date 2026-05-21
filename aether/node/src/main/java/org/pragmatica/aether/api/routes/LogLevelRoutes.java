@@ -33,15 +33,15 @@ public final class LogLevelRoutes implements RouteSource {
         return new LogLevelRoutes(logLevelRegistry);
     }
 
-    record SetLogLevelRequest(String logger, String level){}
+    record SetLogLevelRequest(String logger, String level) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<Object>route(ManagementRoute.LOG_LEVELS_LIST)
-                                         .toJson(logLevelRegistry::allLevels),
-                         ManagementRoutes.<LogLevelSetResponse>route(ManagementRoute.LOG_LEVEL_SET)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<Object> route(ManagementRoute.LOG_LEVELS_LIST).toJson(logLevelRegistry::allLevels),
+                         ManagementRoutes.<LogLevelSetResponse> route(ManagementRoute.LOG_LEVEL_SET)
                                          .withBody(SetLogLevelRequest.class)
                                          .toJson(this::handleSetLevel),
-                         ManagementRoutes.<LogLevelResetResponse>route(ManagementRoute.LOG_LEVEL_RESET)
+                         ManagementRoutes.<LogLevelResetResponse> route(ManagementRoute.LOG_LEVEL_RESET)
                                          .withPath(aString())
                                          .to(this::handleResetLevel)
                                          .asJson());
@@ -51,21 +51,24 @@ public final class LogLevelRoutes implements RouteSource {
         return validateSetRequest(req).async()
                                  .flatMap(valid -> logLevelRegistry.setLevel(valid.logger(),
                                                                              valid.level().toUpperCase())
-        .map(_ -> new LogLevelSetResponse("level_set",
-                                          valid.logger(),
-                                          valid.level().toUpperCase())));
+                                                                   .map(_ -> new LogLevelSetResponse("level_set",
+                                                                                                     valid.logger(),
+                                                                                                     valid.level()
+                                                                                                          .toUpperCase())));
     }
 
     private Result<SetLogLevelRequest> validateSetRequest(SetLogLevelRequest req) {
         if (req.logger() == null || req.logger().isEmpty()) {return LogLevelError.MISSING_FIELDS.result();}
         if (req.level() == null || req.level().isEmpty()) {return LogLevelError.MISSING_FIELDS.result();}
         if (!VALID_LEVELS.contains(req.level().toUpperCase())) {return LogLevelError.INVALID_LEVEL.result();}
+
         return Result.success(req);
     }
 
     private Promise<LogLevelResetResponse> handleResetLevel(String loggerName) {
         if (loggerName.isEmpty()) {return LogLevelError.LOGGER_REQUIRED.promise();}
-        return logLevelRegistry.resetLevel(loggerName).map(_ -> new LogLevelResetResponse("level_reset", loggerName));
+        return logLevelRegistry.resetLevel(loggerName)
+                               .map(_ -> new LogLevelResetResponse("level_reset", loggerName));
     }
 
     private enum LogLevelError implements Cause {
@@ -76,7 +79,8 @@ public final class LogLevelRoutes implements RouteSource {
         LogLevelError(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }

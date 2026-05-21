@@ -13,6 +13,7 @@ final class StorageCliHelper {
 
     static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

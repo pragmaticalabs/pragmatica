@@ -15,16 +15,22 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
 
-@Command(name = "use", description = "Switch active cluster context") @SuppressWarnings("JBCT-RET-01") class ClusterUseCommand implements Callable<Integer> {
-    @Parameters(index = "0", description = "Cluster name to activate") private String name;
+@Command(name = "use", description = "Switch active cluster context")
+@SuppressWarnings("JBCT-RET-01")
+class ClusterUseCommand implements Callable<Integer> {
+    @Parameters(index = "0", description = "Cluster name to activate")
+    private String name;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Override public Integer call() {
-        return ClusterRegistry.load().flatMap(registry -> registry.use(name))
-                                   .flatMap(ClusterRegistry::save)
-                                   .fold(ClusterUseCommand::onFailure,
-                                         _ -> onSuccess());
+    @Override
+    public Integer call() {
+        return ClusterRegistry.load()
+                              .flatMap(registry -> registry.use(name))
+                              .flatMap(ClusterRegistry::save)
+                              .fold(ClusterUseCommand::onFailure,
+                                    _ -> onSuccess());
     }
 
     private int onSuccess() {
@@ -35,6 +41,7 @@ import picocli.CommandLine.Parameters;
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

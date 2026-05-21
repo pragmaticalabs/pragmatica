@@ -24,25 +24,29 @@ public interface BackupService {
 
     sealed interface BackupError extends Cause {
         record BackupFailed(Cause cause) implements BackupError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Backup failed: " + cause.message();
             }
         }
 
         record RestoreNotAllowed() implements BackupError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Restore not allowed while cluster is active";
             }
         }
 
         record CommitNotFound(String commitId) implements BackupError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Backup commit not found: " + commitId;
             }
         }
 
         record BackupDisabled() implements BackupError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Backup is not enabled";
             }
         }
@@ -67,18 +71,22 @@ public interface BackupService {
     static BackupService disabled() {
         var disabledError = BackupError.backupDisabled();
         record disabledBackupService(BackupError error) implements BackupService {
-            @Override public Result<Unit> backupNow() {
+            @Override
+            public Result<Unit> backupNow() {
                 return error.result();
             }
 
-            @Override public Result<List<BackupInfo>> listBackups() {
+            @Override
+            public Result<List<BackupInfo>> listBackups() {
                 return error.result();
             }
 
-            @Override public Result<Unit> restore(String commitId) {
+            @Override
+            public Result<Unit> restore(String commitId) {
                 return error.result();
             }
         }
+
         return new disabledBackupService(disabledError);
     }
 }

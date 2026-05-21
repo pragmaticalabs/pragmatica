@@ -170,10 +170,6 @@ import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
-// NOTE: cluster-wide TransportObservation referenced via FQCN
-// (`org.pragmatica.consensus.topology.TransportObservation`) to avoid the simple-name
-// collision with `org.pragmatica.swim.TransportObservation` (legacy SWIM-local hint type)
-// that is imported below.
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTConfig;
@@ -247,9 +243,7 @@ import org.slf4j.LoggerFactory;
 
 public interface AetherNode extends ManageableNode {
     Logger LOG = LoggerFactory.getLogger(AetherNode.class);
-
     String VERSION = BuildInfo.version();
-
     NodeId self();
     Promise<Unit> start();
     Promise<Unit> stop();
@@ -301,10 +295,13 @@ public interface AetherNode extends ManageableNode {
     long uptimeSeconds();
     List<NodeId> initialTopology();
     TopologyConfig topologyConfig();
-    @Contract void route(Message message);
+
+    @Contract
+    void route(Message message);
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
-        return aetherNode(config, () -> Runtime.getRuntime().halt(2));
+        return aetherNode(config,
+                          () -> Runtime.getRuntime().halt(2));
     }
 
     /// Overload for single-JVM hosting (Forge / Ember). The `jvmExit` hook is invoked by
@@ -314,20 +311,25 @@ public interface AetherNode extends ManageableNode {
     static Result<AetherNode> aetherNode(AetherNodeConfig config, Runnable jvmExit) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
         var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+
         return aetherNode(config, delegateRouter, nodeCodec, jvmExit);
     }
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
                                          SliceCodec nodeCodec) {
-        return aetherNode(config, delegateRouter, nodeCodec, () -> Runtime.getRuntime().halt(2));
+        return aetherNode(config,
+                          delegateRouter,
+                          nodeCodec,
+                          () -> Runtime.getRuntime().halt(2));
     }
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
                                          SliceCodec nodeCodec,
                                          Runnable jvmExit) {
-        return config.validate().flatMap(_ -> createNode(config, delegateRouter, nodeCodec, jvmExit));
+        return config.validate()
+                     .flatMap(_ -> createNode(config, delegateRouter, nodeCodec, jvmExit));
     }
 
     private static Result<AetherNode> createNode(AetherNodeConfig config,
@@ -338,10 +340,9 @@ public interface AetherNode extends ManageableNode {
         Deserializer deserializer = nodeCodec;
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
         var dhtStorage = MemoryStorageEngine.memoryStorageEngine();
-        var dhtRing = ConsistentHashRing.<NodeId>consistentHashRing();
+        var dhtRing = ConsistentHashRing.<NodeId> consistentHashRing();
         dhtRing.addNode(config.self());
-        config.topology().coreNodes()
-                       .forEach(peer -> dhtRing.addNode(peer.id()));
+        config.topology().coreNodes().forEach(peer -> dhtRing.addNode(peer.id()));
         var dhtNode = DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo());
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
@@ -354,15 +355,17 @@ public interface AetherNode extends ManageableNode {
         var persistence = resolvePersistence(config);
         var leaderTerm = new AtomicLong(0L);
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
-        Predicate<NodeId> isDecommissioned = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId)).filter(v -> v instanceof AetherValue.NodeLifecycleValue)
-                                                                  .map(v -> (AetherValue.NodeLifecycleValue) v)
-                                                                  .map(v -> v.state() == AetherValue.NodeLifecycleState.DECOMMISSIONED)
-                                                                  .or(false);
+        Predicate<NodeId> isDecommissioned = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId))
+                                                              .filter(v -> v instanceof AetherValue.NodeLifecycleValue)
+                                                              .map(v -> (AetherValue.NodeLifecycleValue) v)
+                                                              .map(v -> v.state() == AetherValue.NodeLifecycleState.DECOMMISSIONED)
+                                                              .or(false);
         Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                       LeaderValue.class)
-        .map(LeaderValue::leader);
+                                                                            .map(LeaderValue::leader);
         var hlcClock = HlcClock.hlcClock(config.self().id()).unwrap();
         var snapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
+
         return RabiaNode.rabiaNode(nodeConfig,
                                    delegateRouter,
                                    kvStore,
@@ -377,34 +380,37 @@ public interface AetherNode extends ManageableNode {
                                    currentLeaderFromKvSupplier,
                                    snapshotSource,
                                    hlcClock::now)
-        .flatMap(clusterNode -> assembleNode(config,
-                                             delegateRouter,
-                                             kvStore,
-                                             sliceRegistry,
-                                             deferredInvoker,
-                                             clusterNode,
-                                             rabiaMetricsCollector,
-                                             networkMetricsHandler,
-                                             serializer,
-                                             deserializer,
-                                             nodeCodec,
-                                             dhtNode,
-                                             leaderTerm,
-                                             hlcClock,
-                                             snapshotSource,
-                                             jvmExit));
+                        .flatMap(clusterNode -> assembleNode(config,
+                                                             delegateRouter,
+                                                             kvStore,
+                                                             sliceRegistry,
+                                                             deferredInvoker,
+                                                             clusterNode,
+                                                             rabiaMetricsCollector,
+                                                             networkMetricsHandler,
+                                                             serializer,
+                                                             deserializer,
+                                                             nodeCodec,
+                                                             dhtNode,
+                                                             leaderTerm,
+                                                             hlcClock,
+                                                             snapshotSource,
+                                                             jvmExit));
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
-        return config.backupConfig().filter(b -> !b.path().isBlank())
-                                  .map(AetherNode::createGitBackedPersistence)
-                                  .or(RabiaPersistence::inMemory);
+        return config.backupConfig()
+                     .filter(b -> !b.path()
+                                    .isBlank())
+                     .map(AetherNode::createGitBackedPersistence)
+                     .or(RabiaPersistence::inMemory);
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> createGitBackedPersistence(BackupConfig backup) {
         var backupDir = Path.of(backup.path());
         var remote = Option.option(backup.remote()).filter(s -> !s.isBlank());
         LoggerFactory.getLogger(AetherNode.class).info("Consensus persistence: git-backed at {}", backupDir);
+
         return RabiaPersistence.gitBacked(backupDir, remote, AetherNode::snapshotToBase64, AetherNode::base64ToSnapshot);
     }
 
@@ -418,16 +424,16 @@ public interface AetherNode extends ManageableNode {
     }
 
     long DEFAULT_STREAM_RETENTION_MS = 24 * 60 * 60 * 1000L;
-
     long DEFAULT_STREAM_MEMORY_BYTES = 16 * 1024 * 1024L;
 
     private static StorageInstance createStreamStorage(Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(DEFAULT_STREAM_MEMORY_BYTES);
-        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments")).map(dht -> StorageInstance.storageInstance("streams",
-                                                                                                                                            List.of(memoryTier,
-                                                                                                                                                    dht)))
-                            .or(StorageInstance.storageInstance("streams",
-                                                                List.of(memoryTier)));
+
+        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"))
+                        .map(dht -> StorageInstance.storageInstance("streams",
+                                                                    List.of(memoryTier, dht)))
+                        .or(StorageInstance.storageInstance("streams",
+                                                            List.of(memoryTier)));
     }
 
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,
@@ -458,8 +464,10 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
-            public org.pragmatica.lang.Promise<org.pragmatica.consensus.net.WriteOutcome> sendOutcome(NodeId target, org.pragmatica.consensus.ProtocolMessage msg) {
-                return clusterNode.network().sendOutcome(target, msg);
+            public org.pragmatica.lang.Promise<org.pragmatica.consensus.net.WriteOutcome> sendOutcome(NodeId target,
+                                                                                                      org.pragmatica.consensus.ProtocolMessage msg) {
+                return clusterNode.network()
+                                  .sendOutcome(target, msg);
             }
 
             @Override
@@ -471,18 +479,18 @@ public interface AetherNode extends ManageableNode {
                 // computed against the live intersection.
                 var live = new java.util.HashSet<>(clusterNode.network().connectedPeers());
                 live.add(config.self());
+
                 return live;
             }
         };
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, dhtNetwork, config.artifactRepo());
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         var cacheDhtClient = dhtClient.scoped(config.cache());
-        var dhtClientOption = Option.<DHTClient>some(dhtClient);
+        var dhtClientOption = Option.<DHTClient> some(dhtClient);
         var storageSetups = StorageFactory.createAll(config.storageConfig(),
                                                      config.self().id(),
                                                      dhtClientOption);
-        var artifactStorage = Option.option(storageSetups.get("artifacts")).map(StorageFactory.StorageSetup::instance)
-                                           .or(StorageFactory.defaultArtifactStorage(dhtClientOption));
+        var artifactStorage = Option.option(storageSetups.get("artifacts")).map(StorageFactory.StorageSetup::instance).or(StorageFactory.defaultArtifactStorage(dhtClientOption));
         var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
@@ -498,11 +506,7 @@ public interface AetherNode extends ManageableNode {
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
         var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
-        var corePeerIds = config.topology().coreNodes()
-                                         .stream()
-                                         .map(NodeInfo::id)
-                                         .filter(id -> !id.equals(config.self()))
-                                         .collect(Collectors.toSet());
+        var corePeerIds = config.topology().coreNodes().stream().map(NodeInfo::id).filter(id -> !id.equals(config.self())).collect(Collectors.toSet());
         var forwardingClusterNode = ForwardingClusterNode.forwardingClusterNode(clusterNode,
                                                                                 clusterNode.network(),
                                                                                 corePeerIds);
@@ -571,35 +575,43 @@ public interface AetherNode extends ManageableNode {
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
-            @Override public NodeId self() {
+            @Override
+            public NodeId self() {
                 return config.self();
             }
 
-            @Override public TopologyManager topologyManager() {
+            @Override
+            public TopologyManager topologyManager() {
                 return clusterNode.topologyManager();
             }
 
-            @Override public Option<ClusterGenerationSnapshot> currentGenerationSnapshot() {
+            @Override
+            public Option<ClusterGenerationSnapshot> currentGenerationSnapshot() {
                 return generationSnapshotSupplier.get();
             }
 
-            @Override public void requestGenerationSnapshotRefresh() {
+            @Override
+            public void requestGenerationSnapshotRefresh() {
                 refreshGenerationSnapshot.run();
             }
 
-            @Override public Promise<Unit> start() {
+            @Override
+            public Promise<Unit> start() {
                 log.info("Starting Aether node {}", self());
                 snapshotCollector.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::start);
-                return managementServer.map(ManagementServer::start).or(Promise.unitPromise())
-                                           .flatMap(_ -> appHttpServer.start())
-                                           .flatMap(_ -> startClusterAsync())
-                                           .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
-                                                                    self()));
+
+                return managementServer.map(ManagementServer::start)
+                                       .or(Promise.unitPromise())
+                                       .flatMap(_ -> appHttpServer.start())
+                                       .flatMap(_ -> startClusterAsync())
+                                       .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
+                                                                self()));
             }
 
-            @Override public Promise<Unit> stop() {
+            @Override
+            public Promise<Unit> stop() {
                 log.info("Stopping Aether node {}", self());
                 router.route(QuorumStateNotification.disappeared());
                 router.quiesce();
@@ -614,58 +626,61 @@ public interface AetherNode extends ManageableNode {
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
-                return managementServer.map(ManagementServer::stop).or(Promise.unitPromise())
-                                           .flatMap(_ -> appHttpServer.stop())
-                                           .flatMap(_ -> sliceInvoker.stop())
-                                           .flatMap(_ -> clusterNode.stop())
-                                           .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                                    self()));
+
+                return managementServer.map(ManagementServer::stop)
+                                       .or(Promise.unitPromise())
+                                       .flatMap(_ -> appHttpServer.stop())
+                                       .flatMap(_ -> sliceInvoker.stop())
+                                       .flatMap(_ -> clusterNode.stop())
+                                       .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                self()));
             }
 
             private Promise<Unit> startClusterAsync() {
-                return clusterNode.start().onSuccess(_ -> {
-                                                         log.info("Aether node {} cluster formation complete",
-                                                                  self());
-                                                         clusterNode.network().server()
-                                                                            .onPresent(server -> {
-                                                                                           eventLoopMetricsCollector.register(server.bossGroup());
-                                                                                           eventLoopMetricsCollector.register(server.workerGroup());
-                                                                                           log.info("Registered EventLoopGroups for metrics collection");
-                                                                                       });
-                                                         clusterNode.leaderManager().triggerElection();
-                                                         discoveryProvider.onPresent(this::registerWithDiscovery);
-                                                         applyNodeIdTag();
-                                                     })
-                                        .onSuccess(_ -> printStartupBanner())
-                                        .onFailure(cause -> log.error("Cluster formation failed: {}",
-                                                                      cause.message()));
+                return clusterNode.start()
+                                  .onSuccess(_ -> {
+                                                 log.info("Aether node {} cluster formation complete",
+                                                          self());
+                                                 clusterNode.network()
+                                                            .server()
+                                                            .onPresent(server -> {
+                                                                           eventLoopMetricsCollector.register(server.bossGroup());
+                                                                           eventLoopMetricsCollector.register(server.workerGroup());
+                                                                           log.info("Registered EventLoopGroups for metrics collection");
+                                                                       });
+                                                 clusterNode.leaderManager()
+                                                            .triggerElection();
+                                                 discoveryProvider.onPresent(this::registerWithDiscovery);
+                                                 applyNodeIdTag();
+                                             })
+                                  .onSuccess(_ -> printStartupBanner())
+                                  .onFailure(cause -> log.error("Cluster formation failed: {}",
+                                                                cause.message()));
             }
 
             private void registerWithDiscovery(DiscoveryProvider dp) {
-                Option.from(config.topology().coreNodes()
-                                           .stream()
-                                           .filter(n -> n.id().equals(self()))
-                                           .findFirst()).map(n -> new PeerInfo(n.address().host(),
-                                                                               n.address().port(),
-                                                                               Map.of("role",
-                                                                                      "core",
-                                                                                      "nodeId",
-                                                                                      self().id())))
-                           .onPresent(peerInfo -> dp.registerSelf(peerInfo).await()
-                                                                 .onSuccess(_ -> log.info("Registered self with discovery provider"))
-                                                                 .onFailure(cause -> log.warn("Failed to register with discovery: {}",
-                                                                                              cause.message())));
+                Option.from(config.topology().coreNodes().stream().filter(n -> n.id()
+                                                                                .equals(self())).findFirst()).map(n -> new PeerInfo(n.address()
+                                                                                                                                     .host(),
+                                                                                                                                    n.address()
+                                                                                                                                     .port(),
+                                                                                                                                    Map.of("role",
+                                                                                                                                           "core",
+                                                                                                                                           "nodeId",
+                                                                                                                                           self().id()))).onPresent(peerInfo -> dp.registerSelf(peerInfo)
+                                                                                                                                                                                  .await()
+                                                                                                                                                                                  .onSuccess(_ -> log.info("Registered self with discovery provider"))
+                                                                                                                                                                                  .onFailure(cause -> log.warn("Failed to register with discovery: {}",
+                                                                                                                                                                                                               cause.message())));
             }
 
             private void applyNodeIdTag() {
-                config.environment().flatMap(EnvironmentIntegration::compute)
-                                  .onPresent(this::tagSelfInstance);
+                config.environment().flatMap(EnvironmentIntegration::compute).onPresent(this::tagSelfInstance);
             }
 
             private void tagSelfInstance(ComputeProvider provider) {
-                provider.listInstances().onSuccess(instances -> tagMatchingInstance(provider, instances))
-                                      .onFailure(cause -> log.warn("Failed to list instances for self-tagging: {}",
-                                                                   cause.message()));
+                provider.listInstances().onSuccess(instances -> tagMatchingInstance(provider, instances)).onFailure(cause -> log.warn("Failed to list instances for self-tagging: {}",
+                                                                                                                                      cause.message()));
             }
 
             private void tagMatchingInstance(ComputeProvider provider, List<InstanceInfo> instances) {
@@ -673,47 +688,46 @@ public interface AetherNode extends ManageableNode {
                                                                                      Map.of("aether-node-id",
                                                                                             self().id())).onSuccess(_ -> log.info("Applied aether-node-id tag to instance {}",
                                                                                                                                   instance.id()
-                                                                                                                                             .value()))
+                                                                                                                                          .value()))
                                                                                     .onFailure(cause -> log.warn("Failed to apply aether-node-id tag: {}",
                                                                                                                  cause.message())));
             }
 
             private Option<InstanceInfo> findSelfInstance(List<InstanceInfo> instances) {
-                return selfAddress().flatMap(selfIp -> Option.from(instances.stream().filter(i -> i.addresses()
-                                                                                                             .contains(selfIp))
-                                                                                   .findFirst()));
+                return selfAddress().flatMap(selfIp -> Option.from(instances.stream()
+                                                                            .filter(i -> i.addresses()
+                                                                                          .contains(selfIp))
+                                                                            .findFirst()));
             }
 
             private Option<String> selfAddress() {
-                return Option.from(config.topology().coreNodes()
-                                                  .stream()
-                                                  .filter(n -> n.id().equals(self()))
-                                                  .map(n -> n.address().host())
-                                                  .findFirst());
+                return Option.from(config.topology()
+                                         .coreNodes()
+                                         .stream()
+                                         .filter(n -> n.id()
+                                                       .equals(self()))
+                                         .map(n -> n.address()
+                                                    .host())
+                                         .findFirst());
             }
 
             private void deregisterFromDiscovery(DiscoveryProvider dp) {
-                dp.stopWatching().await()
-                               .onFailure(cause -> log.warn("Failed to stop discovery watching: {}",
-                                                            cause.message()));
-                dp.deregisterSelf().await()
-                                 .onFailure(cause -> log.warn("Failed to deregister from discovery: {}",
-                                                              cause.message()));
+                dp.stopWatching().await().onFailure(cause -> log.warn("Failed to stop discovery watching: {}",
+                                                                      cause.message()));
+                dp.deregisterSelf().await().onFailure(cause -> log.warn("Failed to deregister from discovery: {}",
+                                                                        cause.message()));
             }
 
             private void printStartupBanner() {
                 var nodeId = self().id();
-                var clusterPort = Option.from(config.topology().coreNodes()
-                                                             .stream()
-                                                             .filter(n -> n.id().equals(self()))
-                                                             .findFirst()).map(n -> n.address().port())
-                                             .or(0);
+                var clusterPort = Option.from(config.topology().coreNodes().stream().filter(n -> n.id()
+                                                                                                  .equals(self())).findFirst()).map(n -> n.address()
+                                                                                                                                          .port()).or(0);
                 var mgmtPort = config.managementPort();
                 var appHttpPort = config.appHttp().enabled()
-                                 ? config.appHttp().port()
-                                 : 0;
-                var peerCount = config.topology().coreNodes()
-                                               .size();
+                                  ? config.appHttp().port()
+                                  : 0;
+                var peerCount = config.topology().coreNodes().size();
                 var ttmEnabled = ttmManager.isEnabled();
                 var tlsEnabled = config.tls().isPresent();
                 log.info("{}", "+-----------------------------------------------------------------+");
@@ -721,29 +735,38 @@ public interface AetherNode extends ManageableNode {
                 log.info("{}", "+-----------------------------------------------------------------+");
                 log.info("|  Node ID:        {}", pad(nodeId, 46) + "|");
                 log.info("|  Cluster Port:   {}", pad(String.valueOf(clusterPort), 46) + "|");
-                if (mgmtPort > 0) {log.info("|  Management:     {}", pad("http://localhost:" + mgmtPort, 46) + "|");} else {log.info("|  Management:     {}",
-                                                                                                                                     pad("disabled",
-                                                                                                                                         46) + "|");}
-                if (appHttpPort > 0) {log.info("|  App HTTP:       {}", pad("http://localhost:" + appHttpPort, 46) + "|");} else {log.info("|  App HTTP:       {}",
-                                                                                                                                           pad("disabled",
-                                                                                                                                               46) + "|");}
+
+                if (mgmtPort > 0) {log.info("|  Management:     {}", pad("http://localhost:" + mgmtPort, 46) + "|");} else {
+                    log.info("|  Management:     {}", pad("disabled", 46) + "|");
+                }
+                if (appHttpPort > 0) {log.info("|  App HTTP:       {}", pad("http://localhost:" + appHttpPort, 46) + "|");} else {
+                    log.info("|  App HTTP:       {}", pad("disabled", 46) + "|");
+                }
+
                 log.info("|  Peers:          {}", pad(peerCount + " configured", 46) + "|");
-                log.info("|  TTM:            {}", pad(ttmEnabled
-                                                      ? "enabled"
-                                                      : "disabled", 46) + "|");
-                log.info("|  TLS:            {}", pad(tlsEnabled
-                                                      ? "enabled"
-                                                      : "disabled", 46) + "|");
+                log.info("|  TTM:            {}",
+                         pad(ttmEnabled
+                             ? "enabled"
+                             : "disabled",
+                             46) + "|");
+                log.info("|  TLS:            {}",
+                         pad(tlsEnabled
+                             ? "enabled"
+                             : "disabled",
+                             46) + "|");
                 var discoveryEnabled = discoveryProvider.isPresent();
-                log.info("|  Discovery:      {}", pad(discoveryEnabled
-                                                      ? "enabled"
-                                                      : "disabled", 46) + "|");
+                log.info("|  Discovery:      {}",
+                         pad(discoveryEnabled
+                             ? "enabled"
+                             : "disabled",
+                             46) + "|");
                 log.info("{}", "+-----------------------------------------------------------------+");
                 logCloudBootstrapHintIfNoStaticSeeds(peerCount);
             }
 
             private void logCloudBootstrapHintIfNoStaticSeeds(int peerCount) {
                 if (peerCount > 0) {return;}
+
                 log.info("No static seed peers configured — cluster requires operator bootstrap.");
                 log.info("Run `aether cluster bootstrap <aether-cluster.toml>` after cloud nodes start.");
             }
@@ -753,68 +776,90 @@ public interface AetherNode extends ManageableNode {
                 return value + " ".repeat(width - value.length());
             }
 
-            @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            @Override
+            public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
                 return switchableCluster.apply(commands);
             }
 
-            @Override public int connectedNodeCount() {
-                return clusterNode.network().connectedNodeCount();
+            @Override
+            public int connectedNodeCount() {
+                return clusterNode.network()
+                                  .connectedNodeCount();
             }
 
-            @Override public Map<String, Number> transportMetrics() {
-                return clusterNode.network().transportMetrics();
+            @Override
+            public Map<String, Number> transportMetrics() {
+                return clusterNode.network()
+                                  .transportMetrics();
             }
 
-            @Override public Option<ClusterTopologyManager> clusterTopologyManager() {
+            @Override
+            public Option<ClusterTopologyManager> clusterTopologyManager() {
                 return Option.some(clusterTopologyManagerInstance);
             }
 
-            @Override public Set<NodeId> connectedPeerIds() {
+            @Override
+            public Set<NodeId> connectedPeerIds() {
                 // Use activePeers (CONNECTED + EVICTED) to match the quorum-counting
                 // semantics inside QuicClusterNetwork.activeConnectedCount. Without this,
                 // a brief EVICTED transition on any peer flickers the externally-visible
                 // /api/cluster/topology.connectedPeerCount below quorum.
-                return clusterNode.network().activePeers();
+                return clusterNode.network()
+                                  .activePeers();
             }
 
-            @Override public boolean isLeader() {
-                return clusterNode.leaderManager().isLeader();
+            @Override
+            public boolean isLeader() {
+                return clusterNode.leaderManager()
+                                  .isLeader();
             }
 
-            @Override public boolean isReady() {
+            @Override
+            public boolean isReady() {
                 return clusterNode.isActive();
             }
 
-            @Override public Option<NodeId> leader() {
-                return clusterNode.leaderManager().leader();
+            @Override
+            public Option<NodeId> leader() {
+                return clusterNode.leaderManager()
+                                  .leader();
             }
 
-            @Override public int managementPort() {
+            @Override
+            public int managementPort() {
                 return config.managementPort();
             }
 
-            @Override public int appHttpPort() {
-                return config.appHttp().enabled()
-                      ? config.appHttp().port()
-                      : 0;
+            @Override
+            public int appHttpPort() {
+                return config.appHttp()
+                             .enabled()
+                       ? config.appHttp()
+                               .port()
+                       : 0;
             }
 
-            @Override public long uptimeSeconds() {
+            @Override
+            public long uptimeSeconds() {
                 return (System.currentTimeMillis() - startTimeMs) / 1000;
             }
 
-            @Override public List<NodeId> initialTopology() {
-                return config.topology().coreNodes()
-                                      .stream()
-                                      .map(NodeInfo::id)
-                                      .toList();
+            @Override
+            public List<NodeId> initialTopology() {
+                return config.topology()
+                             .coreNodes()
+                             .stream()
+                             .map(NodeInfo::id)
+                             .toList();
             }
 
-            @Override public TopologyConfig topologyConfig() {
+            @Override
+            public TopologyConfig topologyConfig() {
                 return config.topology();
             }
 
-            @Override public void route(Message message) {
+            @Override
+            public void route(Message message) {
                 router.route(message);
             }
 
@@ -837,19 +882,19 @@ public interface AetherNode extends ManageableNode {
                 // ON_DUTY status when local SWIM hasn't yet acked HEALTHY (closes the
                 // per-reader-variance window without breaking the SWIM-faulty downgrade).
                 // See aether/docs/specs/reachability-aggregator-spec.md Layer 5.
-                return org.pragmatica.aether.deployment.membership.view.MembershipView.strict(
-                        () -> {
-                            var swim = swimHealthDetector.currentHealth()
-                                                          .or(() -> org.pragmatica.swim.HealthSnapshot.healthSnapshot(java.util.Map.of()));
-                            var merged = new java.util.HashMap<>(swim.peerHealth());
-                            merged.putIfAbsent(config.self(), org.pragmatica.swim.SwimHealth.HEALTHY);
-                            return org.pragmatica.lang.Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
-                        },
-                        consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                                                     AetherValue.NodeLifecycleValue.class,
-                                                     consumer),
-                        ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
-                        metricsCollector::bestSnapshot);
+                return org.pragmatica.aether.deployment.membership.view.MembershipView.strict(() -> {
+                                                                                                  var swim = swimHealthDetector.currentHealth()
+                                                                                                                               .or(() -> org.pragmatica.swim.HealthSnapshot.healthSnapshot(java.util.Map.of()));
+                                                                                                  var merged = new java.util.HashMap<>(swim.peerHealth());
+                                                                                                  merged.putIfAbsent(config.self(),
+                                                                                                                     org.pragmatica.swim.SwimHealth.HEALTHY);
+                                                                                                  return org.pragmatica.lang.Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
+                                                                                              },
+                                                                                              consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
+                                                                                                                          AetherValue.NodeLifecycleValue.class,
+                                                                                                                          consumer),
+                                                                                              ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
+                                                                                              metricsCollector::bestSnapshot);
             }
         }
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode);
@@ -860,13 +905,12 @@ public interface AetherNode extends ManageableNode {
                                                                                   config.observability());
         var traceStore = InvocationTraceStore.invocationTraceStore();
         var observabilityInterceptor = config.observability().depthThreshold() <0
-                                      ? ObservabilityInterceptor.noOp()
-                                      : createObservabilityInterceptor(config, traceStore, depthRegistry);
+                                       ? ObservabilityInterceptor.noOp()
+                                       : createObservabilityInterceptor(config, traceStore, depthRegistry);
         var invocationHandler = InvocationHandler.invocationHandler(config.self(),
                                                                     clusterNode.network(),
                                                                     invocationMetrics,
-                                                                    config.timeouts().invocation()
-                                                                                   .timeout(),
+                                                                    config.timeouts().invocation().timeout(),
                                                                     serializer,
                                                                     deserializer,
                                                                     httpRoutePublisher,
@@ -876,10 +920,7 @@ public interface AetherNode extends ManageableNode {
         var deploymentMetricsScheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(config.self(),
                                                                                                clusterNode.network(),
                                                                                                deploymentMetricsCollector);
-        var initialTopology = config.topology().coreNodes()
-                                             .stream()
-                                             .map(NodeInfo::id)
-                                             .toList();
+        var initialTopology = config.topology().coreNodes().stream().map(NodeInfo::id).toList();
         var schemaPolicy = SchemaPolicy.schemaPolicy();
         var schemaManager = AetherSchemaManager.aetherSchemaManager(schemaPolicy);
         var repository = compositeRepository(repositories);
@@ -896,10 +937,11 @@ public interface AetherNode extends ManageableNode {
         var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider);
         var deploymentMap = DeploymentMap.deploymentMap();
         var healthSinkRef = new AtomicReference<HealthSignalSink>(HealthSignalSink.noop());
-        HealthSignalSink stableHealthSink = signal -> healthSinkRef.get().emit(signal);
+        HealthSignalSink stableHealthSink = signal -> healthSinkRef.get()
+                                                                   .emit(signal);
         var cdmSnapshotSupplierRef = new AtomicReference<Supplier<Option<ClusterGenerationSnapshot>>>(Option::none);
         Supplier<Option<ClusterGenerationSnapshot>> stableCdmSnapshotSupplier = () -> cdmSnapshotSupplierRef.get()
-                                                                                                                .get();
+                                                                                                            .get();
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -908,18 +950,16 @@ public interface AetherNode extends ManageableNode {
                                                                                          clusterNode.topologyManager(),
                                                                                          config.atomicity(),
                                                                                          config.topology().coreMax(),
-                                                                                         config.timeouts().deployment()
-                                                                                                        .reconciliationInterval(),
+                                                                                         config.timeouts().deployment().reconciliationInterval(),
                                                                                          schemaOrchestrator,
                                                                                          stableHealthSink,
                                                                                          stableCdmSnapshotSupplier);
-        var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer)
-                                                    .map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
-                                                                                                             kvStore,
-                                                                                                             clusterNode.topologyManager(),
-                                                                                                             provider,
-                                                                                                             config.appHttp()
-                                                                                                                           .port()));
+        var loadBalancerManager = config.environment().flatMap(EnvironmentIntegration::loadBalancer).map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
+                                                                                                                                                             kvStore,
+                                                                                                                                                             clusterNode.topologyManager(),
+                                                                                                                                                             provider,
+                                                                                                                                                             config.appHttp()
+                                                                                                                                                                   .port()));
         var taskGroupActivator = TaskGroupActivator.taskGroupActivator(config.self(), clusterNode);
         var taskAssignmentCoordinator = TaskAssignmentCoordinator.taskAssignmentCoordinator(config.self(),
                                                                                             clusterNode,
@@ -933,9 +973,7 @@ public interface AetherNode extends ManageableNode {
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         var metricsCollector = ClusterSyncCollector.clusterSyncCollector(config.self(),
                                                                          clusterNode.network(),
-                                                                         config.timeouts().observability()
-                                                                                        .metricsSlidingWindow()
-                                                                                        .millis());
+                                                                         config.timeouts().observability().metricsSlidingWindow().millis());
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var peerObservationStore = org.pragmatica.aether.metrics.observation.PeerObservationStore.peerObservationStore();
@@ -963,9 +1001,10 @@ public interface AetherNode extends ManageableNode {
                             AetherValue.NodeLifecycleValue.class,
                             (key, value) -> {
                                 if (value.state() != AetherValue.NodeLifecycleState.DECOMMISSIONED) {
-                                    peers.add(key.nodeId());
-                                }
+                                peers.add(key.nodeId());
+                            }
                             });
+
             return Set.copyOf(peers);
         };
         // ReachabilityAggregator: leader-side TTL+quorum aggregator producing the
@@ -976,13 +1015,14 @@ public interface AetherNode extends ManageableNode {
         // across 2-3 emission cycles before expiry. See
         // aether/docs/specs/reachability-aggregator-spec.md "Periodic Observation
         // Mode" subsection.
-        var reachabilityAggregator = ReachabilityAggregator.reachabilityAggregator(
-            config.self(),
-            () -> kvTrackedPeersSupplier.get().size(),
-            () -> clusterNode.network().connectedPeers(),
-            kvTrackedPeersSupplier,
-            System::currentTimeMillis,
-            15_000L);
+        var reachabilityAggregator = ReachabilityAggregator.reachabilityAggregator(config.self(),
+                                                                                   () -> kvTrackedPeersSupplier.get()
+                                                                                                               .size(),
+                                                                                   () -> clusterNode.network()
+                                                                                                    .connectedPeers(),
+                                                                                   kvTrackedPeersSupplier,
+                                                                                   System::currentTimeMillis,
+                                                                                   15_000L);
         // Wire the leader-side aggregator into metricsCollector so MembershipView's
         // bestSnapshot() reads the leader's OWN aggregator output (since the leader
         // doesn't receive pings, its lastReachabilitySnapshot() is forever none).
@@ -1000,13 +1040,12 @@ public interface AetherNode extends ManageableNode {
         var generationChangedSink = buildGenerationChangedSink(delegateRouter);
         Supplier<Option<ClusterGenerationSnapshot>> snapshotSupplier = () -> kvStore.getTyped(AetherKey.GenerationSnapshotKey.SINGLETON,
                                                                                               AetherValue.GenerationSnapshotValue.class)
-        .map(AetherValue.GenerationSnapshotValue::snapshot);
+                                                                                    .map(AetherValue.GenerationSnapshotValue::snapshot);
         cdmSnapshotSupplierRef.set(snapshotSupplier);
         var metricsScheduler = ClusterSyncScheduler.clusterSyncScheduler(config.self(),
                                                                          clusterNode.network(),
                                                                          metricsCollector,
-                                                                         config.timeouts().cluster()
-                                                                                        .pingInterval(),
+                                                                         config.timeouts().cluster().pingInterval(),
                                                                          rabiaTermSupplier,
                                                                          stableHealthSink,
                                                                          ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
@@ -1022,7 +1061,7 @@ public interface AetherNode extends ManageableNode {
         // store's cap supplier to its internal `bufferCap()` formula — this call wins
         // and gives AetherNode the canonical sizing surface.
         peerObservationStore.setCapSupplier(() -> Math.max(periodicConfig.capFloor().getAsInt(),
-                                                            clusterNode.topologyManager().topology().size() * 4));
+                                                           clusterNode.topologyManager().topology().size() * 4));
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
         // Leader/spokesman-gated aggregator ingest. Tier-1 pongs (from core members)
         // arrive when this node is the cluster leader; Tier-2 pongs (from governors)
@@ -1035,21 +1074,29 @@ public interface AetherNode extends ManageableNode {
         var wasLeaderRef = new java.util.concurrent.atomic.AtomicBoolean(false);
         var spokesmanActiveRef = new java.util.concurrent.atomic.AtomicReference<BooleanSupplier>(() -> false);
         metricsCollector.addPongListener(pong -> {
-            var nowLeader = isLeaderSupplier.getAsBoolean();
-            var nowSpokesman = spokesmanActiveRef.get().getAsBoolean();
-            var prev = wasLeaderRef.getAndSet(nowLeader);
-            if (nowLeader && !prev) {
-                reachabilityAggregator.reset();
-                metricsCollector.lastReachabilitySnapshot().onPresent(reachabilityAggregator::seedFromCache);
-            }
-            if (!nowLeader && !nowSpokesman) {return;}
-            reachabilityAggregator.ingest(pong.sender(), pong.peerConnectivity(), pong.peerHealth());
-        });
+                                             var nowLeader = isLeaderSupplier.getAsBoolean();
+                                             var nowSpokesman = spokesmanActiveRef.get()
+                                                                                  .getAsBoolean();
+                                             var prev = wasLeaderRef.getAndSet(nowLeader);
+                                             if (nowLeader && !prev) {
+                                             reachabilityAggregator.reset();
+                                             metricsCollector.lastReachabilitySnapshot()
+                                                             .onPresent(reachabilityAggregator::seedFromCache);
+                                         }
+                                             if (!nowLeader && !nowSpokesman) {
+                                             return;
+                                         }
+                                             reachabilityAggregator.ingest(pong.sender(),
+                                                                           pong.peerConnectivity(),
+                                                                           pong.peerHealth());
+                                         });
         metricsCollector.setPeerObservationBuffer(peerObservationStore);
-        Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT).filter(v -> v instanceof AetherValue.ClusterConfigValue)
-                                                                                                .map(v -> (AetherValue.ClusterConfigValue) v);
-        java.util.function.Function<NodeId, Option<AetherValue.NodeLifecycleValue>> lifecycleReader = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId)).filter(v -> v instanceof AetherValue.NodeLifecycleValue)
-                                                                                                                           .map(v -> (AetherValue.NodeLifecycleValue) v);
+        Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
+                                                                                            .filter(v -> v instanceof AetherValue.ClusterConfigValue)
+                                                                                            .map(v -> (AetherValue.ClusterConfigValue) v);
+        java.util.function.Function<NodeId, Option<AetherValue.NodeLifecycleValue>> lifecycleReader = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId))
+                                                                                                                       .filter(v -> v instanceof AetherValue.NodeLifecycleValue)
+                                                                                                                       .map(v -> (AetherValue.NodeLifecycleValue) v);
         java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> clusterCommandApplier = commands -> clusterNode.apply(commands);
         var leaderAwareSnapshotSource = snapshotSource;
         // Drain infrastructure: tracker is shared with NodeLifecycleRoutes (/api/node/inflight).
@@ -1079,35 +1126,40 @@ public interface AetherNode extends ManageableNode {
             if (publisher == null) {return;}
             publisher.publish(type, severity, message, details);
         };
-        var selfDrainCoordinator = SelfDrainCoordinator.selfDrainCoordinator(
-                config.self(),
-                () -> clusterNode.network().connectedPeers(),
-                () -> clusterNode.topologyManager().topology().size(),
-                inFlightTrackerForDrain,
-                SelfDrainConfig.selfDrainConfig(),
-                jvmExit,
-                selfDrainEventSink);
-        SharedScheduler.scheduleAtFixedRate(
-                selfDrainCoordinator::onConnectivityChange,
-                TimeSpan.timeSpan(1).seconds(),
-                TimeSpan.timeSpan(1).seconds());
+        var selfDrainCoordinator = SelfDrainCoordinator.selfDrainCoordinator(config.self(),
+                                                                             () -> clusterNode.network()
+                                                                                              .connectedPeers(),
+                                                                             () -> clusterNode.topologyManager()
+                                                                                              .topology()
+                                                                                              .size(),
+                                                                             inFlightTrackerForDrain,
+                                                                             SelfDrainConfig.selfDrainConfig(),
+                                                                             jvmExit,
+                                                                             selfDrainEventSink);
+        SharedScheduler.scheduleAtFixedRate(selfDrainCoordinator::onConnectivityChange,
+                                            TimeSpan.timeSpan(1).seconds(),
+                                            TimeSpan.timeSpan(1).seconds());
         java.util.function.Supplier<java.util.Map<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>> slotReader = () -> {
             var collected = new java.util.LinkedHashMap<AetherKey.ProvisioningSlotKey, AetherValue.ProvisioningSlotValue>();
             kvStore.forEach(AetherKey.ProvisioningSlotKey.class, AetherValue.ProvisioningSlotValue.class, collected::put);
             return collected;
         };
-        Supplier<Option<AetherValue.ClusterPhase>> clusterPhaseReader = () -> kvStore.get(AetherKey.ClusterPhaseKey.SINGLETON).filter(v -> v instanceof AetherValue.ClusterPhaseValue)
-                                                                                         .map(v -> ((AetherValue.ClusterPhaseValue) v).phase());
+        Supplier<Option<AetherValue.ClusterPhase>> clusterPhaseReader = () -> kvStore.get(AetherKey.ClusterPhaseKey.SINGLETON)
+                                                                                     .filter(v -> v instanceof AetherValue.ClusterPhaseValue)
+                                                                                     .map(v -> ((AetherValue.ClusterPhaseValue) v).phase());
         Supplier<Integer> onDutyCountSupplier = () -> {
             var counter = new java.util.concurrent.atomic.AtomicInteger();
             kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                             AetherValue.NodeLifecycleValue.class,
                             (_, value) -> {
-                                if (value.state() == AetherValue.NodeLifecycleState.ON_DUTY) {counter.incrementAndGet();}
+                                if (value.state() == AetherValue.NodeLifecycleState.ON_DUTY) {
+                                counter.incrementAndGet();
+                            }
                             });
             return counter.get();
         };
-        Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager().leader();
+        Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
+                                                                         .leader();
         // E.6 / E.8 (spec §7): ClusterPhase derived view is the single source of truth for
         // cluster phase. The KV value is consulted as a cache hint to track the
         // ever-reached-NORMAL bit across leader takeovers — see ClusterPhaseView javadoc.
@@ -1121,50 +1173,51 @@ public interface AetherNode extends ManageableNode {
         // instead of falsely claiming NORMAL from local-SWIM observations. Same quorum
         // source as `aetherNode.membershipView()`.
         var phaseInQuorum = ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum();
-        ClusterPhaseView.MembershipViewReader phaseMembershipReader = () -> MembershipView.strict(
-                () -> {
-                    // H.2 (spec §H): mirror `aetherNode.membershipView()` self-injection — SWIM
-                    // doesn't observe self, but the phase calculation must count this node
-                    // toward quorum.
-                    var swimOpt = Option.option(swimDetectorRefForPhase.get())
-                                         .flatMap(CoreSwimHealthDetector::currentHealth);
-                    var swim = swimOpt.or(() -> org.pragmatica.swim.HealthSnapshot.healthSnapshot(java.util.Map.of()));
-                    var merged = new java.util.HashMap<>(swim.peerHealth());
-                    merged.putIfAbsent(config.self(), org.pragmatica.swim.SwimHealth.HEALTHY);
-                    return Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
-                },
-                consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                                             AetherValue.NodeLifecycleValue.class,
-                                             consumer),
-                phaseInQuorum);
+        ClusterPhaseView.MembershipViewReader phaseMembershipReader = () -> MembershipView.strict(() -> {
+                                                                                                      // H.2 (spec §H): mirror `aetherNode.membershipView()` self-injection — SWIM
+                                                                                                      // doesn't observe self, but the phase calculation must count this node
+                                                                                                      // toward quorum.
+                                                                                                      var swimOpt = Option.option(swimDetectorRefForPhase.get()).flatMap(CoreSwimHealthDetector::currentHealth);
+                                                                                                      var swim = swimOpt.or(() -> org.pragmatica.swim.HealthSnapshot.healthSnapshot(java.util.Map.of()));
+                                                                                                      var merged = new java.util.HashMap<>(swim.peerHealth());
+                                                                                                      merged.putIfAbsent(config.self(),
+                                                                                                                         org.pragmatica.swim.SwimHealth.HEALTHY);
+                                                                                                      return Option.some(org.pragmatica.swim.HealthSnapshot.healthSnapshot(merged));
+                                                                                                  },
+                                                                                                  consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
+                                                                                                                              AetherValue.NodeLifecycleValue.class,
+                                                                                                                              consumer),
+                                                                                                  phaseInQuorum);
         var clusterPhaseView = ClusterPhaseView.clusterPhaseView(config.topology().coreNodes().size(),
-                                                                  org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
-                                                                  org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
-                                                                  phaseMembershipReader,
-                                                                  clusterPhaseReader,
-                                                                  () -> healthLeaderSupplier.get().isPresent());
+                                                                 org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
+                                                                 org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds(),
+                                                                 phaseMembershipReader,
+                                                                 clusterPhaseReader,
+                                                                 () -> healthLeaderSupplier.get()
+                                                                                           .isPresent());
         Supplier<AetherValue.ClusterPhase> effectivePhaseSupplier = () -> clusterPhaseView.compute(System.currentTimeMillis());
         // Direct lifecycle writes for transitions not owned by the FSM operator-event path
         // (requestActivate, requestFailedDrain) and for CTM-initiated drain/decommission
         // (which the FSM does not yet own — those still bypass FSM-driven InvokeDrain).
         var ctmLifecycleWriter = LifecycleWriter.directLifecycleWriter(lifecycleReader::apply, clusterCommandApplier);
-        org.pragmatica.lang.Functions.Fn1<Promise<Integer>, NodeId> inFlightProbe = targetNodeId ->
-                targetNodeId.equals(config.self().id())
-                        ? Promise.success(inFlightTrackerForDrain.count())
-                        : Promise.success(0);
-        var drainCoordinator = org.pragmatica.aether.deployment.drain.ConsensusDrainCoordinator
-                .consensusDrainCoordinator(ctmLifecycleWriter, lifecycleReader::apply, inFlightProbe);
+        org.pragmatica.lang.Functions.Fn1<Promise<Integer>, NodeId> inFlightProbe = targetNodeId -> targetNodeId.equals(config.self()
+                                                                                                                              .id())
+                                                                                                    ? Promise.success(inFlightTrackerForDrain.count())
+                                                                                                    : Promise.success(0);
+        var drainCoordinator = org.pragmatica.aether.deployment.drain.ConsensusDrainCoordinator.consensusDrainCoordinator(ctmLifecycleWriter,
+                                                                                                                          lifecycleReader::apply,
+                                                                                                                          inFlightProbe);
         // MembershipFsm wiring (spec §9 — post-E.8 always active). Constructed AFTER
         // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
         // Step 4: also wired with `reachabilityAggregator::snapshot` so the reducer can apply
         // the aggregator-quorum gate at the two ON_DUTY decommission cells (S04/S05/S13/S17).
         var membershipFsm = buildMembershipFsm(config.self(),
-                                                kvStore,
-                                                clusterCommandApplier,
-                                                drainCoordinator,
-                                                isLeaderSupplier,
-                                                hlcClock,
-                                                reachabilityAggregator);
+                                               kvStore,
+                                               clusterCommandApplier,
+                                               drainCoordinator,
+                                               isLeaderSupplier,
+                                               hlcClock,
+                                               reachabilityAggregator);
         membershipFsm.start();
         // Topology-observation refactor Step 3: wire the leader-side aggregator's snapshot
         // stream into the FSM. The aggregator invokes this listener synchronously after each
@@ -1196,16 +1249,13 @@ public interface AetherNode extends ManageableNode {
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
-        var dynamicConfigManager = resourceProviderSetup.dynamicProvider()
-                                                                        .map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode,
-                                                                                                                             kvStore,
-                                                                                                                             dp,
-                                                                                                                             config.self()));
+        var dynamicConfigManager = resourceProviderSetup.dynamicProvider().map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode,
+                                                                                                                               kvStore,
+                                                                                                                               dp,
+                                                                                                                               config.self()));
         var minuteAggregator = MinuteAggregator.minuteAggregator();
         var gcMetricsCollector = GCMetricsCollector.gcMetricsCollector();
-        var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector(config.timeouts().observability()
-                                                                                                           .eventLoopProbe()
-                                                                                                           .millis());
+        var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector(config.timeouts().observability().eventLoopProbe().millis());
         var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(gcMetricsCollector,
                                                                                               eventLoopMetricsCollector,
                                                                                               networkMetricsHandler,
@@ -1221,9 +1271,9 @@ public interface AetherNode extends ManageableNode {
         // `TopologyObserver.inQuorum()` so a minority-side leader cannot delete events the
         // majority retains.
         var eventLogPublisher = ClusterEventLogPublisher.clusterEventLogPublisher(config.self(),
-                                                                                    hlcClock,
-                                                                                    rabiaTermSupplier::get,
-                                                                                    clusterCommandApplier);
+                                                                                  hlcClock,
+                                                                                  rabiaTermSupplier::get,
+                                                                                  clusterCommandApplier);
         // T3.1: surface the publisher to the SelfDrainCoordinator's lazy-resolving lambda
         // forward-declared upstream. By this point the publisher is fully wired; the
         // coordinator's lambda will resolve the ref on the first ACTIVE→DRAINING transition.
@@ -1242,35 +1292,31 @@ public interface AetherNode extends ManageableNode {
         traceStore.bindEventLogPublisher(eventLogPublisher::publish);
         traceStore.bindClusterEventsSource(() -> projectClusterTraceInjections(eventAggregator.events()));
         var eventLogSweeper = ClusterEventLogSweeper.clusterEventLogSweeper(kvStore::snapshot,
-                                                                              isLeaderSupplier,
-                                                                              ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
-                                                                              rabiaTermSupplier::get,
-                                                                              clusterCommandApplier);
+                                                                            isLeaderSupplier,
+                                                                            ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
+                                                                            rabiaTermSupplier::get,
+                                                                            clusterCommandApplier);
         eventLogSweeper.start();
-        var ttmManager = TTMManager.ttmManager(config.ttm(),
-                                               minuteAggregator,
-                                               controller::configuration)
-        .or(TTMManager.noOp(config.ttm()));
+        var ttmManager = TTMManager.ttmManager(config.ttm(), minuteAggregator, controller::configuration).or(TTMManager.noOp(config.ttm()));
         ClusterController effectiveController = ttmManager.isEnabled()
-                                               ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
-                                               : controller;
+                                                ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
+                                                : controller;
         var controlLoop = ControlLoop.controlLoop(config.self(),
                                                   effectiveController,
                                                   metricsCollector,
                                                   Option.some(invocationMetrics),
                                                   clusterNode,
                                                   kvStore,
-                                                  config.controllerConfig().scalingConfig()
-                                                                                           .evaluationInterval(),
+                                                  config.controllerConfig().scalingConfig().evaluationInterval(),
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
         var rollbackManager = config.rollback().enabled()
-                             ? RollbackManager.rollbackManager(config.self(),
-                                                               config.rollback(),
-                                                               clusterNode,
-                                                               kvStore,
-                                                               clusterNode.leaderManager())
-                             : RollbackManager.disabled();
+                              ? RollbackManager.rollbackManager(config.self(),
+                                                                config.rollback(),
+                                                                clusterNode,
+                                                                kvStore,
+                                                                clusterNode.leaderManager())
+                              : RollbackManager.disabled();
         var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
                                                      clusterNode.network(),
@@ -1278,12 +1324,8 @@ public interface AetherNode extends ManageableNode {
                                                      invocationHandler,
                                                      serializer,
                                                      deserializer,
-                                                     config.timeouts().invocation()
-                                                                    .invokerTimeout()
-                                                                    .millis(),
-                                                     config.timeouts().observability()
-                                                                    .invocationCleanup()
-                                                                    .millis(),
+                                                     config.timeouts().invocation().invokerTimeout().millis(),
+                                                     config.timeouts().observability().invocationCleanup().millis(),
                                                      deploymentManager,
                                                      observabilityInterceptor);
         deferredInvoker.setDelegate(sliceInvoker);
@@ -1292,11 +1334,10 @@ public interface AetherNode extends ManageableNode {
                                                                              config.self(),
                                                                              command -> clusterNode.apply(List.of(command)),
                                                                              clusterNode.leaderManager());
-        resourceProviderSetup.spiProvider()
-                                         .onPresent(spi -> registerRuntimeExtensions(spi,
-                                                                                     topicSubscriptionRegistry,
-                                                                                     sliceInvoker,
-                                                                                     cacheDhtClient));
+        resourceProviderSetup.spiProvider().onPresent(spi -> registerRuntimeExtensions(spi,
+                                                                                       topicSubscriptionRegistry,
+                                                                                       sliceInvoker,
+                                                                                       cacheDhtClient));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -1309,15 +1350,11 @@ public interface AetherNode extends ManageableNode {
                                                                                             nodeCodec,
                                                                                             Option.some(httpRoutePublisher),
                                                                                             Option.some(sliceInvoker),
-                                                                                            config.timeouts().deployment()
-                                                                                                           .activationChain(),
-                                                                                            config.timeouts().deployment()
-                                                                                                           .transitionRetryDelay(),
+                                                                                            config.timeouts().deployment().activationChain(),
+                                                                                            config.timeouts().deployment().transitionRetryDelay(),
                                                                                             snapshotSupplier);
-        var serverBossGroup = clusterNode.network().server()
-                                                 .map(org.pragmatica.net.tcp.Server::bossGroup);
-        var serverWorkerGroup = clusterNode.network().server()
-                                                   .map(org.pragmatica.net.tcp.Server::workerGroup);
+        var serverBossGroup = clusterNode.network().server().map(org.pragmatica.net.tcp.Server::bossGroup);
+        var serverWorkerGroup = clusterNode.network().server().map(org.pragmatica.net.tcp.Server::workerGroup);
         var taskGroupAssignmentRegistry = TaskGroupAssignmentRegistry.taskGroupAssignmentRegistry(kvStore);
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         config.timeouts().forwarding(),
@@ -1445,41 +1482,39 @@ public interface AetherNode extends ManageableNode {
         // (e.g., 30s of unbroken PeerDisconnected with no intervening ConnectionEstablished)
         // before pruning, so genuinely-dead peers eventually leave the ring without the
         // every-flap storm.
-        @SuppressWarnings({"unchecked", "rawtypes"}) MessageRouter.Entry forwardRequestRoute = MessageRouter.Entry.route(ForwardApplyRequest.class,
-                                                                                                                         (ForwardApplyRequest request) -> handleForwardApplyRequest(request,
-                                                                                                                                                                                    clusterNode));
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        MessageRouter.Entry forwardRequestRoute = MessageRouter.Entry.route(ForwardApplyRequest.class,
+                                                                            (ForwardApplyRequest request) -> handleForwardApplyRequest(request,
+                                                                                                                                       clusterNode));
         aetherEntries.add(forwardRequestRoute);
-        @SuppressWarnings({"unchecked", "rawtypes"}) MessageRouter.Entry forwardResponseRoute = MessageRouter.Entry.route(ForwardApplyResponse.class,
-                                                                                                                          forwardingClusterNode::onForwardApplyResponse);
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        MessageRouter.Entry forwardResponseRoute = MessageRouter.Entry.route(ForwardApplyResponse.class,
+                                                                             forwardingClusterNode::onForwardApplyResponse);
         aetherEntries.add(forwardResponseRoute);
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
         var selfId = config.self();
         var rotatingEncryptor = createGossipEncryptor(config);
         var gossipKeyRotationHandler = GossipKeyRotationHandler.gossipKeyRotationHandler(rotatingEncryptor);
-        var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
-                                                     .onPut(AetherKey.ActivationDirectiveKey.class,
-                                                            (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
-                                                                                                                                                                                selfId,
-                                                                                                                                                                                clusterNode,
-                                                                                                                                                                                switchableCluster,
-                                                                                                                                                                                forwardingClusterNode,
-                                                                                                                                                                                config,
-                                                                                                                                                                                delegateRouter,
-                                                                                                                                                                                kvStore,
-                                                                                                                                                                                sliceStore,
-                                                                                                                                                                                sliceInvoker,
-                                                                                                                                                                                growthLog))
-                                                     .onPut(AetherKey.GossipKeyRotationKey.class,
-                                                            gossipKeyRotationHandler::onGossipKeyRotationPut)
-                                                     .build();
+        var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.ActivationDirectiveKey.class,
+                                                                                                              (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
+                                                                                                                                                                                                                                  selfId,
+                                                                                                                                                                                                                                  clusterNode,
+                                                                                                                                                                                                                                  switchableCluster,
+                                                                                                                                                                                                                                  forwardingClusterNode,
+                                                                                                                                                                                                                                  config,
+                                                                                                                                                                                                                                  delegateRouter,
+                                                                                                                                                                                                                                  kvStore,
+                                                                                                                                                                                                                                  sliceStore,
+                                                                                                                                                                                                                                  sliceInvoker,
+                                                                                                                                                                                                                                  growthLog)).onPut(AetherKey.GossipKeyRotationKey.class,
+                                                                                                                                                                                                                                                    gossipKeyRotationHandler::onGossipKeyRotationPut).build();
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
         allEntries.addAll(activationKvRouter.asRouteEntries());
         var swimTimeouts = config.timeouts().swim();
         var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
                                                  swimTimeouts.probeTimeout(),
-                                                 swimTimeouts.suspectTimeout())
-                                   .withSwimPortOffset(CoreSwimHealthDetector.SWIM_PORT_OFFSET);
+                                                 swimTimeouts.suspectTimeout()).withSwimPortOffset(CoreSwimHealthDetector.SWIM_PORT_OFFSET);
         // Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). SWIM suppresses
         // FAULTY-for-never-HEALTHY peers ONLY while the cluster is in `COLD_BOOT`
         // (initial formation, never reached quorum). In `NORMAL` and `RECOVERING`,
@@ -1496,9 +1531,8 @@ public interface AetherNode extends ManageableNode {
         // otherwise depends on consensus to evict, but consensus is what's stuck).
         // Narrow trigger preserves Step 3's removal of the N+1 fan-out cascade for
         // general FAULTY peers. See SwimHealthContext.faultyLeaderEvictor field doc.
-        java.util.function.Consumer<NodeId> faultyLeaderEvictor = peer ->
-            clusterNode.network().disconnect(
-                new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(peer));
+        java.util.function.Consumer<NodeId> faultyLeaderEvictor = peer -> clusterNode.network()
+                                                                                     .disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(peer));
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
@@ -1520,18 +1554,22 @@ public interface AetherNode extends ManageableNode {
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         var announceTopology = config.topology();
-        var selfNodeInfo = announceTopology.coreNodes().stream()
-                                          .filter(n -> n.id().equals(announceTopology.self()))
-                                          .findFirst().orElse(null);
-        var swimSeeds = announceTopology.coreNodes().stream()
-                                        .filter(n -> !n.id().equals(announceTopology.self()))
-                                        .map(n -> InetSocketAddress.createUnresolved(n.address().host(),
-                                                                                      n.address().port() + CoreSwimHealthDetector.SWIM_PORT_OFFSET))
-                                        .toList();
+        var selfNodeInfo = announceTopology.coreNodes().stream().filter(n -> n.id()
+                                                                              .equals(announceTopology.self())).findFirst().orElse(null);
+        var swimSeeds = announceTopology.coreNodes().stream().filter(n -> !n.id()
+                                                                            .equals(announceTopology.self())).map(n -> InetSocketAddress.createUnresolved(n.address()
+                                                                                                                                                           .host(),
+                                                                                                                                                          n.address()
+                                                                                                                                                           .port() + CoreSwimHealthDetector.SWIM_PORT_OFFSET)).toList();
         var quorumThreshold = announceTopology.coreNodes().size() / 2 + 1;
-        Runnable announceJoinTrigger = selfNodeInfo == null ? () -> {} : () ->
-            swimHealthDetector.announceJoin(selfNodeInfo, swimConfig.clusterName(), System.currentTimeMillis(),
-                                            swimSeeds, () -> clusterNode.network().connectedNodeCount() + 1 >= quorumThreshold);
+        Runnable announceJoinTrigger = selfNodeInfo == null
+                                       ? () -> {}
+                                       : () -> swimHealthDetector.announceJoin(selfNodeInfo,
+                                                                               swimConfig.clusterName(),
+                                                                               System.currentTimeMillis(),
+                                                                               swimSeeds,
+                                                                               () -> clusterNode.network()
+                                                                                                .connectedNodeCount() + 1 >= quorumThreshold);
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification,
                                                                                    swimHealthDetector,
@@ -1558,25 +1596,21 @@ public interface AetherNode extends ManageableNode {
         // local-SWIM latency for a Rabia round-trip + projection (~200-500ms cloud RTT).
         var clusterNetworkRef = clusterNode.network();
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
-                                                 (MembershipDecision.NodeRemoved removed) ->
-                                                     clusterNetworkRef.disconnect(
-                                                         new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
+                                                 (MembershipDecision.NodeRemoved removed) -> clusterNetworkRef.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(removed.nodeId()))));
         allEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
-                                                 (MembershipDecision.NodeDecommissioned decommissioned) ->
-                                                     clusterNetworkRef.departurePermanent(decommissioned.nodeId())));
+                                                 (MembershipDecision.NodeDecommissioned decommissioned) -> clusterNetworkRef.departurePermanent(decommissioned.nodeId())));
         swimHealthDetector.addObservationListener(obs -> {
-            switch (obs) {
-                case SwimObservation.JoinAnnounced j -> clusterNetworkRef.connect(j.nodeInfo());
-                case SwimObservation.FaultyObserved f -> clusterNetworkRef.disconnect(
-                    new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(f.peer()));
-                case SwimObservation.DepartedObserved d -> clusterNetworkRef.departurePermanent(d.peer());
-                default -> {}
-            }
-        });
+                                                      switch (obs) {
+            case SwimObservation.JoinAnnounced j -> clusterNetworkRef.connect(j.nodeInfo());
+            case SwimObservation.FaultyObserved f -> clusterNetworkRef.disconnect(new org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode(f.peer()));
+            case SwimObservation.DepartedObserved d -> clusterNetworkRef.departurePermanent(d.peer());
+            default -> {}
+        }
+                                                  });
         clusterNetworkRef.setSwimHealthGate(nodeId -> {
-            var h = swimHealthDetector.healthOf(nodeId);
-            return h != SwimHealth.FAULTY && h != SwimHealth.UNKNOWN;
-        });
+                                                var h = swimHealthDetector.healthOf(nodeId);
+                                                return h != SwimHealth.FAULTY && h != SwimHealth.UNKNOWN;
+                                            });
         var topologyForSwim = clusterNode.topologyManager();
         // P1 fix: prefer the transport-supplied `NodeInfo` (QUIC/Netty Hello handshake)
         // over the static-topology lookup. CTM-replaced or topology-forgotten peers are
@@ -1585,11 +1619,12 @@ public interface AetherNode extends ManageableNode {
         // resolve — leaving the peer permanently UNKNOWN and rejected by the gate.
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> connection.nodeInfo()
-                                                                          .orElse(() -> topologyForSwim.get(connection.nodeId()))
-                                                                          .onPresent(swimHealthDetector::onNodeConnected)
-                                                                          .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
-        Supplier<Integer> initialCoreSizeSupplier = () -> config.topology().coreNodes()
-                                                                         .size();
+                                                                         .orElse(() -> topologyForSwim.get(connection.nodeId()))
+                                                                         .onPresent(swimHealthDetector::onNodeConnected)
+                                                                         .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
+        Supplier<Integer> initialCoreSizeSupplier = () -> config.topology()
+                                                                .coreNodes()
+                                                                .size();
         var publisherExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
                                                                                            var thread = new Thread(runnable,
                                                                                                                    "generation-snapshot-publisher");
@@ -1597,10 +1632,8 @@ public interface AetherNode extends ManageableNode {
                                                                                            return thread;
                                                                                        });
         var publisherRef = new AtomicReference<GenerationSnapshotPublisher>();
-        var swimHints = SwimHintsRegistry.swimHintsRegistry(java.time.Duration.ofMillis(config.autoHeal().swimHintsTtl()
-                                                                                                       .millis()),
-                                                            () -> Option.option(publisherRef.get())
-                                                                               .onPresent(GenerationSnapshotPublisher::markDirty));
+        var swimHints = SwimHintsRegistry.swimHintsRegistry(java.time.Duration.ofMillis(config.autoHeal().swimHintsTtl().millis()),
+                                                            () -> Option.option(publisherRef.get()).onPresent(GenerationSnapshotPublisher::markDirty));
         peerObservationStore.subscribeHealth(swimHints::onPeerHealth);
         var generationSnapshotPublisher = GenerationSnapshotPublisher.generationSnapshotPublisher(isLeaderSupplier,
                                                                                                   rabiaTermSupplier,
@@ -1615,8 +1648,8 @@ public interface AetherNode extends ManageableNode {
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
                                                               rabiaTermSupplier,
                                                               () -> isLeaderSupplier.getAsBoolean()
-                                                                   ? Option.some(leaderTerm.get())
-                                                                   : Option.<Long>none(),
+                                                                    ? Option.some(leaderTerm.get())
+                                                                    : Option.<Long> none(),
                                                               hlcClock,
                                                               projectorEarly,
                                                               kvStore::snapshot,
@@ -1658,66 +1691,42 @@ public interface AetherNode extends ManageableNode {
         // retired dual-channel `onPut(NodeLifecycleKey)` listener.
         wireMembershipDecisionTail(allEntries, generationSnapshotPublisher::onMembershipDecision);
         wireMembershipDecisionTail(allEntries, bootstrapModule::onMembershipDecision);
-        var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
-                                                 .onPut(AetherKey.GovernorAnnouncementKey.class,
-                                                        _ -> generationSnapshotPublisher.markDirty())
-                                                 .onRemove(AetherKey.GovernorAnnouncementKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.SpokesmanKey.class,
-                                                        _ -> {
-                                                            generationSnapshotPublisher.markDirty();
-                                                            bootstrapModule.retryIfNeeded();
-                                                        })
-                                                 .onRemove(AetherKey.SpokesmanKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 // RC1 Step 2: NodeLifecycleKey put listener retired — the equivalent
-                                                 // dirty signal arrives via the MembershipDecision route attached
-                                                 // below (TopologyObserver's lifecycle-projection walker emits one
-                                                 // decision per lifecycle transition, with snapshot-then-tail
-                                                 // semantics for GSP + BootstrapModule).
-                                                 .onRemove(AetherKey.NodeLifecycleKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.ClusterConfigKey.class,
-                                                        _ -> generationSnapshotPublisher.markDirty())
-                                                 .onRemove(AetherKey.ClusterConfigKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.ClusterConfigKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> clusterTopologyManager.onClusterConfigChanged())
-                                                 .onPut(AetherKey.VersionRoutingKey.class,
-                                                        _ -> generationSnapshotPublisher.markDirty())
-                                                 .onRemove(AetherKey.VersionRoutingKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.NodeArtifactKey.class,
-                                                        _ -> generationSnapshotPublisher.markDirty())
-                                                 .onRemove(AetherKey.NodeArtifactKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.SliceTargetKey.class,
-                                                        _ -> generationSnapshotPublisher.markDirty())
-                                                 .onRemove(AetherKey.SliceTargetKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.SliceNodeKey.class,
-                                                        _ -> generationSnapshotPublisher.markDirty())
-                                                 .onRemove(AetherKey.SliceNodeKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.AppBlueprintKey.class,
-                                                        _ -> generationSnapshotPublisher.markDirty())
-                                                 .onRemove(AetherKey.AppBlueprintKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.BlueprintResourcesKey.class,
-                                                        _ -> generationSnapshotPublisher.markDirty())
-                                                 .onRemove(AetherKey.BlueprintResourcesKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .onPut(AetherKey.DhtPartitionOwnershipKey.class,
-                                                        _ -> generationSnapshotPublisher.markDirty())
-                                                 .onRemove(AetherKey.DhtPartitionOwnershipKey.class,
-                                                           _ -> generationSnapshotPublisher.markDirty())
-                                                 .build();
+        var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.GovernorAnnouncementKey.class,
+                                                                                                          _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.GovernorAnnouncementKey.class,
+                                                                                                                                                                 _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.SpokesmanKey.class,
+                                                                                                                                                                                                                     _ -> {
+                                                                                                                                                                                                                         generationSnapshotPublisher.markDirty();
+                                                                                                                                                                                                                         bootstrapModule.retryIfNeeded();
+                                                                                                                                                                                                                     }).onRemove(AetherKey.SpokesmanKey.class,
+                                                                                                                                                                                                                                 _ -> generationSnapshotPublisher.markDirty())
+        // RC1 Step 2: NodeLifecycleKey put listener retired — the equivalent
+        // dirty signal arrives via the MembershipDecision route attached
+        // below (TopologyObserver's lifecycle-projection walker emits one
+        // decision per lifecycle transition, with snapshot-then-tail
+        // semantics for GSP + BootstrapModule).
+        .onRemove(AetherKey.NodeLifecycleKey.class, _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.ClusterConfigKey.class,
+                                                                                                        _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.ClusterConfigKey.class,
+                                                                                                                                                               _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.ClusterConfigKey.class,
+                                                                                                                                                                                                                   (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue>_) -> clusterTopologyManager.onClusterConfigChanged()).onPut(AetherKey.VersionRoutingKey.class,
+                                                                                                                                                                                                                                                                                                                                                                         _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.VersionRoutingKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.SliceTargetKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.SliceTargetKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.SliceNodeKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.SliceNodeKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.AppBlueprintKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.AppBlueprintKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.BlueprintResourcesKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.BlueprintResourcesKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       _ -> generationSnapshotPublisher.markDirty()).onPut(AetherKey.DhtPartitionOwnershipKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           _ -> generationSnapshotPublisher.markDirty()).onRemove(AetherKey.DhtPartitionOwnershipKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  _ -> generationSnapshotPublisher.markDirty()).build();
         allEntries.addAll(healthKvRouter.asRouteEntries());
         Supplier<Option<ClusterGenerationSnapshot>> spokesmanSnapshotSupplier = snapshotSupplier;
         var spokesmanPingLoop = org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.spokesmanPingLoop(config.self(),
                                                                                                          clusterNode.network(),
-                                                                                                         config.timeouts().cluster()
-                                                                                                                        .pingInterval(),
+                                                                                                         config.timeouts().cluster().pingInterval(),
                                                                                                          rabiaTermSupplier,
                                                                                                          metricsCollector::allMetrics,
                                                                                                          communityId -> lookupGovernor(kvStore,
@@ -1730,22 +1739,16 @@ public interface AetherNode extends ManageableNode {
         // reachability-aggregator-spec.md Layer 6.
         spokesmanActiveRef.set(spokesmanPingLoop::isActive);
         metricsCollector.setCommunityReportSupplier(spokesmanPingLoop::currentReports);
-        var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
-                                                    .onPut(AetherKey.SpokesmanKey.class,
-                                                           spokesmanPingLoop::onSpokesmanPut)
-                                                    .onRemove(AetherKey.SpokesmanKey.class,
-                                                              spokesmanPingLoop::onSpokesmanRemove)
-                                                    .build();
+        var spokesmanKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.SpokesmanKey.class,
+                                                                                                             spokesmanPingLoop::onSpokesmanPut).onRemove(AetherKey.SpokesmanKey.class,
+                                                                                                                                                         spokesmanPingLoop::onSpokesmanRemove).build();
         allEntries.addAll(spokesmanKvRouter.asRouteEntries());
         metricsCollector.addPongListener(spokesmanPingLoop::onClusterSyncPong);
         var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes, clusterNode);
-        var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
-                                                       .onPut(AetherKey.StreamConfigKey.class,
-                                                              streamPartitionManager::onStreamConfigPut)
-                                                       .onRemove(AetherKey.StreamConfigKey.class,
-                                                                 streamPartitionManager::onStreamConfigRemove)
-                                                       .build();
+        var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.StreamConfigKey.class,
+                                                                                                                streamPartitionManager::onStreamConfigPut).onRemove(AetherKey.StreamConfigKey.class,
+                                                                                                                                                                    streamPartitionManager::onStreamConfigRemove).build();
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
@@ -1872,109 +1875,108 @@ public interface AetherNode extends ManageableNode {
         // node's local lifecycle reaches ACTIVE, synthesize that observation into our own FSM.
         // The leader-write gate ensures only the leader's enqueue produces a Put(L=ON_DUTY) for
         // self; followers drop the synthetic observation harmlessly. Spec §6 step 7.
-        nodeLifecycle.addStateListener(change -> bootstrapSelfOnDutyOnActive(change,
-                                                                              membershipFsm,
-                                                                              config.self()));
+        nodeLifecycle.addStateListener(change -> bootstrapSelfOnDutyOnActive(change, membershipFsm, config.self()));
         nodeLifecycle.subsystemsReady();
-        return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
-                                           .map(_ -> {
-                                                    if (config.managementPort() > 0) {
-                                                        var mgmtSecurityEnabled = config.appHttp().securityEnabled();
-                                                        var configValidator = mgmtSecurityEnabled
-                                                                             ? SecurityValidator.apiKeyValidator(config.appHttp()
-                                                                                                                               .apiKeys())
-                                                                             : SecurityValidator.noOpValidator();
-                                                        var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
-                                                                                                                            () -> node.kvStore());
-                                                        var managementServer = ManagementServer.managementServer(config.managementPort(),
-                                                                                                                 () -> node,
-                                                                                                                 alertManager,
-                                                                                                                 depthRegistry,
-                                                                                                                 traceStore,
-                                                                                                                 logLevelRegistry,
-                                                                                                                 dynamicConfigManager,
-                                                                                                                 scheduledTaskRegistry,
-                                                                                                                 scheduledTaskManager,
-                                                                                                                 sliceInvoker,
-                                                                                                                 scheduledTaskStateRegistry,
-                                                                                                                 config.tls(),
-                                                                                                                 mgmtSecurityValidator,
-                                                                                                                 mgmtSecurityEnabled,
-                                                                                                                 serverBossGroup,
-                                                                                                                 serverWorkerGroup,
-                                                                                                                 config.managementHttpProtocol(),
-                                                                                                                 config.timeouts()
-                                                                                                                                .forwarding(),
-                                                                                                                 Option.some(clusterNode.network()),
-                                                                                                                 Option.some(serializer),
-                                                                                                                 Option.some(deserializer));
-                                                        managementServerRef.set(Option.some(managementServer));
-                                                        return new aetherNode(config,
-                                                                              delegateRouter,
-                                                                              kvStore,
-                                                                              sliceRegistry,
-                                                                              sliceStore,
-                                                                              clusterNode,
-                                                                              switchableCluster,
-                                                                              nodeDeploymentManager,
-                                                                              clusterDeploymentManager,
-                                                                              endpointRegistry,
-                                                                              httpRouteRegistry,
-                                                                              metricsCollector,
-                                                                              metricsScheduler,
-                                                                              deploymentMetricsCollector,
-                                                                              deploymentMetricsScheduler,
-                                                                              controlLoop,
-                                                                              sliceInvoker,
-                                                                              invocationHandler,
-                                                                              blueprintService,
-                                                                              mavenProtocolHandler,
-                                                                              artifactStore,
-                                                                              invocationMetrics,
-                                                                              controller,
-                                                                              deploymentManager,
-                                                                              abTestManager,
-                                                                              alertManager,
-                                                                              depthRegistry,
-                                                                              traceStore,
-                                                                              logLevelRegistry,
-                                                                              dynamicConfigManager,
-                                                                              appHttpServer,
-                                                                              ttmManager,
-                                                                              rollbackManager,
-                                                                              scheduledTaskManager,
-                                                                              snapshotCollector,
-                                                                              artifactMetricsCollector,
-                                                                              deploymentMap,
-                                                                              eventAggregator,
-                                                                              BackupService.disabled(),
-                                                                              streamPartitionManager,
-                                                                              streamReadRouter,
-                                                                              consumerGroupCoordinator,
-                                                                              consumerGroupRegistry,
-                                                                              taskAssignmentCoordinator,
-                                                                              taskGroupAssignmentRegistry,
-                                                                              storageSetups,
-                                                                              clusterTopologyManager,
-                                                                              eventLoopMetricsCollector,
-                                                                              swimHealthDetector,
-                                                                              spokesmanSnapshotSupplier,
-                                                                              generationSnapshotPublisher::markDirty,
-                                                                              Option.some(managementServer),
-                                                                              discoveryProvider,
-                                                                              certRenewalScheduler,
-                                                                              stableHealthSink,
-                                                                              ctmLifecycleWriter,
-                                                                              inFlightTrackerForDrain,
-                                                                              drainCoordinator,
-                                                                              nodeLifecycle,
-                                                                              membershipFsm,
-                                                                              hlcClock,
-                                                                              effectivePhaseSupplier,
-                                                                              startTimeMs);
-                                                    }
-                                                    return node;
-                                                });
+
+        return RabiaNode.buildAndWireRouter(delegateRouter, allEntries).map(_ -> {
+                                                                                if (config.managementPort() > 0) {
+                                                                                var mgmtSecurityEnabled = config.appHttp()
+                                                                                                                .securityEnabled();
+                                                                                var configValidator = mgmtSecurityEnabled
+                                                                                                      ? SecurityValidator.apiKeyValidator(config.appHttp()
+                                                                                                                                                .apiKeys())
+                                                                                                      : SecurityValidator.noOpValidator();
+                                                                                var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
+                                                                                                                                                    () -> node.kvStore());
+                                                                                var managementServer = ManagementServer.managementServer(config.managementPort(),
+                                                                                                                                         () -> node,
+                                                                                                                                         alertManager,
+                                                                                                                                         depthRegistry,
+                                                                                                                                         traceStore,
+                                                                                                                                         logLevelRegistry,
+                                                                                                                                         dynamicConfigManager,
+                                                                                                                                         scheduledTaskRegistry,
+                                                                                                                                         scheduledTaskManager,
+                                                                                                                                         sliceInvoker,
+                                                                                                                                         scheduledTaskStateRegistry,
+                                                                                                                                         config.tls(),
+                                                                                                                                         mgmtSecurityValidator,
+                                                                                                                                         mgmtSecurityEnabled,
+                                                                                                                                         serverBossGroup,
+                                                                                                                                         serverWorkerGroup,
+                                                                                                                                         config.managementHttpProtocol(),
+                                                                                                                                         config.timeouts()
+                                                                                                                                               .forwarding(),
+                                                                                                                                         Option.some(clusterNode.network()),
+                                                                                                                                         Option.some(serializer),
+                                                                                                                                         Option.some(deserializer));
+                                                                                managementServerRef.set(Option.some(managementServer));
+                                                                                return new aetherNode(config,
+                                                                                                      delegateRouter,
+                                                                                                      kvStore,
+                                                                                                      sliceRegistry,
+                                                                                                      sliceStore,
+                                                                                                      clusterNode,
+                                                                                                      switchableCluster,
+                                                                                                      nodeDeploymentManager,
+                                                                                                      clusterDeploymentManager,
+                                                                                                      endpointRegistry,
+                                                                                                      httpRouteRegistry,
+                                                                                                      metricsCollector,
+                                                                                                      metricsScheduler,
+                                                                                                      deploymentMetricsCollector,
+                                                                                                      deploymentMetricsScheduler,
+                                                                                                      controlLoop,
+                                                                                                      sliceInvoker,
+                                                                                                      invocationHandler,
+                                                                                                      blueprintService,
+                                                                                                      mavenProtocolHandler,
+                                                                                                      artifactStore,
+                                                                                                      invocationMetrics,
+                                                                                                      controller,
+                                                                                                      deploymentManager,
+                                                                                                      abTestManager,
+                                                                                                      alertManager,
+                                                                                                      depthRegistry,
+                                                                                                      traceStore,
+                                                                                                      logLevelRegistry,
+                                                                                                      dynamicConfigManager,
+                                                                                                      appHttpServer,
+                                                                                                      ttmManager,
+                                                                                                      rollbackManager,
+                                                                                                      scheduledTaskManager,
+                                                                                                      snapshotCollector,
+                                                                                                      artifactMetricsCollector,
+                                                                                                      deploymentMap,
+                                                                                                      eventAggregator,
+                                                                                                      BackupService.disabled(),
+                                                                                                      streamPartitionManager,
+                                                                                                      streamReadRouter,
+                                                                                                      consumerGroupCoordinator,
+                                                                                                      consumerGroupRegistry,
+                                                                                                      taskAssignmentCoordinator,
+                                                                                                      taskGroupAssignmentRegistry,
+                                                                                                      storageSetups,
+                                                                                                      clusterTopologyManager,
+                                                                                                      eventLoopMetricsCollector,
+                                                                                                      swimHealthDetector,
+                                                                                                      spokesmanSnapshotSupplier,
+                                                                                                      generationSnapshotPublisher::markDirty,
+                                                                                                      Option.some(managementServer),
+                                                                                                      discoveryProvider,
+                                                                                                      certRenewalScheduler,
+                                                                                                      stableHealthSink,
+                                                                                                      ctmLifecycleWriter,
+                                                                                                      inFlightTrackerForDrain,
+                                                                                                      drainCoordinator,
+                                                                                                      nodeLifecycle,
+                                                                                                      membershipFsm,
+                                                                                                      hlcClock,
+                                                                                                      effectivePhaseSupplier,
+                                                                                                      startTimeMs);
+                                                                            }
+                                                                                return node;
+                                                                            });
     }
 
     /// Build the membership FSM (spec §9 — post-E.8 always active). The FSM:
@@ -1990,30 +1992,31 @@ public interface AetherNode extends ManageableNode {
     /// `reachabilityAggregator.snapshot()` returns `Option.none()`, the gate is permissive
     /// (pre-Step-4 behavior).
     private static MembershipFsm buildMembershipFsm(NodeId self,
-                                                     KVStore<AetherKey, AetherValue> kvStore,
-                                                     java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                     org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
-                                                     BooleanSupplier isLeaderSupplier,
-                                                     HlcClock hlcClock,
-                                                     org.pragmatica.aether.deployment.membership.ReachabilityAggregator reachabilityAggregator) {
+                                                    KVStore<AetherKey, AetherValue> kvStore,
+                                                    java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                    org.pragmatica.aether.deployment.drain.DrainCoordinator drainCoordinator,
+                                                    BooleanSupplier isLeaderSupplier,
+                                                    HlcClock hlcClock,
+                                                    org.pragmatica.aether.deployment.membership.ReachabilityAggregator reachabilityAggregator) {
         var fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
         MembershipFsm.LifecycleSnapshotReader lifecycleSnapshot = consumer -> kvStore.forEach(AetherKey.NodeLifecycleKey.class,
-                                                                                                AetherValue.NodeLifecycleValue.class,
-                                                                                                consumer);
+                                                                                              AetherValue.NodeLifecycleValue.class,
+                                                                                              consumer);
         MembershipFsm.SlotSnapshotReader slotSnapshot = consumer -> kvStore.forEach(AetherKey.ProvisioningSlotKey.class,
-                                                                                      AetherValue.ProvisioningSlotValue.class,
-                                                                                      consumer);
+                                                                                    AetherValue.ProvisioningSlotValue.class,
+                                                                                    consumer);
         MembershipFsm.TimerScheduler scheduler = org.pragmatica.lang.utils.SharedScheduler::schedule;
+
         return MembershipFsm.membershipFsm(self,
-                                            fsmConfig,
-                                            lifecycleSnapshot,
-                                            slotSnapshot,
-                                            commandApplier,
-                                            drainCoordinator,
-                                            scheduler,
-                                            isLeaderSupplier,
-                                            hlcClock,
-                                            reachabilityAggregator::snapshot);
+                                           fsmConfig,
+                                           lifecycleSnapshot,
+                                           slotSnapshot,
+                                           commandApplier,
+                                           drainCoordinator,
+                                           scheduler,
+                                           isLeaderSupplier,
+                                           hlcClock,
+                                           reachabilityAggregator::snapshot);
     }
 
     /// Self-bootstrap (Bootstrap-correction 2026-05-12; spec §6 step 7). SWIM does not observe
@@ -2024,9 +2027,8 @@ public interface AetherNode extends ManageableNode {
     /// `Put(L=ON_DUTY)`. On followers the leader-write gate inside `MembershipFsm` drops the
     /// synthetic observation (single-writer invariant) — which is correct, because the leader
     /// writes the lifecycle atom for every peer including itself.
-    @Contract private static void bootstrapSelfOnDutyOnActive(NodeStateChanged change,
-                                                                MembershipFsm membershipFsm,
-                                                                NodeId self) {
+    @Contract
+    private static void bootstrapSelfOnDutyOnActive(NodeStateChanged change, MembershipFsm membershipFsm, NodeId self) {
         if (change.current() != NodeState.ACTIVE) {
             return;
         }
@@ -2038,19 +2040,24 @@ public interface AetherNode extends ManageableNode {
     /// Post-E.8 phase-change publisher. Polls `phaseSupplier` at `PHASE_WATCH_INTERVAL` and
     /// dispatches `ctm.onClusterPhaseChanged(newPhase)` on every observed transition.
     /// Replaces the legacy `AetherNode.schedulePhaseChangeWatcher` wiring.
-    @Contract private static void schedulePhaseChangeWatcher(Supplier<AetherValue.ClusterPhase> phaseSupplier,
-                                                              ClusterTopologyManager ctm) {
+    @Contract
+    private static void schedulePhaseChangeWatcher(Supplier<AetherValue.ClusterPhase> phaseSupplier,
+                                                   ClusterTopologyManager ctm) {
         var lastPhase = new java.util.concurrent.atomic.AtomicReference<>(phaseSupplier.get());
-        org.pragmatica.lang.utils.SharedScheduler.scheduleAtFixedRate(() -> publishPhaseChange(phaseSupplier, ctm, lastPhase),
-                                                                       PHASE_WATCH_INTERVAL,
-                                                                       PHASE_WATCH_INTERVAL);
+        org.pragmatica.lang.utils.SharedScheduler.scheduleAtFixedRate(() -> publishPhaseChange(phaseSupplier,
+                                                                                               ctm,
+                                                                                               lastPhase),
+                                                                      PHASE_WATCH_INTERVAL,
+                                                                      PHASE_WATCH_INTERVAL);
     }
 
-    @Contract private static void publishPhaseChange(Supplier<AetherValue.ClusterPhase> phaseSupplier,
-                                                      ClusterTopologyManager ctm,
-                                                      java.util.concurrent.atomic.AtomicReference<AetherValue.ClusterPhase> lastPhase) {
+    @Contract
+    private static void publishPhaseChange(Supplier<AetherValue.ClusterPhase> phaseSupplier,
+                                           ClusterTopologyManager ctm,
+                                           java.util.concurrent.atomic.AtomicReference<AetherValue.ClusterPhase> lastPhase) {
         var current = phaseSupplier.get();
         var previous = lastPhase.getAndSet(current);
+
         if (previous != current) {
             ctm.onClusterPhaseChanged(current);
         }
@@ -2061,37 +2068,42 @@ public interface AetherNode extends ManageableNode {
     /// invoked because Rabia's `EngineState.Paused` fires on the same DISAPPEARED signal and the
     /// coordinator surface keeps the two trigger paths distinct for forward compatibility with
     /// a future Rabia-direct paused listener.
-    @Contract private static void routeQuorumDisappearedToSelfDrain(QuorumStateNotification notification,
-                                                                     SelfDrainCoordinator selfDrainCoordinator) {
+    @Contract
+    private static void routeQuorumDisappearedToSelfDrain(QuorumStateNotification notification,
+                                                          SelfDrainCoordinator selfDrainCoordinator) {
         if (notification.state() != QuorumStateNotification.State.DISAPPEARED) {return;}
+
         selfDrainCoordinator.onQuorumDisappeared();
         selfDrainCoordinator.onRabiaPaused();
     }
 
-    @SuppressWarnings("unchecked") private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
-                                                                       ClusterTopologyManager ctm) {
-        if (put.cause().value() instanceof AetherValue.NodeLifecycleValue lifecycleValue && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {ctm.onNodeReady(put.cause().key()
-                                                                                                                                                                                        .nodeId());}
+    @SuppressWarnings("unchecked")
+    private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
+                                        ClusterTopologyManager ctm) {
+        if (put.cause().value() instanceof AetherValue.NodeLifecycleValue lifecycleValue && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {
+            ctm.onNodeReady(put.cause().key().nodeId());
+        }
     }
 
     private static NodeAddress findSelfAddress(AetherNodeConfig config) {
-        return config.topology().coreNodes()
-                              .stream()
-                              .filter(info -> info.id().equals(config.self()))
-                              .map(NodeInfo::address)
-                              .findFirst()
-                              .orElse(new NodeAddress("", 0));
+        return config.topology()
+                     .coreNodes()
+                     .stream()
+                     .filter(info -> info.id()
+                                         .equals(config.self()))
+                     .map(NodeInfo::address)
+                     .findFirst()
+                     .orElse(new NodeAddress("", 0));
     }
 
     private static AetherValue.ProvisioningSource detectProvisioningSource() {
-        var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY")).filter(v -> !v.isBlank())
-                               .map(String::trim)
-                               .map(String::toLowerCase);
-        return raw.map(AetherNode::provisioningSourceFrom).or(AetherValue.ProvisioningSource.MANUAL);
+        var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY")).filter(v -> !v.isBlank()).map(String::trim).map(String::toLowerCase);
+        return raw.map(AetherNode::provisioningSourceFrom)
+                  .or(AetherValue.ProvisioningSource.MANUAL);
     }
 
     private static AetherValue.ProvisioningSource provisioningSourceFrom(String raw) {
-        return switch (raw){
+        return switch (raw) {
             case "ctm" -> AetherValue.ProvisioningSource.CTM;
             case "manual" -> AetherValue.ProvisioningSource.MANUAL;
             default -> AetherValue.ProvisioningSource.UNKNOWN;
@@ -2124,40 +2136,47 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    private static void attachQuicPeerStateListener(ClusterNetwork network,
-                                                     CoreSwimHealthDetector swimDetector) {
+    private static void attachQuicPeerStateListener(ClusterNetwork network, CoreSwimHealthDetector swimDetector) {
         LOG.debug("attachQuicPeerStateListener: network class={}",
                   network == null
                   ? "null"
                   : network.getClass().getName());
+
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {
             LOG.warn("attachQuicPeerStateListener: network is NOT QuicClusterNetwork — skipping listener attachment");
+
             return;
         }
+
         var listener = new QuicPeerStateListener() {
-            @Override@Contract public void onPeerJoined(NodeId nodeId) {
+            @Override
+            @Contract
+            public void onPeerJoined(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable)", nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
             }
 
-            @Override@Contract public void onPeerReconnected(NodeId nodeId) {
+            @Override
+            @Contract
+            public void onPeerReconnected(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable)", nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
             }
 
-            @Override@Contract public void onPeerLeft(NodeId nodeId) {
+            @Override
+            @Contract
+            public void onPeerLeft(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
                 swimDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
                                                                                           QuicTransportCause.PEER_LEFT));
             }
         };
         quicNetwork.setPeerStateListener(listener);
-        quicNetwork.connectedPeers()
-                                  .forEach(peer -> {
-                                               LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) for already-connected peer {}",
-                                                         peer);
-                                               swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
-                                           });
+        quicNetwork.connectedPeers().forEach(peer -> {
+                                                 LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) for already-connected peer {}",
+                                                           peer);
+                                                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
+                                             });
     }
 
     enum QuicTransportCause implements Cause {
@@ -2166,7 +2185,8 @@ public interface AetherNode extends ManageableNode {
         QuicTransportCause(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }
@@ -2191,46 +2211,56 @@ public interface AetherNode extends ManageableNode {
                                                        Supplier<Epoch> epochSupplier,
                                                        ReachabilityAggregator reachabilityAggregator) {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {return;}
+
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
-            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter) {
+            @Override
+            public void onPeerDisconnected(NodeId peerId, long term, long counter) {
                 var now = System.currentTimeMillis();
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.DISCONNECTED,
                                                                         term,
                                                                         counter,
                                                                         now));
+
                 if (isLeaderSupplier.getAsBoolean()) {
                     reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.UNREACHABLE, now);
                 }
             }
 
-            @Override public void onPeerConnected(NodeId peerId, long term, long counter) {
+            @Override
+            public void onPeerConnected(NodeId peerId, long term, long counter) {
                 var now = System.currentTimeMillis();
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.CONNECTED,
                                                                         term,
                                                                         counter,
                                                                         now));
+
                 if (isLeaderSupplier.getAsBoolean()) {
                     reachabilityAggregator.ingestSelfTransition(peerId, ReachabilityKind.REACHABLE, now);
                 }
             }
         };
         QuicClusterNetwork.ObservedEpochSupplier epochAdapter = new QuicClusterNetwork.ObservedEpochSupplier() {
-            @Override public long term() {
-                return epochSupplier.get().rabiaTerm();
+            @Override
+            public long term() {
+                return epochSupplier.get()
+                                    .rabiaTerm();
             }
 
-            @Override public long counter() {
-                return epochSupplier.get().localCounter();
+            @Override
+            public long counter() {
+                return epochSupplier.get()
+                                    .localCounter();
             }
         };
         quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
     }
 
     private static Option<NodeId> lookupGovernor(KVStore<AetherKey, AetherValue> kvStore, String communityId) {
-        return kvStore.get(AetherKey.GovernorAnnouncementKey.forCommunity(communityId)).filter(v -> v instanceof AetherValue.GovernorAnnouncementValue)
-                          .map(v -> ((AetherValue.GovernorAnnouncementValue) v).governorId());
+        return kvStore.get(AetherKey.GovernorAnnouncementKey.forCommunity(communityId))
+                      .filter(v -> v instanceof AetherValue.GovernorAnnouncementValue)
+                      .map(v -> ((AetherValue.GovernorAnnouncementValue) v).governorId());
     }
 
     private static GenerationChangedSink buildGenerationChangedSink(MessageRouter router) {
@@ -2253,8 +2283,8 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static void toggleCtmOnLeaderChange(LeaderNotification.LeaderChange change,
-                                                                                 ClusterTopologyManager ctm) {
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleCtmOnLeaderChange(LeaderNotification.LeaderChange change, ClusterTopologyManager ctm) {
         if (change.localNodeIsLeader()) {ctm.activate();} else {ctm.deactivate();}
     }
 
@@ -2270,22 +2300,22 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    @SuppressWarnings({"JBCT-RET-01"}) private static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
-                                                                                     NodeId selfId,
-                                                                                     RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                                     SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
-                                                                                     ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
-                                                                                     AetherNodeConfig config,
-                                                                                     MessageRouter.DelegateRouter delegateRouter,
-                                                                                     KVStore<AetherKey, AetherValue> kvStore,
-                                                                                     SliceStore sliceStore,
-                                                                                     SliceInvoker sliceInvoker,
-                                                                                     Logger growthLog) {
-        if (!put.cause().key()
-                      .nodeId()
-                      .equals(selfId)) {return;}
-        var role = put.cause().value()
-                            .role();
+    @SuppressWarnings({"JBCT-RET-01"})
+    private static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
+                                                  NodeId selfId,
+                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                  SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+                                                  ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+                                                  AetherNodeConfig config,
+                                                  MessageRouter.DelegateRouter delegateRouter,
+                                                  KVStore<AetherKey, AetherValue> kvStore,
+                                                  SliceStore sliceStore,
+                                                  SliceInvoker sliceInvoker,
+                                                  Logger growthLog) {
+        if (!put.cause().key().nodeId().equals(selfId)) {return;}
+
+        var role = put.cause().value().role();
+
         if (AetherValue.ActivationDirectiveValue.CORE.equals(role)) {
             growthLog.info("Received core activation directive from CDM");
             clusterNode.authorizeActivation();
@@ -2304,16 +2334,17 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    @SuppressWarnings({"JBCT-RET-01"}) private static void activateWorkerMode(NodeId selfId,
-                                                                              RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                              SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
-                                                                              ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
-                                                                              AetherNodeConfig config,
-                                                                              MessageRouter.DelegateRouter delegateRouter,
-                                                                              KVStore<AetherKey, AetherValue> kvStore,
-                                                                              SliceStore sliceStore,
-                                                                              SliceInvoker sliceInvoker,
-                                                                              Logger log) {
+    @SuppressWarnings({"JBCT-RET-01"})
+    private static void activateWorkerMode(NodeId selfId,
+                                           RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                           SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+                                           ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+                                           AetherNodeConfig config,
+                                           MessageRouter.DelegateRouter delegateRouter,
+                                           KVStore<AetherKey, AetherValue> kvStore,
+                                           SliceStore sliceStore,
+                                           SliceInvoker sliceInvoker,
+                                           Logger log) {
         clusterNode.authorizeObservation();
         switchableCluster.switchTo(forwardingClusterNode);
         log.info("Worker {} switched to forwarding mode", selfId.id());
@@ -2322,23 +2353,21 @@ public interface AetherNode extends ManageableNode {
         var workerBootstrap = WorkerBootstrap.workerBootstrap(selfId, delegateRouter, kvStore);
         var governorMesh = GovernorMesh.governorMesh(delegateRouter);
         var groupMembershipTracker = GroupMembershipTracker.groupMembershipTracker(selfId,
-                                                                                   config.workerConfig().map(WorkerConfig::groupName)
-                                                                                                      .or(WorkerConfig.DEFAULT_GROUP_NAME),
-                                                                                   config.workerConfig().map(WorkerConfig::maxGroupSize)
-                                                                                                      .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
+                                                                                   config.workerConfig().map(WorkerConfig::groupName).or(WorkerConfig.DEFAULT_GROUP_NAME),
+                                                                                   config.workerConfig().map(WorkerConfig::maxGroupSize).or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
         var workerDeploymentManager = WorkerDeploymentManager.workerDeploymentManager(selfId,
                                                                                       sliceStore,
                                                                                       mutationForwarder,
                                                                                       List.of(),
                                                                                       () -> groupMembershipTracker.myGroup()
-                                                                                                                          .communityId());
+                                                                                                                  .communityId());
         var workerHlc = HlcClock.hlcClock(selfId.id()).unwrap();
         var workerTcpAddress = resolveSelfTcpAddress(config);
         var governorAnnouncer = org.pragmatica.aether.worker.governor.GovernorAnnouncer.governorAnnouncer(selfId,
                                                                                                           clusterNode,
                                                                                                           workerHlc,
                                                                                                           () -> groupMembershipTracker.myGroup()
-                                                                                                                                              .communityId(),
+                                                                                                                                      .communityId(),
                                                                                                           () -> workerTcpAddress,
                                                                                                           () -> Epoch.ZERO);
         governorAnnouncer.start();
@@ -2346,34 +2375,40 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static String resolveSelfTcpAddress(AetherNodeConfig config) {
-        return config.topology().coreNodes()
-                              .stream()
-                              .filter(info -> info.id().equals(config.self()))
-                              .map(info -> info.address().host() + ":" + info.address().port())
-                              .findFirst()
-                              .orElse("");
+        return config.topology()
+                     .coreNodes()
+                     .stream()
+                     .filter(info -> info.id()
+                                         .equals(config.self()))
+                     .map(info -> info.address()
+                                      .host() + ":" + info.address()
+                                                          .port())
+                     .findFirst()
+                     .orElse("");
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes", "JBCT-RET-01"}) private static void handleForwardApplyRequest(ForwardApplyRequest request,
-                                                                                                              RabiaNode<KVCommand<AetherKey>> clusterNode) {
+    @SuppressWarnings({"unchecked", "rawtypes", "JBCT-RET-01"})
+    private static void handleForwardApplyRequest(ForwardApplyRequest request,
+                                                  RabiaNode<KVCommand<AetherKey>> clusterNode) {
         clusterNode.apply((List) request.commands()).onSuccess(results -> sendSuccessResponse(clusterNode,
                                                                                               request,
-                                                                                              (List) results))
-                         .onFailure(cause -> sendFailureResponse(clusterNode,
-                                                                 request,
-                                                                 (Cause) cause));
+                                                                                              (List) results)).onFailure(cause -> sendFailureResponse(clusterNode,
+                                                                                                                                                      request,
+                                                                                                                                                      (Cause) cause));
     }
 
-    @SuppressWarnings({"rawtypes"}) private static void sendSuccessResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                            ForwardApplyRequest request,
-                                                                            List<?> results) {
+    @SuppressWarnings({"rawtypes"})
+    private static void sendSuccessResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                            ForwardApplyRequest request,
+                                            List<?> results) {
         var response = new ForwardApplyResponse<>(clusterNode.self(), request.correlationId(), results, Option.empty());
         clusterNode.network().send(request.sender(), response);
     }
 
-    @SuppressWarnings({"rawtypes"}) private static void sendFailureResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                            ForwardApplyRequest request,
-                                                                            Cause cause) {
+    @SuppressWarnings({"rawtypes"})
+    private static void sendFailureResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                            ForwardApplyRequest request,
+                                            Cause cause) {
         var response = new ForwardApplyResponse<>(clusterNode.self(),
                                                   request.correlationId(),
                                                   List.of(),
@@ -2381,22 +2416,25 @@ public interface AetherNode extends ManageableNode {
         clusterNode.network().send(request.sender(), response);
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static RotatingGossipEncryptor createGossipEncryptor(AetherNodeConfig config) {
-        var initial = config.certificateProvider().flatMap(provider -> buildDualKeyEncryptor(provider))
-                                                .or(GossipEncryptor.none());
+    @SuppressWarnings("JBCT-RET-01")
+    private static RotatingGossipEncryptor createGossipEncryptor(AetherNodeConfig config) {
+        var initial = config.certificateProvider().flatMap(provider -> buildDualKeyEncryptor(provider)).or(GossipEncryptor.none());
         return RotatingGossipEncryptor.rotatingGossipEncryptor(initial);
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static Option<GossipEncryptor> buildDualKeyEncryptor(org.pragmatica.net.tcp.security.CertificateProvider provider) {
-        return provider.currentGossipKey().option()
-                                        .flatMap(current -> buildEncryptorFromKeys(current,
-                                                                                   provider.previousGossipKey()));
+    @SuppressWarnings("JBCT-RET-01")
+    private static Option<GossipEncryptor> buildDualKeyEncryptor(org.pragmatica.net.tcp.security.CertificateProvider provider) {
+        return provider.currentGossipKey()
+                       .option()
+                       .flatMap(current -> buildEncryptorFromKeys(current,
+                                                                  provider.previousGossipKey()));
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static Option<GossipEncryptor> buildEncryptorFromKeys(org.pragmatica.net.tcp.security.GossipKey current,
-                                                                                                   Option<org.pragmatica.net.tcp.security.GossipKey> previous) {
+    @SuppressWarnings("JBCT-RET-01")
+    private static Option<GossipEncryptor> buildEncryptorFromKeys(org.pragmatica.net.tcp.security.GossipKey current,
+                                                                  Option<org.pragmatica.net.tcp.security.GossipKey> previous) {
         return previous.flatMap(prev -> buildDualKeyAesEncryptor(current, prev))
-                               .orElse(() -> buildSingleKeyAesEncryptor(current));
+                       .orElse(() -> buildSingleKeyAesEncryptor(current));
     }
 
     private static Option<GossipEncryptor> buildDualKeyAesEncryptor(org.pragmatica.net.tcp.security.GossipKey current,
@@ -2405,40 +2443,46 @@ public interface AetherNode extends ManageableNode {
                                                            current.keyId(),
                                                            prev.key(),
                                                            prev.keyId())
-        .option();
+                                    .option();
     }
 
     private static Option<GossipEncryptor> buildSingleKeyAesEncryptor(org.pragmatica.net.tcp.security.GossipKey current) {
-        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(), current.keyId()).option();
+        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(),
+                                                           current.keyId())
+                                    .option();
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Option<CertificateRenewalScheduler> createCertRenewalScheduler(AetherNodeConfig config,
-                                                                                                                   RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                                                                   AppHttpServer appHttpServer,
-                                                                                                                   java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Option<CertificateRenewalScheduler> createCertRenewalScheduler(AetherNodeConfig config,
+                                                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                                                  AppHttpServer appHttpServer,
+                                                                                  java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         return config.certificateProvider()
-                                         .flatMap(provider -> buildCertRenewalScheduler(config,
-                                                                                        provider,
-                                                                                        clusterNode,
-                                                                                        appHttpServer,
-                                                                                        managementServerSupplier));
+                     .flatMap(provider -> buildCertRenewalScheduler(config,
+                                                                    provider,
+                                                                    clusterNode,
+                                                                    appHttpServer,
+                                                                    managementServerSupplier));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Option<CertificateRenewalScheduler> buildCertRenewalScheduler(AetherNodeConfig config,
-                                                                                                                  org.pragmatica.net.tcp.security.CertificateProvider provider,
-                                                                                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                                                                  AppHttpServer appHttpServer,
-                                                                                                                  java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Option<CertificateRenewalScheduler> buildCertRenewalScheduler(AetherNodeConfig config,
+                                                                                 org.pragmatica.net.tcp.security.CertificateProvider provider,
+                                                                                 RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                                                 AppHttpServer appHttpServer,
+                                                                                 java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         var nodeId = config.self().id();
         var hostname = resolveHostname(config);
-        return provider.issueCertificate(nodeId, hostname).map(bundle -> createSchedulerFromBundle(provider,
-                                                                                                   nodeId,
-                                                                                                   hostname,
-                                                                                                   bundle,
-                                                                                                   clusterNode,
-                                                                                                   appHttpServer,
-                                                                                                   managementServerSupplier))
-                                        .option();
+
+        return provider.issueCertificate(nodeId, hostname)
+                       .map(bundle -> createSchedulerFromBundle(provider,
+                                                                nodeId,
+                                                                hostname,
+                                                                bundle,
+                                                                clusterNode,
+                                                                appHttpServer,
+                                                                managementServerSupplier))
+                       .option();
     }
 
     private static CertificateRenewalScheduler createSchedulerFromBundle(org.pragmatica.net.tcp.security.CertificateProvider provider,
@@ -2458,30 +2502,30 @@ public interface AetherNode extends ManageableNode {
                                                                        bundle.notAfter());
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static void onCertificateRenewed(CertificateBundle newBundle,
-                                                                              RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                              AppHttpServer appHttpServer,
-                                                                              java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void onCertificateRenewed(CertificateBundle newBundle,
+                                             RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                             AppHttpServer appHttpServer,
+                                             java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         log.info("Certificate renewed, valid until {}", newBundle.notAfter());
         Result.all(QuicSslContextFactory.createServerFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL),
-                   QuicSslContextFactory.createClientFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL)).id()
-                  .onSuccess(tuple -> triggerCertRotation(clusterNode,
-                                                          tuple.first(),
-                                                          tuple.last(),
-                                                          newBundle,
-                                                          appHttpServer,
-                                                          managementServerSupplier))
-                  .onFailure(cause -> log.error("Failed to build SSL contexts from renewed certificate: {}",
-                                                cause.message()));
+                   QuicSslContextFactory.createClientFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL)).id().onSuccess(tuple -> triggerCertRotation(clusterNode,
+                                                                                                                                                          tuple.first(),
+                                                                                                                                                          tuple.last(),
+                                                                                                                                                          newBundle,
+                                                                                                                                                          appHttpServer,
+                                                                                                                                                          managementServerSupplier)).onFailure(cause -> log.error("Failed to build SSL contexts from renewed certificate: {}",
+                                                                                                                                                                                                                  cause.message()));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static void triggerCertRotation(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                                             io.netty.handler.codec.quic.QuicSslContext serverSsl,
-                                                                             io.netty.handler.codec.quic.QuicSslContext clientSsl,
-                                                                             CertificateBundle newBundle,
-                                                                             AppHttpServer appHttpServer,
-                                                                             java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void triggerCertRotation(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                            io.netty.handler.codec.quic.QuicSslContext serverSsl,
+                                            io.netty.handler.codec.quic.QuicSslContext clientSsl,
+                                            CertificateBundle newBundle,
+                                            AppHttpServer appHttpServer,
+                                            java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         rotateQuicNetwork(clusterNode, serverSsl, clientSsl, log);
         managementServerSupplier.get().onPresent(mgmt -> rotateManagementServer(mgmt, newBundle, log));
@@ -2492,51 +2536,55 @@ public interface AetherNode extends ManageableNode {
                                           io.netty.handler.codec.quic.QuicSslContext serverSsl,
                                           io.netty.handler.codec.quic.QuicSslContext clientSsl,
                                           Logger log) {
-        if (clusterNode.network() instanceof QuicClusterNetwork quicNetwork) {quicNetwork.rotateCertificate(serverSsl,
-                                                                                                            clientSsl).onSuccess(_ -> log.info("QUIC certificate rotation complete"))
-                                                                                                           .onFailure(cause -> log.error("QUIC certificate rotation failed: {}",
-                                                                                                                                         cause.message()));} else {log.warn("QUIC certificate rotation skipped: network is not QUIC-based");}
+        if (clusterNode.network() instanceof QuicClusterNetwork quicNetwork) {
+            quicNetwork.rotateCertificate(serverSsl, clientSsl).onSuccess(_ -> log.info("QUIC certificate rotation complete")).onFailure(cause -> log.error("QUIC certificate rotation failed: {}",
+                                                                                                                                                            cause.message()));
+        } else {log.warn("QUIC certificate rotation skipped: network is not QUIC-based");}
     }
 
     private static void rotateManagementServer(ManagementServer mgmt, CertificateBundle newBundle, Logger log) {
-        mgmt.rotateCertificate(newBundle).onSuccess(_ -> log.info("Management server certificate rotation complete"))
-                              .onFailure(cause -> log.error("Management server certificate rotation failed: {}",
-                                                            cause.message()));
+        mgmt.rotateCertificate(newBundle).onSuccess(_ -> log.info("Management server certificate rotation complete")).onFailure(cause -> log.error("Management server certificate rotation failed: {}",
+                                                                                                                                                   cause.message()));
     }
 
     private static void rotateAppHttpServer(AppHttpServer appHttpServer, CertificateBundle newBundle, Logger log) {
-        appHttpServer.rotateCertificate(newBundle).onSuccess(_ -> log.info("App HTTP server certificate rotation complete"))
-                                       .onFailure(cause -> log.error("App HTTP server certificate rotation failed: {}",
-                                                                     cause.message()));
+        appHttpServer.rotateCertificate(newBundle).onSuccess(_ -> log.info("App HTTP server certificate rotation complete")).onFailure(cause -> log.error("App HTTP server certificate rotation failed: {}",
+                                                                                                                                                          cause.message()));
     }
 
     private static long resolveStreamMaxMemoryBytes() {
-        return Option.option(System.getenv("STREAM_MAX_MEMORY_BYTES")).filter(s -> !s.isBlank())
-                            .flatMap(s -> Result.lift(() -> Long.parseLong(s)).option())
-                            .or(128 * 1024 * 1024L);
+        return Option.option(System.getenv("STREAM_MAX_MEMORY_BYTES"))
+                     .filter(s -> !s.isBlank())
+                     .flatMap(s -> Result.lift(() -> Long.parseLong(s)).option())
+                     .or(128 * 1024 * 1024L);
     }
 
     private static String resolveHostname(AetherNodeConfig config) {
-        return config.topology().coreNodes()
-                              .stream()
-                              .filter(n -> n.id().equals(config.self()))
-                              .findFirst()
-                              .map(n -> n.address().host())
-                              .orElse("localhost");
+        return config.topology()
+                     .coreNodes()
+                     .stream()
+                     .filter(n -> n.id()
+                                   .equals(config.self()))
+                     .findFirst()
+                     .map(n -> n.address()
+                                .host())
+                     .orElse("localhost");
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static void handleRemotePutResponse(DHTNetwork dhtNetwork,
-                                                                                 AetherMaps aetherMaps,
-                                                                                 DHTMessage.PutRequest request,
-                                                                                 DHTMessage.PutResponse response) {
+    @SuppressWarnings("JBCT-RET-01")
+    private static void handleRemotePutResponse(DHTNetwork dhtNetwork,
+                                                AetherMaps aetherMaps,
+                                                DHTMessage.PutRequest request,
+                                                DHTMessage.PutResponse response) {
         dhtNetwork.send(request.sender(), response);
         if (response.success() && !response.superseded()) {aetherMaps.dispatchRemotePut(request.key(), request.value());}
     }
 
-    @SuppressWarnings("JBCT-RET-01") private static void handleRemoteRemoveResponse(DHTNetwork dhtNetwork,
-                                                                                    AetherMaps aetherMaps,
-                                                                                    DHTMessage.RemoveRequest request,
-                                                                                    DHTMessage.RemoveResponse response) {
+    @SuppressWarnings("JBCT-RET-01")
+    private static void handleRemoteRemoveResponse(DHTNetwork dhtNetwork,
+                                                   AetherMaps aetherMaps,
+                                                   DHTMessage.RemoveRequest request,
+                                                   DHTMessage.RemoveResponse response) {
         dhtNetwork.send(request.sender(), response);
         if (response.found()) {aetherMaps.dispatchRemoteRemove(request.key());}
     }
@@ -2583,106 +2631,62 @@ public interface AetherNode extends ManageableNode {
                                                                     SelfDrainCoordinator selfDrainCoordinator,
                                                                     java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
-        var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
-                                                  .onPut(AetherKey.AppBlueprintKey.class,
-                                                         clusterDeploymentManager::onAppBlueprintPut)
-                                                  .onPut(AetherKey.SliceTargetKey.class,
-                                                         clusterDeploymentManager::onSliceTargetPut)
-                                                  .onPut(AetherKey.VersionRoutingKey.class,
-                                                         clusterDeploymentManager::onVersionRoutingPut)
-                                                  .onRemove(AetherKey.AppBlueprintKey.class,
-                                                            clusterDeploymentManager::onAppBlueprintRemove)
-                                                  .onRemove(AetherKey.SliceTargetKey.class,
-                                                            clusterDeploymentManager::onSliceTargetRemove)
-                                                  .onRemove(AetherKey.VersionRoutingKey.class,
-                                                            clusterDeploymentManager::onVersionRoutingRemove)
-                                                  .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
-                                                  .onRemove(AetherKey.SliceTargetKey.class,
-                                                            controlLoop::onSliceTargetRemove)
-                                                  .onPut(AetherKey.AlertThresholdKey.class,
-                                                         alertManager::onAlertThresholdPut)
-                                                  .onRemove(AetherKey.AlertThresholdKey.class,
-                                                            alertManager::onAlertThresholdRemove)
-                                                  .onPut(AetherKey.ObservabilityDepthKey.class,
-                                                         depthRegistry::onDepthPut)
-                                                  .onRemove(AetherKey.ObservabilityDepthKey.class,
-                                                            depthRegistry::onDepthRemove)
-                                                  .onPut(AetherKey.LogLevelKey.class, logLevelRegistry::onLogLevelPut)
-                                                  .onRemove(AetherKey.LogLevelKey.class,
-                                                            logLevelRegistry::onLogLevelRemove)
-                                                  .onPut(AetherKey.SliceTargetKey.class,
-                                                         rollbackManager::onSliceTargetPut)
-                                                  .onPut(AetherKey.PreviousVersionKey.class,
-                                                         rollbackManager::onPreviousVersionPut)
-                                                  .onPut(AetherKey.TopicSubscriptionKey.class,
-                                                         topicSubscriptionRegistry::onSubscriptionPut)
-                                                  .onRemove(AetherKey.TopicSubscriptionKey.class,
-                                                            topicSubscriptionRegistry::onSubscriptionRemove)
-                                                  .onPut(AetherKey.ScheduledTaskKey.class,
-                                                         scheduledTaskRegistry::onScheduledTaskPut)
-                                                  .onRemove(AetherKey.ScheduledTaskKey.class,
-                                                            scheduledTaskRegistry::onScheduledTaskRemove)
-                                                  .onPut(AetherKey.ScheduledTaskStateKey.class,
-                                                         scheduledTaskStateRegistry::onStatePut)
-                                                  .onRemove(AetherKey.ScheduledTaskStateKey.class,
-                                                            scheduledTaskStateRegistry::onStateRemove)
-                                                  // RC1 Step 2: NodeDeploymentManager + ClusterDeploymentManager no longer
-                                                  // subscribe to NodeLifecycleKey directly — they consume
-                                                  // MembershipDecision via the routes added near the
-                                                  // generationSnapshotPublisher wiring above. ClusterEventAggregator
-                                                  // (Step 1 scope) and MembershipFsm remain as KV-put consumers.
-                                                  .onRemove(AetherKey.NodeLifecycleKey.class,
-                                                            nodeDeploymentManager::onNodeLifecycleRemove)
-                                                  .onPut(AetherKey.NodeLifecycleKey.class,
-                                                         eventAggregator::onNodeLifecyclePut)
-                                                  .onPut(AetherKey.NodeLifecycleKey.class,
-                                                         put -> notifyCtmOnDuty(put, clusterTopologyManager))
-                                                  .onPut(AetherKey.NodeLifecycleKey.class,
-                                                         membershipFsm::onNodeLifecyclePut)
-                                                  .onRemove(AetherKey.NodeLifecycleKey.class,
-                                                            membershipFsm::onNodeLifecycleRemove)
-                                                  .onPut(AetherKey.ProvisioningSlotKey.class,
-                                                         membershipFsm::onProvisioningSlotPut)
-                                                  .onRemove(AetherKey.ProvisioningSlotKey.class,
-                                                            membershipFsm::onProvisioningSlotRemove)
-                                                  .onPut(AetherKey.ActivationDirectiveKey.class,
-                                                         clusterDeploymentManager::onActivationDirectivePut)
-                                                  .onRemove(AetherKey.ActivationDirectiveKey.class,
-                                                            clusterDeploymentManager::onActivationDirectiveRemove)
-                                                  .onPut(AetherKey.SchemaVersionKey.class,
-                                                         clusterDeploymentManager::onSchemaVersionPut)
-                                                  .onPut(AetherKey.NodeArtifactKey.class,
-                                                         nodeDeploymentManager::onNodeArtifactPut)
-                                                  .onPut(AetherKey.NodeArtifactKey.class,
-                                                         clusterDeploymentManager::onNodeArtifactPut)
-                                                  .onPut(AetherKey.NodeArtifactKey.class,
-                                                         endpointRegistry::onNodeArtifactPut)
-                                                  .onPut(AetherKey.NodeArtifactKey.class,
-                                                         artifactMetricsCollector.deploymentTracker()::onNodeArtifactPut)
-                                                  .onPut(AetherKey.NodeArtifactKey.class,
-                                                         deploymentMap::onNodeArtifactPut)
-                                                  .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
-                                                  .onPut(AetherKey.NodeArtifactKey.class,
-                                                         eventAggregator::onNodeArtifactPut)
-                                                  .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            nodeDeploymentManager::onNodeArtifactRemove)
-                                                  .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            clusterDeploymentManager::onNodeArtifactRemove)
-                                                  .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            endpointRegistry::onNodeArtifactRemove)
-                                                  .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            artifactMetricsCollector.deploymentTracker()::onNodeArtifactRemove)
-                                                  .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            deploymentMap::onNodeArtifactRemove)
-                                                  .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            controlLoop::onNodeArtifactRemove)
-                                                  .onPut(AetherKey.NodeRoutesKey.class,
-                                                         httpRouteRegistry::onNodeRoutesPut)
-                                                  .onPut(AetherKey.NodeRoutesKey.class, appHttpServer::onNodeRoutesPut)
-                                                  .onRemove(AetherKey.NodeRoutesKey.class,
-                                                            httpRouteRegistry::onNodeRoutesRemove)
-                                                  .onRemove(AetherKey.NodeRoutesKey.class,
-                                                            appHttpServer::onNodeRoutesRemove);
+        var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.AppBlueprintKey.class,
+                                                                                                           clusterDeploymentManager::onAppBlueprintPut).onPut(AetherKey.SliceTargetKey.class,
+                                                                                                                                                              clusterDeploymentManager::onSliceTargetPut).onPut(AetherKey.VersionRoutingKey.class,
+                                                                                                                                                                                                                clusterDeploymentManager::onVersionRoutingPut).onRemove(AetherKey.AppBlueprintKey.class,
+                                                                                                                                                                                                                                                                        clusterDeploymentManager::onAppBlueprintRemove).onRemove(AetherKey.SliceTargetKey.class,
+                                                                                                                                                                                                                                                                                                                                 clusterDeploymentManager::onSliceTargetRemove).onRemove(AetherKey.VersionRoutingKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                         clusterDeploymentManager::onVersionRoutingRemove).onPut(AetherKey.SliceTargetKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                 controlLoop::onSliceTargetPut).onRemove(AetherKey.SliceTargetKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         controlLoop::onSliceTargetRemove).onPut(AetherKey.AlertThresholdKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 alertManager::onAlertThresholdPut).onRemove(AetherKey.AlertThresholdKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             alertManager::onAlertThresholdRemove).onPut(AetherKey.ObservabilityDepthKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         depthRegistry::onDepthPut).onRemove(AetherKey.ObservabilityDepthKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             depthRegistry::onDepthRemove).onPut(AetherKey.LogLevelKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 logLevelRegistry::onLogLevelPut).onRemove(AetherKey.LogLevelKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           logLevelRegistry::onLogLevelRemove).onPut(AetherKey.SliceTargetKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     rollbackManager::onSliceTargetPut).onPut(AetherKey.PreviousVersionKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              rollbackManager::onPreviousVersionPut).onPut(AetherKey.TopicSubscriptionKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           topicSubscriptionRegistry::onSubscriptionPut).onRemove(AetherKey.TopicSubscriptionKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  topicSubscriptionRegistry::onSubscriptionRemove).onPut(AetherKey.ScheduledTaskKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         scheduledTaskRegistry::onScheduledTaskPut).onRemove(AetherKey.ScheduledTaskKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             scheduledTaskRegistry::onScheduledTaskRemove).onPut(AetherKey.ScheduledTaskStateKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 scheduledTaskStateRegistry::onStatePut).onRemove(AetherKey.ScheduledTaskStateKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  scheduledTaskStateRegistry::onStateRemove)
+        // RC1 Step 2: NodeDeploymentManager + ClusterDeploymentManager no longer
+        // subscribe to NodeLifecycleKey directly — they consume
+        // MembershipDecision via the routes added near the
+        // generationSnapshotPublisher wiring above. ClusterEventAggregator
+        // (Step 1 scope) and MembershipFsm remain as KV-put consumers.
+        .onRemove(AetherKey.NodeLifecycleKey.class, nodeDeploymentManager::onNodeLifecycleRemove).onPut(AetherKey.NodeLifecycleKey.class,
+                                                                                                        eventAggregator::onNodeLifecyclePut).onPut(AetherKey.NodeLifecycleKey.class,
+                                                                                                                                                   put -> notifyCtmOnDuty(put,
+                                                                                                                                                                          clusterTopologyManager)).onPut(AetherKey.NodeLifecycleKey.class,
+                                                                                                                                                                                                         membershipFsm::onNodeLifecyclePut).onRemove(AetherKey.NodeLifecycleKey.class,
+                                                                                                                                                                                                                                                     membershipFsm::onNodeLifecycleRemove).onPut(AetherKey.ProvisioningSlotKey.class,
+                                                                                                                                                                                                                                                                                                 membershipFsm::onProvisioningSlotPut).onRemove(AetherKey.ProvisioningSlotKey.class,
+                                                                                                                                                                                                                                                                                                                                                membershipFsm::onProvisioningSlotRemove).onPut(AetherKey.ActivationDirectiveKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                               clusterDeploymentManager::onActivationDirectivePut).onRemove(AetherKey.ActivationDirectiveKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                            clusterDeploymentManager::onActivationDirectiveRemove).onPut(AetherKey.SchemaVersionKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         clusterDeploymentManager::onSchemaVersionPut).onPut(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             nodeDeploymentManager::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             clusterDeploymentManager::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                endpointRegistry::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           artifactMetricsCollector.deploymentTracker()::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  deploymentMap::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          controlLoop::onNodeArtifactPut).onPut(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                eventAggregator::onNodeArtifactPut).onRemove(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             nodeDeploymentManager::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   clusterDeploymentManager::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            endpointRegistry::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             artifactMetricsCollector.deploymentTracker()::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          deploymentMap::onNodeArtifactRemove).onRemove(AetherKey.NodeArtifactKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        controlLoop::onNodeArtifactRemove).onPut(AetherKey.NodeRoutesKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 httpRouteRegistry::onNodeRoutesPut).onPut(AetherKey.NodeRoutesKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           appHttpServer::onNodeRoutesPut).onRemove(AetherKey.NodeRoutesKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    httpRouteRegistry::onNodeRoutesRemove).onRemove(AetherKey.NodeRoutesKey.class,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    appHttpServer::onNodeRoutesRemove);
         // RC1 Step 1 — materialised view subscriber. Every Rabia-committed `ClusterEventLogKey`
         // put — whether it arrives via fresh consensus or cold-boot snapshot replay — flows
         // through `onClusterEventLogPut` and into the local RingBuffer projection that
@@ -2690,12 +2694,12 @@ public interface AetherNode extends ManageableNode {
         // sink fan-out during the snapshot-replay window.
         kvRouterBuilder.onPut(AetherKey.ClusterEventLogKey.class, eventAggregator::onClusterEventLogPut);
         loadBalancerManager.onPresent(lbm -> kvRouterBuilder.onPut(AetherKey.NodeRoutesKey.class, lbm::onNodeRoutesPut)
-                                                                  .onRemove(AetherKey.NodeRoutesKey.class,
-                                                                            lbm::onNodeRoutesRemove));
-        dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut).onRemove(AetherKey.ConfigKey.class,
-                                                                                                                          dcm::onConfigRemove)
-                                                                   .onPut(AetherKey.BlueprintResourcesKey.class,
-                                                                          dcm::onBlueprintResourcesPut));
+                                                            .onRemove(AetherKey.NodeRoutesKey.class,
+                                                                      lbm::onNodeRoutesRemove));
+        dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
+                                                             .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove)
+                                                             .onPut(AetherKey.BlueprintResourcesKey.class,
+                                                                    dcm::onBlueprintResourcesPut));
         kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentPut);
         kvRouterBuilder.onRemove(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentRemove);
         kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupAssignmentRegistry::onTaskAssignmentPut);
@@ -2717,7 +2721,8 @@ public interface AetherNode extends ManageableNode {
         // with the spec §16.1 trigger list (a future Rabia-direct paused listener can route to
         // `onRabiaPaused` without changing the FSM).
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
-                                              notification -> routeQuorumDisappearedToSelfDrain(notification, selfDrainCoordinator)));
+                                              notification -> routeQuorumDisappearedToSelfDrain(notification,
+                                                                                                selfDrainCoordinator)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               taskAssignmentCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -2727,7 +2732,7 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()
-                                                                                                        .map(NodeId::id))));
+                                                                                               .map(NodeId::id))));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               scheduledTaskManager::onLeaderChange));
         // Self-bootstrap second trigger (Bootstrap-correction 2026-05-12; spec §6.2 step 7).
@@ -2736,8 +2741,7 @@ public interface AetherNode extends ManageableNode {
         // covers the inverse race — leader election completes AFTER subsystem readiness — by
         // re-injecting the synthetic SwimHealthy(self) once this node becomes leader. The
         // reducer's (ON_DUTY, SwimHealthy) → nop rule keeps both triggers idempotent.
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              membershipFsm::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, membershipFsm::onLeaderChange));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
@@ -2786,8 +2790,7 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               metricsScheduler::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class, controlLoop::onMembershipDecision));
-        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
-                                              controlLoop::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class, controlLoop::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               controlLoop::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
@@ -2823,9 +2826,11 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               deploymentMetricsScheduler::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class, appHttpServer::onNodeRemoved));
-        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class, appHttpServer::onNodeDecommissioned));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              appHttpServer::onNodeDecommissioned));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
-        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class, appHttpServer::onSelfShutdown));
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
+                                              appHttpServer::onSelfShutdown));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                               msg -> httpRouteRegistry.evictNode(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
@@ -2887,18 +2892,21 @@ public interface AetherNode extends ManageableNode {
                                           entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                                                                 lbm::onSelfShutdown));
                                       });
+
         return entries;
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static void demuxHttpForwardRequest(HttpForwardMessage.HttpForwardRequest request,
-                                                                                 AppHttpServer appHttpServer,
-                                                                                 Option<ManagementServer> managementServer) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void demuxHttpForwardRequest(HttpForwardMessage.HttpForwardRequest request,
+                                                AppHttpServer appHttpServer,
+                                                Option<ManagementServer> managementServer) {
         if (request.pipeline() == HttpForwardMessage.Pipeline.MANAGEMENT) {managementServer.onPresent(ms -> ms.onHttpForwardRequest(request));} else {appHttpServer.onHttpForwardRequest(request);}
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static void demuxHttpForwardResponse(HttpForwardMessage.HttpForwardResponse response,
-                                                                                  AppHttpServer appHttpServer,
-                                                                                  Option<ManagementServer> managementServer) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void demuxHttpForwardResponse(HttpForwardMessage.HttpForwardResponse response,
+                                                 AppHttpServer appHttpServer,
+                                                 Option<ManagementServer> managementServer) {
         if (response.pipeline() == HttpForwardMessage.Pipeline.MANAGEMENT) {managementServer.onPresent(ms -> ms.onHttpForwardResponse(response));} else {appHttpServer.onHttpForwardResponse(response);}
     }
 
@@ -2914,97 +2922,103 @@ public interface AetherNode extends ManageableNode {
                                                                            InvocationTraceStore traceStore,
                                                                            ObservabilityDepthRegistry depthRegistry) {
         var sampler = AdaptiveSampler.adaptiveSampler(config.observability().targetTracesPerSec());
+
         return ObservabilityInterceptor.observabilityInterceptor(sampler,
                                                                  traceStore,
                                                                  config.self().id(),
                                                                  (artifact, method) -> depthRegistry.getConfig(artifact,
                                                                                                                method)
-        .depthThreshold());
+                                                                                                    .depthThreshold());
     }
 
     private static SharedLibraryClassLoader createSharedLibraryLoader(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
-        return config.sliceAction().frameworkJarsPath()
-                                 .fold(() -> {
-                                           log.debug("No framework JARs path configured, using Application ClassLoader as parent");
-                                           return new SharedLibraryClassLoader(AetherNode.class.getClassLoader());
-                                       },
-                                       path -> FrameworkClassLoader.fromDirectory(path).onFailure(cause -> log.warn("Failed to create FrameworkClassLoader from {}: {}. " + "Falling back to Application ClassLoader.",
-                                                                                                                    path,
-                                                                                                                    cause.message()))
-                                                                                 .map(loader -> {
-                                                                                          log.info("Using FrameworkClassLoader with {} JARs as parent",
-                                                                                                   loader.getLoadedJars()
-                                                                                                                       .size());
-                                                                                          return new SharedLibraryClassLoader(loader);
-                                                                                      })
-                                                                                 .or(new SharedLibraryClassLoader(AetherNode.class.getClassLoader())));
+
+        return config.sliceAction()
+                     .frameworkJarsPath()
+                     .fold(() -> {
+                               log.debug("No framework JARs path configured, using Application ClassLoader as parent");
+                               return new SharedLibraryClassLoader(AetherNode.class.getClassLoader());
+                           },
+                           path -> FrameworkClassLoader.fromDirectory(path)
+                                                       .onFailure(cause -> log.warn("Failed to create FrameworkClassLoader from {}: {}. "
+                                                                                   + "Falling back to Application ClassLoader.",
+                                                                                    path,
+                                                                                    cause.message()))
+                                                       .map(loader -> {
+                                                                log.info("Using FrameworkClassLoader with {} JARs as parent",
+                                                                         loader.getLoadedJars().size());
+                                                                return new SharedLibraryClassLoader(loader);
+                                                            })
+                                                       .or(new SharedLibraryClassLoader(AetherNode.class.getClassLoader())));
     }
 
     record ResourceProviderSetup(ResourceProviderFacade facade,
                                  Option<DynamicConfigurationProvider> dynamicProvider,
-                                 Option<SpiResourceProvider> spiProvider){}
+                                 Option<SpiResourceProvider> spiProvider) {}
 
     private static ResourceProviderSetup createResourceProviderFacade(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
-        return config.configProvider()
-                                    .fold(() -> {
-                                              log.debug("No configuration provider configured, resource provisioning disabled");
-                                              return new ResourceProviderSetup(noOpResourceProviderFacade(),
-                                                                               Option.empty(),
-                                                                               Option.empty());
-                                          },
-                                          configProvider -> {
-                                              log.info("Creating ConfigService and ResourceProvider from configuration provider");
-                                              var resolvedProvider = config.environment().flatMap(EnvironmentIntegration::secrets)
-                                                                                       .fold(() -> Result.success(configProvider),
-                                                                                             sp -> ConfigurationProvider.withSecretResolution(configProvider,
-                                                                                                                                              sp::resolveSecret));
-                                              return resolvedProvider.fold(cause -> {
-                                                                               log.error("Failed to resolve secrets in configuration: {}",
-                                                                                         cause.message());
-                                                                               return new ResourceProviderSetup(noOpResourceProviderFacade(),
-                                                                                                                Option.empty(),
-                                                                                                                Option.empty());
-                                                                           },
-                                                                           provider -> {
-                                                                               var dynamicProvider = DynamicConfigurationProvider.dynamicConfigurationProvider(provider);
-                                                                               var configService = ProviderBasedConfigService.providerBasedConfigService(dynamicProvider);
-                                                                               ConfigService.setInstance(configService);
-                                                                               var resourceProvider = SpiResourceProvider.spiResourceProvider();
-                                                                               ResourceProvider.setInstance(resourceProvider);
-                                                                               log.info("ConfigService and ResourceProvider initialized with dynamic overlay");
-                                                                               return new ResourceProviderSetup(new ResourceProviderFacade() {
-            @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                                                                                                                    return resourceProvider.provide(resourceType,
-                                                                                                                                                    configSection);
-                                                                                                                }
 
-            @Override public <T> Promise<T> provide(Class<T> resourceType,
-                                                    String configSection,
-                                                    ProvisioningContext context) {
-                                                                                                                    return resourceProvider.provide(resourceType,
-                                                                                                                                                    configSection,
-                                                                                                                                                    context);
-                                                                                                                }
+        return config.configProvider()
+                     .fold(() -> {
+                               log.debug("No configuration provider configured, resource provisioning disabled");
+                               return new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                Option.empty(),
+                                                                Option.empty());
+                           },
+                           configProvider -> {
+                               log.info("Creating ConfigService and ResourceProvider from configuration provider");
+                               var resolvedProvider = config.environment()
+                                                            .flatMap(EnvironmentIntegration::secrets)
+                                                            .fold(() -> Result.success(configProvider),
+                                                                  sp -> ConfigurationProvider.withSecretResolution(configProvider,
+                                                                                                                   sp::resolveSecret));
+                               return resolvedProvider.fold(cause -> {
+                                                                log.error("Failed to resolve secrets in configuration: {}",
+                                                                          cause.message());
+                                                                return new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                                                 Option.empty(),
+                                                                                                 Option.empty());
+                                                            },
+                                                            provider -> {
+                                                                var dynamicProvider = DynamicConfigurationProvider.dynamicConfigurationProvider(provider);
+                                                                var configService = ProviderBasedConfigService.providerBasedConfigService(dynamicProvider);
+                                                                ConfigService.setInstance(configService);
+                                                                var resourceProvider = SpiResourceProvider.spiResourceProvider();
+                                                                ResourceProvider.setInstance(resourceProvider);
+                                                                log.info("ConfigService and ResourceProvider initialized with dynamic overlay");
+                                                                return new ResourceProviderSetup(new ResourceProviderFacade() {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                                                                                                     return resourceProvider.provide(resourceType,
+                                                                                                                                     configSection);
+                                                                                                 }
+
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+                                                                                                     return resourceProvider.provide(resourceType,
+                                                                                                                                     configSection,
+                                                                                                                                     context);
+                                                                                                 }
         },
-                                                                                                                Option.some(dynamicProvider),
-                                                                                                                Option.some(resourceProvider));
-                                                                           });
-                                          });
+                                                                                                 Option.some(dynamicProvider),
+                                                                                                 Option.some(resourceProvider));
+                                                            });
+                           });
     }
 
     private static ResourceProviderFacade noOpResourceProviderFacade() {
         return new ResourceProviderFacade() {
             private static final Cause NOT_CONFIGURED = Causes.cause("Resource provisioning not configured. Use AetherNodeConfig.withConfigProvider() to enable.");
 
-            @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
                 return NOT_CONFIGURED.promise();
             }
 
-            @Override public <T> Promise<T> provide(Class<T> resourceType,
-                                                    String configSection,
-                                                    ProvisioningContext context) {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
                 return NOT_CONFIGURED.promise();
             }
         };
@@ -3034,13 +3048,12 @@ public interface AetherNode extends ManageableNode {
                                                         StreamPartitionManager streamPartitionManager,
                                                         Serializer serializer,
                                                         Deserializer deserializer) {
-        resourceProviderSetup.spiProvider()
-                                         .onPresent(spi -> registerForwardExtensionsOnSpi(spi,
-                                                                                          forwardClient,
-                                                                                          registry,
-                                                                                          streamPartitionManager,
-                                                                                          serializer,
-                                                                                          deserializer));
+        resourceProviderSetup.spiProvider().onPresent(spi -> registerForwardExtensionsOnSpi(spi,
+                                                                                            forwardClient,
+                                                                                            registry,
+                                                                                            streamPartitionManager,
+                                                                                            serializer,
+                                                                                            deserializer));
     }
 
     private static void registerForwardExtensionsOnSpi(SpiResourceProvider spi,
@@ -3055,7 +3068,7 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(Deserializer.class, deserializer);
         spi.registerExtension(StreamPublisherFactory.GovernorResolver.class,
                               new StreamPublisherFactory.GovernorResolver(() -> registry.ownerFor(TaskGroup.STREAMING)
-                                                                                                 .option()));
+                                                                                        .option()));
     }
 
     /// Project the aggregator's materialised `ClusterEvent` view onto
@@ -3064,23 +3077,34 @@ public interface AetherNode extends ManageableNode {
     /// Lives here (not in aether-invoke) because `ClusterEvent` is owned by aether/node.
     private static List<InvocationTraceStore.ClusterTraceEvent> projectClusterTraceInjections(List<ClusterEvent> events) {
         var list = new java.util.ArrayList<InvocationTraceStore.ClusterTraceEvent>();
+
         for (var event : events) {
             if (event.type() != org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.EventType.TRACE_INJECTED) {continue;}
+
             var details = event.details();
             var requestId = details.get("requestId");
+
             if (requestId == null) {continue;}
+
             var operation = details.getOrDefault("operation", "");
             var durationMs = parseLongDetail(details.get("durationMs"), 0L);
             var depth = (int) parseLongDetail(details.get("depth"), 0L);
             var timestamp = parseLongDetail(details.get("timestamp"), 0L);
             var nodeId = details.getOrDefault("originNodeId", "");
-            list.add(new InvocationTraceStore.ClusterTraceEvent(requestId, operation, durationMs, depth, timestamp, nodeId));
+            list.add(new InvocationTraceStore.ClusterTraceEvent(requestId,
+                                                                operation,
+                                                                durationMs,
+                                                                depth,
+                                                                timestamp,
+                                                                nodeId));
         }
+
         return list;
     }
 
     private static long parseLongDetail(String raw, long defaultValue) {
         if (raw == null) {return defaultValue;}
-        return org.pragmatica.lang.parse.Number.parseLong(raw).or(defaultValue);
+        return org.pragmatica.lang.parse.Number.parseLong(raw)
+                                               .or(defaultValue);
     }
 }

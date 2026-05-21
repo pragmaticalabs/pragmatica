@@ -51,7 +51,9 @@ public final class ClusterEventLogSweeper {
     public static final TimeSpan DEFAULT_SWEEP_PERIOD = TimeSpan.timeSpan(30).seconds();
 
     private final Supplier<Map<AetherKey, AetherValue>> kvSnapshotSupplier;
+
     private final BooleanSupplier isLeaderSupplier;
+
     /// **Quorum gate** — supplier returns `true` iff this node is on the majority side of any
     /// active partition. Without this gate, a minority-side leader would sweep events the
     /// majority still retains — see `TopologyObserver.inQuorum()` and spec §3.6 risk #5.
@@ -109,12 +111,14 @@ public final class ClusterEventLogSweeper {
                                           period);
     }
 
-    @Contract public void start() {
+    @Contract
+    public void start() {
         log.info("ClusterEventLogSweeper starting: retainedEpochs={}, period={}", retainedEpochs, period);
         timer.set(SharedScheduler.scheduleAtFixedRate(this::tick, period, period));
     }
 
-    @Contract public void stop() {
+    @Contract
+    public void stop() {
         timer.cancel();
     }
 
@@ -122,31 +126,45 @@ public final class ClusterEventLogSweeper {
         if (!isLeaderSupplier.getAsBoolean()) {return Promise.success(0L);}
         if (!inQuorum.getAsBoolean()) {
             log.debug("ClusterEventLogSweeper: leader but minority-side (inQuorum=false), skipping sweep");
+
             return Promise.success(0L);
         }
+
         var currentEpoch = currentEpochSupplier.getAsLong();
         var cutoffEpoch = currentEpoch - retainedEpochs;
+
         if (cutoffEpoch <= 0L) {return Promise.success(0L);}
+
         var commands = collectExpired(cutoffEpoch);
+
         if (commands.isEmpty()) {return Promise.success(0L);}
+
         log.info("ClusterEventLogSweeper: removing {} event(s) with epoch < {} (currentEpoch={}, retainedEpochs={})",
-                 commands.size(), cutoffEpoch, currentEpoch, retainedEpochs);
+                 commands.size(),
+                 cutoffEpoch,
+                 currentEpoch,
+                 retainedEpochs);
+
         return applier.apply(commands)
-                       .onFailure(cause -> log.warn("ClusterEventLogSweeper: consensus apply failed for {} command(s): {}",
-                                                     commands.size(), cause.message()))
-                       .map(_ -> (long) commands.size());
+                      .onFailure(cause -> log.warn("ClusterEventLogSweeper: consensus apply failed for {} command(s): {}",
+                                                   commands.size(),
+                                                   cause.message()))
+                      .map(_ -> (long) commands.size());
     }
 
     private List<KVCommand<AetherKey>> collectExpired(long cutoffEpoch) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
         Map<?, ?> raw = kvSnapshotSupplier.get();
+
         for (Map.Entry<?, ?> entry : raw.entrySet()) {appendIfExpired(entry.getKey(), cutoffEpoch, commands);}
+
         return List.copyOf(commands);
     }
 
     private static void appendIfExpired(Object key, long cutoffEpoch, List<KVCommand<AetherKey>> commands) {
         if (! (key instanceof ClusterEventLogKey eventLogKey)) {return;}
         if (eventLogKey.epoch() >= cutoffEpoch) {return;}
+
         commands.add(new KVCommand.Remove<AetherKey>(eventLogKey));
     }
 }

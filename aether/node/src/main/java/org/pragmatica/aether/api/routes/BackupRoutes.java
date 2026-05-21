@@ -39,25 +39,25 @@ public final class BackupRoutes implements RouteSource {
         }
     }
 
-    record RestoreRequest(String commit){}
+    record RestoreRequest(String commit) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<BackupResponse>route(ManagementRoute.BACKUP_TRIGGER)
-                                         .toJson(this::triggerBackup),
-                         ManagementRoutes.<List<BackupInfo>>route(ManagementRoute.BACKUPS_LIST)
-                                         .toJson(this::listBackups),
-                         ManagementRoutes.<BackupResponse>route(ManagementRoute.BACKUP_RESTORE)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<BackupResponse> route(ManagementRoute.BACKUP_TRIGGER).toJson(this::triggerBackup),
+                         ManagementRoutes.<List<BackupInfo>> route(ManagementRoute.BACKUPS_LIST).toJson(this::listBackups),
+                         ManagementRoutes.<BackupResponse> route(ManagementRoute.BACKUP_RESTORE)
                                          .withBody(RestoreRequest.class)
                                          .toJson(this::restoreBackup));
     }
 
     private BackupResponse triggerBackup() {
-        var response = backupServiceSupplier.get().backupNow()
-                                                .fold(cause -> BackupResponse.backupResponse(false,
-                                                                                             cause.message()),
-                                                      _ -> BackupResponse.backupResponse(true, "Backup completed"));
+        var response = backupServiceSupplier.get().backupNow().fold(cause -> BackupResponse.backupResponse(false,
+                                                                                                           cause.message()),
+                                                                    _ -> BackupResponse.backupResponse(true,
+                                                                                                       "Backup completed"));
         AuditLog.backupCreated(response.success(), response.message());
         emitBackupCreated(response);
+
         return response;
     }
 
@@ -66,22 +66,25 @@ public final class BackupRoutes implements RouteSource {
     }
 
     private List<BackupInfo> listBackups() {
-        return backupServiceSupplier.get().listBackups()
-                                        .or(List.of());
+        return backupServiceSupplier.get()
+                                    .listBackups()
+                                    .or(List.of());
     }
 
     private Promise<BackupResponse> restoreBackup(RestoreRequest request) {
-        var response = backupServiceSupplier.get().restore(request.commit())
-                                                .fold(cause -> BackupResponse.backupResponse(false,
-                                                                                             cause.message()),
-                                                      _ -> BackupResponse.backupResponse(true, "Restore completed"));
+        var response = backupServiceSupplier.get().restore(request.commit()).fold(cause -> BackupResponse.backupResponse(false,
+                                                                                                                         cause.message()),
+                                                                                  _ -> BackupResponse.backupResponse(true,
+                                                                                                                     "Restore completed"));
         AuditLog.backupRestored(response.success(), request.commit(), response.message());
         emitBackupRestored(request.commit(), response);
+
         return Promise.success(response);
     }
 
     private void emitBackupRestored(String commitId, BackupResponse response) {
-        if (response.success()) {nodeSupplier.get()
-                                                 .route(OperationalEvent.BackupRestored.backupRestored(commitId, "api"));}
+        if (response.success()) {
+            nodeSupplier.get().route(OperationalEvent.BackupRestored.backupRestored(commitId, "api"));
+        }
     }
 }

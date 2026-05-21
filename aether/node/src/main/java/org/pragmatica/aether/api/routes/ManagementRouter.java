@@ -48,49 +48,52 @@ public final class ManagementRouter {
     }
 
     public static ManagementRouter managementRouter(RouteSource... sources) {
-        var allRoutes = java.util.stream.Stream.of(sources).flatMap(RouteSource::routes)
-                                                  .toList();
-        var byName = allRoutes.stream().filter(r -> !r.name().isEmpty())
-                                     .collect(Collectors.toMap(Route::name,
-                                                               r -> r,
-                                                               (a, _) -> a));
+        var allRoutes = java.util.stream.Stream.of(sources).flatMap(RouteSource::routes).toList();
+        var byName = allRoutes.stream().filter(r -> !r.name()
+                                                      .isEmpty()).collect(Collectors.toMap(Route::name,
+                                                                                           r -> r,
+                                                                                           (a, _) -> a));
         return new ManagementRouter(RequestRouter.with(sources), JsonCodecAdapter.defaultCodec(), Map.copyOf(byName));
     }
 
     public boolean handle(RequestContext ctx, ResponseWriter response) {
-        return parseMethod(ctx.method().name()).flatMap(method -> dispatch(method, ctx, response)).or(false);
+        return parseMethod(ctx.method().name()).flatMap(method -> dispatch(method, ctx, response))
+                          .or(false);
     }
 
     private Option<Boolean> dispatch(HttpMethod method, RequestContext ctx, ResponseWriter response) {
         var matchResult = ManagementRoute.match(method, ctx.path());
+
         if (matchResult.isSuccess()) {
             var matched = matchResult.unwrap();
             var route = routesByName.get(matched.route().name());
+
             if (route != null) {
                 log.trace("ManagementRoute matched: {} target={}",
                           matched.route().name(),
                           matched.route().target());
                 handleRoute(route, ctx, response);
+
                 return Option.some(true);
             }
+
             log.debug("ManagementRoute {} matched but no Route handler registered under that name",
                       matched.route().name());
         }
+
         return requestRouter.findRoute(method,
                                        ctx.path())
-        .map(route -> {
-                                          handleRoute(route, ctx, response);
-                                          return true;
-                                      });
+                            .map(route -> {
+                                handleRoute(route, ctx, response);
+                                return true;
+                            });
     }
 
     private void handleRoute(Route<?> route, RequestContext serverCtx, ResponseWriter response) {
         var routingCtx = adaptContext(serverCtx, route);
-        route.handler().handle(routingCtx)
-                     .onFailure(cause -> writeError(response, cause, serverCtx))
-                     .onSuccess(value -> writeSuccess(value,
-                                                      route.contentType(),
-                                                      response));
+        route.handler().handle(routingCtx).onFailure(cause -> writeError(response, cause, serverCtx)).onSuccess(value -> writeSuccess(value,
+                                                                                                                                      route.contentType(),
+                                                                                                                                      response));
     }
 
     private void writeError(ResponseWriter response, org.pragmatica.lang.Cause cause, RequestContext serverCtx) {
@@ -100,23 +103,27 @@ public final class ManagementRouter {
     private void writeSuccess(Object value, ContentType contentType, ResponseWriter response) {
         if (value instanceof Option<?> opt && opt.isEmpty()) {
             response.noContent();
+
             return;
         }
         if (isTextContent(contentType)) {
             response.okText(value.toString());
+
             return;
         }
         if (value instanceof String json) {
             response.ok(json);
+
             return;
         }
+
         writeJson(value, response);
     }
 
     private void writeJson(Object value, ResponseWriter response) {
         jsonCodec.serialize(value).onFailure(_ -> response.error(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR,
-                                                                 "Serialization failed"))
-                           .onSuccess(byteBuf -> extractAndRelease(byteBuf, response));
+                                                                 "Serialization failed")).onSuccess(byteBuf -> extractAndRelease(byteBuf,
+                                                                                                                                 response));
     }
 
     private void extractAndRelease(io.netty.buffer.ByteBuf byteBuf, ResponseWriter response) {
@@ -136,11 +143,12 @@ public final class ManagementRouter {
     private static Option<HttpMethod> parseMethod(String method) {
         return Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
                            () -> HttpMethod.valueOf(method.toUpperCase()))
-        .option();
+                     .option();
     }
 
     private static boolean isTextContent(ContentType contentType) {
         var headerText = contentType.headerText().toLowerCase();
+
         return headerText.startsWith("text/") || headerText.contains("plain");
     }
 
@@ -157,70 +165,92 @@ public final class ManagementRouter {
                                                    route,
                                                    jsonCodec,
                                                    Unpooled.wrappedBuffer(serverCtx.body()),
-                                                   DefaultHttpHeadersFactory.headersFactory().withCombiningHeaders(true)
-                                                                                           .newHeaders(),
+                                                   DefaultHttpHeadersFactory.headersFactory()
+                                                                            .withCombiningHeaders(true)
+                                                                            .newHeaders(),
                                                    new AtomicReference<>());
         }
 
-        @Override public String requestPath() {
+        @Override
+        public String requestPath() {
             return serverCtx.path();
         }
 
-        @Override public String requestId() {
+        @Override
+        public String requestId() {
             return serverCtx.requestId();
         }
 
-        @Override public ByteBuf body() {
+        @Override
+        public ByteBuf body() {
             return bodyBuf;
         }
 
-        @Override public String bodyAsString() {
+        @Override
+        public String bodyAsString() {
             return serverCtx.bodyAsString();
         }
 
-        @Override public <T> Result<T> fromJson(TypeToken<T> literal) {
+        @Override
+        public <T> Result<T> fromJson(TypeToken<T> literal) {
             return jsonCodec.deserialize(bodyBuf, literal);
         }
 
-        @Override public List<String> pathParams() {
+        @Override
+        public List<String> pathParams() {
             var params = pathParamsRef.get();
+
             if (params == null) {
                 params = initPathParams();
                 pathParamsRef.set(params);
             }
+
             return params;
         }
 
-        @Override public Map<String, List<String>> queryParams() {
-            return serverCtx.queryParams().asMap()
-                                        .entrySet()
-                                        .stream()
-                                        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        @Override
+        public Map<String, List<String>> queryParams() {
+            return serverCtx.queryParams()
+                            .asMap()
+                            .entrySet()
+                            .stream()
+                            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         }
 
-        @Override public Map<String, String> requestHeaders() {
-            return serverCtx.headers().asMap()
-                                    .entrySet()
-                                    .stream()
-                                    .collect(Collectors.toMap(Map.Entry::getKey,
-                                                              entry -> entry.getValue().isEmpty()
-                                                                      ? ""
-                                                                      : entry.getValue().getFirst()));
+        @Override
+        public Map<String, String> requestHeaders() {
+            return serverCtx.headers()
+                            .asMap()
+                            .entrySet()
+                            .stream()
+                            .collect(Collectors.toMap(Map.Entry::getKey,
+                                                      entry -> entry.getValue()
+                                                                    .isEmpty()
+                                                               ? ""
+                                                               : entry.getValue()
+                                                                      .getFirst()));
         }
 
-        @Override public HttpHeaders responseHeaders() {
+        @Override
+        public HttpHeaders responseHeaders() {
             return responseHeaders;
         }
 
         private List<String> initPathParams() {
             var normalizedPath = PathUtils.normalize(serverCtx.path());
             var routePath = route.path();
+
             if (normalizedPath.length() <= routePath.length()) {return List.of();}
+
             var remainder = normalizedPath.substring(routePath.length());
+
             if (remainder.startsWith("/")) {remainder = remainder.substring(1);}
             if (remainder.isEmpty()) {return List.of();}
+
             var elements = remainder.split("/", 1024);
+
             if (elements[elements.length - 1].isEmpty()) {return List.of(elements).subList(0, elements.length - 1);}
+
             return List.of(elements);
         }
     }

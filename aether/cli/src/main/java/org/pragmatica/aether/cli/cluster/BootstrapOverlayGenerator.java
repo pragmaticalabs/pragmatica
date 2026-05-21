@@ -37,16 +37,17 @@ public interface BootstrapOverlayGenerator {
                               cloudCredentialsSection(source),
                               cloudDiscoverySection(config, source),
                               sourceSpecificSection(config, source, nodeIndex, apiKey, dockerGid),
-                              tlsSection(source, clusterSecret))
-        .flatMap(Option::stream);
+                              tlsSection(source, clusterSecret)).flatMap(Option::stream);
         var databases = databaseSections(source).stream();
         var sections = Stream.concat(fixed, databases).toList();
+
         return new TomlDocument(toOrderedMap(sections), Map.of());
     }
 
     private static Map<String, Map<String, Object>> toOrderedMap(List<Section> sections) {
         var ordered = new LinkedHashMap<String, Map<String, Object>>();
         sections.forEach(section -> ordered.put(section.name(), section.values()));
+
         return Map.copyOf(ordered);
     }
 
@@ -55,8 +56,8 @@ public interface BootstrapOverlayGenerator {
         values.put("name",
                    config.cluster().name());
         values.put("tls",
-                   config.operations().tls()
-                                    .autoGenerate());
+                   config.operations().tls().autoGenerate());
+
         return Section.section("cluster", values);
     }
 
@@ -65,6 +66,7 @@ public interface BootstrapOverlayGenerator {
         var values = new LinkedHashMap<String, Object>();
         values.put("management", ports.management());
         values.put("cluster", ports.cluster());
+
         return Section.section("cluster.ports", values);
     }
 
@@ -73,7 +75,7 @@ public interface BootstrapOverlayGenerator {
                                                          int nodeIndex,
                                                          Option<String> apiKey,
                                                          Option<String> dockerGid) {
-        return switch (source.type()){
+        return switch (source.type()) {
             case DOCKER -> Option.some(dockerComputeSection(config, nodeIndex, apiKey, dockerGid));
             case CLOUD -> Option.some(cloudComputeSection(source));
             case SSH, FORGE -> Option.empty();
@@ -92,6 +94,7 @@ public interface BootstrapOverlayGenerator {
         values.put("socket_path", "/var/run/docker.sock");
         apiKey.onPresent(key -> values.put("api_key", key));
         dockerGid.onPresent(gid -> values.put("docker_gid", gid));
+
         return Section.section("cloud.compute", values);
     }
 
@@ -99,20 +102,24 @@ public interface BootstrapOverlayGenerator {
         var values = new LinkedHashMap<String, Object>();
         source.region().onPresent(region -> values.put("region", region));
         coreInstanceType(source).onPresent(serverType -> values.put("server_type", serverType));
+
         return Section.section("cloud.compute", values);
     }
 
     private static Option<Section> cloudSection(SourceProfile source) {
         if (source.type() != SourceType.CLOUD) {return Option.empty();}
-        return source.provider().map(provider -> Section.section("cloud",
-                                                                 Map.of("provider", provider.value())));
+        return source.provider()
+                     .map(provider -> Section.section("cloud",
+                                                      Map.of("provider",
+                                                             provider.value())));
     }
 
     private static Option<Section> cloudCredentialsSection(SourceProfile source) {
         if (source.type() != SourceType.CLOUD) {return Option.empty();}
-        return source.credentials().filter(token -> !token.isBlank())
-                                 .map(token -> Section.section("cloud.credentials",
-                                                               Map.of("api_token", token)));
+        return source.credentials()
+                     .filter(token -> !token.isBlank())
+                     .map(token -> Section.section("cloud.credentials",
+                                                   Map.of("api_token", token)));
     }
 
     private static Option<Section> cloudDiscoverySection(ClusterBootstrapConfig config, SourceProfile source) {
@@ -132,17 +139,18 @@ public interface BootstrapOverlayGenerator {
     }
 
     private static List<Section> databaseSections(SourceProfile source) {
-        return source.databases().entrySet()
-                               .stream()
-                               .map(entry -> Section.section("database." + entry.getKey(),
-                                                             Map.of(urlFieldName(entry.getValue()),
-                                                                    entry.getValue())))
-                               .toList();
+        return source.databases()
+                     .entrySet()
+                     .stream()
+                     .map(entry -> Section.section("database." + entry.getKey(),
+                                                   Map.of(urlFieldName(entry.getValue()),
+                                                          entry.getValue())))
+                     .toList();
     }
 
     private static String urlFieldName(String url) {
         return url.startsWith("jdbc:")
-              ? "jdbc_url"
-              : "async_url";
+               ? "jdbc_url"
+               : "async_url";
     }
 }

@@ -28,7 +28,7 @@ public sealed interface AlertEvent {
                           String metric,
                           NodeId nodeId,
                           double value,
-                          double threshold) implements AlertEvent{}
+                          double threshold) implements AlertEvent {}
 
     record SliceFailureAlert(String alertId,
                              long timestamp,

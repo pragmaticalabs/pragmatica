@@ -18,45 +18,58 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     }
 
     record BindFailed(int port, Throwable cause) implements ManagementServerError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Failed to bind management server on port " + port + ": " + cause.getMessage();
         }
     }
 
     record MissingField(String fieldName) implements ManagementServerError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Missing '" + fieldName + "' field";
         }
-        @Override public HttpStatus httpStatus() {
+
+        @Override
+        public HttpStatus httpStatus() {
             return HttpStatus.BAD_REQUEST;
         }
     }
 
     record InvalidArtifactPath(String path) implements ManagementServerError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Invalid artifact path. Expected: /repository/info/{groupPath}/{artifactId}/{version}, got: " + path;
         }
-        @Override public HttpStatus httpStatus() {
+
+        @Override
+        public HttpStatus httpStatus() {
             return HttpStatus.BAD_REQUEST;
         }
     }
 
     record NotLeader(String leaderId) implements ManagementServerError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "This operation requires the leader node." + (leaderId.isEmpty()
                                                                  ? ""
                                                                  : " Current leader: " + leaderId);
         }
-        @Override public HttpStatus httpStatus() {
+
+        @Override
+        public HttpStatus httpStatus() {
             return HttpStatus.CONFLICT;
         }
     }
 
     record StrategyChangeNotSupported() implements ManagementServerError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Runtime strategy change not supported. Strategy must be set at node startup.";
         }
-        @Override public HttpStatus httpStatus() {
+
+        @Override
+        public HttpStatus httpStatus() {
             return HttpStatus.NOT_IMPLEMENTED;
         }
     }

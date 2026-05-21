@@ -52,36 +52,36 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return new NodeLifecycleRoutes(nodeSupplier);
     }
 
-    record LifecycleEntry(String nodeId, String state, long updatedAt){}
+    record LifecycleEntry(String nodeId, String state, long updatedAt) {}
 
-    record TransitionResult(boolean success, String nodeId, String state, String message){}
+    record TransitionResult(boolean success, String nodeId, String state, String message) {}
 
-    record InFlightResponse(int count){}
+    record InFlightResponse(int count) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<List<LifecycleEntry>>route(ManagementRoute.NODE_LIFECYCLE_LIST)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<List<LifecycleEntry>> route(ManagementRoute.NODE_LIFECYCLE_LIST)
                                          .withQuery(QueryParameter.aString("state"))
                                          .toValue(this::getAllLifecycleStates)
                                          .asJson(),
-                         ManagementRoutes.<LifecycleEntry>route(ManagementRoute.NODE_LIFECYCLE_GET)
+                         ManagementRoutes.<LifecycleEntry> route(ManagementRoute.NODE_LIFECYCLE_GET)
                                          .withPath(aString())
                                          .to(this::getNodeLifecycle)
                                          .asJson(),
-                         ManagementRoutes.<TransitionResult>route(ManagementRoute.NODE_DRAIN)
+                         ManagementRoutes.<TransitionResult> route(ManagementRoute.NODE_DRAIN)
                                          .withPath(aString())
                                          .to(this::drainNode)
                                          .asJson(),
-                         ManagementRoutes.<TransitionResult>route(ManagementRoute.NODE_ACTIVATE)
+                         ManagementRoutes.<TransitionResult> route(ManagementRoute.NODE_ACTIVATE)
                                          .withPath(aString())
                                          .to(this::activateNode)
                                          .asJson(),
-                         ManagementRoutes.<TransitionResult>route(ManagementRoute.NODE_SHUTDOWN)
+                         ManagementRoutes.<TransitionResult> route(ManagementRoute.NODE_SHUTDOWN)
                                          .withPath(aString())
                                          .to(this::shutdownNode)
                                          .asJson(),
-                         ManagementRoutes.<InFlightResponse>route(ManagementRoute.NODE_INFLIGHT)
-                                         .toJson(this::getInFlightCount),
-                         ManagementRoutes.<InFlightResponse>route(ManagementRoute.NODE_INFLIGHT_GET)
+                         ManagementRoutes.<InFlightResponse> route(ManagementRoute.NODE_INFLIGHT).toJson(this::getInFlightCount),
+                         ManagementRoutes.<InFlightResponse> route(ManagementRoute.NODE_INFLIGHT_GET)
                                          .withPath(aString())
                                          .to(__ -> Promise.success(getInFlightCount()))
                                          .asJson());
@@ -116,8 +116,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
         nodeSupplier.get().kvStore().forEach(NodeLifecycleKey.class,
-                                              NodeLifecycleValue.class,
-                                              (key, value) -> appendIfMatches(entries, key, value, normalizedFilter));
+                                             NodeLifecycleValue.class,
+                                             (key, value) -> appendIfMatches(entries, key, value, normalizedFilter));
+
         return entries;
     }
 
@@ -148,7 +149,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// "node is going away" state. See `cluster-membership-fsm-spec.md` §R6 — the FSM no longer emits
     /// `SHUTTING_DOWN`, only the `NODE_SHUTDOWN` API action writes it transiently before halt.
     private static String externalStateName(NodeLifecycleState state) {
-        return state == NodeLifecycleState.SHUTTING_DOWN ? NodeLifecycleState.DRAINING.name() : state.name();
+        return state == NodeLifecycleState.SHUTTING_DOWN
+               ? NodeLifecycleState.DRAINING.name()
+               : state.name();
     }
 
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
@@ -162,11 +165,14 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeLifecycleValue current) {
         if (current.state() != NodeLifecycleState.ON_DUTY) {
             return HttpError.httpError(HttpStatus.CONFLICT,
-                                       Causes.cause("Cannot drain node " + nodeIdStr + " from " + current.state() + " (must be ON_DUTY)"))
-                                  .promise();
+                                       Causes.cause("Cannot drain node " + nodeIdStr
+                                                   + " from " + current.state()
+                                                   + " (must be ON_DUTY)"))
+                            .promise();
         }
-        return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(this::runDrainProtocol);
+        return NodeId.nodeId(nodeIdStr)
+                     .async()
+                     .flatMap(this::runDrainProtocol);
     }
 
     /// Drain protocol per RC1 spec §D.5 (post-E.8):
@@ -177,11 +183,13 @@ public final class NodeLifecycleRoutes implements RouteSource {
     ///   3b. on timeout → requestFailedDrain (writes FAILED_DRAIN) → 503
     private Promise<TransitionResult> runDrainProtocol(NodeId nodeId) {
         var coordinator = nodeSupplier.get().drainCoordinator();
+
         return initiateDrain(nodeId).onSuccess(_ -> auditAndEmitLifecycleTransition(drainInitiatedResult(nodeId.id()),
-                                                                                     NodeLifecycleState.DRAINING))
-                                     .flatMap(_ -> coordinator.awaitDrainAck(nodeId, drainTimeout()))
-                                     .flatMap(_ -> completeDrain(nodeId))
-                                     .recover(cause -> handleDrainFailure(nodeId, cause));
+                                                                                    NodeLifecycleState.DRAINING))
+                            .flatMap(_ -> coordinator.awaitDrainAck(nodeId,
+                                                                    drainTimeout()))
+                            .flatMap(_ -> completeDrain(nodeId))
+                            .recover(cause -> handleDrainFailure(nodeId, cause));
     }
 
     /// Step 1 of drain: write DRAINING via consensus through `MembershipFsm` (spec §9 E.4).
@@ -192,10 +200,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// stamped action on this node.
     private Promise<Unit> initiateDrain(NodeId nodeId) {
         var node = nodeSupplier.get();
-        node.membershipFsm()
-                  .enqueueOperatorEvent(new OperatorDrain(nodeId,
-                                                            DrainReason.OPERATOR_DRAIN,
-                                                            node.hlcClock().now()));
+        node.membershipFsm().enqueueOperatorEvent(new OperatorDrain(nodeId,
+                                                                    DrainReason.OPERATOR_DRAIN,
+                                                                    node.hlcClock().now()));
+
         return Promise.unitPromise();
     }
 
@@ -211,6 +219,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                           NodeLifecycleState.DECOMMISSIONED.name(),
                                           "Drain protocol complete; node is DECOMMISSIONED");
         auditAndEmitLifecycleTransition(result, NodeLifecycleState.DECOMMISSIONED);
+
         return Promise.success(result);
     }
 
@@ -221,16 +230,16 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                           NodeLifecycleState.FAILED_DRAIN.name(),
                                           "Drain budget exceeded: " + cause.message());
         auditAndEmitLifecycleTransition(result, NodeLifecycleState.FAILED_DRAIN);
+
         return result;
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void recordFailedDrainAtom(NodeId nodeId) {
-        nodeSupplier.get().lifecycleWriter()
-                          .requestFailedDrain(nodeId)
-                          .onFailure(writerCause -> AuditLog.nodeLifecycleTransition(nodeId.id(),
-                                                                                       NodeLifecycleState.FAILED_DRAIN.name(),
-                                                                                       false,
-                                                                                       writerCause.message()));
+    @SuppressWarnings("JBCT-RET-01")
+    private void recordFailedDrainAtom(NodeId nodeId) {
+        nodeSupplier.get().lifecycleWriter().requestFailedDrain(nodeId).onFailure(writerCause -> AuditLog.nodeLifecycleTransition(nodeId.id(),
+                                                                                                                                  NodeLifecycleState.FAILED_DRAIN.name(),
+                                                                                                                                  false,
+                                                                                                                                  writerCause.message()));
     }
 
     private TransitionResult drainInitiatedResult(String nodeIdStr) {
@@ -242,22 +251,24 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
         // Use live on-duty count; initialTopology() can accumulate stale entries across restarts.
-        var intendedSize = Math.max(nodeSupplier.get().membershipView().onDutyPeers().size(), 1);
+        var intendedSize = Math.max(nodeSupplier.get().membershipView().onDutyPeers().size(),
+                                    1);
         var minAvailable = (intendedSize / 2) + 1;
         var operationalAfterDrain = countOnDuty() - 1;
-        if (operationalAfterDrain >= minAvailable) {return Promise.success(new TransitionResult(true,
-                                                                                                nodeIdStr,
-                                                                                                "",
-                                                                                                "Budget check passed"));}
+
+        if (operationalAfterDrain >= minAvailable) {
+            return Promise.success(new TransitionResult(true, nodeIdStr, "", "Budget check passed"));
+        }
+
         return budgetExceededError(nodeIdStr, operationalAfterDrain, minAvailable).promise();
     }
 
     private int countOnDuty() {
         var count = new AtomicInteger(0);
-        nodeSupplier.get().kvStore()
-                        .forEach(NodeLifecycleKey.class,
-                                 NodeLifecycleValue.class,
-                                 (_, value) -> incrementIfOnDuty(count, value));
+        nodeSupplier.get().kvStore().forEach(NodeLifecycleKey.class,
+                                             NodeLifecycleValue.class,
+                                             (_, value) -> incrementIfOnDuty(count, value));
+
         return count.get();
     }
 
@@ -266,7 +277,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private static Cause budgetExceededError(String nodeIdStr, int operationalAfterDrain, int minAvailable) {
-        var message = "Disruption budget exceeded: draining " + nodeIdStr + " would leave " + operationalAfterDrain + " operational nodes, minimum is " + minAvailable;
+        var message = "Disruption budget exceeded: draining " + nodeIdStr
+                    + " would leave " + operationalAfterDrain
+                    + " operational nodes, minimum is " + minAvailable;
+
         return HttpError.httpError(HttpStatus.CONFLICT, Causes.cause(message));
     }
 
@@ -277,17 +291,21 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<TransitionResult> guardActivateState(String nodeIdStr, NodeLifecycleValue current) {
         if (current.state() != NodeLifecycleState.DRAINING && current.state() != NodeLifecycleState.DECOMMISSIONED) {
             return HttpError.httpError(HttpStatus.CONFLICT,
-                                       Causes.cause("Cannot activate node " + nodeIdStr + " from " + current.state() + " (must be DRAINING or DECOMMISSIONED)"))
-                                  .promise();
+                                       Causes.cause("Cannot activate node " + nodeIdStr
+                                                   + " from " + current.state()
+                                                   + " (must be DRAINING or DECOMMISSIONED)"))
+                            .promise();
         }
-        return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(this::routeActivateThroughLifecycleWriter)
-                            .map(_ -> activateSuccessResult(nodeIdStr));
+        return NodeId.nodeId(nodeIdStr)
+                     .async()
+                     .flatMap(this::routeActivateThroughLifecycleWriter)
+                     .map(_ -> activateSuccessResult(nodeIdStr));
     }
 
     private Promise<Unit> routeActivateThroughLifecycleWriter(NodeId nodeId) {
-        return nodeSupplier.get().lifecycleWriter()
-                               .requestActivate(nodeId);
+        return nodeSupplier.get()
+                           .lifecycleWriter()
+                           .requestActivate(nodeId);
     }
 
     private TransitionResult activateSuccessResult(String nodeIdStr) {
@@ -296,13 +314,15 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                           NodeLifecycleState.ON_DUTY.name(),
                                           "Transition to " + NodeLifecycleState.ON_DUTY + " initiated");
         auditAndEmitLifecycleTransition(result, NodeLifecycleState.ON_DUTY);
+
         return result;
     }
 
     private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(this::initiateDecommission)
-                            .map(_ -> shutdownSuccessResult(nodeIdStr));
+        return NodeId.nodeId(nodeIdStr)
+                     .async()
+                     .flatMap(this::initiateDecommission)
+                     .map(_ -> shutdownSuccessResult(nodeIdStr));
     }
 
     /// Decommission entry point. Routes through `MembershipFsm` with `OperatorDecommission(force=true)`
@@ -312,8 +332,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// RC1 Step 4: stamp the event with the node's canonical `HlcClock`.
     private Promise<Unit> initiateDecommission(NodeId nodeId) {
         var node = nodeSupplier.get();
-        node.membershipFsm()
-                  .enqueueOperatorEvent(new OperatorDecommission(nodeId, true, node.hlcClock().now()));
+        node.membershipFsm().enqueueOperatorEvent(new OperatorDecommission(nodeId,
+                                                                           true,
+                                                                           node.hlcClock().now()));
+
         return Promise.unitPromise();
     }
 
@@ -323,31 +345,34 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                           NodeLifecycleState.DECOMMISSIONED.name(),
                                           "Transition to " + NodeLifecycleState.DECOMMISSIONED + " initiated");
         auditAndEmitLifecycleTransition(result, NodeLifecycleState.DECOMMISSIONED);
+
         return result;
     }
 
     private Promise<NodeLifecycleValue> resolveNodeLifecycle(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr).async()
-                            .flatMap(this::lookupLifecycleValue);
+        return NodeId.nodeId(nodeIdStr)
+                     .async()
+                     .flatMap(this::lookupLifecycleValue);
     }
 
     private Promise<NodeLifecycleValue> lookupLifecycleValue(NodeId nodeId) {
         var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
+
         return readPriorLifecycle(key).async(LIFECYCLE_NOT_FOUND);
     }
 
     private void auditAndEmitLifecycleTransition(TransitionResult result, NodeLifecycleState newState) {
         AuditLog.nodeLifecycleTransition(result.nodeId(), result.state(), result.success(), result.message());
-        nodeSupplier.get()
-                        .route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(result.nodeId(),
-                                                                                          newState.name(),
-                                                                                          "api"));
+        nodeSupplier.get().route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(result.nodeId(),
+                                                                                            newState.name(),
+                                                                                            "api"));
     }
 
     private Option<NodeLifecycleValue> readPriorLifecycle(NodeLifecycleKey key) {
-        return nodeSupplier.get().kvStore()
-                               .get(key)
-                               .filter(v -> v instanceof NodeLifecycleValue)
-                               .map(v -> (NodeLifecycleValue) v);
+        return nodeSupplier.get()
+                           .kvStore()
+                           .get(key)
+                           .filter(v -> v instanceof NodeLifecycleValue)
+                           .map(v -> (NodeLifecycleValue) v);
     }
 }

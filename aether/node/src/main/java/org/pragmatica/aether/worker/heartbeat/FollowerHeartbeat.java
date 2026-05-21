@@ -9,7 +9,8 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.serialization.Codec;
 
 
-@Codec public record FollowerHeartbeat(NodeId nodeId, long lastDecisionSequence, long timestampMs) implements Message.Wired {
+@Codec
+public record FollowerHeartbeat(NodeId nodeId, long lastDecisionSequence, long timestampMs) implements Message.Wired {
     public static FollowerHeartbeat followerHeartbeat(NodeId nodeId, long lastDecisionSequence, long timestampMs) {
         return new FollowerHeartbeat(nodeId, lastDecisionSequence, timestampMs);
     }

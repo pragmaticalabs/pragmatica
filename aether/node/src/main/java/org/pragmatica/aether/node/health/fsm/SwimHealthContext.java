@@ -41,7 +41,9 @@ public final class SwimHealthContext {
     private final BooleanSupplier isLeaderSupplier;
     private final PeerObservationStore observationStore;
     private final SwimConfig swimConfig;
+
     private final LongSupplier clock;
+
     /// Phase-aware SWIM cold-boot suppression (D.3, 2026-05-11). `true` when the
     /// cluster is in `COLD_BOOT` phase (FAULTY for never-HEALTHY peers should be
     /// suppressed to `UnknownObserved`); `false` in `NORMAL` and `RECOVERING` (always
@@ -52,11 +54,8 @@ public final class SwimHealthContext {
     /// for unit tests that don't wire a phase.
     private final BooleanSupplier isBootingSupplier;
     private final java.util.function.Consumer<NodeId> faultyLeaderEvictor;
-
     private final AtomicInteger faultyCountInWindow = new AtomicInteger();
-
     private final AtomicLong faultyWindowStart = new AtomicLong();
-
     private final SwimHealthState stopped;
     private final SwimHealthState starting;
 
@@ -174,7 +173,8 @@ public final class SwimHealthContext {
         return fsm;
     }
 
-    @Contract public void dispatch(SwimHealthEvents event) {
+    @Contract
+    public void dispatch(SwimHealthEvents event) {
         fsm.dispatch(event);
     }
 
@@ -214,16 +214,19 @@ public final class SwimHealthContext {
         return swimConfig;
     }
 
-    @Contract public void reportHint(NodeId nodeId, HealthHint hint) {
+    @Contract
+    public void reportHint(NodeId nodeId, HealthHint hint) {
         emitLeaderHint(nodeId, hint);
         bufferHealthObservation(nodeId, hint);
     }
 
-    @Contract public void emitLeaderHint(NodeId nodeId, HealthHint hint) {
+    @Contract
+    public void emitLeaderHint(NodeId nodeId, HealthHint hint) {
         signalSink.emit(new HealthSignal.SwimHint(nodeId, hint, epochSupplier.get()));
     }
 
-    @Contract public void bufferHealthObservation(NodeId nodeId, HealthHint hint) {
+    @Contract
+    public void bufferHealthObservation(NodeId nodeId, HealthHint hint) {
         var epoch = epochSupplier.get();
         observationStore.pushHealth(new PeerHealthObservation(nodeId,
                                                               toWire(hint),
@@ -233,7 +236,7 @@ public final class SwimHealthContext {
     }
 
     private static HealthHintWire toWire(HealthHint hint) {
-        return switch (hint){
+        return switch (hint) {
             case HEALTHY -> HealthHintWire.HEALTHY;
             case SUSPECTED -> HealthHintWire.SUSPECTED;
             case FAULTY -> HealthHintWire.FAULTY;
@@ -246,7 +249,8 @@ public final class SwimHealthContext {
     /// `MembershipFsm` writes `DECOMMISSIONED` and `TopologyObserver` publishes
     /// the membership delta. The leader-side aggregation path
     /// (`emitLeaderHint` + `bufferHealthObservation`) is preserved.
-    @Contract public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
+    @Contract
+    public void routeFaulty(NodeId peer, Option<NodeId> currentLeader) {
         emitLeaderHint(peer, HealthHint.FAULTY);
         bufferHealthObservation(peer, HealthHint.FAULTY);
         // See `faultyLeaderEvictor` field doc for the catch-22 this breaks. Narrow trigger:
@@ -263,20 +267,25 @@ public final class SwimHealthContext {
     public int incrementAndGetFaulty(long nowMillis) {
         var suspectTimeoutMs = swimConfig.suspectTimeout().millis();
         var start = faultyWindowStart.get();
+
         if (nowMillis - start > suspectTimeoutMs && faultyWindowStart.compareAndSet(start, nowMillis)) {faultyCountInWindow.set(0);}
+
         return faultyCountInWindow.incrementAndGet();
     }
 
-    @Contract public void resetFaultyWindow(long nowMillis) {
+    @Contract
+    public void resetFaultyWindow(long nowMillis) {
         faultyCountInWindow.set(0);
         faultyWindowStart.set(nowMillis);
     }
 
     public Option<InetSocketAddress> resolveSwimAddress(NodeId nodeId, int swimPortOffset) {
-        return Option.from(topologyConfig.coreNodes().stream()
-                                                   .filter(node -> node.id().equals(nodeId))
-                                                   .map(node -> toSwimAddress(node, swimPortOffset))
-                                                   .findFirst());
+        return Option.from(topologyConfig.coreNodes()
+                                         .stream()
+                                         .filter(node -> node.id()
+                                                             .equals(nodeId))
+                                         .map(node -> toSwimAddress(node, swimPortOffset))
+                                         .findFirst());
     }
 
     public static InetSocketAddress toSwimAddress(NodeInfo node, int swimPortOffset) {
@@ -285,8 +294,10 @@ public final class SwimHealthContext {
     }
 
     public Option<NodeInfo> findSelfNode() {
-        return Option.from(topologyConfig.coreNodes().stream()
-                                                   .filter(node -> node.id().equals(topologyConfig.self()))
-                                                   .findFirst());
+        return Option.from(topologyConfig.coreNodes()
+                                         .stream()
+                                         .filter(node -> node.id()
+                                                             .equals(topologyConfig.self()))
+                                         .findFirst());
     }
 }

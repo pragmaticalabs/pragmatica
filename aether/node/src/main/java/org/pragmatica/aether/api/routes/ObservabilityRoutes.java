@@ -42,9 +42,9 @@ public final class ObservabilityRoutes implements RouteSource {
         return new ObservabilityRoutes(depthRegistry, traceStore);
     }
 
-    record SetDepthRequest(String artifact, String method, int depthThreshold){}
+    record SetDepthRequest(String artifact, String method, int depthThreshold) {}
 
-    record InjectTraceRequest(String operation, Long durationMs, Integer depth, String requestId, String traceId){}
+    record InjectTraceRequest(String operation, Long durationMs, Integer depth, String requestId, String traceId) {}
 
     /// Public view record for `/api/traces*` endpoints. Replaces the previous pre-serialized
     /// JSON String pathway (`tracesAsJson(...)`): wrapping a String in an `Object`-typed
@@ -63,16 +63,17 @@ public final class ObservabilityRoutes implements RouteSource {
                             String outcome,
                             String errorMessage,
                             boolean local,
-                            int hops){}
+                            int hops) {}
 
-    public record DepthConfigView(String key, int depthThreshold, int targetTracesPerSec){}
+    public record DepthConfigView(String key, int depthThreshold, int targetTracesPerSec) {}
 
-    public record DepthSetResponse(String status, String artifact, String method, int depthThreshold){}
+    public record DepthSetResponse(String status, String artifact, String method, int depthThreshold) {}
 
-    public record DepthRemovedResponse(String status, String artifact, String method){}
+    public record DepthRemovedResponse(String status, String artifact, String method) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<List<TraceView>>route(ManagementRoute.TRACES_QUERY)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<List<TraceView>> route(ManagementRoute.TRACES_QUERY)
                                          .withQuery(QueryParameter.aString("limit"),
                                                     QueryParameter.aString("method"),
                                                     QueryParameter.aString("status"),
@@ -80,20 +81,19 @@ public final class ObservabilityRoutes implements RouteSource {
                                                     QueryParameter.aString("maxDepth"))
                                          .toValue(this::handleQueryTraces)
                                          .asJson(),
-                         ManagementRoutes.<TraceStats>route(ManagementRoute.TRACES_STATS).toJson(this::handleTraceStats),
-                         ManagementRoutes.<TraceInjectResponse>route(ManagementRoute.TRACES_INJECT)
+                         ManagementRoutes.<TraceStats> route(ManagementRoute.TRACES_STATS).toJson(this::handleTraceStats),
+                         ManagementRoutes.<TraceInjectResponse> route(ManagementRoute.TRACES_INJECT)
                                          .withBody(InjectTraceRequest.class)
                                          .toJson(this::handleInjectTrace),
-                         ManagementRoutes.<List<TraceView>>route(ManagementRoute.TRACE_BY_REQUEST_ID)
+                         ManagementRoutes.<List<TraceView>> route(ManagementRoute.TRACE_BY_REQUEST_ID)
                                          .withPath(aString())
                                          .to(this::handleTraceByRequestId)
                                          .asJson(),
-                         ManagementRoutes.<List<DepthConfigView>>route(ManagementRoute.OBSERVABILITY_DEPTH_GET)
-                                         .toJson(this::handleGetDepthConfigs),
-                         ManagementRoutes.<DepthSetResponse>route(ManagementRoute.OBSERVABILITY_DEPTH_SET)
+                         ManagementRoutes.<List<DepthConfigView>> route(ManagementRoute.OBSERVABILITY_DEPTH_GET).toJson(this::handleGetDepthConfigs),
+                         ManagementRoutes.<DepthSetResponse> route(ManagementRoute.OBSERVABILITY_DEPTH_SET)
                                          .withBody(SetDepthRequest.class)
                                          .toJson(this::handleSetDepth),
-                         ManagementRoutes.<DepthRemovedResponse>route(ManagementRoute.OBSERVABILITY_DEPTH_DELETE)
+                         ManagementRoutes.<DepthRemovedResponse> route(ManagementRoute.OBSERVABILITY_DEPTH_DELETE)
                                          .withPath(aString(),
                                                    aString())
                                          .to(this::handleDeleteDepth)
@@ -111,6 +111,7 @@ public final class ObservabilityRoutes implements RouteSource {
 
     private static TraceInjectResponse toTraceInjectResponse(InvocationNode node) {
         var durationMs = node.durationNs() / 1_000_000L;
+
         return new TraceInjectResponse(node.requestId(),
                                        node.requestId(),
                                        node.callee(),
@@ -127,6 +128,7 @@ public final class ObservabilityRoutes implements RouteSource {
         var limit = limitOpt.map(ObservabilityRoutes::parseIntOrDefault).or(DEFAULT_LIMIT);
         var traces = traceStore.query(node -> matchesTraceFilters(node, methodOpt, statusOpt, minDepthOpt, maxDepthOpt),
                                       limit);
+
         return toTraceViews(traces);
     }
 
@@ -148,7 +150,10 @@ public final class ObservabilityRoutes implements RouteSource {
                                       .flatMap(valid -> depthRegistry.setConfig(valid.artifact(),
                                                                                 valid.method(),
                                                                                 valid.depthThreshold())
-        .map(_ -> new DepthSetResponse("depth_set", valid.artifact(), valid.method(), valid.depthThreshold())));
+                                                                     .map(_ -> new DepthSetResponse("depth_set",
+                                                                                                    valid.artifact(),
+                                                                                                    valid.method(),
+                                                                                                    valid.depthThreshold())));
     }
 
     private Promise<DepthRemovedResponse> handleDeleteDepth(String artifact, String method) {
@@ -161,6 +166,7 @@ public final class ObservabilityRoutes implements RouteSource {
         if (req.artifact() == null || req.artifact().isEmpty()) {return ObservabilityError.MISSING_FIELDS.result();}
         if (req.method() == null || req.method().isEmpty()) {return ObservabilityError.MISSING_FIELDS.result();}
         if (req.depthThreshold() <0) {return ObservabilityError.INVALID_DEPTH.result();}
+
         return Result.success(req);
     }
 
@@ -169,12 +175,18 @@ public final class ObservabilityRoutes implements RouteSource {
                                                Option<String> statusOpt,
                                                Option<String> minDepthOpt,
                                                Option<String> maxDepthOpt) {
-        var matchesMethod = methodOpt.map(m -> node.callee().contains(m)).or(true);
-        var matchesStatus = statusOpt.map(s -> node.outcome().name()
-                                                           .equals(s)).or(true);
+        var matchesMethod = methodOpt.map(m -> node.callee()
+                                                   .contains(m)).or(true);
+        var matchesStatus = statusOpt.map(s -> node.outcome()
+                                                   .name()
+                                                   .equals(s)).or(true);
         var matchesMinDepth = minDepthOpt.map(d -> node.depth() >= parseIntOrDefault(d)).or(true);
         var matchesMaxDepth = maxDepthOpt.map(d -> node.depth() <= parseIntOrDefault(d)).or(true);
-        return matchesMethod && matchesStatus && matchesMinDepth && matchesMaxDepth;
+
+        return matchesMethod
+               && matchesStatus
+               && matchesMinDepth
+               && matchesMaxDepth;
     }
 
     private static int parseIntOrDefault(String value) {
@@ -186,30 +198,33 @@ public final class ObservabilityRoutes implements RouteSource {
     }
 
     private static List<TraceView> toTraceViews(List<InvocationNode> traces) {
-        return traces.stream().map(ObservabilityRoutes::toTraceView).toList();
+        return traces.stream()
+                     .map(ObservabilityRoutes::toTraceView)
+                     .toList();
     }
 
     private static TraceView toTraceView(InvocationNode node) {
         return new TraceView(node.requestId(),
-                              node.depth(),
-                              node.timestamp().toString(),
-                              node.nodeId(),
-                              node.caller(),
-                              node.callee(),
-                              node.durationNs(),
-                              node.durationMs(),
-                              node.outcome().name(),
-                              node.errorMessage().or((String) null),
-                              node.local(),
-                              node.hops());
+                             node.depth(),
+                             node.timestamp().toString(),
+                             node.nodeId(),
+                             node.caller(),
+                             node.callee(),
+                             node.durationNs(),
+                             node.durationMs(),
+                             node.outcome().name(),
+                             node.errorMessage().or((String) null),
+                             node.local(),
+                             node.hops());
     }
 
     private static List<DepthConfigView> toDepthConfigViews(Map<String, ObservabilityConfig> configs) {
-        return configs.entrySet().stream()
-                                  .map(entry -> new DepthConfigView(entry.getKey(),
-                                                                     entry.getValue().depthThreshold(),
-                                                                     entry.getValue().targetTracesPerSec()))
-                                  .toList();
+        return configs.entrySet()
+                      .stream()
+                      .map(entry -> new DepthConfigView(entry.getKey(),
+                                                        entry.getValue().depthThreshold(),
+                                                        entry.getValue().targetTracesPerSec()))
+                      .toList();
     }
 
     private enum ObservabilityError implements Cause {
@@ -221,7 +236,8 @@ public final class ObservabilityRoutes implements RouteSource {
         ObservabilityError(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }

@@ -15,7 +15,8 @@ public record WorkerGroupId(String groupName, String zone) {
         return groupName + ":" + zone;
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         return communityId();
     }
 }

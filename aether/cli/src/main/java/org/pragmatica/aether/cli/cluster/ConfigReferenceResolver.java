@@ -20,7 +20,7 @@ import static org.pragmatica.lang.Result.success;
 
 
 sealed interface ConfigReferenceResolver {
-    record unused() implements ConfigReferenceResolver{}
+    record unused() implements ConfigReferenceResolver {}
 
     Pattern REFERENCE_PATTERN = Pattern.compile("\\$\\{(env|secrets):([^}]+)}");
 
@@ -33,7 +33,9 @@ sealed interface ConfigReferenceResolver {
         var unresolved = new LinkedHashSet<String>();
         var resolved = new ArrayList<ResolvedMatch>();
         collectMatches(matcher, unresolved, resolved, secretsProvider);
+
         if (!unresolved.isEmpty()) {return new ClusterConfigError.SecretResolutionFailed(formatUnresolved(unresolved)).result();}
+
         return success(applyReplacements(tomlContent, resolved));
     }
 
@@ -57,14 +59,18 @@ sealed interface ConfigReferenceResolver {
                                          Option<SecretsProvider> secretsProvider) {
         var envVarName = resolveEnvVarName(type, name);
         var envValue = option(System.getenv(envVarName));
+
         if (envValue.isPresent()) {
             envValue.onPresent(value -> resolved.add(new ResolvedMatch(fullRef, value)));
+
             return;
         }
         if ("secrets".equals(type)) {
             resolveViaProvider(secretsProvider, name, fullRef, envVarName, unresolved, resolved);
+
             return;
         }
+
         unresolved.add(fullRef + " -> env var " + envVarName + " not set");
     }
 
@@ -79,25 +85,28 @@ sealed interface ConfigReferenceResolver {
                                                                      fullRef,
                                                                      envVarName,
                                                                      unresolved,
-                                                                     resolved))
-        .onEmpty(() -> unresolved.add(fullRef + " -> env var " + envVarName + " not set"));
+                                                                     resolved)).onEmpty(() -> unresolved.add(fullRef
+                                                                                                            + " -> env var " + envVarName
+                                                                                                            + " not set"));
     }
 
-    @Contract private static void attemptProviderResolve(SecretsProvider provider,
-                                                         String name,
-                                                         String fullRef,
-                                                         String envVarName,
-                                                         LinkedHashSet<String> unresolved,
-                                                         ArrayList<ResolvedMatch> resolved) {
-        provider.resolveSecret(name).await()
-                              .onSuccess(value -> resolved.add(new ResolvedMatch(fullRef, value)))
-                              .onFailure(_ -> unresolved.add(fullRef + " -> env var " + envVarName + " not set"));
+    @Contract
+    private static void attemptProviderResolve(SecretsProvider provider,
+                                               String name,
+                                               String fullRef,
+                                               String envVarName,
+                                               LinkedHashSet<String> unresolved,
+                                               ArrayList<ResolvedMatch> resolved) {
+        provider.resolveSecret(name).await().onSuccess(value -> resolved.add(new ResolvedMatch(fullRef, value))).onFailure(_ -> unresolved.add(fullRef
+                                                                                                                                              + " -> env var " + envVarName
+                                                                                                                                              + " not set"));
     }
 
     private static String resolveEnvVarName(String type, String name) {
         return "secrets".equals(type)
-              ? "AETHER_" + name.toUpperCase().replace('-', '_')
-              : name;
+               ? "AETHER_" + name.toUpperCase()
+                                 .replace('-', '_')
+               : name;
     }
 
     private static String formatUnresolved(LinkedHashSet<String> unresolved) {
@@ -106,9 +115,11 @@ sealed interface ConfigReferenceResolver {
 
     private static String applyReplacements(String content, ArrayList<ResolvedMatch> resolved) {
         var result = content;
+
         for (var match : resolved) {result = result.replace(match.reference(), match.value());}
+
         return result;
     }
 
-    record ResolvedMatch(String reference, String value){}
+    record ResolvedMatch(String reference, String value) {}
 }

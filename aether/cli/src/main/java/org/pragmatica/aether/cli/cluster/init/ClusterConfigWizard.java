@@ -31,9 +31,7 @@ import java.util.function.Supplier;
 
 public class ClusterConfigWizard {
     private static final String DEFAULT_CLUSTER_VERSION = "1.0.0";
-
     private static final String BACK_KEYWORD = "back";
-
     private static final String ABORT_KEYWORD = "abort";
 
     private final Prompt prompt;
@@ -51,14 +49,18 @@ public class ClusterConfigWizard {
         var history = new ArrayDeque<ClusterConfigAnswers>();
         var state = blankState();
         var index = 0;
+
         while (index <steps.size()) {
             var step = steps.get(index);
+
             if (!step.applies().test(state)) {
                 index++;
                 continue;
             }
+
             var result = step.def().run(state, prompt);
-            switch (result){
+
+            switch (result) {
                 case StepResult.Continue cont -> {
                     history.push(state);
                     state = cont.answers();
@@ -66,7 +68,9 @@ public class ClusterConfigWizard {
                 }
                 case StepResult.Back _ -> {
                     var previousIndex = previousApplicableIndex(steps, index, history);
+
                     if (previousIndex <0) {return new ClusterInitError.Aborted().result();}
+
                     state = history.pop();
                     index = previousIndex;
                 }
@@ -75,17 +79,22 @@ public class ClusterConfigWizard {
                 }
             }
         }
+
         return Result.success(state);
     }
 
     private static int previousApplicableIndex(List<NamedStep> steps,
                                                int currentIndex,
                                                Deque<ClusterConfigAnswers> history) {
-        if (history.isEmpty()) {return - 1;}
+        if (history.isEmpty()) {return -1;}
+
         var previousState = history.peek();
-        for (int i = currentIndex - 1;i >= 0;i--) {if (steps.get(i).applies()
-                                                                .test(previousState)) {return i;}}
-        return - 1;
+
+        for (int i = currentIndex - 1;i >= 0;i--) {
+            if (steps.get(i).applies().test(previousState)) {return i;}
+        }
+
+        return -1;
     }
 
     private static ClusterConfigAnswers blankState() {
@@ -163,30 +172,31 @@ public class ClusterConfigWizard {
 
     private static ClusterConfigAnswers stateWithTarget(ClusterConfigAnswers state, SourceType target) {
         var cloud = target == SourceType.CLOUD
-                   ? state.cloud()
-                   : Option.<CloudAnswers>none();
+                    ? state.cloud()
+                    : Option.<CloudAnswers> none();
         var ssh = target == SourceType.SSH
-                 ? state.ssh()
-                 : Option.<SshAnswers>none();
+                  ? state.ssh()
+                  : Option.<SshAnswers> none();
         var firewallApplies = target == SourceType.CLOUD || target == SourceType.SSH;
         var firewallPreset = firewallApplies
-                            ? state.firewallPreset()
-                            : FirewallPreset.STANDARD;
+                             ? state.firewallPreset()
+                             : FirewallPreset.STANDARD;
         var adminCidr = firewallApplies
-                       ? state.adminCidr()
-                       : Option.<String>none();
+                        ? state.adminCidr()
+                        : Option.<String> none();
         var internalCidr = firewallApplies
-                          ? state.internalCidr()
-                          : Option.<String>none();
+                           ? state.internalCidr()
+                           : Option.<String> none();
         var customRules = firewallApplies
-                         ? state.customFirewallRules()
-                         : List.<FirewallRule>of();
+                          ? state.customFirewallRules()
+                          : List.<FirewallRule> of();
         var tls = firewallApplies
-                 ? state.tls()
-                 : (TlsAnswers) new TlsAnswers.Skipped();
+                  ? state.tls()
+                  : (TlsAnswers) new TlsAnswers.Skipped();
         var secret = firewallApplies
-                    ? state.secret()
-                    : (SecretAnswers) new SecretAnswers.Skipped();
+                     ? state.secret()
+                     : (SecretAnswers) new SecretAnswers.Skipped();
+
         return new ClusterConfigAnswers(state.clusterName(),
                                         state.clusterVersion(),
                                         target,
@@ -205,14 +215,15 @@ public class ClusterConfigWizard {
     private static StepResult stepCloud(ClusterConfigAnswers state, Prompt prompt) {
         var existing = state.cloud().or((CloudAnswers) null);
         var defaultProvider = existing == null
-                             ? CloudProviderName.HETZNER
-                             : existing.provider();
+                              ? CloudProviderName.HETZNER
+                              : existing.provider();
         var provider = prompt.choice("Cloud provider",
                                      Arrays.asList(CloudProviderName.values()),
                                      defaultProvider);
         var defaultRegion = existing != null && existing.provider() == provider
-                           ? existing.region()
-                           : defaultRegionFor(provider);
+                            ? existing.region()
+                            : defaultRegionFor(provider);
+
         return guardedPrompt(prompt,
                              "Region",
                              defaultRegion,
@@ -232,8 +243,8 @@ public class ClusterConfigWizard {
                                                   CloudAnswers existing,
                                                   Prompt prompt) {
         var defaultInstance = existing != null && existing.provider() == provider
-                             ? existing.instanceType()
-                             : defaultInstanceFor(provider);
+                              ? existing.instanceType()
+                              : defaultInstanceFor(provider);
         return guardedPrompt(prompt,
                              "Instance type",
                              defaultInstance,
@@ -259,8 +270,8 @@ public class ClusterConfigWizard {
                                                     CloudAnswers existing,
                                                     Prompt prompt) {
         var defaultEnvVar = existing != null && existing.provider() == provider
-                           ? existing.credentialEnvVar()
-                           : defaultCredentialEnvVarFor(provider);
+                            ? existing.credentialEnvVar()
+                            : defaultCredentialEnvVarFor(provider);
         return guardedPrompt(prompt,
                              "Credential env var name",
                              defaultEnvVar,
@@ -296,7 +307,7 @@ public class ClusterConfigWizard {
     }
 
     private static String defaultRegionFor(CloudProviderName provider) {
-        return switch (provider){
+        return switch (provider) {
             case HETZNER -> "hel1";
             case AWS -> "us-east-1";
             case GCP -> "us-central1";
@@ -305,7 +316,7 @@ public class ClusterConfigWizard {
     }
 
     private static String defaultInstanceFor(CloudProviderName provider) {
-        return switch (provider){
+        return switch (provider) {
             case HETZNER -> "cx21";
             case AWS -> "t3.medium";
             case GCP -> "e2-medium";
@@ -314,7 +325,7 @@ public class ClusterConfigWizard {
     }
 
     private static String defaultCredentialEnvVarFor(CloudProviderName provider) {
-        return switch (provider){
+        return switch (provider) {
             case HETZNER -> "HCLOUD_TOKEN";
             case AWS -> "AWS_ACCESS_KEY_ID";
             case GCP -> "GOOGLE_APPLICATION_CREDENTIALS";
@@ -325,8 +336,9 @@ public class ClusterConfigWizard {
     private static StepResult stepSsh(ClusterConfigAnswers state, Prompt prompt) {
         var existing = state.ssh().or((SshAnswers) null);
         var defaultHosts = existing == null
-                          ? ""
-                          : String.join(",", existing.hosts());
+                           ? ""
+                           : String.join(",", existing.hosts());
+
         return guardedPrompt(prompt,
                              "Hosts (comma-separated)",
                              defaultHosts,
@@ -343,6 +355,7 @@ public class ClusterConfigWizard {
 
     private static StepResult reportAndRetryStep(Cause cause, Supplier<StepResult> retry) {
         System.out.println("  ✗ " + cause.message());
+
         return retry.get();
     }
 
@@ -351,8 +364,8 @@ public class ClusterConfigWizard {
                                             SshAnswers existing,
                                             Prompt prompt) {
         var defaultUser = existing == null
-                         ? "aether"
-                         : existing.user();
+                          ? "aether"
+                          : existing.user();
         return guardedPrompt(prompt,
                              "SSH user",
                              defaultUser,
@@ -368,8 +381,8 @@ public class ClusterConfigWizard {
                                            SshAnswers existing,
                                            Prompt prompt) {
         var defaultKey = existing == null
-                        ? "~/.ssh/id_ed25519"
-                        : existing.keyPath().toString();
+                         ? "~/.ssh/id_ed25519"
+                         : existing.keyPath().toString();
         return guardedPrompt(prompt,
                              "SSH private key path",
                              defaultKey,
@@ -383,8 +396,8 @@ public class ClusterConfigWizard {
                                             SshAnswers existing,
                                             Prompt prompt) {
         var defaultPort = existing == null
-                         ? "22"
-                         : String.valueOf(existing.port());
+                          ? "22"
+                          : String.valueOf(existing.port());
         return guardedPrompt(prompt,
                              "SSH port",
                              defaultPort,
@@ -421,30 +434,38 @@ public class ClusterConfigWizard {
 
     private static Result<List<String>> parseAndValidateHosts(String raw) {
         if (raw == null || raw.isBlank()) {return new ClusterInitError.InvalidValue("hosts", "", "must not be empty").result();}
+
         var parts = raw.split(",");
         var validated = new ArrayList<String>(parts.length);
+
         for (var part : parts) {
             var trimmed = part.trim();
+
             if (trimmed.isEmpty()) {continue;}
+
             var validation = InputValidators.validateHostnameOrIp(trimmed);
-            var stepOutcome = validation.fold(cause -> ((ClusterInitError) cause).<List<String>>result(),
+            var stepOutcome = validation.fold(cause -> ((ClusterInitError) cause).<List<String>> result(),
                                               host -> appendHost(validated, host));
+
             if (!stepOutcome.isSuccess()) {return stepOutcome;}
         }
-        if (validated.isEmpty()) {return new ClusterInitError.InvalidValue("hosts",
-                                                                           raw,
-                                                                           "must contain at least one host").result();}
+        if (validated.isEmpty()) {
+            return new ClusterInitError.InvalidValue("hosts", raw, "must contain at least one host").result();
+        }
+
         return Result.success(List.copyOf(validated));
     }
 
     private static Result<List<String>> appendHost(ArrayList<String> validated, String host) {
         validated.add(host);
+
         return Result.success(validated);
     }
 
     private static Path expandHome(String raw) {
         if (raw.startsWith("~/")) {return Path.of(System.getProperty("user.home"), raw.substring(2));}
         if ("~".equals(raw)) {return Path.of(System.getProperty("user.home"));}
+
         return Path.of(raw);
     }
 
@@ -454,40 +475,45 @@ public class ClusterConfigWizard {
     }
 
     private static StepResult sshDerivedTopology(ClusterConfigAnswers state, Prompt prompt) {
-        return state.ssh().map(ssh -> deriveOrFail(state,
-                                                   ssh.hosts().size(),
-                                                   prompt,
-                                                   true))
-                        .or(ClusterConfigWizard::sshHostsMissing);
+        return state.ssh()
+                    .map(ssh -> deriveOrFail(state,
+                                             ssh.hosts().size(),
+                                             prompt,
+                                             true))
+                    .or(ClusterConfigWizard::sshHostsMissing);
     }
 
     private static StepResult sshHostsMissing() {
         System.out.println("  ✗ SSH hosts not yet collected");
+
         return new StepResult.Back();
     }
 
     private static StepResult promptedTopology(ClusterConfigAnswers state, Prompt prompt) {
         var defaultCount = state.topology().total() >= 3
-                          ? String.valueOf(state.topology().total())
-                          : "3";
+                           ? String.valueOf(state.topology().total())
+                           : "3";
         return guardedPrompt(prompt, "Total node count", defaultCount, raw -> parseNodeCount(raw, prompt, state));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static StepResult parseNodeCount(String raw,
-                                                                             Prompt prompt,
-                                                                             ClusterConfigAnswers state) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static StepResult parseNodeCount(String raw, Prompt prompt, ClusterConfigAnswers state) {
         int count;
+
         try {
             count = Integer.parseInt(raw.trim());
         } catch (NumberFormatException _) {
             System.out.println("  ✗ expected integer >= 3");
+
             return promptedTopology(state, prompt);
         }
+
         return deriveOrFail(state, count, prompt, false);
     }
 
     private static StepResult deriveOrFail(ClusterConfigAnswers state, int count, Prompt prompt, boolean fromSsh) {
         var derived = TopologyDeriver.derive(count);
+
         return derived.fold(cause -> reportTopologyFailure(state, prompt, cause, fromSsh),
                             split -> announceTopology(state, split));
     }
@@ -497,12 +523,15 @@ public class ClusterConfigWizard {
                                                     Cause cause,
                                                     boolean fromSsh) {
         System.out.println("  ✗ " + cause.message());
+
         if (fromSsh) {return new StepResult.Back();}
+
         return promptedTopology(state, prompt);
     }
 
     private static StepResult announceTopology(ClusterConfigAnswers state, CoreWorkerSplit split) {
         System.out.println("  → derived topology: " + split.core() + " core + " + split.worker() + " worker");
+
         return new StepResult.Continue(new ClusterConfigAnswers(state.clusterName(),
                                                                 state.clusterVersion(),
                                                                 state.target(),
@@ -521,11 +550,14 @@ public class ClusterConfigWizard {
     private static StepResult stepDatabase(ClusterConfigAnswers state, Prompt prompt) {
         var configure = prompt.confirm("Configure database?",
                                        state.database().isPresent());
+
         if (!configure) {return new StepResult.Continue(stateWithDatabase(state, Option.none()));}
+
         var existing = state.database().or((DatabaseAnswers) null);
         var defaultHost = existing == null
-                         ? "localhost"
-                         : existing.host();
+                          ? "localhost"
+                          : existing.host();
+
         return guardedPrompt(prompt,
                              "Database host",
                              defaultHost,
@@ -540,8 +572,8 @@ public class ClusterConfigWizard {
                                            DatabaseAnswers existing,
                                            Prompt prompt) {
         var defaultPort = existing == null
-                         ? "5432"
-                         : String.valueOf(existing.port());
+                          ? "5432"
+                          : String.valueOf(existing.port());
         return guardedPrompt(prompt,
                              "Database port",
                              defaultPort,
@@ -557,8 +589,8 @@ public class ClusterConfigWizard {
                                            DatabaseAnswers existing,
                                            Prompt prompt) {
         var defaultName = existing == null
-                         ? "aether_app"
-                         : existing.name();
+                          ? "aether_app"
+                          : existing.name();
         return guardedPrompt(prompt,
                              "Database name",
                              defaultName,
@@ -575,8 +607,8 @@ public class ClusterConfigWizard {
                                            DatabaseAnswers existing,
                                            Prompt prompt) {
         var defaultUser = existing == null
-                         ? "aether"
-                         : existing.user();
+                          ? "aether"
+                          : existing.user();
         return guardedPrompt(prompt,
                              "Database user",
                              defaultUser,
@@ -601,10 +633,11 @@ public class ClusterConfigWizard {
                                                Prompt prompt) {
         var defaultEnv = defaultPasswordIsEnv(existing);
         var useEnv = prompt.confirm("Use environment variable for password?", defaultEnv);
+
         if (useEnv) {
             var defaultEnvVar = existing == null
-                               ? "DB_PASSWORD"
-                               : extractEnvVar(existing.password()).or("DB_PASSWORD");
+                                ? "DB_PASSWORD"
+                                : extractEnvVar(existing.password()).or("DB_PASSWORD");
             return guardedPrompt(prompt,
                                  "Password env var name",
                                  defaultEnvVar,
@@ -624,11 +657,13 @@ public class ClusterConfigWizard {
                                                                                                                                                  user,
                                                                                                                                                  new PasswordSource.FromEnv(envVar)))))));
         }
+
         System.out.println("  ⚠  WARNING: plaintext passwords are stored in the generated TOML file.");
         System.out.println("              For production, prefer the environment-variable option.");
         var defaultPlain = existing == null
-                          ? ""
-                          : extractPlaintext(existing.password()).or("");
+                           ? ""
+                           : extractPlaintext(existing.password()).or("");
+
         return guardedPrompt(prompt,
                              "Password (plaintext)",
                              defaultPlain,
@@ -646,14 +681,14 @@ public class ClusterConfigWizard {
     }
 
     private static Option<String> extractEnvVar(PasswordSource source) {
-        return switch (source){
+        return switch (source) {
             case PasswordSource.FromEnv fromEnv -> Option.some(fromEnv.envVar());
             case PasswordSource.Plaintext _ -> Option.none();
         };
     }
 
     private static Option<String> extractPlaintext(PasswordSource source) {
-        return switch (source){
+        return switch (source) {
             case PasswordSource.FromEnv _ -> Option.none();
             case PasswordSource.Plaintext plain -> Option.some(plain.value());
         };
@@ -680,7 +715,7 @@ public class ClusterConfigWizard {
         var preset = prompt.choice("Firewall preset",
                                    Arrays.asList(FirewallPreset.values()),
                                    state.firewallPreset());
-        return switch (preset){
+        return switch (preset) {
             case STANDARD -> new StepResult.Continue(stateWithFirewall(state,
                                                                        FirewallPreset.STANDARD,
                                                                        Option.none(),
@@ -697,6 +732,7 @@ public class ClusterConfigWizard {
         var defaultAdmin = state.adminCidr().or(detected.isEmpty()
                                                 ? ""
                                                 : detected);
+
         return guardedPrompt(prompt,
                              "Admin CIDR",
                              defaultAdmin,
@@ -708,6 +744,7 @@ public class ClusterConfigWizard {
 
     private static StepResult firewallInternalCidr(ClusterConfigAnswers state, String admin, Prompt prompt) {
         var defaultInternal = state.internalCidr().or(FirewallPresets.DEFAULT_INTERNAL_CIDR);
+
         return guardedPrompt(prompt,
                              "Internal CIDR",
                              defaultInternal,
@@ -723,6 +760,7 @@ public class ClusterConfigWizard {
 
     private static StepResult firewallCustom(ClusterConfigAnswers state, Prompt prompt) {
         var rules = collectCustomRules(prompt);
+
         return new StepResult.Continue(stateWithFirewall(state,
                                                          FirewallPreset.CUSTOM,
                                                          Option.none(),
@@ -732,30 +770,33 @@ public class ClusterConfigWizard {
 
     private static List<FirewallRule> collectCustomRules(Prompt prompt) {
         var rules = new ArrayList<FirewallRule>();
+
         do {rules.add(readSingleRule(prompt));} while (prompt.confirm("Add another rule?", false));
+
         return List.copyOf(rules);
     }
 
     private static FirewallRule readSingleRule(Prompt prompt) {
         var port = prompt.promptValidated("Rule port", "8080", InputValidators::validatePort);
-        var protocolRaw = prompt.prompt("Rule protocol (tcp/udp)",
-                                        "tcp").trim()
-                                       .toLowerCase();
+        var protocolRaw = prompt.prompt("Rule protocol (tcp/udp)", "tcp").trim().toLowerCase();
         var protocol = "udp".equals(protocolRaw)
-                      ? "udp"
-                      : "tcp";
+                       ? "udp"
+                       : "tcp";
         var cidr = prompt.promptValidated("Source CIDR", "0.0.0.0/0", InputValidators::validateCidr);
         var description = prompt.prompt("Description (optional)", "");
         var descOption = description.isEmpty()
-                        ? Option.<String>none()
-                        : Option.some(description);
+                         ? Option.<String> none()
+                         : Option.some(description);
+
         return FirewallRule.firewallRule(port, protocol, cidr, descOption);
     }
 
     private static StepResult firewallOpen(ClusterConfigAnswers state, Prompt prompt) {
         System.out.println("  ⚠  WARNING: OPEN preset emits no firewall rules at all. Network-level security is your responsibility.");
         var confirmed = prompt.confirm("Are you sure? OPEN means no firewall rules at all.", false);
+
         if (!confirmed) {return stepFirewall(state, prompt);}
+
         return new StepResult.Continue(stateWithFirewall(state,
                                                          FirewallPreset.OPEN,
                                                          Option.none(),
@@ -787,8 +828,9 @@ public class ClusterConfigWizard {
         var tlsChoices = List.of("Auto-generate at bootstrap (recommended)", "Provide cert/key paths via env vars");
         var tlsChoice = prompt.choice("TLS configuration", tlsChoices, tlsChoices.getFirst());
         var tls = tlsChoice.equals(tlsChoices.getFirst())
-                 ? autoGenTls()
-                 : manualTls(prompt);
+                  ? autoGenTls()
+                  : manualTls(prompt);
+
         return secretChoice(state, tls, prompt);
     }
 
@@ -801,6 +843,7 @@ public class ClusterConfigWizard {
                                              "TLS_CERT_PATH",
                                              InputValidators::validateEnvVarName);
         var keyEnv = prompt.promptValidated("TLS key path env var", "TLS_KEY_PATH", InputValidators::validateEnvVarName);
+
         return new TlsAnswers.Manual(certEnv, keyEnv);
     }
 
@@ -808,12 +851,14 @@ public class ClusterConfigWizard {
         var secretChoices = List.of("Auto-generate at bootstrap (recommended)", "Read from environment variable");
         var secretChoice = prompt.choice("Cluster secret source", secretChoices, secretChoices.getFirst());
         SecretAnswers secret;
+
         if (secretChoice.equals(secretChoices.getFirst())) {secret = new SecretAnswers.AutoGenerate();} else {
             var envVar = prompt.promptValidated("Cluster secret env var name",
                                                 "AETHER_CLUSTER_SECRET",
                                                 InputValidators::validateEnvVarName);
             secret = new SecretAnswers.FromEnv(envVar);
         }
+
         return new StepResult.Continue(stateWithSecurity(state, tls, secret));
     }
 
@@ -838,7 +883,9 @@ public class ClusterConfigWizard {
     private static StepResult stepReview(ClusterConfigAnswers state, Prompt prompt) {
         printSummary(state);
         var generate = prompt.confirm("Generate config?", true);
+
         if (!generate) {return new StepResult.Abort();}
+
         return new StepResult.Continue(state);
     }
 
@@ -849,9 +896,13 @@ public class ClusterConfigWizard {
         System.out.println("  Target:     " + state.target().value());
         state.cloud().onPresent(ClusterConfigWizard::printCloudSummary);
         state.ssh().onPresent(ClusterConfigWizard::printSshSummary);
-        System.out.println("  Topology:   " + state.topology().core() + " core + " + state.topology().worker() + " worker");
+        System.out.println("  Topology:   " + state.topology().core()
+                          + " core + " + state.topology().worker()
+                          + " worker");
         state.database().onPresent(ClusterConfigWizard::printDatabaseSummary);
+
         if (state.target() == SourceType.CLOUD || state.target() == SourceType.SSH) {printSecuritySummary(state);}
+
         System.out.println("");
     }
 
@@ -878,21 +929,24 @@ public class ClusterConfigWizard {
         System.out.println("  Firewall:   " + state.firewallPreset());
         state.adminCidr().onPresent(c -> System.out.println("    admin:    " + c));
         state.internalCidr().onPresent(c -> System.out.println("    internal: " + c));
-        if (state.firewallPreset() == FirewallPreset.CUSTOM) {System.out.println("    custom rules: " + state.customFirewallRules()
-                                                                                                                                 .size());}
+
+        if (state.firewallPreset() == FirewallPreset.CUSTOM) {
+            System.out.println("    custom rules: " + state.customFirewallRules().size());
+        }
+
         System.out.println("  TLS:        " + summarizeTls(state.tls()));
         System.out.println("  Secret:     " + summarizeSecret(state.secret()));
     }
 
     private static String summarizePassword(PasswordSource source) {
-        return switch (source){
+        return switch (source) {
             case PasswordSource.FromEnv fromEnv -> "${env:" + fromEnv.envVar() + "}";
             case PasswordSource.Plaintext _ -> "<plaintext, hidden>";
         };
     }
 
     private static String summarizeTls(TlsAnswers tls) {
-        return switch (tls){
+        return switch (tls) {
             case TlsAnswers.AutoGenerate _ -> "auto-generate";
             case TlsAnswers.Manual manual -> "env: " + manual.certPathEnvVar() + " / " + manual.keyPathEnvVar();
             case TlsAnswers.Skipped _ -> "skipped";
@@ -900,7 +954,7 @@ public class ClusterConfigWizard {
     }
 
     private static String summarizeSecret(SecretAnswers secret) {
-        return switch (secret){
+        return switch (secret) {
             case SecretAnswers.AutoGenerate _ -> "auto-generate";
             case SecretAnswers.FromEnv fromEnv -> "${env:" + fromEnv.envVar() + "}";
             case SecretAnswers.Skipped _ -> "skipped";
@@ -912,8 +966,10 @@ public class ClusterConfigWizard {
                                             String defaultValue,
                                             Function<String, StepResult> onValue) {
         var raw = prompt.prompt(question, defaultValue);
+
         if (BACK_KEYWORD.equalsIgnoreCase(raw)) {return new StepResult.Back();}
         if (ABORT_KEYWORD.equalsIgnoreCase(raw)) {return new StepResult.Abort();}
+
         return onValue.apply(raw);
     }
 
@@ -922,33 +978,38 @@ public class ClusterConfigWizard {
                                                     Function<Cause, StepResult> onFailure,
                                                     Function<T, StepResult> onSuccess) {
         var result = validator.apply(raw);
+
         return result.fold(cause -> reportAndRetry(cause, onFailure), onSuccess::apply);
     }
 
     private static StepResult reportAndRetry(Cause cause, Function<Cause, StepResult> onFailure) {
         System.out.println("  ✗ " + cause.message());
+
         return onFailure.apply(cause);
     }
 
     private static Result<String> nonEmpty(String raw) {
         var trimmed = raw == null
-                     ? ""
-                     : raw.trim();
+                      ? ""
+                      : raw.trim();
+
         if (trimmed.isEmpty()) {return new ClusterInitError.InvalidValue("value", "", "must not be empty").result();}
+
         return Result.success(trimmed);
     }
 
     sealed interface StepResult {
-        record Continue(ClusterConfigAnswers answers) implements StepResult{}
+        record Continue(ClusterConfigAnswers answers) implements StepResult {}
 
-        record Back() implements StepResult{}
+        record Back() implements StepResult {}
 
-        record Abort() implements StepResult{}
+        record Abort() implements StepResult {}
     }
 
-    @FunctionalInterface interface StepDef {
+    @FunctionalInterface
+    interface StepDef {
         StepResult run(ClusterConfigAnswers state, Prompt prompt);
     }
 
-    private record NamedStep(String name, Predicate<ClusterConfigAnswers> applies, StepDef def){}
+    private record NamedStep(String name, Predicate<ClusterConfigAnswers> applies, StepDef def) {}
 }
