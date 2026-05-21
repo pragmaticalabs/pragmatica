@@ -1520,36 +1520,30 @@ start_node() {
     fi
 }
 
-drain_node() {
-    local node_id="$1"
-    log_info "Draining node: ${node_id}"
-    api_post "/api/nodes/drain" "{\"nodeId\":\"${node_id}\"}"
-}
-
-activate_node() {
-    local node_id="$1"
-    log_info "Activating node: ${node_id}"
-    api_post "/api/nodes/activate" "{\"nodeId\":\"${node_id}\"}"
-}
-
-shutdown_node() {
-    local node_id="$1"
-    log_info "Shutting down node: ${node_id}"
-    api_post "/api/nodes/shutdown" "{\"nodeId\":\"${node_id}\"}"
-}
-
 get_node_lifecycle() {
     api_get "/api/nodes/lifecycle"
 }
 
+# Node lifecycle transitions. Canonical REST contract is path-parameterized
+# (`/api/nodes/{action}/{id}` — see ManagementRoute.NODE_DRAIN/NODE_ACTIVATE/
+# NODE_SHUTDOWN). Earlier body-based duplicates were removed
+# (audit 2026-05-21 §1.1) — they shadowed these with a different request shape.
 drain_node() {
     local node_id="$1"
+    log_info "Draining node: ${node_id}"
     api_post "/api/nodes/drain/${node_id}" "{}"
 }
 
 activate_node() {
     local node_id="$1"
+    log_info "Activating node: ${node_id}"
     api_post "/api/nodes/activate/${node_id}" "{}"
+}
+
+shutdown_node() {
+    local node_id="$1"
+    log_info "Shutting down node: ${node_id}"
+    api_post "/api/nodes/shutdown/${node_id}" "{}"
 }
 
 # ---------------------------------------------------------------------------
