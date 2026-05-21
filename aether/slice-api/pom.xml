@@ -32,6 +32,10 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
+            <artifactId>config-service</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
             <artifactId>serialization-codec-processor</artifactId>
             <scope>provided</scope>
         </dependency>

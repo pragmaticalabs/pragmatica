@@ -179,7 +179,9 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                          registry,
                                                          sharedLibraryLoader,
                                                          invokerFacade,
-                                                         resourceFacade).map(resolved -> {
+                                                         resourceFacade,
+                                                         Option.some(classLoader -> buildSliceCompositeFromClassLoader(artifact,
+                                                                                                                       classLoader))).map(resolved -> {
                                                                                  var sliceClassLoader = resolved.slice().getClass()
                                                                                                                       .getClassLoader();
                                                                                  if (sliceClassLoader instanceof SliceClassLoader scl) {return createEntry(artifact,
@@ -201,28 +203,19 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                                       cause.message()));
         }
 
-        private LoadedSliceEntry createEntry(Artifact artifact,
-                                             Slice slice,
-                                             SliceClassLoader classLoader,
-                                             SliceLoadingContext loadingContext) {
-            var sliceConfig = buildSliceComposite(artifact, classLoader);
-            var entry = new LoadedSliceEntry(artifact,
-                                             slice,
-                                             classLoader,
-                                             loadingContext,
-                                             sliceConfig,
-                                             EntryState.LOADED);
-            log.debug("Slice {} loaded", artifact);
-            return entry;
+        /// Build the slice-composite (`slice.toml ⊕ nodeComposite`) from the slice classloader.
+        ///
+        /// Reads `META-INF/resources.toml` via the slice classloader, parses it into a flat
+        /// key/value map, wraps it in an `IntrinsicConfigProvider`, and layers it over the
+        /// node-composite. Returns `Option.none()` when the store was constructed without a
+        /// node-composite (per-slice config disabled).
+        private Option<ConfigurationProvider> buildSliceCompositeFromClassLoader(Artifact artifact, ClassLoader classLoader) {
+            return nodeComposite.flatMap(composite -> loadSliceIntrinsicProviderFromClassLoader(artifact, classLoader).map(intrinsic -> LayeredConfigProvider.layered(List.of(intrinsic,
+                                                                                                                                                                              composite))));
         }
 
-        private Option<ConfigurationProvider> buildSliceComposite(Artifact artifact, SliceClassLoader classLoader) {
-            return nodeComposite.flatMap(composite -> loadSliceIntrinsicProvider(artifact, classLoader).map(intrinsic -> LayeredConfigProvider.layered(List.of(intrinsic,
-                                                                                                                                                              composite))));
-        }
-
-        private Option<ConfigurationProvider> loadSliceIntrinsicProvider(Artifact artifact, SliceClassLoader classLoader) {
-            var tomlContent = readSliceResourcesToml(classLoader);
+        private Option<ConfigurationProvider> loadSliceIntrinsicProviderFromClassLoader(Artifact artifact, ClassLoader classLoader) {
+            var tomlContent = readSliceResourcesTomlFromClassLoader(classLoader);
             if (tomlContent.isEmpty()) {
                 log.debug("Slice {} has no {}; intrinsic config provider omitted", artifact, SLICE_RESOURCES_TOML);
                 return Option.some(IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(), Map.of()));
@@ -232,7 +225,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private static Option<String> readSliceResourcesToml(SliceClassLoader classLoader) {
+        private static Option<String> readSliceResourcesTomlFromClassLoader(ClassLoader classLoader) {
             try (var in = classLoader.getResourceAsStream(SLICE_RESOURCES_TOML)) {
                 if (in == null) {return Option.none();}
                 return Option.some(new String(in.readAllBytes(), StandardCharsets.UTF_8));
@@ -240,6 +233,22 @@ import static org.pragmatica.lang.utils.Causes.cause;
                 log.warn("Failed to read {} from slice classloader: {}", SLICE_RESOURCES_TOML, e.getMessage());
                 return Option.none();
             }
+        }
+
+        private LoadedSliceEntry createEntry(Artifact artifact,
+                                             Slice slice,
+                                             SliceClassLoader classLoader,
+                                             SliceLoadingContext loadingContext) {
+            var sliceConfig = loadingContext.sliceComposite()
+                                            .orElse(() -> buildSliceCompositeFromClassLoader(artifact, classLoader));
+            var entry = new LoadedSliceEntry(artifact,
+                                             slice,
+                                             classLoader,
+                                             loadingContext,
+                                             sliceConfig,
+                                             EntryState.LOADED);
+            log.debug("Slice {} loaded", artifact);
+            return entry;
         }
 
         private static Option<Map<String, String>> parseToFlatMap(Artifact artifact, String content) {

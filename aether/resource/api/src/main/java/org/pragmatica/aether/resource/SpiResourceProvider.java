@@ -5,6 +5,8 @@
 package org.pragmatica.aether.resource;
 
 import org.pragmatica.config.ConfigService;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.lang.Functions.Fn2;
@@ -147,7 +149,8 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                Class<T> resourceType,
                                                String configSection) {
         return loadConfig(configSection,
-                          factoryList.getFirst().configType()).flatMap(config -> selectAndInvoke(factoryList,
+                          factoryList.getFirst().configType(),
+                          org.pragmatica.lang.Option.<ProvisioningContext>none()).flatMap(config -> selectAndInvoke(factoryList,
                                                                                                  config,
                                                                                                  resourceType,
                                                                                                  configSection));
@@ -158,7 +161,8 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                           String configSection,
                                                           ProvisioningContext context) {
         return loadConfig(configSection,
-                          factoryList.getFirst().configType()).flatMap(config -> selectAndInvokeWithContext(factoryList,
+                          factoryList.getFirst().configType(),
+                          org.pragmatica.lang.Option.some(context)).flatMap(config -> selectAndInvokeWithContext(factoryList,
                                                                                                             config,
                                                                                                             resourceType,
                                                                                                             configSection,
@@ -194,11 +198,35 @@ public final class SpiResourceProvider implements ResourceProvider {
         return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
     }
 
-    @SuppressWarnings("unchecked") private <C> Promise<C> loadConfig(String section, Class<C> configType) {
-        return configLoader.apply(section, configType).mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
+    @SuppressWarnings("unchecked") private <C> Promise<C> loadConfig(String section,
+                                                                      Class<C> configType,
+                                                                      org.pragmatica.lang.Option<ProvisioningContext> contextOpt) {
+        return resolveConfigLoader(contextOpt).apply(section, configType).mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
                                                                                                                            cause))
                                  .map(obj -> (C) obj)
                                  .async();
+    }
+
+    /// Resolve the configuration loader for this provisioning call.
+    ///
+    /// When the provided context carries a `ConfigurationProvider` extension, the per-call
+    /// slice-composite is used (wrapped in `ProviderBasedConfigService` for section binding).
+    /// Otherwise the loader falls back to the constructor-supplied `configLoader` (typically
+    /// the global `ConfigService.instance()` singleton).
+    private Fn2<Result<?>, String, Class<?>> resolveConfigLoader(org.pragmatica.lang.Option<ProvisioningContext> contextOpt) {
+        return contextOpt.flatMap(SpiResourceProvider::extractCompositeLoader)
+                         .or(configLoader);
+    }
+
+    private static org.pragmatica.lang.Option<Fn2<Result<?>, String, Class<?>>> extractCompositeLoader(ProvisioningContext context) {
+        return context.extension(ConfigurationProvider.class)
+                      .option()
+                      .map(SpiResourceProvider::loaderFromComposite);
+    }
+
+    private static Fn2<Result<?>, String, Class<?>> loaderFromComposite(ConfigurationProvider composite) {
+        var svc = ProviderBasedConfigService.providerBasedConfigService(composite);
+        return (section, configClass) -> svc.config(section, configClass);
     }
 
     private record CacheKey(Class<?> resourceType, String configSection){}
