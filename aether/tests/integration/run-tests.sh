@@ -277,17 +277,19 @@ run_suite() {
         lb_app="${CLUSTER_A_LB_APP:-$CLUSTER_A_APP_DIRECT}"
         lb_mgmt="${CLUSTER_A_LB_MGMT:-$CLUSTER_A_MGMT}"
         cluster_id="a"
-        # Direct per-node mgmt ports = 5151..5155 (node-1..node-5); 5150 is the
-        # mgmt sidecar gateway. MGMT_PORT+i convention now resolves node-{i+1}.
+        # Direct per-node mgmt ports = 5151..5155 (node-1..node-5).
+        # MGMT_PORT+i convention resolves node-{i+1} → 5151+i. Cluster reach
+        # via lib/common.sh _refresh_mgmt_entry_point probing this range.
         node_base="5151"
     else
         cluster_endpoint="$CLUSTER_B_MGMT"
         lb_app="${CLUSTER_B_LB_APP:-$CLUSTER_B_APP_DIRECT}"
         lb_mgmt="${CLUSTER_B_LB_MGMT:-$CLUSTER_B_MGMT}"
         cluster_id="b"
-        # Direct per-node mgmt ports = 5161..5165 (node-1..node-5); 5160 is the
-        # mgmt sidecar gateway. Killing ANY core is now safe -- gateway routes
-        # via proxy_next_upstream to a surviving upstream.
+        # Direct per-node mgmt ports = 5161..5165 (node-1..node-5).
+        # Killing node-1 leaves 5161 dead; the harness rotates MGMT_ENTRY_POINT
+        # to a surviving core via lib/common.sh _refresh_mgmt_entry_point
+        # (invoked from wait_for_cluster_ready and api_get/api_post).
         node_base="5161"
     fi
 

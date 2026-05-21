@@ -31,10 +31,10 @@ x-node-common: &node-common
     # `aether.cluster=a` label, breaking cross-cluster filter scoping.
     AETHER_CLUSTER_NAME: "a"
     # Cluster A claims host port range 5150-5159 for CTM-provisioned containers
-    # (compose-defined nodes own 5150-5155; auto-heal replacements pick from 5156+).
+    # (compose-defined nodes own 5151-5155; auto-heal replacements pick from 5156+).
     # Cluster B uses 5160-5169. Distinct ranges prevent port-bind collisions when
-    # CTM auto-provisions a phantom replacement for cluster A using cluster B's
-    # baked-in 5160 base. Read by DockerEnvironmentIntegrationFactory.resolvePortBase.
+    # CTM auto-provisions a replacement in one cluster from colliding with the
+    # other's port window. Read by DockerEnvironmentIntegrationFactory.resolvePortBase.
     AETHER_MGMT_PORT_BASE: "5156"
     AETHER_APP_PORT_BASE: "8075"
   healthcheck:
@@ -71,10 +71,10 @@ services:
       retries: 10
 
   # --- 5-node Aether Cluster A ---
-  # Direct per-node mgmt ports moved to 5151-5155 (was 5150-5154). 5150 is now
-  # owned by the mgmt sidecar gateway (aether-a-mgmt-gateway) so MGMT_ENTRY_POINT
-  # survives any single-core failure. The MGMT_PORT+i convention now resolves
-  # node-i+1 -> 5151+i; lib/cluster.sh + run-tests.sh rebased to 5151.
+  # Direct per-node mgmt ports 5151-5155 (node-1..node-5). Slot 5150 is
+  # intentionally unbound; the test harness reaches the cluster by probing
+  # 5151..5155 for any live core (lib/common.sh _refresh_mgmt_entry_point).
+  # The MGMT_PORT+i convention resolves node-{i+1} → 5151+i.
   aether-a-node-1:
     <<: *node-common
     container_name: aether-a-node-1
@@ -86,7 +86,7 @@ services:
       <<: *node-env
       NODE_ID: "node-1"
     ports:
-      - "5151:8080"   # Direct mgmt (gateway-bypass)
+      - "5151:8080"   # Direct mgmt
       - "8070:8070"   # App HTTP
       - "9090:8070"   # LB app port
       - "9091:8080"   # LB mgmt port

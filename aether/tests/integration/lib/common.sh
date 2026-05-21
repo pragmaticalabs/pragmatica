@@ -166,6 +166,25 @@ _resolve_live_endpoint() {
     return 1
 }
 
+# Refresh the *exported* MGMT_ENTRY_POINT / CLUSTER_ENDPOINT to a live core node.
+# Differs from _resolve_live_endpoint: callers don't use $(...) command substitution,
+# so the export survives into subsequent helpers in the same shell. Used by
+# wait_for_cluster_ready's fast-fail probe and any caller that needs the env vars
+# themselves to be live (not just the return string).
+#
+# Returns 0 if a live endpoint was found (and exported); 1 if every probed port is
+# dead. Leaves env vars unchanged on failure so callers can still log the original
+# pinned endpoint in the error message.
+_refresh_mgmt_entry_point() {
+    local live
+    if live=$(_resolve_live_endpoint); then
+        export MGMT_ENTRY_POINT="${live}"
+        export CLUSTER_ENDPOINT="${live}"
+        return 0
+    fi
+    return 1
+}
+
 api_get() {
     local path="$1"
     local endpoint

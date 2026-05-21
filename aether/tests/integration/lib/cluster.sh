@@ -438,12 +438,18 @@ wait_for_cluster_ready() {
         log_pass "cluster ready (${expected}+ members, canonical §1.1) (0s)"
         return 0
     fi
-    # Fast-fail probe — if the entry point's /health/live is dead, the cluster is
-    # categorically unreachable and no amount of waiting will help. Bail out in ~1s
-    # instead of waiting the full timeout. This caps the cascading slowdown across
-    # downstream tests when one suite leaves the cluster in a broken state.
-    if ! curl -sfk -m 1 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
-        log_fail "cluster ready (${expected}+ members, canonical §1.1) — entry point ${MGMT_ENTRY_POINT} not responding to /health/live; cluster appears down, fast-failing"
+    # Fast-fail probe — if NO core in MGMT_PORT..MGMT_PORT+N-1 responds to /health/live,
+    # the cluster is categorically unreachable and no amount of waiting will help. Bail
+    # out in ~1s instead of waiting the full timeout. This caps the cascading slowdown
+    # across downstream tests when one suite leaves the cluster in a broken state.
+    #
+    # The probe also refreshes MGMT_ENTRY_POINT/CLUSTER_ENDPOINT to a live core if the
+    # pinned one is dead — required after chaos-suite kills where the entry-point host
+    # port (e.g. 5161 for node-1) stays dead while CTM provisions a replacement at a
+    # different port (5156+/5166+). Without this, subsequent suites probe the dead pin
+    # and fast-fail even though the cluster is operationally healthy.
+    if ! _refresh_mgmt_entry_point; then
+        log_fail "cluster ready (${expected}+ members, canonical §1.1) — no live core in ${MGMT_PORT}..$((MGMT_PORT + NODE_COUNT - 1)) responds to /health/live; cluster appears down, fast-failing"
         return 1
     fi
     # Slow path — cluster is reachable but not yet at full readiness; enter the polling loop.
@@ -1969,7 +1975,7 @@ schema_undo() {
 # Streams
 # ---------------------------------------------------------------------------
 stream_list() {
-    aether_json streams 2>/dev/null || api_get "/api/streams"
+    aether_json "streams list" 2>/dev/null || api_get "/api/streams"
 }
 
 stream_info() {
