@@ -456,6 +456,31 @@ Get detailed slice status including per-node state and health.
 }
 ```
 
+### GET /api/slices/config/{id}
+
+Return the effective configuration view for a loaded slice with per-key attribution of which layer of the slice-composite (`slice.toml ⊕ KV-overlay ⊕ node.toml`) produced the resolved value.
+
+`id` is the slice's full artifact coordinates (`group:artifact:version`).
+
+Each entry's `source` is one of:
+- `"slice.toml"` — value comes from the slice's intrinsic `META-INF/resources.toml`
+- `"KV"` — value comes from the operator-supplied KV overlay (via `POST /api/config`)
+- `"node.toml"` — value comes from the node's static `node.toml` file
+
+Entries are sorted alphabetically by `key`. Returns a failure when the slice is not loaded or the node has per-slice config disabled.
+
+**Response:**
+```json
+{
+  "sliceId": "org.example:my-slice:1.0.0",
+  "entries": [
+    {"key": "topic.orders", "value": "orders.v1", "source": "slice.toml"},
+    {"key": "schedule.interval", "value": "30s", "source": "KV"},
+    {"key": "datasource.url", "value": "jdbc:postgresql://...", "source": "node.toml"}
+  ]
+}
+```
+
 ### GET /api/nodes/routes
 
 List HTTP routes registered on the connected node.
@@ -2811,6 +2836,7 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/slices` | Slice Management (cluster-wide) |
 | GET | `/api/nodes/slices` | Slice Management (per-node) |
 | GET | `/api/slices/status` | Slice Management |
+| GET | `/api/slices/config/{id}` | Slice Management |
 | GET | `/api/nodes/routes` | Slice Management (per-node) |
 | GET | `/api/routes` | Slice Management (cluster-wide) |
 | POST | `/api/scale` | Slice Management |

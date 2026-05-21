@@ -24,6 +24,8 @@ import org.pragmatica.aether.slice.topology.SliceTopology;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.LayeredConfigProvider;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
@@ -55,6 +57,8 @@ public final class SliceRoutes implements RouteSource {
     private static final Cause MISSING_ARTIFACT_OR_INSTANCES = Causes.cause("Missing 'artifact' or 'instances' field");
 
     private static final Cause BLUEPRINT_NOT_FOUND = Causes.cause("Blueprint not found");
+
+    private static final Cause SLICE_NOT_LOADED = Causes.cause("Slice not loaded or no per-slice config available");
 
     private static final Cause NOT_IN_BLUEPRINT = Causes.cause("Slice is not part of any active blueprint. Deploy via blueprint.");
 
@@ -117,7 +121,11 @@ public final class SliceRoutes implements RouteSource {
                          ManagementRoutes.<BlueprintValidationResponse> route(ManagementRoute.BLUEPRINT_VALIDATE)
                                          .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
                                          .asJson(),
-                         ManagementRoutes.<TopologyResponse> route(ManagementRoute.SLICE_TOPOLOGY).toJson(this::buildTopologyResponse));
+                         ManagementRoutes.<TopologyResponse> route(ManagementRoute.SLICE_TOPOLOGY).toJson(this::buildTopologyResponse),
+                         ManagementRoutes.<SliceConfigResponse> route(ManagementRoute.SLICE_CONFIG)
+                                         .withPath(aString())
+                                         .to(this::handleSliceConfig)
+                                         .asJson());
     }
 
     private record ScaleParams(String artifact, int instances, Option<String> placement) {}
@@ -411,6 +419,36 @@ public final class SliceRoutes implements RouteSource {
 
         return placement.map(updated::withPlacement)
                         .or(updated);
+    }
+
+    private Promise<SliceConfigResponse> handleSliceConfig(String id) {
+        return Artifact.artifact(id)
+                       .async()
+                       .flatMap(this::buildSliceConfigResponse);
+    }
+
+    private Promise<SliceConfigResponse> buildSliceConfigResponse(Artifact artifact) {
+        return nodeSupplier.get()
+                           .sliceStore()
+                           .sliceComposite(artifact)
+                           .async(SLICE_NOT_LOADED)
+                           .map(composite -> projectSliceConfig(artifact, composite));
+    }
+
+    private static SliceConfigResponse projectSliceConfig(Artifact artifact, ConfigurationProvider composite) {
+        var entries = composite.keys().stream()
+                               .sorted()
+                               .map(key -> attribute(key, composite))
+                               .toList();
+        return new SliceConfigResponse(artifact.asString(), entries);
+    }
+
+    private static SliceConfigEntry attribute(String key, ConfigurationProvider composite) {
+        var value = composite.getString(key).or("");
+        var source = composite instanceof LayeredConfigProvider layered
+                     ? layered.sourceOf(key).map(LayeredConfigProvider.SourceAttribution::layerName).or("unknown")
+                     : composite.displayName();
+        return new SliceConfigEntry(key, value, source);
     }
 
     private TopologyResponse buildTopologyResponse() {

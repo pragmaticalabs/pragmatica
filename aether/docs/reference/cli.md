@@ -221,6 +221,38 @@ Show the slice topology — the per-slice governor mapping across the cluster (w
 aether slices topology
 ```
 
+#### slices config
+
+Show the effective configuration view for a loaded slice with per-key layer attribution. Wraps `GET /api/slices/config/{id}`.
+
+```bash
+aether slices config <artifact>
+```
+
+Arguments:
+
+| Name | Description |
+|------|-------------|
+| `<artifact>` | Slice artifact coordinates (`group:artifact:version`) |
+
+Each entry's `source` field reports which layer of the slice-composite (`slice.toml ⊕ KV-overlay ⊕ node.toml`) produced the resolved value — one of `slice.toml`, `KV`, or `node.toml`. Output is sorted alphabetically by key.
+
+Example (JSON):
+
+```bash
+aether slices config org.example:my-slice:1.0.0 --format json
+```
+
+```json
+{
+  "sliceId": "org.example:my-slice:1.0.0",
+  "entries": [
+    {"key": "schedule.interval", "value": "30s", "source": "KV"},
+    {"key": "topic.orders", "value": "orders.v1", "source": "slice.toml"}
+  ]
+}
+```
+
 #### nodes slices
 
 Show slices loaded on the connected node (flat list of artifact names). Pass `[id]` for a specific node:

@@ -798,7 +798,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "slices", description = "Show all slices across the cluster", subcommands = {SlicesCommand.StatusCommand.class, SlicesCommand.TopologyCommand.class})
+    @Command(name = "slices", description = "Show all slices across the cluster", subcommands = {SlicesCommand.StatusCommand.class, SlicesCommand.TopologyCommand.class, SlicesCommand.ConfigCommand.class})
     static class SlicesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -839,6 +839,22 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = slicesParent.parent.fetch(SLICE_TOPOLOGY);
+
+                return OutputFormatter.printQuery(response, slicesParent.parent.outputOptions());
+            }
+        }
+
+        @Command(name = "config", description = "Show effective configuration view for a loaded slice with per-key layer attribution")
+        static class ConfigCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private SlicesCommand slicesParent;
+
+            @CommandLine.Parameters(index = "0", description = "Slice artifact coordinates (e.g. org.example:my-slice:1.0.0)")
+            private String sliceId;
+
+            @Override
+            public Integer call() {
+                var response = slicesParent.parent.fetch(SLICE_CONFIG, List.of(sliceId));
 
                 return OutputFormatter.printQuery(response, slicesParent.parent.outputOptions());
             }

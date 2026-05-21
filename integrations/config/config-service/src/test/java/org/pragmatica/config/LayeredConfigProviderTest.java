@@ -109,6 +109,82 @@ class LayeredConfigProviderTest {
     }
 
     @Nested
+    class SourceAttribution {
+
+        @Test
+        void sourceOf_returnsLeafLayerName_forShallowComposite() {
+            var top = NamedConfigProvider.namedConfigProvider("KV", providerFor("top", Map.of("a", "from-top")));
+            var bottom = NamedConfigProvider.namedConfigProvider("node.toml", providerFor("bottom", Map.of("a", "from-bottom", "b", "only-bottom")));
+
+            var layered = LayeredConfigProvider.layered(List.of(top, bottom));
+
+            var aSource = layered.sourceOf("a").unwrap();
+            assertThat(aSource.layerName()).isEqualTo("KV");
+            assertThat(aSource.value()).isEqualTo("from-top");
+
+            var bSource = layered.sourceOf("b").unwrap();
+            assertThat(bSource.layerName()).isEqualTo("node.toml");
+            assertThat(bSource.value()).isEqualTo("only-bottom");
+        }
+
+        @Test
+        void sourceOf_returnsNone_whenKeyMissing() {
+            var top = NamedConfigProvider.namedConfigProvider("KV", providerFor("t", Map.of("a", "1")));
+            var bottom = NamedConfigProvider.namedConfigProvider("node.toml", providerFor("b", Map.of("c", "3")));
+
+            var layered = LayeredConfigProvider.layered(List.of(top, bottom));
+
+            assertThat(layered.sourceOf("missing").isEmpty()).isTrue();
+        }
+
+        @Test
+        void sourceOf_recursesIntoNestedComposite_allThreeLayers() {
+            // slice-composite = slice.toml ⊕ node-composite where node-composite = KV ⊕ node.toml
+            var sliceToml = NamedConfigProvider.namedConfigProvider("slice.toml", providerFor("intrinsic", Map.of("intrinsic-only", "iv", "shared", "from-slice")));
+            var kv = NamedConfigProvider.namedConfigProvider("KV", providerFor("kv", Map.of("kv-only", "kv", "shared", "from-kv")));
+            var nodeToml = NamedConfigProvider.namedConfigProvider("node.toml", providerFor("nodetoml", Map.of("node-only", "nv", "shared", "from-node")));
+
+            var nodeComposite = LayeredConfigProvider.layered(List.of(kv, nodeToml));
+            var sliceComposite = LayeredConfigProvider.layered(List.of(sliceToml, nodeComposite));
+
+            // intrinsic-only resolves to slice.toml (top of slice-composite)
+            var intrinsicHit = sliceComposite.sourceOf("intrinsic-only").unwrap();
+            assertThat(intrinsicHit.layerName()).isEqualTo("slice.toml");
+            assertThat(intrinsicHit.value()).isEqualTo("iv");
+
+            // kv-only resolves to KV (recurses through node-composite to its top layer)
+            var kvHit = sliceComposite.sourceOf("kv-only").unwrap();
+            assertThat(kvHit.layerName()).isEqualTo("KV");
+            assertThat(kvHit.value()).isEqualTo("kv");
+
+            // node-only resolves to node.toml (deepest layer)
+            var nodeHit = sliceComposite.sourceOf("node-only").unwrap();
+            assertThat(nodeHit.layerName()).isEqualTo("node.toml");
+            assertThat(nodeHit.value()).isEqualTo("nv");
+
+            // shared is present in all three; slice.toml wins (top of slice-composite)
+            var sharedHit = sliceComposite.sourceOf("shared").unwrap();
+            assertThat(sharedHit.layerName()).isEqualTo("slice.toml");
+            assertThat(sharedHit.value()).isEqualTo("from-slice");
+        }
+
+        @Test
+        void sourceOf_kvWinsOverNodeToml_inNodeComposite() {
+            // When slice.toml does NOT define a key but KV and node.toml both do, KV wins.
+            var sliceToml = NamedConfigProvider.namedConfigProvider("slice.toml", providerFor("intrinsic", Map.of("other", "x")));
+            var kv = NamedConfigProvider.namedConfigProvider("KV", providerFor("kv", Map.of("shared", "from-kv")));
+            var nodeToml = NamedConfigProvider.namedConfigProvider("node.toml", providerFor("nodetoml", Map.of("shared", "from-node")));
+
+            var nodeComposite = LayeredConfigProvider.layered(List.of(kv, nodeToml));
+            var sliceComposite = LayeredConfigProvider.layered(List.of(sliceToml, nodeComposite));
+
+            var hit = sliceComposite.sourceOf("shared").unwrap();
+            assertThat(hit.layerName()).isEqualTo("KV");
+            assertThat(hit.value()).isEqualTo("from-kv");
+        }
+    }
+
+    @Nested
     class Composition {
 
         @Test

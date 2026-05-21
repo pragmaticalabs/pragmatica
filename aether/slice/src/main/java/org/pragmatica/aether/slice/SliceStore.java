@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.IntrinsicConfigProvider;
 import org.pragmatica.config.LayeredConfigProvider;
+import org.pragmatica.config.NamedConfigProvider;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
@@ -209,9 +210,39 @@ import static org.pragmatica.lang.utils.Causes.cause;
         /// key/value map, wraps it in an `IntrinsicConfigProvider`, and layers it over the
         /// node-composite. Returns `Option.none()` when the store was constructed without a
         /// node-composite (per-slice config disabled).
+        ///
+        /// Emits one INFO log per intrinsic key whose value is shadowed by an existing KV
+        /// override at slice-load time (operator override preceded slice deploy) — see
+        /// [#logShadowedKeys].
         private Option<ConfigurationProvider> buildSliceCompositeFromClassLoader(Artifact artifact, ClassLoader classLoader) {
-            return nodeComposite.flatMap(composite -> loadSliceIntrinsicProviderFromClassLoader(artifact, classLoader).map(intrinsic -> LayeredConfigProvider.layered(List.of(intrinsic,
-                                                                                                                                                                              composite))));
+            return nodeComposite.flatMap(composite -> loadSliceIntrinsicProviderFromClassLoader(artifact, classLoader).map(intrinsic -> assembleSliceComposite(artifact,
+                                                                                                                                                              intrinsic,
+                                                                                                                                                              composite)));
+        }
+
+        private static ConfigurationProvider assembleSliceComposite(Artifact artifact,
+                                                                    ConfigurationProvider intrinsic,
+                                                                    ConfigurationProvider composite) {
+            logShadowedKeys(artifact, intrinsic, composite);
+            var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
+            return LayeredConfigProvider.layered(List.of(labelledIntrinsic, composite));
+        }
+
+        /// Emit one INFO log entry per intrinsic key whose value is shadowed by an existing
+        /// operator override in the node-composite (typically the KV-overlay layer). Triggered
+        /// at slice-load time only; subsequent reads are silent.
+        private static void logShadowedKeys(Artifact artifact, ConfigurationProvider intrinsic, ConfigurationProvider composite) {
+            for (var key : intrinsic.keys()) {
+                var intrinsicValue = intrinsic.getString(key);
+                var overrideValue = composite.getString(key);
+                if (intrinsicValue.isPresent() && overrideValue.isPresent() && !intrinsicValue.unwrap().equals(overrideValue.unwrap())) {
+                    log.info("slice {} intrinsic key {} shadowed by operator override (intrinsic={}, override={})",
+                             artifact.asString(),
+                             key,
+                             intrinsicValue.unwrap(),
+                             overrideValue.unwrap());
+                }
+            }
         }
 
         private Option<ConfigurationProvider> loadSliceIntrinsicProviderFromClassLoader(Artifact artifact, ClassLoader classLoader) {

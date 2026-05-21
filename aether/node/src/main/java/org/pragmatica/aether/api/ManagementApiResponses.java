@@ -425,6 +425,16 @@ public sealed interface ManagementApiResponses {
 
     record TopologyResponse(List<TopologyNodeInfo> nodes, List<TopologyEdgeInfo> edges) {}
 
+    /// Wire shape for `GET /api/slices/{id}/config` (Batch 4 of the hierarchical-config
+    /// refactor, 2026-05-21). Returns the effective configuration view for a loaded slice,
+    /// with per-key attribution of which layer of the slice-composite
+    /// (`slice.toml ⊕ KV-overlay ⊕ node.toml`) produced the resolved value. `source` is
+    /// one of `"KV"`, `"node.toml"`, `"slice.toml"` (see [LayeredConfigProvider#sourceOf]).
+    /// `entries` is sorted alphabetically by `key` for deterministic output.
+    record SliceConfigResponse(String sliceId, List<SliceConfigEntry> entries) {}
+
+    record SliceConfigEntry(String key, String value, String source) {}
+
     record TopologyNodeInfo(String id, String type, String label, String sliceArtifact) {}
 
     record TopologyEdgeInfo(String from, String to, String style, String topicConfig) {}

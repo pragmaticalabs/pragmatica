@@ -19,6 +19,7 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.DynamicConfigurationProvider;
 import org.pragmatica.config.LayeredConfigProvider;
+import org.pragmatica.config.NamedConfigProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
@@ -3003,8 +3004,10 @@ public interface AetherNode extends ManageableNode {
                                                                 var emptyBase = ConfigurationProvider.builder().build();
                                                                 var dynamicProvider = DynamicConfigurationProvider.dynamicConfigurationProvider(emptyBase);
                                                                 // node-composite = KV-overlay ⊕ node.toml
-                                                                ConfigurationProvider nodeComposite = LayeredConfigProvider.layered(java.util.List.of(dynamicProvider,
-                                                                                                                                                       provider));
+                                                                var kvLayer = NamedConfigProvider.namedConfigProvider("KV", dynamicProvider);
+                                                                var nodeTomlLayer = NamedConfigProvider.namedConfigProvider("node.toml", provider);
+                                                                ConfigurationProvider nodeComposite = LayeredConfigProvider.layered(java.util.List.of(kvLayer,
+                                                                                                                                                       nodeTomlLayer));
                                                                 var configService = ProviderBasedConfigService.providerBasedConfigService(nodeComposite);
                                                                 ConfigService.setInstance(configService);
                                                                 var resourceProvider = SpiResourceProvider.spiResourceProvider();

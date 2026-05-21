@@ -66,6 +66,36 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
         return none();
     }
 
+    /// Resolve the layer that first matched the given key, plus the value it yielded.
+    ///
+    /// Walks layers in declaration order (left wins). When the matching layer is itself a
+    /// `LayeredConfigProvider`, recursively unwraps it so the returned `layerName` is always
+    /// the leaf (e.g. for `slice-composite = slice.toml ⊕ node-composite` where
+    /// `node-composite = KV ⊕ node.toml`, a hit in KV reports `layerName="KV"`, not
+    /// `layerName="LayeredConfigProvider[...]"`).
+    ///
+    /// Returns [Option#none()] when no layer matches.
+    public Option<SourceAttribution> sourceOf(String key) {
+        for (var layer : layers) {
+            var hit = attributeIn(layer, key);
+            if (hit.isPresent()) {return hit;}
+        }
+        return none();
+    }
+
+    private static Option<SourceAttribution> attributeIn(ConfigurationProvider layer, String key) {
+        return layer instanceof LayeredConfigProvider nested
+               ? nested.sourceOf(key)
+               : layer.getString(key).map(value -> new SourceAttribution(layer.displayName(), value));
+    }
+
+    /// Attribution record describing which layer of a layered provider matched a key.
+    ///
+    /// `layerName` is the leaf layer's [ConfigurationProvider#displayName()]; nested
+    /// composites are unwrapped by [LayeredConfigProvider#sourceOf]. `value` is the
+    /// resolved value as returned by [ConfigurationProvider#getString].
+    public record SourceAttribution(String layerName, String value) {}
+
     @Override
     public Set<String> keys() {
         var unionKeys = new LinkedHashSet<String>();

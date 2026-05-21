@@ -76,6 +76,7 @@ public enum ManagementRoute {
     SLICES_LIST(GET, "/api/slices", List.of(), ANY),
     SLICES_STATUS(GET, "/api/slices/status", List.of(), ANY),
     SLICE_TOPOLOGY(GET, "/api/slices/topology", List.of(), ANY),
+    SLICE_CONFIG(GET, "/api/slices/config", List.of("id"), ANY),
     NODE_SLICES(GET, "/api/nodes/slices", List.of(), ANY),
     NODE_SLICES_GET(GET, "/api/nodes/slices", List.of("id"), RouteTarget.nodeIdParam(0)),
     NODE_ROUTES(GET, "/api/nodes/routes", List.of(), ANY),
