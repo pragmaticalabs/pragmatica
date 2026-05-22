@@ -850,7 +850,10 @@ import org.slf4j.LoggerFactory;
 
         private Option<ScheduleConfig> resolveScheduleConfig(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
-                                               .flatMap(svc -> svc.config(configSection, ScheduleConfig.class).option());
+                                               .flatMap(svc -> svc.config(configSection, ScheduleConfig.class)
+                                                                  .onFailure(cause -> log.warn("Slice {} schedule config binding failed for section {}: {}",
+                                                                                                artifact, configSection, cause.message()))
+                                                                  .option());
         }
 
         private Promise<SliceNodeKey> publishStreamSubscriptions(SliceNodeKey sliceKey) {
