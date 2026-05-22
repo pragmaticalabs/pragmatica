@@ -45,5 +45,5 @@
 [R3] aether/tests/integration/suites/08-resources/test-scheduled-tasks.sh:17 — tautological assert_ne on raw response (var $tasks from line 16)
 [R3] aether/tests/integration/suites/11-observability/test-prometheus-metrics.sh:28 — tautological assert_ne on raw response (var $body from line 27)
 [R3] aether/tests/integration/suites/11-observability/test-transport-metrics.sh:17 — tautological assert_ne on raw response (var $metrics from line 16)
-[R4] aether/tests/integration/suites/08-resources/test-sql-connector.sh:50 — if [ "$result" -ge 200 ] && [ "$result" -lt 400 ] 2>/dev/null; then
-[R4] aether/tests/integration/suites/08-resources/test-sql-connector.sh:92 — if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+[R4] aether/tests/integration/suites/08-resources/test-sql-connector.sh:56 — if [ "$result" -ge 200 ] && [ "$result" -lt 400 ] 2>/dev/null; then
+[R4] aether/tests/integration/suites/08-resources/test-sql-connector.sh:98 — if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then

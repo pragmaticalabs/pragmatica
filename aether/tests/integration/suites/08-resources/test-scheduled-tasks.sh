@@ -18,6 +18,19 @@ test_scheduled_tasks_endpoint() {
 }
 
 test_task_last_execution_advances() {
+    # The heartbeat task is registered by test-persistence's slice activation
+    # (publishScheduledTasks fires during the activation chain). Suite bootstrap
+    # deploys the blueprint async, then `await_generation_quiesced` waits only
+    # for cluster generation quiesce — NOT for slice instance activation, which
+    # may lag by tens of seconds (44s observed for cold @PgSql provisioning).
+    # Poll for at least one task to surface before reading its fields.
+    wait_for "scheduled task registered (post-bootstrap activation)" \
+             '[ -n "$(aether_field "scheduled-tasks list" tasks.0.configSection 2>/dev/null)" ]' \
+             120 || {
+        log_fail "No scheduled tasks present in /api/scheduled-tasks within 120s of cluster ready"
+        return 1
+    }
+
     local tasks
     tasks=$(aether_json "scheduled-tasks list") || {
         log_fail "aether scheduled-tasks list failed"
