@@ -38,6 +38,10 @@ x-node-common: &node-common
     # Read by DockerEnvironmentIntegrationFactory.resolvePortBase.
     AETHER_MGMT_PORT_BASE: "5166"
     AETHER_APP_PORT_BASE: "8085"
+    # Test cluster: enable dev-mode endpoints (mirror of cluster A). 05-security
+    # explicitly opts OUT via per-test unset when exercising the TLS-rotation
+    # NOT_CONFIGURED skip path — see 05-security/CHARTER.md.
+    AETHER_INSECURE_DEV_MODE: "true"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
     interval: 10s
