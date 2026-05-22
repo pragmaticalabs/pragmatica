@@ -42,14 +42,18 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.cluster.state.kvstore.KvstoreCodecs.CODECS);
         all.addAll(org.pragmatica.cluster.metrics.MetricsCodecs.CODECS);
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.artifact.ArtifactCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.SliceCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.invoke.InvokeCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.http.forward.ForwardCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.dht.DhtCodecs.CODECS);
+        all.addAll(org.pragmatica.aether.artifact.ArtifactCodecsSlice.CODECS);
+        // SliceCodecs registry in org.pragmatica.aether.slice is contributed by four modules; reference each suffixed sub-registry to avoid shade collision.
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsSliceApi.CODECS);
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsNode.CODECS);
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsInvoke.CODECS);
+        all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);
+        all.addAll(org.pragmatica.aether.http.forward.ForwardCodecsInvoke.CODECS);
+        all.addAll(org.pragmatica.aether.dht.DhtCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
         all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);
