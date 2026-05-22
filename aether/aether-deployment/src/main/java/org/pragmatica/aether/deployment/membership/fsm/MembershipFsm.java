@@ -804,6 +804,19 @@ public final class MembershipFsm {
         var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
         var outcome = reducer.apply(current, event, currentReachabilityGate());
         fsmStates.put(peer, outcome.newState());
+        // Symmetry with processOperatorEventLocked: apply effects even on the shadow path so a
+        // reducer-emitted ScheduleTimer or EmitDomainEvent doesn't silently disappear. Writes
+        // ARE still dropped here — that's the contract of "shadow-only" — but flag any
+        // unexpected write as a misclassification rather than swallow it silently (this is the
+        // exact bear-trap that hid the SlotClaimed JOINING-write loss; see 2026-05-22 fix).
+        if (!outcome.writes().isEmpty()) {
+            log.warn("MembershipFsm: shadow-only event {} for {} produced {} write(s) that will not be proposed — "
+                     + "the event is likely misclassified (see isLeaderWritingEvent)",
+                     event.getClass().getSimpleName(),
+                     peer.id(),
+                     outcome.writes().size());
+        }
+        applyEffectsLocked(outcome.effects());
         logFsmOutcome(event, current, outcome);
     }
 
