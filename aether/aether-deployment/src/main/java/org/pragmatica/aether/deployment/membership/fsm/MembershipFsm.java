@@ -673,8 +673,14 @@ public final class MembershipFsm {
     /// classified as shadow-only. If Step 4/5 introduces a `TransportReachable` write cell,
     /// add it here.
     ///
-    /// `SlotClaimed` remains a shadow-only event (no consensus write — the slot key was
-    /// already written by another actor; this event drives a derived JOINING transition).
+    /// `SlotClaimed` IS a leader-writing event. CTM wrote the `ProvisioningSlotKey` atom, but
+    /// the lifecycle transition `(Untracked, SlotClaimed) → Joining` emitted by
+    /// `ClusterMembershipReducer.enterJoining` produces a SEPARATE `Put(NodeLifecycleKey,
+    /// JOINING)` write plus a `ScheduleTimer(JOIN_DEADLINE)` effect — both must flow through
+    /// `proposeWritesAndApply` and `applyEffectsLocked`. Misclassifying SlotClaimed as
+    /// shadow-only silently dropped the JOINING write, leaving CTM-provisioned replacements
+    /// with no `NodeLifecycleKey` atom in KV and no join-deadline tombstone path — observed
+    /// 2026-05-22 as the dominant failure mode of suite 02-chaos / test-joining-window-kill.sh.
     private static boolean isLeaderWritingEvent(MembershipFsmEvent event) {
         return event instanceof OperatorDrain
                || event instanceof OperatorDecommission
@@ -683,7 +689,8 @@ public final class MembershipFsm {
                || event instanceof SwimFaulty
                || event instanceof SwimDeparted
                || event instanceof SwimHealthy
-               || event instanceof TransportUnreachable;
+               || event instanceof TransportUnreachable
+               || event instanceof SlotClaimed;
     }
 
     private void applyExternalLifecyclePut(NodeId peer, NodeLifecycleValue value) {
@@ -759,7 +766,14 @@ public final class MembershipFsm {
         fsmLock.lock();
         try {
             ensureProvisioningTracked(peer, slotId);
-            processFsmEventLocked(new SlotClaimed(peer, slotId, hlcClock.now()));
+            // SlotClaimed is a leader-writing event (see isLeaderWritingEvent Javadoc) — route
+            // through processOperatorEventLocked so the reducer's `Put(NodeLifecycleKey, JOINING)`
+            // write reaches consensus and the `ScheduleTimer(JOIN_DEADLINE)` effect actually
+            // schedules. The prior `processFsmEventLocked` call updated the in-memory state map
+            // only, silently discarding the write and the timer — the symptom was CTM-provisioned
+            // replacements never appearing in `/api/nodes/lifecycle/<id>` and never being
+            // tombstoned when they failed to bootstrap.
+            processOperatorEventLocked(new SlotClaimed(peer, slotId, hlcClock.now()));
         } finally {
             fsmLock.unlock();
         }
