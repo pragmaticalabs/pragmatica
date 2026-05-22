@@ -63,13 +63,23 @@ test_task_last_execution_advances() {
     pre_ts=$(aether_field "scheduled-tasks list" "tasks.0.lastExecutionAt")
     pre_ts="${pre_ts:-0}"
     # Inject (synchronously trigger the task and advance its lastExecutionAt).
-    local inject_response post_ts
-    inject_response=$(aether_json scheduled-tasks inject --section "$section" --artifact "$artifact" --method "$method") || {
-        log_fail "scheduled-tasks inject failed for ${section}/${artifact}/${method}"
+    local inject_response inject_rc post_ts
+    set +e
+    inject_response=$(aether_json scheduled-tasks inject --section "$section" --artifact "$artifact" --method "$method" 2>&1)
+    inject_rc=$?
+    set -e
+    if [ "$inject_rc" -ne 0 ]; then
+        log_fail "scheduled-tasks inject failed for ${section}/${artifact}/${method} (rc=${inject_rc}): $(printf '%s' "$inject_response" | head -c 300)"
         return 1
-    }
-    # Post-inject: capture currentExecutionMs from response.
-    post_ts=$(echo "$inject_response" | grep -oE '"currentExecutionMs"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$')
+    fi
+    if printf '%s' "$inject_response" | grep -q '"error"'; then
+        log_fail "scheduled-tasks inject returned error JSON for ${section}/${artifact}/${method}: $(printf '%s' "$inject_response" | head -c 300)"
+        return 1
+    fi
+    # Post-inject: capture currentExecutionMs from response (tolerate missing match
+    # under set -euo pipefail — grep -oE exit 1 on no match would otherwise abort
+    # the whole script silently).
+    post_ts=$(printf '%s' "$inject_response" | grep -oE '"currentExecutionMs"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
     post_ts="${post_ts:-0}"
     if [ "$post_ts" -le "$pre_ts" ]; then
         log_fail "Task last-execution did not advance: pre=$pre_ts post=$post_ts"
