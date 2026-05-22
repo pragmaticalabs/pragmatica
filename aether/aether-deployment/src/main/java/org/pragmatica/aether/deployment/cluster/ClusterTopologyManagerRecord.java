@@ -563,6 +563,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract private void activateWithLeaderFailover(int effectiveActual, int desired) {
         transitionTo(new NodeReconcilerState.Converged());
+        // Cold-boot guard: when the cluster has not yet declared itself NORMAL, the leader-failover
+        // path is reached because baseline nodes are still booting (clusterWasFormed = readyCount>0
+        // becomes true as soon as ANY node is ready). Provisioning here races still-booting
+        // compose-baseline nodes and creates a ghost. Defer to phase=NORMAL; onClusterPhaseChanged
+        // will fire reconcile() at that moment and the normal cycle (with stability window) will
+        // detect any genuine deficit.
+        if (phaseSupplier.get() == ClusterPhase.COLD_BOOT) {
+            log.info("CTM: Leader failover path entered during COLD_BOOT ({}/{}); deferring to phase=NORMAL",
+                     effectiveActual,
+                     desired);
+            return;
+        }
         log.info("CTM: Leader failover detected ({}/{}), enabling immediate reconciliation", effectiveActual, desired);
         handleDeficit(effectiveActual, desired);
     }
