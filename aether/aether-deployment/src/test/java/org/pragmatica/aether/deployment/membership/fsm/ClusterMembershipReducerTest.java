@@ -73,7 +73,7 @@ class ClusterMembershipReducerTest {
     /// so the reducer's `physicalMicros() / 1000` derivation yields exactly `millis`.
     /// Counter component is zero, nodeId "test" — sufficient for deterministic equality.
     private static HlcTimestamp at(long millis) {
-        return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), "test");
+        return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), new NodeId("test"));
     }
 
     /// Extracts the wall-clock millis derivation used inside the reducer for state-AtMs fields.

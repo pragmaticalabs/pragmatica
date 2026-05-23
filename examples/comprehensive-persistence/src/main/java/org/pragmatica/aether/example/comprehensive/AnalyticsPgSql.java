@@ -9,4 +9,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@ResourceQualifier(type = PgSqlConnector.class, config = "database.analytics") @Retention(RetentionPolicy.RUNTIME) @Target({ElementType.PARAMETER, ElementType.TYPE}) public@interface AnalyticsPgSql {}
+@ResourceQualifier(type = PgSqlConnector.class, config = "database.analytics")
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.PARAMETER, ElementType.TYPE})
+public @interface AnalyticsPgSql {}

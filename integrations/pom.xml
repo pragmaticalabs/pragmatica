@@ -31,7 +31,6 @@
         <module>cloud</module>
         <module>statemachine</module>
         <module>swim</module>
-        <module>hlc</module>
         <module>email-http</module>
         <module>xml</module>
         <module>storage</module>

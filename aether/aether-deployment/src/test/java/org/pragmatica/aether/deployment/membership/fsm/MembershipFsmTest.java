@@ -59,7 +59,7 @@ class MembershipFsmTest {
 
     /// RC1 Step 4 — HLC equivalent of `T1` for events that now carry `HlcTimestamp`.
     /// State assertions continue using the `long` form; KV-mint helpers use the `long` form.
-    private static final HlcTimestamp T1_HLC = new HlcTimestamp(HlcTimestamp.pack(T1 * 1000L, 0), "test");
+    private static final HlcTimestamp T1_HLC = new HlcTimestamp(HlcTimestamp.pack(T1 * 1000L, 0), new NodeId("test"));
 
     private FakeLifecycleSnapshot lifecycleSnapshot;
 

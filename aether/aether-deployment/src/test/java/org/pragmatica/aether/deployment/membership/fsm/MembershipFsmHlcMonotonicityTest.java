@@ -72,7 +72,7 @@ class MembershipFsmHlcMonotonicityTest {
             // Physical clock: first call returns 2_000_000us, all later calls return 1_500_000us
             // (backward step). The HlcClock's counter MUST advance to preserve monotonicity.
             var physical = new SteppedPhysicalClock(2_000_000L, 1_500_000L, 1_500_000L, 1_500_000L);
-            var clock = HlcClock.hlcClock(SELF.id(), physical, 500_000L).unwrap();
+            var clock = HlcClock.hlcClock(SELF, physical, 500_000L);
             var reducer = ClusterMembershipReducer.clusterMembershipReducer(MembershipFsmConfig.defaultMembershipFsmConfig());
 
             var firstAt = clock.now();
@@ -95,7 +95,7 @@ class MembershipFsmHlcMonotonicityTest {
         /// truncates HLC to wall-clock millis).
         @Test void frozenPhysicalClock_burst_hlcCounterMonotonic() {
             var physical = new SteppedPhysicalClock(5_000_000L, 5_000_000L, 5_000_000L, 5_000_000L);
-            var clock = HlcClock.hlcClock(SELF.id(), physical, 500_000L).unwrap();
+            var clock = HlcClock.hlcClock(SELF, physical, 500_000L);
             // Start FSM so that downstream wiring is exercised, but rely on direct `clock.now()`
             // for the strict-counter assertion (which the FSM internally uses the same way).
             startedFsmWithClock(clock);
@@ -119,11 +119,11 @@ class MembershipFsmHlcMonotonicityTest {
         /// (verified by the next local event having `physicalMicros >= remote.physicalMicros`).
         @Test void remotePutWithInRangeHlc_advancesLocalClock_admitsPut() {
             var physical = new SteppedPhysicalClock(2_000_000L);
-            var clock = HlcClock.hlcClock(SELF.id(), physical, 500_000L).unwrap();
+            var clock = HlcClock.hlcClock(SELF, physical, 500_000L);
             var fsm = startedFsmWithClock(clock);
 
             // Remote at 2_200_000us = 200ms ahead — within 500ms drift budget.
-            var remoteAt = new HlcTimestamp(HlcTimestamp.pack(2_200_000L, 0), PEER_A.id());
+            var remoteAt = new HlcTimestamp(HlcTimestamp.pack(2_200_000L, 0), PEER_A);
             var put = new ValuePut<NodeLifecycleKey, NodeLifecycleValue>(
                     new KVCommand.Put<>(NodeLifecycleKey.nodeLifecycleKey(PEER_A),
                                           new NodeLifecycleValue(NodeLifecycleState.ON_DUTY,
@@ -146,11 +146,11 @@ class MembershipFsmHlcMonotonicityTest {
         /// NOT updated and the local clock is NOT advanced to the drifted remote value.
         @Test void remotePutWithDriftExceedingHlc_isDropped_stateUnchanged() {
             var physical = new SteppedPhysicalClock(2_000_000L);
-            var clock = HlcClock.hlcClock(SELF.id(), physical, 500_000L).unwrap();
+            var clock = HlcClock.hlcClock(SELF, physical, 500_000L);
             var fsm = startedFsmWithClock(clock);
 
             // Remote at 3_000_000us = 1s ahead — exceeds 500ms drift budget.
-            var remoteAt = new HlcTimestamp(HlcTimestamp.pack(3_000_000L, 0), PEER_A.id());
+            var remoteAt = new HlcTimestamp(HlcTimestamp.pack(3_000_000L, 0), PEER_A);
             var put = new ValuePut<NodeLifecycleKey, NodeLifecycleValue>(
                     new KVCommand.Put<>(NodeLifecycleKey.nodeLifecycleKey(PEER_A),
                                           new NodeLifecycleValue(NodeLifecycleState.ON_DUTY,
@@ -172,7 +172,7 @@ class MembershipFsmHlcMonotonicityTest {
         /// writers) is admitted without a clock merge — preserves backward compatibility.
         @Test void remotePutWithZeroSentinelHlc_admittedWithoutMerge() {
             var physical = new SteppedPhysicalClock(2_000_000L);
-            var clock = HlcClock.hlcClock(SELF.id(), physical, 500_000L).unwrap();
+            var clock = HlcClock.hlcClock(SELF, physical, 500_000L);
             var fsm = startedFsmWithClock(clock);
             var localBefore = clock.peek();
 
@@ -191,7 +191,7 @@ class MembershipFsmHlcMonotonicityTest {
     class TransitionedAtPropagation {
         @Test void slotClaimed_writesNodeLifecycleValue_withEventHlcInTransitionedAt() {
             var physical = new SteppedPhysicalClock(7_000_000L);
-            var clock = HlcClock.hlcClock(SELF.id(), physical, 500_000L).unwrap();
+            var clock = HlcClock.hlcClock(SELF, physical, 500_000L);
             // Use a reducer factory test path so we can inspect emitted writes directly.
             var reducer = ClusterMembershipReducer.clusterMembershipReducer(MembershipFsmConfig.defaultMembershipFsmConfig());
             var eventAt = clock.now();

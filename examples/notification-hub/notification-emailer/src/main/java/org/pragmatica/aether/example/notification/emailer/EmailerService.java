@@ -16,10 +16,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.pragmatica.aether.example.notification.emailer.EmailerStatus.emailerStatus;
 
 
-@Slice public interface EmailerService {
-    @Codec record StatusRequest(){}
+@Slice
+public interface EmailerService {
+    @Codec
+    record StatusRequest() {}
 
-    @NotificationConsumer Promise<Unit> processNotification(NotificationEvent event);
+    @NotificationConsumer
+    Promise<Unit> processNotification(NotificationEvent event);
+
     Promise<EmailerStatus> status(StatusRequest request);
 
     static EmailerService emailerService(@Notify NotificationSender sender) {
@@ -29,17 +33,20 @@ import static org.pragmatica.aether.example.notification.emailer.EmailerStatus.e
     record emailerService(NotificationSender sender, AtomicLong sentCount, AtomicLong failedCount) implements EmailerService {
         private static final String FROM_ADDRESS = "notifications@notification-hub.example";
 
-        @Override public Promise<Unit> processNotification(NotificationEvent event) {
+        @Override
+        public Promise<Unit> processNotification(NotificationEvent event) {
             var email = Notification.Email.email(FROM_ADDRESS,
                                                  List.of(recipientFor(event)),
                                                  "Notification from " + event.senderId(),
                                                  NotificationBody.Text.text(event.message()));
-            return sender.send(email).onSuccess(_ -> sentCount.incrementAndGet())
-                              .onFailure(_ -> failedCount.incrementAndGet())
-                              .mapToUnit();
+            return sender.send(email)
+                         .onSuccess(_ -> sentCount.incrementAndGet())
+                         .onFailure(_ -> failedCount.incrementAndGet())
+                         .mapToUnit();
         }
 
-        @Override public Promise<EmailerStatus> status(StatusRequest request) {
+        @Override
+        public Promise<EmailerStatus> status(StatusRequest request) {
             return Promise.success(emailerStatus(sentCount.get(), failedCount.get()));
         }
 

@@ -75,6 +75,7 @@ public interface AnalyticsSlice {
             private static HighValueSummary toSummary(List<HourlyBucket> buckets) {
                 var totalOrders = buckets.stream().mapToInt(HourlyBucket::orderCount).sum();
                 var totalRevenue = buckets.stream().mapToLong(HourlyBucket::revenueCents).sum();
+
                 return new HighValueSummary(totalOrders, totalRevenue, buckets);
             }
         }

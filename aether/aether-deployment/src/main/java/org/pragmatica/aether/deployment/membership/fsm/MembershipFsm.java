@@ -1329,6 +1329,6 @@ public final class MembershipFsm {
     /// explicit clock. Production wiring (`AetherNode.buildMembershipFsm`) MUST pass the node's
     /// canonical clock instance so HLC values are shared across subsystems.
     private static HlcClock defaultHlcClock(NodeId self) {
-        return HlcClock.hlcClock(self.id()).unwrap();
+        return HlcClock.hlcClock(self);
     }
 }

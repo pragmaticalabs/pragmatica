@@ -17,7 +17,7 @@ class DhtPartitionOwnershipValueTest {
     void dhtPartitionOwnershipValue_withAllFields_populatesRecord() {
         var owner = NodeId.nodeId("core-1").unwrap();
         var epoch = Epoch.epoch(5L, 12L);
-        var hlc = new HlcTimestamp(200L, "core-1");
+        var hlc = new HlcTimestamp(200L, new NodeId("core-1"));
 
         var v = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(owner, "core", epoch, 7L, hlc);
 

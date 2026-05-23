@@ -293,7 +293,7 @@ class TopologyObserverTest {
         void publishMembershipDeltas_stampsLogIndexAndHlc_onNodeJoined() {
             var emissions = new CopyOnWriteArrayList<MembershipDecision>();
             var snapshot = new StatefulSnapshotSource();
-            var hlc = new HlcTimestamp(HlcTimestamp.pack(12_345L, 0), "node-self");
+            var hlc = new HlcTimestamp(HlcTimestamp.pack(12_345L, 0), new NodeId("node-self"));
 
             // Seed snapshot before start() so initial publish observes the configured core.
             snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
@@ -321,7 +321,7 @@ class TopologyObserverTest {
         void publishMembershipDeltas_emitsNodeDraining_onLifecycleTransitionToDraining() {
             var emissions = new CopyOnWriteArrayList<MembershipDecision>();
             var snapshot = new StatefulSnapshotSource();
-            var hlc = new HlcTimestamp(HlcTimestamp.pack(100L, 0), "node-self");
+            var hlc = new HlcTimestamp(HlcTimestamp.pack(100L, 0), new NodeId("node-self"));
 
             snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
                                                    PEER_A, LifecycleState.ON_DUTY,

@@ -19,6 +19,8 @@ package org.pragmatica.hlc;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import org.pragmatica.consensus.NodeId;
+
 
 import org.junit.jupiter.api.Test;
 
@@ -32,7 +34,7 @@ class HlcClockTest {
     @Test
     void now_sequential_strictlyIncreasing() {
         var time = new AtomicLong(1_000_000L);
-        var clock = HlcClock.hlcClock("node-1", time::incrementAndGet, 500_000L).unwrap();
+        var clock = HlcClock.hlcClock(new NodeId("node-1"), time::incrementAndGet, 500_000L);
 
         var previous = clock.now();
 
@@ -46,7 +48,7 @@ class HlcClockTest {
     @Test
     void now_samePhysicalTime_incrementsCounter() {
         var fixedTime = new AtomicLong(5_000_000L);
-        var clock = HlcClock.hlcClock("node-1", fixedTime::get, 500_000L).unwrap();
+        var clock = HlcClock.hlcClock(new NodeId("node-1"), fixedTime::get, 500_000L);
 
         var first = clock.now();
         var second = clock.now();
@@ -62,7 +64,7 @@ class HlcClockTest {
     @Test
     void now_physicalClockAdvances_resetsCounter() {
         var time = new AtomicLong(1_000_000L);
-        var clock = HlcClock.hlcClock("node-1", time::get, 500_000L).unwrap();
+        var clock = HlcClock.hlcClock(new NodeId("node-1"), time::get, 500_000L);
 
         clock.now();
         clock.now();
@@ -80,9 +82,9 @@ class HlcClockTest {
     @Test
     void update_remoteCausality_resultGreaterThanRemote() {
         var time = new AtomicLong(1_000_000L);
-        var clock = HlcClock.hlcClock("node-1", time::get, 500_000L).unwrap();
+        var clock = HlcClock.hlcClock(new NodeId("node-1"), time::get, 500_000L);
 
-        var remote = new HlcTimestamp(pack(1_200_000L, 3), "node-2");
+        var remote = new HlcTimestamp(pack(1_200_000L, 3), new NodeId("node-2"));
 
         clock.update(remote)
              .onFailure(c -> fail("Expected success: " + c.message()))
@@ -92,9 +94,9 @@ class HlcClockTest {
     @Test
     void update_driftExceeded_returnsFailure() {
         var time = new AtomicLong(1_000_000L);
-        var clock = HlcClock.hlcClock("node-1", time::get, 500_000L).unwrap();
+        var clock = HlcClock.hlcClock(new NodeId("node-1"), time::get, 500_000L);
 
-        var farFuture = new HlcTimestamp(pack(2_000_000L, 0), "node-2");
+        var farFuture = new HlcTimestamp(pack(2_000_000L, 0), new NodeId("node-2"));
 
         clock.update(farFuture)
              .onSuccess(_ -> fail("Expected failure for excessive drift"))
@@ -104,10 +106,10 @@ class HlcClockTest {
     @Test
     void update_counterOverflow_throwsException() {
         var fixedTime = new AtomicLong(1_000_000L);
-        var clock = HlcClock.hlcClock("node-1", fixedTime::get, 500_000L).unwrap();
+        var clock = HlcClock.hlcClock(new NodeId("node-1"), fixedTime::get, 500_000L);
 
         // Set remote to same physical time with counter near max
-        var remote = new HlcTimestamp(pack(1_000_000L, 0xFFFE), "node-2");
+        var remote = new HlcTimestamp(pack(1_000_000L, 0xFFFE), new NodeId("node-2"));
         clock.update(remote)
              .onFailure(c -> fail("Expected success: " + c.message()));
 
@@ -118,7 +120,7 @@ class HlcClockTest {
     @Test
     void forceReset_resetsToCurrentPhysicalTime() {
         var time = new AtomicLong(1_000_000L);
-        var clock = HlcClock.hlcClock("node-1", time::get, 500_000L).unwrap();
+        var clock = HlcClock.hlcClock(new NodeId("node-1"), time::get, 500_000L);
 
         // Advance the clock with several events
         clock.now();
@@ -130,13 +132,13 @@ class HlcClockTest {
 
         assertThat(reset.physicalMicros()).isEqualTo(3_000_000L);
         assertThat(reset.counter()).isZero();
-        assertThat(reset.nodeId()).isEqualTo("node-1");
+        assertThat(reset.nodeId()).isEqualTo(new NodeId("node-1"));
     }
 
     @Test
     void now_concurrentAccess_allTimestampsUnique() throws InterruptedException {
         var time = new AtomicLong(1_000_000L);
-        var clock = HlcClock.hlcClock("node-1", time::incrementAndGet, 500_000L).unwrap();
+        var clock = HlcClock.hlcClock(new NodeId("node-1"), time::incrementAndGet, 500_000L);
 
         Set<Long> packedValues = ConcurrentHashMap.newKeySet();
         var threadCount = 8;

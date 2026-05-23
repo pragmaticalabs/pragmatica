@@ -17,6 +17,8 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.consensus.NodeId;
+
 
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
@@ -210,6 +212,6 @@ class NodeLifecycleRoutesCommandsTest {
     }
 
     private static HlcClock stubHlcClock() {
-        return HlcClock.hlcClock("test-node").unwrap();
+        return HlcClock.hlcClock(new NodeId("test-node"));
     }
 }

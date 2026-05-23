@@ -20,10 +20,8 @@ import java.time.Instant;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
 
-import org.pragmatica.lang.Cause;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Verify;
-import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.hlc.HlcTimestamp.pack;
 
@@ -38,16 +36,13 @@ public final class HlcClock {
     private static final long COUNTER_MASK = 0xFFFFL;
     private static final int MAX_COUNTER = 0xFFFF;
 
-    private static final Cause EMPTY_NODE_ID = Causes.cause("Node ID must not be null or empty");
-    private static final Cause INVALID_MAX_DRIFT = Causes.cause("Max drift must be positive");
-
     private volatile long latestPacked;
-    private final String nodeId;
+    private final NodeId nodeId;
     private final long maxDriftMicros;
     private final LongSupplier physicalClock;
     private final ReentrantLock lock = new ReentrantLock();
 
-    private HlcClock(String nodeId, LongSupplier physicalClock, long maxDriftMicros) {
+    private HlcClock(NodeId nodeId, LongSupplier physicalClock, long maxDriftMicros) {
         this.nodeId = nodeId;
         this.physicalClock = physicalClock;
         this.maxDriftMicros = maxDriftMicros;
@@ -59,16 +54,14 @@ public final class HlcClock {
     /// @param nodeId          unique identifier for this node
     /// @param physicalClock   supplier returning current physical time in microseconds
     /// @param maxDriftMicros  maximum allowed drift between remote and local clocks in microseconds
-    public static Result<HlcClock> hlcClock(String nodeId, LongSupplier physicalClock, long maxDriftMicros) {
-        return Verify.ensure(nodeId, Verify.Is::present, EMPTY_NODE_ID)
-                     .flatMap(_ -> Verify.ensure(maxDriftMicros, Verify.Is::positive, INVALID_MAX_DRIFT))
-                     .map(_ -> new HlcClock(nodeId, physicalClock, maxDriftMicros));
+    public static HlcClock hlcClock(NodeId nodeId, LongSupplier physicalClock, long maxDriftMicros) {
+        return new HlcClock(nodeId, physicalClock, maxDriftMicros);
     }
 
     /// Creates an HLC clock with default physical clock (system time in microseconds) and default max drift (500ms).
     ///
     /// @param nodeId unique identifier for this node
-    public static Result<HlcClock> hlcClock(String nodeId) {
+    public static HlcClock hlcClock(NodeId nodeId) {
         return hlcClock(nodeId, HlcClock::systemMicros, DEFAULT_MAX_DRIFT_MICROS);
     }
 

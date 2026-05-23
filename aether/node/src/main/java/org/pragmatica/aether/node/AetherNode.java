@@ -370,7 +370,7 @@ public interface AetherNode extends ManageableNode {
         Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                       LeaderValue.class)
                                                                             .map(LeaderValue::leader);
-        var hlcClock = HlcClock.hlcClock(config.self().id()).unwrap();
+        var hlcClock = HlcClock.hlcClock(config.self());
         var snapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
         // Phase 2 PR-B (cluster-convergence-reconciler) — per-node readiness tracker + leader-side
         // sync-hold registry. `readinessTracker.markReady(self)` fires on KVSyncResponse arrival;
@@ -2501,7 +2501,7 @@ public interface AetherNode extends ManageableNode {
                                                                                       List.of(),
                                                                                       () -> groupMembershipTracker.myGroup()
                                                                                                                   .communityId());
-        var workerHlc = HlcClock.hlcClock(selfId.id()).unwrap();
+        var workerHlc = HlcClock.hlcClock(selfId);
         var workerTcpAddress = resolveSelfTcpAddress(config);
         var governorAnnouncer = org.pragmatica.aether.worker.governor.GovernorAnnouncer.governorAnnouncer(selfId,
                                                                                                           clusterNode,

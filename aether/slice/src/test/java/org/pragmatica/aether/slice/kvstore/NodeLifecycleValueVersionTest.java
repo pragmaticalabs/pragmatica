@@ -13,6 +13,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.serialization.WireFormatError;
 import org.pragmatica.serialization.WireFormatError.UnsupportedVersion;
+import org.pragmatica.consensus.NodeId;
+
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -130,11 +132,11 @@ class NodeLifecycleValueVersionTest {
                                                   "h",
                                                   1,
                                                   Epoch.epoch(3L, 4L),
-                                                  new HlcTimestamp(50L, "a"),
+                                                  new HlcTimestamp(50L, new NodeId("a")),
                                                   ProvisioningSource.CTM,
                                                   (byte) 3);
 
-            var next = original.withState(NodeLifecycleState.DRAINING, new HlcTimestamp(99L, "leader"));
+            var next = original.withState(NodeLifecycleState.DRAINING, new HlcTimestamp(99L, new NodeId("leader")));
 
             assertThat(next.version()).isEqualTo((byte) 3);
         }
@@ -145,7 +147,7 @@ class NodeLifecycleValueVersionTest {
                                                   "h",
                                                   1,
                                                   Epoch.epoch(3L, 4L),
-                                                  new HlcTimestamp(5L, "a"),
+                                                  new HlcTimestamp(5L, new NodeId("a")),
                                                   ProvisioningSource.UNKNOWN,
                                                   (byte) 7);
 
