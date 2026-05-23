@@ -37,14 +37,19 @@ class ReconcilerConfigTest {
             assertThat(rules.onDutyFaulty().enforce()).isTrue();
             assertThat(rules.drainTimeout().enforce()).isTrue();
             assertThat(rules.generationLifecycleGap().enforce()).isTrue();
-            assertThat(rules.swimLifecycleGap().enforce()).isTrue();
         }
 
         @Test
         void defaults_keepsAlertOnlyRulesAuditOnly() {
             var rules = ReconcilerConfig.defaults().rules();
 
+            // joiningStuckAlert, swimLifecycleGap, stoppedZombie are audit-only forever
+            // per spec §7.1. swimLifecycleGap MUST NOT be enforcing — auto-emitting
+            // RecordJoining for SWIM-Healthy peers with no lifecycle entry creates a
+            // phantom-recovery loop with JoiningTimeout when GC removes a STOPPED entry
+            // before SWIM forgets the peer (observed in remote validation #4).
             assertThat(rules.joiningStuckAlert().enforce()).isFalse();
+            assertThat(rules.swimLifecycleGap().enforce()).isFalse();
             assertThat(rules.stoppedZombie().enforce()).isFalse();
         }
 
@@ -116,21 +121,25 @@ class ReconcilerConfigTest {
     @Nested
     class EnforcingDefaults {
         @Test
-        void enforcingDefaults_flipsFiveRulesToEnforcing() {
+        void enforcingDefaults_flipsFourRulesToEnforcing() {
             var rules = ReconcilerRulesConfig.enforcingDefaults();
 
             assertThat(rules.joiningTimeout().enforce()).isTrue();
             assertThat(rules.onDutyFaulty().enforce()).isTrue();
             assertThat(rules.drainTimeout().enforce()).isTrue();
             assertThat(rules.generationLifecycleGap().enforce()).isTrue();
-            assertThat(rules.swimLifecycleGap().enforce()).isTrue();
         }
 
         @Test
-        void enforcingDefaults_keepsJoiningStuckAlertAndStoppedZombieAuditOnly() {
+        void enforcingDefaults_keepsAuditOnlyRulesAuditOnly() {
             var rules = ReconcilerRulesConfig.enforcingDefaults();
 
+            // joiningStuckAlert, swimLifecycleGap, stoppedZombie stay audit-only forever
+            // per spec §7.1 (see ReconcilerRulesConfig.enforcingDefaults() javadoc for
+            // rationale — particularly the phantom-recovery loop SwimLifecycleGap would
+            // create if enforcing).
             assertThat(rules.joiningStuckAlert().enforce()).isFalse();
+            assertThat(rules.swimLifecycleGap().enforce()).isFalse();
             assertThat(rules.stoppedZombie().enforce()).isFalse();
         }
 
