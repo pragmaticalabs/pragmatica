@@ -9,29 +9,30 @@ import org.pragmatica.lang.utils.Causes;
 public record Quantity(int value) {
     public sealed interface QuantityError extends Cause {
         record Negative(int value) implements QuantityError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Quantity cannot be negative: " + value;
             }
         }
 
         record ExceedsMax(int value, int max) implements QuantityError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Quantity " + value + " exceeds maximum " + max;
             }
         }
     }
 
     public static final int MAX_QUANTITY = 10_000;
-
     public static final Quantity ZERO = quantity(0).expect("Quantity.ZERO");
 
     public static Result<Quantity> quantity(int value) {
         return Verify.ensure(value,
                              v -> v >= 0,
-                             _ -> new QuantityError.Negative(value)).filter(_ -> new QuantityError.ExceedsMax(value,
-                                                                                                              MAX_QUANTITY),
-                                                                            v -> v <= MAX_QUANTITY)
-                            .map(Quantity::new);
+                             _ -> new QuantityError.Negative(value))
+                     .filter(_ -> new QuantityError.ExceedsMax(value, MAX_QUANTITY),
+                             v -> v <= MAX_QUANTITY)
+                     .map(Quantity::new);
     }
 
     public Result<Quantity> add(Quantity other) {

@@ -40,7 +40,7 @@ class GovernorAnnouncerTest {
     @BeforeEach
     void setUp() {
         cluster = new RecordingClusterNode();
-        var hlcClock = HlcClock.hlcClock(SELF.id()).unwrap();
+        var hlcClock = HlcClock.hlcClock(SELF);
         announcer = GovernorAnnouncer.governorAnnouncer(SELF,
                                                          cluster,
                                                          hlcClock,

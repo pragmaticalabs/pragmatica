@@ -70,8 +70,7 @@ public final class DHTNode {
                                   StorageEngine storage,
                                   ConsistentHashRing<NodeId> ring,
                                   DHTConfig config) {
-        var clock = HlcClock.hlcClock(nodeId.id())
-                            .expect("NodeId from validated source cannot produce invalid HlcClock");
+        var clock = HlcClock.hlcClock(nodeId);
         return new DHTNode(nodeId, storage, ring, config, clock);
     }
 

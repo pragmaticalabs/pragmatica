@@ -53,12 +53,6 @@
 
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
-            <artifactId>hlc</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-
-        <dependency>
-            <groupId>org.pragmatica-lite</groupId>
             <artifactId>statemachine</artifactId>
             <version>${project.version}</version>
             <type>test-jar</type>

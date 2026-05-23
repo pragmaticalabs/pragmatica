@@ -119,7 +119,7 @@ public final class DhtRoutes implements RouteSource {
 
     private Result<HlcTimestamp> mergeHlc(DHTNode node, HlcShape requested) {
         var remote = new HlcTimestamp(HlcTimestamp.pack(requested.physical(), requested.logical()),
-                                      node.nodeId().id());
+                                      node.nodeId());
         return node.hlcClock()
                    .update(remote);
     }

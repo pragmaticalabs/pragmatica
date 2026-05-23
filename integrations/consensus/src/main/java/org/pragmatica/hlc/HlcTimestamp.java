@@ -16,6 +16,7 @@
 
 package org.pragmatica.hlc;
 
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
 
 /// Hybrid Logical Clock timestamp combining physical time (microseconds) and a logical counter
@@ -23,8 +24,8 @@ import org.pragmatica.serialization.Codec;
 ///
 /// Packing layout: upper 48 bits = microseconds since epoch, lower 16 bits = logical counter.
 @Codec
-public record HlcTimestamp(long packed, String nodeId) implements Comparable<HlcTimestamp> {
-    public static final HlcTimestamp ZERO = new HlcTimestamp(0L, "");
+public record HlcTimestamp(long packed, NodeId nodeId) implements Comparable<HlcTimestamp> {
+    public static final HlcTimestamp ZERO = new HlcTimestamp(0L, new NodeId(""));
     public static final HlcTimestamp MIN = ZERO;
 
     private static final int COUNTER_BITS = 16;
@@ -59,6 +60,6 @@ public record HlcTimestamp(long packed, String nodeId) implements Comparable<Hlc
 
     @Override
     public String toString() {
-        return physicalMicros() + "/" + counter() + "@" + nodeId;
+        return physicalMicros() + "/" + counter() + "@" + nodeId.id();
     }
 }

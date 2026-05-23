@@ -203,7 +203,7 @@ class GenerationSnapshotPublisherAsyncTest {
     private static Fixture newFixture() {
         var router = MessageRouter.mutable();
         KVStore<AetherKey, AetherValue> kvStore = new KVStore<>(router, NoOpSerializer.INSTANCE, NoOpDeserializer.INSTANCE);
-        var hlcClock = HlcClock.hlcClock("test-self").unwrap();
+        var hlcClock = HlcClock.hlcClock(new NodeId("test-self"));
         var projector = ClusterGenerationProjector.clusterGenerationProjector();
         var isLeader = new AtomicBoolean(true);
         AtomicReference<Map<AetherKey, AetherValue>> kvRef = new AtomicReference<>(new HashMap<>());

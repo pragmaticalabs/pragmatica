@@ -64,7 +64,7 @@ class GovernorAnnouncementValueTest {
             var members = List.of(NodeId.nodeId("w-1").unwrap());
             var communityEpoch = Epoch.epoch(2L, 0L);
             var coreEpoch = Epoch.epoch(7L, 42L);
-            var hlc = new HlcTimestamp(100L, "core-leader");
+            var hlc = new HlcTimestamp(100L, new NodeId("core-leader"));
 
             var v = GovernorAnnouncementValue.governorAnnouncementValue(governor,
                                                                         members,
@@ -110,7 +110,7 @@ class GovernorAnnouncementValueTest {
                                                    List.of(NodeId.nodeId("w-1").unwrap()),
                                                    "10.0.0.2:7201",
                                                    Epoch.epoch(3L, 5L),
-                                                   new HlcTimestamp(50L, "core-1"));
+                                                   new HlcTimestamp(50L, new NodeId("core-1")));
 
             assertThat(next.governorId()).isEqualTo(newGovernor);
             assertThat(next.communityTerm()).isEqualTo(original.communityTerm() + 1);

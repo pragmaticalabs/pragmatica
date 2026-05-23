@@ -21,7 +21,7 @@ class CommunityGenerationSnapshotTest {
         var member = NodeId.nodeId("worker-1").unwrap();
         var commEpoch = Epoch.epoch(1L, 3L);
         var coreEpoch = Epoch.epoch(7L, 42L);
-        var hlc = new HlcTimestamp(1000L, "gov-1");
+        var hlc = new HlcTimestamp(1000L, new NodeId("gov-1"));
 
         var snapshot = CommunityGenerationSnapshot.communityGenerationSnapshot("pool-a",
                                                                                 1L,

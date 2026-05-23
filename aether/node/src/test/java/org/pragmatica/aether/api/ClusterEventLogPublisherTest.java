@@ -50,7 +50,7 @@ class ClusterEventLogPublisherTest {
     }
 
     private static HlcClock newClock() {
-        return HlcClock.hlcClock(SELF.id()).unwrap();
+        return HlcClock.hlcClock(SELF);
     }
 
     @Test

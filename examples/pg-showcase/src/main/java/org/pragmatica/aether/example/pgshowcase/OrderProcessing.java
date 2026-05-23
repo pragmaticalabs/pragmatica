@@ -11,16 +11,16 @@ import org.pragmatica.lang.Verify;
 import java.math.BigDecimal;
 
 
-@Slice public interface OrderProcessing {
+@Slice
+public interface OrderProcessing {
     record PlaceOrderRequest(String userId, String total) {
         private static final Cause EMPTY_USER_ID = OrderError.validationFailed("User ID cannot be empty");
-
         private static final Cause EMPTY_TOTAL = OrderError.validationFailed("Total cannot be empty");
 
         public static Result<PlaceOrderRequest> placeOrderRequest(String userId, String total) {
             return Result.all(Verify.ensure(userId, Verify.Is::notBlank, EMPTY_USER_ID),
                               Verify.ensure(total, Verify.Is::notBlank, EMPTY_TOTAL))
-            .map(PlaceOrderRequest::new);
+                         .map(PlaceOrderRequest::new);
         }
     }
 
@@ -32,7 +32,8 @@ import java.math.BigDecimal;
 
     sealed interface OrderError extends Cause {
         record ValidationFailed(String reason) implements OrderError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Order validation failed: " + reason;
             }
         }
@@ -56,25 +57,26 @@ import java.math.BigDecimal;
     static OrderProcessing orderProcessing(OrderPersistence orders, UserPersistence users) {
         record orderProcessing(OrderPersistence orders, UserPersistence users) implements OrderProcessing {
             private static final Cause INVALID_USER_ID = OrderError.validationFailed("User ID must be a positive number");
-
             private static final Cause INVALID_TOTAL = OrderError.validationFailed("Total must be a positive number");
 
-            @Override public Promise<OrderConfirmation> placeOrder(PlaceOrderRequest request) {
+            @Override
+            public Promise<OrderConfirmation> placeOrder(PlaceOrderRequest request) {
                 return validateInput(request).async()
                                     .flatMap(this::verifyUserExists)
                                     .flatMap(this::createOrder)
                                     .map(OrderConfirmation::fromRow);
             }
 
-            @Override public Promise<Option<OrderRow>> getOrder(GetOrderRequest request) {
+            @Override
+            public Promise<Option<OrderRow>> getOrder(GetOrderRequest request) {
                 return orders.findById(request.orderId());
             }
 
             private Promise<ValidInput> verifyUserExists(ValidInput valid) {
                 return users.existsById(valid.userId())
-                                       .flatMap(exists -> exists
-                                                         ? Promise.success(valid)
-                                                         : OrderError.validationFailed("User does not exist").promise());
+                            .flatMap(exists -> exists
+                                               ? Promise.success(valid)
+                                               : OrderError.validationFailed("User does not exist").promise());
             }
 
             private Promise<OrderRow> createOrder(ValidInput valid) {
@@ -84,7 +86,9 @@ import java.math.BigDecimal;
             }
 
             private static Result<ValidInput> validateInput(PlaceOrderRequest raw) {
-                return Result.all(parseLong(raw.userId()), parseBigDecimal(raw.total())).map(ValidInput::new);
+                return Result.all(parseLong(raw.userId()),
+                                  parseBigDecimal(raw.total()))
+                             .map(ValidInput::new);
             }
 
             private static Result<Long> parseLong(String value) {
@@ -92,13 +96,12 @@ import java.math.BigDecimal;
             }
 
             private static Result<BigDecimal> parseBigDecimal(String value) {
-                return Result.lift(() -> new BigDecimal(value.trim()))
-                                  .filter(_ -> INVALID_TOTAL,
-                                          total -> total.compareTo(BigDecimal.ZERO) > 0);
+                return Result.lift(() -> new BigDecimal(value.trim())).filter(_ -> INVALID_TOTAL,
+                                                                              total -> total.compareTo(BigDecimal.ZERO) > 0);
             }
         }
         return new orderProcessing(orders, users);
     }
 
-    record ValidInput(long userId, BigDecimal total){}
+    record ValidInput(long userId, BigDecimal total) {}
 }

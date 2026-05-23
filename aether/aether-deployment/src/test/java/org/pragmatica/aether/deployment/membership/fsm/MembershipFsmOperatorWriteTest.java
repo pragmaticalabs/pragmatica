@@ -61,7 +61,7 @@ class MembershipFsmOperatorWriteTest {
     private static final long T0 = 1_000L;
 
     private static HlcTimestamp hlc(long millis) {
-        return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), "test");
+        return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), new NodeId("test"));
     }
 
     private FakeLifecycleSnapshot lifecycleSnapshot;

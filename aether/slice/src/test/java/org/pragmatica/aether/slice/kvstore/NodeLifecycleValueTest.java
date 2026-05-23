@@ -11,6 +11,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.consensus.NodeId;
+
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -54,7 +56,7 @@ class NodeLifecycleValueTest {
         @Test
         void nodeLifecycleValue_withAllFields_preservesEpochAndTransition() {
             var epoch = Epoch.epoch(5L, 12L);
-            var hlc = new HlcTimestamp(100L, "core-1");
+            var hlc = new HlcTimestamp(100L, new NodeId("core-1"));
 
             var v = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.JOINING,
                                                           1710072000000L,
@@ -161,9 +163,9 @@ class NodeLifecycleValueTest {
                                                                  "h",
                                                                  1,
                                                                  Epoch.epoch(3L, 4L),
-                                                                 new HlcTimestamp(50L, "a"));
+                                                                 new HlcTimestamp(50L, new NodeId("a")));
 
-            var next = original.withState(NodeLifecycleState.ON_DUTY, new HlcTimestamp(200L, "b"));
+            var next = original.withState(NodeLifecycleState.ON_DUTY, new HlcTimestamp(200L, new NodeId("b")));
 
             assertThat(next.transitionedAt()).isEqualTo(original.transitionedAt());
         }
@@ -175,8 +177,8 @@ class NodeLifecycleValueTest {
                                                                  "h",
                                                                  1,
                                                                  Epoch.epoch(3L, 4L),
-                                                                 new HlcTimestamp(50L, "a"));
-            var now = new HlcTimestamp(175L, "leader");
+                                                                 new HlcTimestamp(50L, new NodeId("a")));
+            var now = new HlcTimestamp(175L, new NodeId("leader"));
 
             var next = original.withState(NodeLifecycleState.DRAINING, now);
 
@@ -193,7 +195,7 @@ class NodeLifecycleValueTest {
                                                                  Epoch.epoch(3L, 4L),
                                                                  HlcTimestamp.ZERO);
 
-            var next = original.withState(NodeLifecycleState.DRAINING, new HlcTimestamp(99L, "leader"));
+            var next = original.withState(NodeLifecycleState.DRAINING, new HlcTimestamp(99L, new NodeId("leader")));
 
             assertThat(next.host()).isEqualTo("h");
             assertThat(next.port()).isEqualTo(1);
@@ -210,7 +212,7 @@ class NodeLifecycleValueTest {
                                                                  HlcTimestamp.ZERO,
                                                                  ProvisioningSource.CTM);
 
-            var next = original.withState(NodeLifecycleState.DRAINING, new HlcTimestamp(99L, "leader"));
+            var next = original.withState(NodeLifecycleState.DRAINING, new HlcTimestamp(99L, new NodeId("leader")));
 
             assertThat(next.provisioningSource()).isEqualTo(ProvisioningSource.CTM);
         }
@@ -222,7 +224,7 @@ class NodeLifecycleValueTest {
                                                                  "h",
                                                                  1,
                                                                  Epoch.epoch(3L, 4L),
-                                                                 new HlcTimestamp(5L, "a"),
+                                                                 new HlcTimestamp(5L, new NodeId("a")),
                                                                  ProvisioningSource.UNKNOWN);
 
             var next = original.withProvisioningSource(ProvisioningSource.MANUAL);
@@ -243,7 +245,7 @@ class NodeLifecycleValueTest {
                                                                  "h",
                                                                  1,
                                                                  Epoch.epoch(3L, 4L),
-                                                                 new HlcTimestamp(50L, "a"));
+                                                                 new HlcTimestamp(50L, new NodeId("a")));
 
             var next = original.withState(NodeLifecycleState.DRAINING, HlcTimestamp.ZERO);
 

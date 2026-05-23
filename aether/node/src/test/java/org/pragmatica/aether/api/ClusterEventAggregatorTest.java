@@ -57,7 +57,7 @@ class ClusterEventAggregatorTest {
         }
 
         LoopbackHarness(NodeId nodeId, boolean isLeader) {
-            var hlc = HlcClock.hlcClock(nodeId.id()).unwrap();
+            var hlc = HlcClock.hlcClock(nodeId);
             this.publisher = ClusterEventLogPublisher.clusterEventLogPublisher(nodeId,
                                                                                 hlc,
                                                                                 epoch::get,
@@ -158,7 +158,7 @@ class ClusterEventAggregatorTest {
                                                                               () -> CLUSTER_SIZE,
                                                                               org.pragmatica.aether.api.ClusterEventLogPublisher.clusterEventLogPublisher(
                                                                                   new NodeId("reader"),
-                                                                                  HlcClock.hlcClock("reader").unwrap(),
+                                                                                  HlcClock.hlcClock(new NodeId("reader")),
                                                                                   readerEpoch::get,
                                                                                   cmds -> Promise.success(List.of())),
                                                                               () -> true);
@@ -180,11 +180,11 @@ class ClusterEventAggregatorTest {
         };
 
         var writerA = ClusterEventLogPublisher.clusterEventLogPublisher(NODE_A,
-                                                                         HlcClock.hlcClock(NODE_A.id()).unwrap(),
+                                                                         HlcClock.hlcClock(NODE_A),
                                                                          readerEpoch::get,
                                                                          sharedApplier);
         var writerB = ClusterEventLogPublisher.clusterEventLogPublisher(NODE_B,
-                                                                         HlcClock.hlcClock(NODE_B.id()).unwrap(),
+                                                                         HlcClock.hlcClock(NODE_B),
                                                                          readerEpoch::get,
                                                                          sharedApplier);
 

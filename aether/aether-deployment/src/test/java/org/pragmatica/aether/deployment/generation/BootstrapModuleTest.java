@@ -167,7 +167,7 @@ class BootstrapModuleTest {
     // ---- Fixture wiring ----
 
     private static Fixture newFixture(int initialCoreSize) {
-        var hlcClock = HlcClock.hlcClock("test-self").unwrap();
+        var hlcClock = HlcClock.hlcClock(new NodeId("test-self"));
         var projector = ClusterGenerationProjector.clusterGenerationProjector();
         Map<AetherKey, AetherValue> kv = new HashMap<>();
         var isLeader = new AtomicBoolean(true);

@@ -66,7 +66,7 @@ class ReducerAggregatorGateTest {
     private static final long NOW_MS = 2_000L;
 
     private static HlcTimestamp at(long millis) {
-        return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), "test");
+        return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), new NodeId("test"));
     }
 
     private static long ms(HlcTimestamp at) {
@@ -174,7 +174,7 @@ class ReducerAggregatorGateTest {
                                                    new NoOpDrainCoordinator(),
                                                    new NoOpScheduler(),
                                                    () -> true,
-                                                   org.pragmatica.hlc.HlcClock.hlcClock(SELF.id()).unwrap(),
+                                                   org.pragmatica.hlc.HlcClock.hlcClock(SELF),
                                                    Option::none);  // cold-start: no snapshot
             fsm.start().await();
             assertThat(fsm.get(PEER).unwrap()).isInstanceOf(OnDuty.class);
@@ -205,7 +205,7 @@ class ReducerAggregatorGateTest {
                                                    new NoOpDrainCoordinator(),
                                                    new NoOpScheduler(),
                                                    () -> true,
-                                                   org.pragmatica.hlc.HlcClock.hlcClock(SELF.id()).unwrap(),
+                                                   org.pragmatica.hlc.HlcClock.hlcClock(SELF),
                                                    () -> Option.some(reachableSnapshot));
             fsm.start().await();
 

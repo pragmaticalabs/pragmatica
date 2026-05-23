@@ -17,6 +17,8 @@
 package org.pragmatica.hlc;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.NodeId;
+
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.hlc.HlcTimestamp.compareTime;
@@ -29,7 +31,7 @@ class HlcTimestampTest {
         var micros = 1_700_000_000_000L;
         var counter = 42;
         var packed = pack(micros, counter);
-        var ts = new HlcTimestamp(packed, "node-1");
+        var ts = new HlcTimestamp(packed, new NodeId("node-1"));
 
         assertThat(ts.physicalMicros()).isEqualTo(micros);
         assertThat(ts.counter()).isEqualTo(counter);
@@ -37,8 +39,8 @@ class HlcTimestampTest {
 
     @Test
     void compareTo_differentPhysical_orderedByTime() {
-        var earlier = new HlcTimestamp(pack(1000L, 0), "node-b");
-        var later = new HlcTimestamp(pack(2000L, 0), "node-a");
+        var earlier = new HlcTimestamp(pack(1000L, 0), new NodeId("node-b"));
+        var later = new HlcTimestamp(pack(2000L, 0), new NodeId("node-a"));
 
         assertThat(earlier).isLessThan(later);
         assertThat(later).isGreaterThan(earlier);
@@ -47,8 +49,8 @@ class HlcTimestampTest {
     @Test
     void compareTo_sameTime_orderedByNodeId() {
         var packed = pack(1000L, 5);
-        var nodeA = new HlcTimestamp(packed, "node-a");
-        var nodeB = new HlcTimestamp(packed, "node-b");
+        var nodeA = new HlcTimestamp(packed, new NodeId("node-a"));
+        var nodeB = new HlcTimestamp(packed, new NodeId("node-b"));
 
         assertThat(nodeA).isLessThan(nodeB);
         assertThat(nodeB).isGreaterThan(nodeA);
@@ -66,18 +68,18 @@ class HlcTimestampTest {
 
     @Test
     void toString_formatsCorrectly() {
-        var ts = new HlcTimestamp(pack(12345L, 7), "my-node");
+        var ts = new HlcTimestamp(pack(12345L, 7), new NodeId("my-node"));
 
         assertThat(ts.toString()).isEqualTo("12345/7@my-node");
     }
 
     @Test
     void zero_isSmallestTimestamp() {
-        var nonZero = new HlcTimestamp(pack(1L, 0), "a");
+        var nonZero = new HlcTimestamp(pack(1L, 0), new NodeId("a"));
 
         assertThat(HlcTimestamp.ZERO).isLessThan(nonZero);
         assertThat(HlcTimestamp.ZERO.physicalMicros()).isZero();
         assertThat(HlcTimestamp.ZERO.counter()).isZero();
-        assertThat(HlcTimestamp.ZERO.nodeId()).isEmpty();
+        assertThat(HlcTimestamp.ZERO.nodeId().id()).isEmpty();
     }
 }
