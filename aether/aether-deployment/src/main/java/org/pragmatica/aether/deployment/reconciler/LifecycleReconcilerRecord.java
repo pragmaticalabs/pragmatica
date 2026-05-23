@@ -41,6 +41,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipView;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -104,6 +105,7 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                  StreamPublisher<CommandLifecycleEvent> auditPublisher,
                                  MembershipFsmConfig fsmConfig,
                                  ReconcilerConfig config,
+                                 HlcClock hlcClock,
                                  LongSupplier clock,
                                  AtomicBoolean activeRef,
                                  AtomicReference<ScheduledFuture<?>> scheduledTickRef,
@@ -122,7 +124,8 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
 
     /// Build the record-shaped reconciler. The seven rules are wired in fixed insertion
     /// order; the `activate()` lifecycle, in-flight tick scheduling, and decision buffer
-    /// are initialised from the supplied `config`.
+    /// are initialised from the supplied `config`. `hlcClock` is sampled once per tick
+    /// (see `buildSnapshot()`) and embedded in every emitted command via `snapshot.at()`.
     static LifecycleReconcilerRecord lifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                                                KVStore<AetherKey, AetherValue> kvStore,
                                                                Supplier<Option<MembershipView>> generationSnapshot,
@@ -132,6 +135,7 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                                                StreamPublisher<CommandLifecycleEvent> auditPublisher,
                                                                MembershipFsmConfig fsmConfig,
                                                                ReconcilerConfig config,
+                                                               HlcClock hlcClock,
                                                                LongSupplier clock) {
         var rules = List.<ReconciliationRule>of(JoiningTimeout.joiningTimeout(),
                                                 JoiningStuckAlert.joiningStuckAlert(),
@@ -149,6 +153,7 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                              auditPublisher,
                                              fsmConfig,
                                              config,
+                                             hlcClock,
                                              clock,
                                              new AtomicBoolean(false),
                                              new AtomicReference<>(null),
@@ -369,6 +374,7 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
 
     private ReconciliationSnapshot buildSnapshot() {
         var nowMs = clock.getAsLong();
+        var at = hlcClock.now();
         var lifecycleEntries = new HashMap<NodeId, NodeLifecycleValue>();
         kvStore.forEach(NodeLifecycleKey.class,
                         NodeLifecycleValue.class,
@@ -395,6 +401,7 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                           drainDeadlines,
                                           holds,
                                           nowMs,
+                                          at,
                                           fsmConfig,
                                           config.rules());
     }

@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.reconciler.rules;
 
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -68,7 +67,7 @@ public final class SwimLifecycleGap implements ReconciliationRule {
                                           new RecordJoining(peer,
                                                             Option.none(),
                                                             justification,
-                                                            HlcTimestamp.ZERO),
+                                                            snapshot.at()),
                                           justification));
     }
 

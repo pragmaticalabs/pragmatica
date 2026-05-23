@@ -1324,6 +1324,7 @@ public interface AetherNode extends ManageableNode {
             auditLifecycleCommandPublisher,
             org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig.defaultMembershipFsmConfig(),
             org.pragmatica.aether.config.ReconcilerConfig.defaults(),
+            hlcClock,
             System::currentTimeMillis);
         // Post-E.8 phase-change publisher. ClusterPhaseView computes the phase on each call;
         // CTM needs the edge-triggered `onClusterPhaseChanged` callback to reset the

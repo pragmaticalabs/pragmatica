@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipView;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimHealth;
@@ -78,6 +79,11 @@ public interface LifecycleReconciler {
     /// `swimHealthSnapshot` is a `Supplier<Map<NodeId, SwimHealth>>` polled once per
     /// tick; the reconciler maintains its own per-peer "since" timestamps by diffing
     /// consecutive snapshots — no external "since" feed is required.
+    ///
+    /// `hlcClock` is sampled once per tick and the resulting `HlcTimestamp` is embedded
+    /// in every emitted `LifecycleCommand` so consensus writes and audit events carry
+    /// correct causal ordering (cluster-convergence-reconciler-spec §7, open follow-up
+    /// #6 — replaces the prior `HlcTimestamp.ZERO` placeholders).
     static LifecycleReconciler lifecycleReconciler(Supplier<ClusterPhase> phaseSupplier,
                                                    KVStore<AetherKey, AetherValue> kvStore,
                                                    Supplier<Option<MembershipView>> generationSnapshot,
@@ -87,6 +93,7 @@ public interface LifecycleReconciler {
                                                    StreamPublisher<CommandLifecycleEvent> auditPublisher,
                                                    MembershipFsmConfig fsmConfig,
                                                    ReconcilerConfig config,
+                                                   HlcClock hlcClock,
                                                    LongSupplier clock) {
         return LifecycleReconcilerRecord.lifecycleReconcilerRecord(phaseSupplier,
                                                                    kvStore,
@@ -97,6 +104,7 @@ public interface LifecycleReconciler {
                                                                    auditPublisher,
                                                                    fsmConfig,
                                                                    config,
+                                                                   hlcClock,
                                                                    clock);
     }
 }

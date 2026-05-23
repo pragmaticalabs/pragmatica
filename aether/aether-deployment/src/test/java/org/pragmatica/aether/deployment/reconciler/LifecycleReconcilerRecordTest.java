@@ -14,6 +14,7 @@ import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
 import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent.CommandReceived;
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -26,6 +27,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipView;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -207,6 +210,27 @@ class LifecycleReconcilerRecordTest {
     }
 
     @Nested
+    class HlcStamping {
+        @Test
+        void enforcing_commandsCarryNonZeroHlcTimestamp() {
+            phaseRef.set(ClusterPhase.NORMAL);
+            seedDecommissionableJoiner();
+
+            var reconciler = (LifecycleReconcilerRecord) buildReconciler(enforcingConfig());
+            reconciler.activate();
+            invokeReconcileDirectly(reconciler);
+
+            assertEquals(1, dispatchedCommands.size());
+            var command = (ForceDecommission) dispatchedCommands.get(0);
+            // The reconciler MUST stamp commands with a real HLC value, not the
+            // pre-RC1 `HlcTimestamp.ZERO` placeholder (open follow-up #6).
+            assertFalse(HlcTimestamp.ZERO.equals(command.at()),
+                        "Reconciler command MUST carry a non-zero HLC stamp");
+            reconciler.deactivate();
+        }
+    }
+
+    @Nested
     class NormalPhaseWarmup {
         @Test
         void firstTickAfterNormalEntry_skipsRulesEvenIfBudgetExceeded() {
@@ -328,6 +352,7 @@ class LifecycleReconcilerRecordTest {
                                                        auditPublisher,
                                                        fsmConfig,
                                                        config,
+                                                       HlcClock.hlcClock(NodeId.nodeId("test-node").unwrap()),
                                                        clockMs::get);
     }
 

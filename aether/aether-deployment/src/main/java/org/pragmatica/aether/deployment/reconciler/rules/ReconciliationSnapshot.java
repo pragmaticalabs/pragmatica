@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DrainDeadlineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.JoinDeadlineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimHealth;
 
@@ -45,6 +46,10 @@ import java.util.Set;
 ///   - `nowMs` — wall-clock instant the tick was sampled. Rules MUST use this rather than
 ///     calling `System.currentTimeMillis()` directly so deterministic tests can inject a
 ///     clock.
+///   - `at` — HLC stamp sampled once at the top of the tick from the reconciler's
+///     `HlcClock`. Rules MUST embed this in every emitted `LifecycleCommand` so consensus
+///     writes and audit events carry correct causal ordering. All commands fired in a
+///     single tick share the same `at` stamp.
 ///   - `fsmConfig` — `MembershipFsmConfig.joinDeadline()` / `drainTimeout()` budgets.
 ///     Rules multiply these by their per-rule multiplier (1.5×, 3×, …) to derive the
 ///     effective threshold.
@@ -60,6 +65,7 @@ public record ReconciliationSnapshot(Map<NodeId, NodeLifecycleValue> lifecycleEn
                                      Map<NodeId, DrainDeadlineValue> drainDeadlines,
                                      Set<NodeId> activeSyncHolds,
                                      long nowMs,
+                                     HlcTimestamp at,
                                      MembershipFsmConfig fsmConfig,
                                      ReconcilerRulesConfig rulesConfig) {
     public ReconciliationSnapshot {
