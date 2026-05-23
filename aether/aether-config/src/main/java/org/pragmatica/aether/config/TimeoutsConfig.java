@@ -148,7 +148,11 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
 
     public record DhtTimeouts(TimeSpan operation, TimeSpan antiEntropyInterval) {
         public static DhtTimeouts dhtTimeouts() {
-            return new DhtTimeouts(timeSpan(10).seconds(), timeSpan(30).seconds());
+            // operation=30s aligns with `DHTConfig.DEFAULT_TIMEOUT` (raised
+            // from 10s to give the `/api/blueprints/deploy` chain — which
+            // hits `dht.get` via BuiltinRepository — enough headroom during
+            // cluster bootstrap + parallel-suite-load. See DHTConfig javadoc.
+            return new DhtTimeouts(timeSpan(30).seconds(), timeSpan(30).seconds());
         }
     }
 

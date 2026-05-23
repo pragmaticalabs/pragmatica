@@ -66,3 +66,14 @@ connection_timeout = "5s"
 max_lifetime = "30m"
 leak_detection_timeout = "0s"
 io_threads = 0
+
+# Belt-and-suspenders: DHT operation timeout pinned explicitly to 30s.
+# The deploy chain (/api/blueprints/deploy → BlueprintService →
+# BuiltinRepository → ArtifactStore → dht.get) bottlenecks on this value;
+# 10s breached under parallel-suite-load + still-settling QUIC links during
+# cluster bootstrap, surfacing as "Promise timed out after 10000ms" HTTP 500.
+# Code default in DHTConfig.DEFAULT_TIMEOUT is also 30s — this stanza just
+# pins it for docker-compose / integration-test deployments so any future
+# regression in the code default does not silently leak back in.
+[timeouts.dht]
+operation = "30s"

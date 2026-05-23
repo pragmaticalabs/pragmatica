@@ -34,8 +34,20 @@ public record DHTConfig(int replicationFactor, int writeQuorum, int readQuorum, 
     /// Full replication marker - all nodes store all data.
     public static final int FULL_REPLICATION = 0;
 
-    /// Default operation timeout.
-    public static final TimeSpan DEFAULT_TIMEOUT = timeSpan(10).seconds();
+    /// Default operation timeout for individual DHT get/put operations.
+    ///
+    /// Set to 30s (was 10s) to give headroom for cluster bootstrap and
+    /// parallel-suite-load latency. The deploy chain `/api/blueprints/deploy` →
+    /// `BlueprintService.publishFromArtifact` → `BuiltinRepository` →
+    /// `ArtifactStore.resolveWithMetadata` → `dht.get(metaKey)` bottlenecks on
+    /// this timeout. With longer node identifiers (post NodeId-as-container-name
+    /// migration) plus still-settling QUIC connections during cluster bootstrap,
+    /// a 10s budget routinely breaches and surfaces as
+    /// `Promise timed out after 10000ms` HTTP 500 on the deploy endpoint.
+    /// `RemoteRepository`, `ArtifactStore.DEPLOY_TIMEOUT`, and
+    /// `LocalRepository.localRepository(Path)` are already at 30s — this aligns
+    /// the DHT operation budget with the rest of the deploy pipeline.
+    public static final TimeSpan DEFAULT_TIMEOUT = timeSpan(30).seconds();
 
     private static final Cause INVALID_REPLICATION = Causes.cause("replicationFactor must be >= 0 (0 = full replication)");
     private static final Cause INVALID_WRITE_QUORUM = Causes.cause("writeQuorum must be between 1 and replicationFactor");
