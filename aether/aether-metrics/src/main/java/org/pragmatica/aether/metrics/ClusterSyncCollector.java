@@ -128,6 +128,11 @@ public interface ClusterSyncCollector {
     /// resolve KV-ON_DUTY peer status when local SWIM hasn't acked HEALTHY.
     Option<AggregatedReachabilitySnapshot> bestSnapshot();
 
+    /// Wire the per-node readiness tracker so `buildPong()` can populate
+    /// `ClusterSyncPong.readyCandidate`. Default no-op leaves the field as `Option.none()`
+    /// which preserves pre-Phase-2 behaviour. See cluster-convergence-reconciler-spec §SYNCING.
+    @Contract default void setReadinessTracker(NodeReadinessTracker tracker) {}
+
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
     }
@@ -182,6 +187,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// SwimHealth.HEALTHY`. When this predicate returns TRUE for a peer, the follower
     /// IGNORES the owner's eviction hint for that peer — independence preserved.
     private final AtomicReference<java.util.function.Predicate<NodeId>> peerLocallyAlive = new AtomicReference<>(_ -> true);
+
+    /// Phase 2 PR-B — per-node "ready to promote to ON_DUTY" candidate. `buildPong()` reads
+    /// `tracker.candidate()` and stamps the value on the outgoing pong. Default tracker reports
+    /// `Option.none()` until `setReadinessTracker(...)` is wired by `AetherNode`.
+    private final AtomicReference<NodeReadinessTracker> readinessTracker =
+        new AtomicReference<>(NodeReadinessTracker.nodeReadinessTracker());
 
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
@@ -345,6 +356,12 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                              : predicate);
     }
 
+    @Override@Contract public void setReadinessTracker(NodeReadinessTracker tracker) {
+        readinessTracker.set(tracker == null
+                             ? NodeReadinessTracker.nodeReadinessTracker()
+                             : tracker);
+    }
+
     @Override@Contract public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
         var buffer = peerObservationBuffer.get();
         var epoch = observedEpoch.get();
@@ -427,7 +444,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
                                    currentLifecycleState(),
                                    collectCommunityReports(),
                                    buffer.drainHealth(),
-                                   buffer.drainConnectivity());
+                                   buffer.drainConnectivity(),
+                                   readinessTracker.get().candidate());
     }
 
     private void collectCpuMetrics(Map<String, Double> metrics) {

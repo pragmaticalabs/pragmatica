@@ -372,6 +372,15 @@ public interface AetherNode extends ManageableNode {
                                                                             .map(LeaderValue::leader);
         var hlcClock = HlcClock.hlcClock(config.self().id()).unwrap();
         var snapshotSource = KvBackedGenerationSnapshotSource.kvBackedGenerationSnapshotSource(kvStore);
+        // Phase 2 PR-B (cluster-convergence-reconciler) — per-node readiness tracker + leader-side
+        // sync-hold registry. `readinessTracker.markReady(self)` fires on KVSyncResponse arrival;
+        // `metricsCollector` and `clusterSyncPongSignalFan` consume the candidate signal further
+        // down in `assembleNode`. `syncHoldRegistry` is consulted by Phase 4's reconciler.
+        var readinessTracker = org.pragmatica.aether.metrics.NodeReadinessTracker.nodeReadinessTracker();
+        var syncHoldRegistry = org.pragmatica.cluster.node.rabia.SyncHoldRegistry.syncHoldRegistry();
+        var syncHoldConfig = org.pragmatica.cluster.node.rabia.SyncHoldConfig.defaults();
+        var self = config.self();
+        Runnable onSyncResponseReceived = () -> readinessTracker.markReady(self);
 
         return RabiaNode.rabiaNode(nodeConfig,
                                    delegateRouter,
@@ -386,7 +395,10 @@ public interface AetherNode extends ManageableNode {
                                    isDecommissioned,
                                    currentLeaderFromKvSupplier,
                                    snapshotSource,
-                                   hlcClock::now)
+                                   hlcClock::now,
+                                   syncHoldRegistry,
+                                   syncHoldConfig,
+                                   onSyncResponseReceived)
                         .flatMap(clusterNode -> assembleNode(config,
                                                              delegateRouter,
                                                              kvStore,
@@ -402,6 +414,7 @@ public interface AetherNode extends ManageableNode {
                                                              leaderTerm,
                                                              hlcClock,
                                                              snapshotSource,
+                                                             readinessTracker,
                                                              jvmExit));
     }
 
@@ -458,6 +471,7 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicLong leaderTerm,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
+                                                   org.pragmatica.aether.metrics.NodeReadinessTracker readinessTracker,
                                                    Runnable jvmExit) {
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
         // it to the QUIC transport's tracked-write API. The default DHTNetwork impl
@@ -1047,8 +1061,22 @@ public interface AetherNode extends ManageableNode {
         metricsCollector.setLocalSnapshotSupplier(() -> isLeaderSupplier.getAsBoolean()
                                                         ? reachabilityAggregator.snapshot()
                                                         : Option.none());
+        // Phase 2 PR-B (cluster-convergence-reconciler) — readyCandidate signal routing.
+        // `metricsCollector` reads the candidate from `readinessTracker` when building outgoing
+        // pongs. The leader-side `ClusterSyncPongSignalFan` reacts to non-empty candidates by
+        // invoking `ReadyCandidateSink`, which is wired here to emit
+        // `LifecycleCommand.ForceOnDuty` through `ctmLifecycleWriter`. The writer is built
+        // further down (~line 1240), so an `AtomicReference` indirection lets the fan capture
+        // a stable sink view before the writer exists. Pre-wiring sink calls resolve to a
+        // no-op (`unitPromise()`) — safe because Rabia sync completion can only fire after
+        // the node has been fully assembled.
+        var ctmLifecycleWriterRef = new AtomicReference<org.pragmatica.aether.deployment.cluster.LifecycleWriter>(null);
+        ClusterSyncPongSignalFan.ReadyCandidateSink readyCandidateSink = (sender, candidate) ->
+            emitForceOnDuty(ctmLifecycleWriterRef.get(), sender, candidate);
+        metricsCollector.setReadinessTracker(readinessTracker);
         metricsCollector.setPongSignalFan(ClusterSyncPongSignalFan.clusterSyncPongSignalFan(stableHealthSink,
-                                                                                            clusterNode.leaderManager()));
+                                                                                            clusterNode.leaderManager(),
+                                                                                            readyCandidateSink));
         Supplier<Long> rabiaTermSupplier = leaderTerm::get;
         Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), 0L);
         var projectorEarly = ClusterGenerationProjector.clusterGenerationProjector();
@@ -1224,6 +1252,9 @@ public interface AetherNode extends ManageableNode {
         StreamPublisher<CommandLifecycleEvent> auditLifecycleCommandPublisher = event -> Option.option(auditLifecycleCommandPublisherRef.get())
                                                                                                 .fold(Promise::<Unit>unitPromise, p -> p.publish(event));
         var ctmLifecycleWriter = LifecycleWriter.directLifecycleWriter(lifecycleReader::apply, clusterCommandApplier, auditLifecycleCommandPublisher);
+        // Bind the forward-ref so the Phase 2 PR-B `readyCandidateSink` (wired above) can emit
+        // `LifecycleCommand.ForceOnDuty` once the lifecycle writer exists.
+        ctmLifecycleWriterRef.set(ctmLifecycleWriter);
         org.pragmatica.lang.Functions.Fn1<Promise<Integer>, NodeId> inFlightProbe = targetNodeId -> targetNodeId.equals(config.self()
                                                                                                                               .id())
                                                                                                     ? Promise.success(inFlightTrackerForDrain.count())
@@ -1448,7 +1479,9 @@ public interface AetherNode extends ManageableNode {
                                                 consumerGroupRegistry,
                                                 membershipFsm,
                                                 selfDrainCoordinator,
-                                                managementServerRef);
+                                                managementServerRef,
+                                                config.self(),
+                                                readinessTracker);
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
                                                                                         response -> dhtNetwork.send(request.sender(),
@@ -2149,6 +2182,39 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// Phase 2 PR-B (cluster-convergence-reconciler) — `ReadyCandidateSink` impl. Emits
+    /// `LifecycleCommand.ForceOnDuty` for the candidate. The HLC stamp uses `HlcTimestamp.ZERO`
+    /// per Phase 1 PR-A convention — proper HLC threading is tracked as follow-up #6 in the
+    /// cluster-convergence-reconciler initiative. Audit logging lives downstream in
+    /// `DirectLifecycleWriter.applyCommand`. When the writer ref is unbound (pre-wiring window),
+    /// this collapses to a no-op so early pong arrivals don't NPE.
+    private static void emitForceOnDuty(org.pragmatica.aether.deployment.cluster.LifecycleWriter writer,
+                                         NodeId sender,
+                                         NodeId candidate) {
+        if (writer == null) {return;}
+        var command = new org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty(
+                candidate,
+                org.pragmatica.lang.utils.Causes.cause("readyCandidate from " + sender),
+                org.pragmatica.hlc.HlcTimestamp.ZERO);
+        writer.applyCommand(command)
+              .onFailure(cause -> LOG.warn("ForceOnDuty for {} (signalled by {}) failed: {}",
+                                            candidate, sender, cause.message()));
+    }
+
+    /// Phase 2 PR-B (cluster-convergence-reconciler) — clears the local readiness tracker once
+    /// this node observes its OWN `NodeLifecycleValue` flip to `ON_DUTY` via KV notification.
+    /// Closes the candidate-field loop: future pongs from this node carry `Option.none()` until
+    /// another sync-complete signal fires. Idempotent — safe to invoke multiple times.
+    private static void clearReadinessOnSelfOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
+                                                    NodeId self,
+                                                    org.pragmatica.aether.metrics.NodeReadinessTracker tracker) {
+        if (!put.cause().key().nodeId().equals(self)) {return;}
+        if (put.cause().value() instanceof AetherValue.NodeLifecycleValue lifecycleValue
+            && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {
+            tracker.clear();
+        }
+    }
+
     private static NodeAddress findSelfAddress(AetherNodeConfig config) {
         return config.topology()
                      .coreNodes()
@@ -2693,7 +2759,9 @@ public interface AetherNode extends ManageableNode {
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
                                                                     MembershipFsm membershipFsm,
                                                                     SelfDrainCoordinator selfDrainCoordinator,
-                                                                    java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef) {
+                                                                    java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef,
+                                                                    NodeId self,
+                                                                    org.pragmatica.aether.metrics.NodeReadinessTracker readinessTracker) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.AppBlueprintKey.class,
                                                                                                            clusterDeploymentManager::onAppBlueprintPut).onPut(AetherKey.SliceTargetKey.class,
@@ -2727,6 +2795,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                         eventAggregator::onNodeLifecyclePut).onPut(AetherKey.NodeLifecycleKey.class,
                                                                                                                                                    put -> notifyCtmOnDuty(put,
                                                                                                                                                                           clusterTopologyManager)).onPut(AetherKey.NodeLifecycleKey.class,
+                                                                                                                                                                                                         put -> clearReadinessOnSelfOnDuty(put,
+                                                                                                                                                                                                                                            self,
+                                                                                                                                                                                                                                            readinessTracker)).onPut(AetherKey.NodeLifecycleKey.class,
                                                                                                                                                                                                          membershipFsm::onNodeLifecyclePut).onRemove(AetherKey.NodeLifecycleKey.class,
                                                                                                                                                                                                                                                      membershipFsm::onNodeLifecycleRemove).onPut(AetherKey.ProvisioningSlotKey.class,
                                                                                                                                                                                                                                                                                                  membershipFsm::onProvisioningSlotPut).onRemove(AetherKey.ProvisioningSlotKey.class,

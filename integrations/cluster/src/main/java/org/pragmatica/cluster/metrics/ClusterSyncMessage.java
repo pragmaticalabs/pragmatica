@@ -90,6 +90,13 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
     ///                            since its last pong; empty on leaders and during steady state
     /// @param peerConnectivity    per-peer QUIC connectivity observations collected by the
     ///                            sender since its last pong; empty on leaders and during steady state
+    /// @param readyCandidate      set by a non-leader node that has just received and applied a full
+    ///                            KV-sync snapshot from the leader. Leader-side handler emits
+    ///                            `LifecycleCommand.ForceOnDuty` for the candidate so the lifecycle
+    ///                            transition `JOINING → ON_DUTY` is recorded through the audit-routed
+    ///                            command path. `Option.none()` on the leader's own outgoing pongs
+    ///                            and during steady state. See cluster-convergence-reconciler-spec
+    ///                            §SYNCING.
     record ClusterSyncPong(NodeId sender,
                            Map<String, Double> metrics,
                            long observedRabiaTerm,
@@ -98,7 +105,8 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
                            String lifecycleState,
                            List<CommunityReport> communityReports,
                            List<PeerHealthObservation> peerHealth,
-                           List<PeerConnectivityObservation> peerConnectivity) implements ClusterSyncMessage {
+                           List<PeerConnectivityObservation> peerConnectivity,
+                           Option<NodeId> readyCandidate) implements ClusterSyncMessage {
         public ClusterSyncPong {
             if (lifecycleState == null) {lifecycleState = "";}
             communityReports = communityReports == null
@@ -110,12 +118,31 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
             peerConnectivity = peerConnectivity == null
                               ? List.of()
                               : List.copyOf(peerConnectivity);
+            readyCandidate = readyCandidate == null
+                            ? Option.none()
+                            : readyCandidate;
+        }
+
+        /// Backward-compatible 9-arg constructor for call sites that pre-date the
+        /// `readyCandidate` extension (Phase 2 PR-B of cluster-convergence-reconciler).
+        /// Defaults the candidate field to `Option.none()`.
+        public ClusterSyncPong(NodeId sender,
+                               Map<String, Double> metrics,
+                               long observedRabiaTerm,
+                               long observedEpochTerm,
+                               long observedEpochCounter,
+                               String lifecycleState,
+                               List<CommunityReport> communityReports,
+                               List<PeerHealthObservation> peerHealth,
+                               List<PeerConnectivityObservation> peerConnectivity) {
+            this(sender, metrics, observedRabiaTerm, observedEpochTerm, observedEpochCounter,
+                 lifecycleState, communityReports, peerHealth, peerConnectivity, Option.none());
         }
 
         /// Backward-compatible factory for legacy call sites. Emits zero epoch,
         /// empty lifecycle, no community reports, no peer observations.
         public static ClusterSyncPong clusterSyncPong(NodeId sender, Map<String, Double> metrics) {
-            return new ClusterSyncPong(sender, metrics, 0L, 0L, 0L, "", List.of(), List.of(), List.of());
+            return new ClusterSyncPong(sender, metrics, 0L, 0L, 0L, "", List.of(), List.of(), List.of(), Option.none());
         }
     }
 }
