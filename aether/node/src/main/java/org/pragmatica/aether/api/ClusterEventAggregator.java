@@ -217,7 +217,7 @@ public final class ClusterEventAggregator {
         var prior = lastLifecycleState.put(nodeId, newState);
         if (prior == newState) {return;}
         switch (newState){
-            case DECOMMISSIONED -> emitDecommissionEvent(nodeId.id(), prior);
+            case STOPPED -> emitDecommissionEvent(nodeId.id(), prior);
             case DRAINING -> bufferNodeLifecycleChangedEvent(nodeId.id(), prior, newState);
             default -> {}
         }

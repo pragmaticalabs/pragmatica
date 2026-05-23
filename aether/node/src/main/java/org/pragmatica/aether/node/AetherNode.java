@@ -1377,7 +1377,7 @@ public interface AetherNode extends ManageableNode {
                     org.pragmatica.aether.api.ClusterEvent.Severity.INFO,
                     "Injected trace: " + operation,
                     metadata)));
-        traceStore.bindClusterEventsSource(() -> projectClusterTraceInjections(eventAggregator.events()));
+        traceStore.bindClusterEventsSource(() -> eventAggregator.events().map(AetherNode::projectClusterTraceInjections));
         var ttmManager = TTMManager.ttmManager(config.ttm(),
                                                minuteAggregator,
                                                controller::configuration)

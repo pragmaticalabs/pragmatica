@@ -243,9 +243,9 @@ class ManagementServerImpl implements ManagementServer {
                                                                                    () -> buildStatusJson(nodeSupplier));
         this.eventWsHandler = new EventWebSocketHandler(wsAuthenticator);
         this.eventWsPublisher = EventWebSocketPublisher.eventWebSocketPublisher(eventWsHandler,
-                                                                                () -> nodeSupplier.get()
-                                                                                                  .eventAggregator()
-                                                                                                  .events(),
+                                                                                since -> nodeSupplier.get()
+                                                                                                     .eventAggregator()
+                                                                                                     .eventsSince(since),
                                                                                 ManagementServerImpl::buildEventsJson);
         this.staticFileHandler = StaticFileHandler.staticFileHandler();
         this.observability = ObservabilityRegistry.prometheus();
@@ -618,8 +618,8 @@ class ManagementServerImpl implements ManagementServer {
 
     @SuppressWarnings("JBCT-PAT-01")
     private static void appendEventJson(StringBuilder sb, ClusterEvent event) {
-        sb.append("{\"timestamp\":\"").append(event.timestamp()).append("\"");
-        sb.append(",\"type\":\"").append(event.type().name()).append("\"");
+        sb.append("{\"at\":\"").append(event.at()).append("\"");
+        sb.append(",\"type\":\"").append(event.getClass().getSimpleName()).append("\"");
         sb.append(",\"severity\":\"").append(event.severity().name()).append("\"");
         sb.append(",\"summary\":\"").append(escapeJson(event.summary())).append("\"");
         sb.append(",\"details\":{");

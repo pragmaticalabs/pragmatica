@@ -7,6 +7,7 @@ package org.pragmatica.aether.invoke;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.time.Instant;
@@ -52,10 +53,9 @@ public final class InvocationTraceStore {
     /// matching prior behaviour for tests and non-cluster harnesses.
     private volatile Option<TraceEventSink> traceEventSink = Option.none();
 
-    /// Optional cluster-wide read source for cross-node visibility on `/api/traces`. When
-    /// bound, `all()` UNIONs the local ring with peer-originated `TRACE_INJECTED` entries.
-    /// Dedup by `requestId`.
-    private volatile Option<Supplier<List<ClusterTraceEvent>>> clusterEventsSource = Option.none();
+    /// Optional cluster-wide read source for cross-node visibility on `/api/traces`. Returns
+    /// a Promise because the underlying namespace-stream consumer is async. Dedup by `requestId`.
+    private volatile Option<Supplier<Promise<List<ClusterTraceEvent>>>> clusterEventsSource = Option.none();
 
     /// View record exposed to bindings — keeps `InvocationTraceStore` decoupled from the
     /// `ClusterEvent` projection type owned by `aether/node`. Producers convert to this
@@ -81,7 +81,7 @@ public final class InvocationTraceStore {
     /// Bind the cross-node injected-trace reader. Supplier returns the latest view of the
     /// replicated log filtered/projected by the caller to `TRACE_INJECTED` events only.
     @Contract
-    public void bindClusterEventsSource(Supplier<List<ClusterTraceEvent>> source) {
+    public void bindClusterEventsSource(Supplier<Promise<List<ClusterTraceEvent>>> source) {
         this.clusterEventsSource = Option.option(source);
     }
 
@@ -193,7 +193,7 @@ public final class InvocationTraceStore {
         }
     }
 
-    public List<InvocationNode> all() {
+    public Promise<List<InvocationNode>> all() {
         List<InvocationNode> local;
         lock.lock();
         try {
@@ -204,12 +204,12 @@ public final class InvocationTraceStore {
         return unionWithClusterWideInjected(local, _ -> true, Integer.MAX_VALUE);
     }
 
-    public List<InvocationNode> forRequest(String requestId) {
+    public Promise<List<InvocationNode>> forRequest(String requestId) {
         return query(node -> node.requestId().equals(requestId),
                      capacity);
     }
 
-    public List<InvocationNode> query(Predicate<InvocationNode> predicate, int limit) {
+    public Promise<List<InvocationNode>> query(Predicate<InvocationNode> predicate, int limit) {
         List<InvocationNode> local;
         lock.lock();
         try {
@@ -228,25 +228,24 @@ public final class InvocationTraceStore {
         return unionWithClusterWideInjected(local, predicate, limit);
     }
 
-    /// UNION the local-ring result with peer-originated `TRACE_INJECTED` entries from the
-    /// replicated log. Dedup by `requestId` (originator's local entry wins). Filter the
-    /// cluster-wide projection by the same predicate so query semantics stay consistent.
-    private List<InvocationNode> unionWithClusterWideInjected(List<InvocationNode> local,
-                                                              Predicate<InvocationNode> predicate,
-                                                              int limit) {
-        if (clusterEventsSource.isEmpty()) {return local;}
-        var seenRequestIds = new java.util.HashSet<String>();
-        for (var node : local) {seenRequestIds.add(node.requestId());}
-        var combined = new ArrayList<>(local);
-        clusterEventsSource.onPresent(source -> {
-            for (var event : source.get()) {
-                if (combined.size() >= limit) {return;}
-                if (event.requestId() == null || !seenRequestIds.add(event.requestId())) {continue;}
-                var projected = projectClusterTraceEvent(event);
-                if (predicate.test(projected)) {combined.add(projected);}
-            }
-        });
-        return combined;
+    /// UNION the local-ring result with peer-originated `TraceInjected` entries from the
+    /// cluster-wide events stream. Dedup by `requestId` (originator's local entry wins).
+    private Promise<List<InvocationNode>> unionWithClusterWideInjected(List<InvocationNode> local,
+                                                                       Predicate<InvocationNode> predicate,
+                                                                       int limit) {
+        return clusterEventsSource.fold(() -> Promise.success(local),
+                                         source -> source.get().map(events -> {
+                                             var seenRequestIds = new java.util.HashSet<String>();
+                                             for (var node : local) {seenRequestIds.add(node.requestId());}
+                                             var combined = new ArrayList<>(local);
+                                             for (var event : events) {
+                                                 if (combined.size() >= limit) {break;}
+                                                 if (event.requestId() == null || !seenRequestIds.add(event.requestId())) {continue;}
+                                                 var projected = projectClusterTraceEvent(event);
+                                                 if (predicate.test(projected)) {combined.add(projected);}
+                                             }
+                                             return (List<InvocationNode>) combined;
+                                         }));
     }
 
     private static InvocationNode projectClusterTraceEvent(ClusterTraceEvent event) {

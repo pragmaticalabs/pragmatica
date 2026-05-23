@@ -156,11 +156,14 @@ Per §5, a stream's schema is immutable once registered. The v1.0.0 envelope is 
 sealed interface ClusterEvent permits
     NodeJoined, NodeLeft, /* ... 22 other framework variants ... */,
     StreamRegistered, StreamDeleted,
+    AlertInjected, TraceInjected, SelfDrainInitiated,
     ExtendedEvent {
 
-    EventId id();          // total cluster ordering: per-node monotonic sequence + nodeId
-    Instant timestamp();   // wall-clock UTC at emission (HLC if available)
-    NodeId sourceNode();
+    HlcTimestamp at();                // restart-safe identity + total cluster ordering:
+                                      // HLC physical micros + logical counter + originating nodeId
+    default NodeId sourceNode() {     // origin — derived from at(), no separate wire field
+        return at().nodeId();
+    }
 }
 
 non-sealed interface ExtendedEvent extends ClusterEvent {
@@ -169,7 +172,10 @@ non-sealed interface ExtendedEvent extends ClusterEvent {
 }
 ```
 
-The v1.0.0 closed-set count is **27 variants**: the existing 25 framework event types plus `STREAM_REGISTERED` and `STREAM_DELETED` introduced by this spec.
+The v1.0.0 closed-set count is **30 variants**: the 25 prior framework event types plus `STREAM_REGISTERED` / `STREAM_DELETED` (this spec) plus `ALERT_INJECTED` / `TRACE_INJECTED` / `SELF_DRAIN_INITIATED` (operator-driven cluster-replicated paths).
+
+**Identity & ordering (RC1 amendment).** `EventId(sequence, nodeId)` with a per-node in-memory `AtomicLong` was rejected as restart-fragile: the sequence resets on each JVM boot, so `(sequence, nodeId)` was not globally unique across restart boundaries. Replaced with `HlcTimestamp` (already a cluster primitive in `integrations/consensus`): the 48-bit physical-micros component is anchored to wall-clock time and never repeats across restarts; the 16-bit logical counter handles same-microsecond bursts; the `NodeId` field carries origin. `HlcTimestamp.compareTo` provides the spec's total cluster order — physical micros first, logical counter second, nodeId tie-break. The separate `timestamp()` field is folded into `at()` (wall-clock UTC is `at().physicalMicros()`); the separate `sourceNode()` field is a default-method derivation from `at().nodeId()` so it's not a duplicate wire field.
+
 
 #### 6.4.2. Consumer pattern
 

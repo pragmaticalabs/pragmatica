@@ -45,8 +45,8 @@ public final class AlertRoutes implements RouteSource {
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<List<ThresholdView>> route(ManagementRoute.THRESHOLDS_LIST).toJson(alertManager::thresholdsAsList),
-                         ManagementRoutes.<AlertsResponse> route(ManagementRoute.ALERTS).toJson(this::buildAlertsResponse),
-                         ManagementRoutes.<List<AlertView>> route(ManagementRoute.ALERTS_ACTIVE).toJson(alertManager::activeAlertsAsList),
+                         ManagementRoutes.<AlertsResponse> route(ManagementRoute.ALERTS).toJson((org.pragmatica.http.routing.Handler<AlertsResponse>) ctx -> buildAlertsResponse()),
+                         ManagementRoutes.<List<AlertView>> route(ManagementRoute.ALERTS_ACTIVE).toJson((org.pragmatica.http.routing.Handler<List<AlertView>>) ctx -> alertManager.activeAlertsAsList()),
                          ManagementRoutes.<List<AlertHistoryView>> route(ManagementRoute.ALERTS_HISTORY).toJson(alertManager::alertHistoryAsList),
                          ManagementRoutes.<ThresholdSetResponse> route(ManagementRoute.THRESHOLD_SET)
                                          .withBody(ThresholdRequest.class)
@@ -99,8 +99,9 @@ public final class AlertRoutes implements RouteSource {
                            .map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
     }
 
-    private AlertsResponse buildAlertsResponse() {
-        return new AlertsResponse(alertManager.activeAlertsAsList(), alertManager.alertHistoryAsList());
+    private org.pragmatica.lang.Promise<AlertsResponse> buildAlertsResponse() {
+        return alertManager.activeAlertsAsList()
+                           .map(active -> new AlertsResponse(active, alertManager.alertHistoryAsList()));
     }
 
     private enum AlertError implements Cause {

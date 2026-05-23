@@ -74,10 +74,9 @@ public class AlertManager {
     /// `eventSink` is unbound, this is unused.
     private volatile Option<HlcClock> hlcClock = Option.none();
 
-    /// Optional cluster-wide read source for cross-node visibility on `/api/alerts`. When
-    /// bound, `activeAlertsAsList()` UNIONs the local `injectedAlerts` map with any
-    /// `AlertInjected` cluster events originating from peer nodes — dedup by `alertId`.
-    private volatile Option<Supplier<List<ClusterEvent>>> clusterEventsSource = Option.none();
+    /// Optional cluster-wide read source for cross-node visibility on `/api/alerts`. Returns a
+    /// Promise because the underlying namespace-stream consumer is async.
+    private volatile Option<Supplier<Promise<List<ClusterEvent>>>> clusterEventsSource = Option.none();
 
     private AlertManager(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
@@ -95,7 +94,7 @@ public class AlertManager {
     /// up-to-date events stream (typically `ClusterEventAggregator::events`). Filtering by
     /// `AlertInjected` variant happens in `activeAlertsAsList()` to keep the binding
     /// projection-agnostic.
-    public void bindClusterEventsSource(Supplier<List<ClusterEvent>> source) {
+    public void bindClusterEventsSource(Supplier<Promise<List<ClusterEvent>>> source) {
         this.clusterEventsSource = Option.option(source);
     }
 
@@ -453,7 +452,7 @@ public class AlertManager {
     /// a list. Replaces the JSON-as-String `thresholdsAsJson` path.
     public record ThresholdView(String metric, double warning, double critical) {}
 
-    public List<AlertView> activeAlertsAsList() {
+    public Promise<List<AlertView>> activeAlertsAsList() {
         var list = new java.util.ArrayList<AlertView>(activeAlerts.size() + injectedAlerts.size());
         var seenInjectedIds = new java.util.HashSet<String>();
 
@@ -485,27 +484,22 @@ public class AlertManager {
                                    alert.timestamp));
         }
 
-        appendClusterWideInjectedAlerts(list, seenInjectedIds);
-
-        return List.copyOf(list);
+        return appendClusterWideInjectedAlerts(list, seenInjectedIds)
+                .map(_ -> List.copyOf(list));
     }
 
-    private void appendClusterWideInjectedAlerts(java.util.List<AlertView> sink, java.util.Set<String> seenIds) {
-        clusterEventsSource.onPresent(source -> {
-                                          for (var event : source.get()) {
-                                          if (!(event instanceof AlertInjected)) {
-                                          continue;
-                                      }
-                                          var view = projectClusterEventToAlertView(event);
-                                          if (view == null) {
-                                          continue;
-                                      }
-                                          if (view.alertId() != null && !seenIds.add(view.alertId())) {
-                                          continue;
-                                      }
-                                          sink.add(view);
-                                      }
-                                      });
+    private Promise<Unit> appendClusterWideInjectedAlerts(java.util.List<AlertView> sink, java.util.Set<String> seenIds) {
+        return clusterEventsSource.fold(() -> Promise.success(Unit.unit()),
+                                         source -> source.get().map(events -> {
+                                             for (var event : events) {
+                                                 if (!(event instanceof AlertInjected)) {continue;}
+                                                 var view = projectClusterEventToAlertView(event);
+                                                 if (view == null) {continue;}
+                                                 if (view.alertId() != null && !seenIds.add(view.alertId())) {continue;}
+                                                 sink.add(view);
+                                             }
+                                             return Unit.unit();
+                                         }));
     }
 
     private static AlertView projectClusterEventToAlertView(ClusterEvent event) {
@@ -631,24 +625,10 @@ public class AlertManager {
     }
 
     private List<AlertView> clusterWideInjectedAlerts(java.util.Set<String> seenIds) {
-        var list = new java.util.ArrayList<AlertView>();
-        clusterEventsSource.onPresent(source -> {
-                                          for (var event : source.get()) {
-                                          if (!(event instanceof AlertInjected)) {
-                                          continue;
-                                      }
-                                          var view = projectClusterEventToAlertView(event);
-                                          if (view == null) {
-                                          continue;
-                                      }
-                                          if (view.alertId() != null && !seenIds.add(view.alertId())) {
-                                          continue;
-                                      }
-                                          list.add(view);
-                                      }
-                                      });
-
-        return list;
+        // Legacy sync path for `activeAlertsAsJson()`. Returns empty — the cluster-wide read
+        // requires Promise composition (see `activeAlertsAsList()` which is the async replacement).
+        // `activeAlertsAsJson()` is being phased out per the AlertView migration note at line 427.
+        return java.util.List.of();
     }
 
     @SuppressWarnings("JBCT-PAT-01")

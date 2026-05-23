@@ -39,6 +39,7 @@ import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -86,7 +87,7 @@ public final class StatusRoutes implements RouteSource {
                          ManagementRoutes.<List<ClusterEvent>> route(ManagementRoute.EVENTS)
                                          .withQuery(QueryParameter.aLong("sinceEpoch"),
                                                     QueryParameter.aLong("sinceSeq"))
-                                         .toValue(this::buildEventsResponse)
+                                         .to(this::buildEventsResponse)
                                          .asJson(),
                          ManagementRoutes.<CertificateStatusResponse> route(ManagementRoute.CERTIFICATES_LIST).toJson(this::buildCertificateStatusResponse),
                          ManagementRoutes.<WhoamiResponse> route(ManagementRoute.WHOAMI).toJson(StatusRoutes::buildWhoamiResponse));
@@ -101,14 +102,17 @@ public final class StatusRoutes implements RouteSource {
                                   ctx.isAuthenticated());
     }
 
-    private List<ClusterEvent> buildEventsResponse(Option<Long> sinceEpochParam, Option<Long> sinceSeqParam) {
+    private Promise<List<ClusterEvent>> buildEventsResponse(Option<Long> sinceEpochParam, Option<Long> sinceSeqParam) {
         var aggregator = nodeSupplier.get().eventAggregator();
 
         if (sinceEpochParam.isEmpty() && sinceSeqParam.isEmpty()) {
             return aggregator.events();
         }
-
-        return aggregator.eventsSince(sinceEpochParam.or(0L), sinceSeqParam.or(-1L));
+        // `since` cursor is an Instant in the new namespace-stream API; legacy (epoch, seq) cursor
+        // is translated by treating `sinceSeqParam` as epoch-milli (rc1 callers rarely passed
+        // sinceEpochParam alone). Operators should migrate to ISO-8601 timestamps in a follow-up.
+        var sinceMillis = sinceSeqParam.fold(() -> 0L, seq -> seq);
+        return aggregator.eventsSince(java.time.Instant.ofEpochMilli(sinceMillis));
     }
 
     private StatusResponse buildStatusResponse() {

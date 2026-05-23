@@ -61,11 +61,11 @@ class InvocationTraceStoreInjectTest {
                                  .or("");
             assertTrue(!requestId.isEmpty(), "Injection must produce a non-empty requestId");
 
-            var all = store.all();
+            var all = store.all().await().unwrap();
             assertEquals(1, all.size(), "GET /api/traces backing buffer must surface the injected entry");
             assertEquals(requestId, all.get(0).requestId(), "Entry in all() must match injected requestId");
 
-            var forReq = store.forRequest(requestId);
+            var forReq = store.forRequest(requestId).await().unwrap();
             assertEquals(1, forReq.size(), "forRequest must locate the injected entry by id");
             assertEquals("processPayment", forReq.get(0).callee());
         }
@@ -113,9 +113,9 @@ class InvocationTraceStoreInjectTest {
 
             var peerEvent = new ClusterTraceEvent("req-peer-001", "peerOp", 80L, 2, 1700000000000L, "peer-node");
             var echoEvent = new ClusterTraceEvent("req-local-001", "localOp", 20L, 0, 1700000000001L, "self-node");
-            store.bindClusterEventsSource(() -> List.of(peerEvent, echoEvent));
+            store.bindClusterEventsSource(() -> org.pragmatica.lang.Promise.success(List.of(peerEvent, echoEvent)));
 
-            var all = store.all();
+            var all = store.all().await().unwrap();
             var requestIds = all.stream().map(InvocationNode::requestId).toList();
             assertTrue(requestIds.contains("req-local-001"),
                        "Originator's local trace must remain visible: " + requestIds);
