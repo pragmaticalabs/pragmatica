@@ -20,9 +20,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// sluggish. Default: 10s.
 ///
 /// `rules` — per-rule enable + enforce toggles. See `ReconcilerRulesConfig`. Default
-/// (Phase 5 PR-E): five rules `enforce=true`, two rules audit-only forever
-/// (`joiningStuckAlert`, `stoppedZombie`). Operators flip individual rules back to
-/// dry-run via `[reconciler.rules.<rule>] enforce=false` in `aether.toml`.
+/// (RC1, post-Phase-5-revert): ALL rules audit-only — Phase 5 PR-E flipped 5 rules to
+/// enforcing but remote validation #3 (HEAD `86bcb53d8`) showed the reconciler firing
+/// `OnDutyFaulty` against healthy nodes that were briefly SWIM-Faulty during cluster
+/// formation (no startup grace period after phase NORMAL transition). Reverting to
+/// dry-run keeps the audit channel useful while the grace-period fix is designed.
+/// Operators can opt in per-rule via `[reconciler.rules.<rule>] enforce=true` in
+/// `aether.toml` once they trust the false-positive rate in their environment.
 ///
 /// `recentDecisionsCapacity` — ring buffer size for the per-rule `recentDecisions`
 /// surfaced by `GET /api/nodes/lifecycle/reconciler`. Default: 50 per rule.
@@ -36,7 +40,7 @@ public record ReconcilerConfig(boolean enabled,
     public static ReconcilerConfig defaults() {
         return new ReconcilerConfig(true,
                                     DEFAULT_TICK_INTERVAL,
-                                    ReconcilerRulesConfig.enforcingDefaults(),
+                                    ReconcilerRulesConfig.dryRunDefaults(),
                                     DEFAULT_RECENT_DECISIONS_CAPACITY);
     }
 }

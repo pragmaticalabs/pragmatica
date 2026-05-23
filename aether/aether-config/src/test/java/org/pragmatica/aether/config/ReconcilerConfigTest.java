@@ -24,23 +24,23 @@ class ReconcilerConfigTest {
         void defaults_returnsRulesWhereJoiningTimeoutIsEnforcing() {
             var config = ReconcilerConfig.defaults();
 
-            assertThat(config.rules().joiningTimeout().enforce()).isTrue();
+            assertThat(config.rules().joiningTimeout().enforce()).isFalse();
             assertThat(config.rules().joiningTimeout().enabled()).isTrue();
         }
 
         @Test
-        void defaults_flipsFiveEnforcingRules() {
+        void defaults_allRulesAuditOnly() {
             var rules = ReconcilerConfig.defaults().rules();
 
-            assertThat(rules.joiningTimeout().enforce()).isTrue();
-            assertThat(rules.onDutyFaulty().enforce()).isTrue();
-            assertThat(rules.drainTimeout().enforce()).isTrue();
-            assertThat(rules.generationLifecycleGap().enforce()).isTrue();
-            assertThat(rules.swimLifecycleGap().enforce()).isTrue();
+            assertThat(rules.joiningTimeout().enforce()).isFalse();
+            assertThat(rules.onDutyFaulty().enforce()).isFalse();
+            assertThat(rules.drainTimeout().enforce()).isFalse();
+            assertThat(rules.generationLifecycleGap().enforce()).isFalse();
+            assertThat(rules.swimLifecycleGap().enforce()).isFalse();
         }
 
         @Test
-        void defaults_keepsAlertOnlyRulesAuditOnly() {
+        void defaults_alertOnlyRulesStillAuditOnly() {
             var rules = ReconcilerConfig.defaults().rules();
 
             assertThat(rules.joiningStuckAlert().enforce()).isFalse();
@@ -121,8 +121,12 @@ class ReconcilerConfigTest {
         }
 
         @Test
-        void enforcingDefaults_matchesDefaultsRulesShape() {
-            assertThat(ReconcilerConfig.defaults().rules()).isEqualTo(ReconcilerRulesConfig.enforcingDefaults());
+        void enforcingDefaults_matchesDefaultsRulesShape_DISABLED_post_RC1_revert() {
+            // RC1 revert (HEAD post-86bcb53d8): defaults() now calls dryRunDefaults() not
+            // enforcingDefaults() — remote validation #3 surfaced premature OnDutyFaulty
+            // firing during cluster formation without a NORMAL-phase grace period.
+            // enforcingDefaults() factory is retained for operators who opt in.
+            assertThat(ReconcilerConfig.defaults().rules()).isEqualTo(ReconcilerRulesConfig.dryRunDefaults());
         }
     }
 }
