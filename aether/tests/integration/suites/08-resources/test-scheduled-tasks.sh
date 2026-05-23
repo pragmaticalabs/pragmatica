@@ -124,10 +124,15 @@ test_pause_task() {
         return 1
     fi
 
-    # Readback: confirm the task's `paused` field is now true.
-    local paused
-    paused=$(aether_field "scheduled-tasks list" "tasks.0.paused")
-    if [ "$paused" != "true" ]; then
+    # Readback: confirm the task's `paused` field is now true. The pause command
+    # writes to consensus on the leader; the readback may hit any node, so we poll
+    # for KV propagation rather than relying on an immediate read. Mirrors the
+    # `publish_blueprint` pattern in lib/cluster.sh:1131.
+    if ! wait_for "task ${section}/${method} reflects paused=true" \
+                  '[ "$(aether_field "scheduled-tasks list" "tasks.0.paused" 2>/dev/null)" = "true" ]' \
+                  10; then
+        local paused
+        paused=$(aether_field "scheduled-tasks list" "tasks.0.paused" 2>/dev/null || echo '')
         log_fail "Post-pause readback: expected tasks.0.paused=true, got '${paused}'"
         return 1
     fi
@@ -167,10 +172,13 @@ test_resume_task() {
         return 1
     fi
 
-    # Readback: confirm the task's `paused` field is now false.
-    local paused
-    paused=$(aether_field "scheduled-tasks list" "tasks.0.paused")
-    if [ "$paused" != "false" ]; then
+    # Readback: confirm the task's `paused` field is now false. Same KV-propagation
+    # consideration as the pause readback — poll instead of single-shot read.
+    if ! wait_for "task ${section}/${method} reflects paused=false" \
+                  '[ "$(aether_field "scheduled-tasks list" "tasks.0.paused" 2>/dev/null)" = "false" ]' \
+                  10; then
+        local paused
+        paused=$(aether_field "scheduled-tasks list" "tasks.0.paused" 2>/dev/null || echo '')
         log_fail "Post-resume readback: expected tasks.0.paused=false, got '${paused}'"
         return 1
     fi
