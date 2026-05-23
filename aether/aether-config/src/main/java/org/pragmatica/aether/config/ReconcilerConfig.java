@@ -19,8 +19,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// the SWIM probe cycle and produces noise; >60s makes operator-perceived recovery
 /// sluggish. Default: 10s.
 ///
-/// `rules` — per-rule enable + enforce toggles. See `ReconcilerRulesConfig`. Default:
-/// every rule enabled, every rule `enforce=false` (Phase 4 dry-run).
+/// `rules` — per-rule enable + enforce toggles. See `ReconcilerRulesConfig`. Default
+/// (Phase 5 PR-E): five rules `enforce=true`, two rules audit-only forever
+/// (`joiningStuckAlert`, `stoppedZombie`). Operators flip individual rules back to
+/// dry-run via `[reconciler.rules.<rule>] enforce=false` in `aether.toml`.
 ///
 /// `recentDecisionsCapacity` — ring buffer size for the per-rule `recentDecisions`
 /// surfaced by `GET /api/nodes/lifecycle/reconciler`. Default: 50 per rule.
@@ -34,7 +36,7 @@ public record ReconcilerConfig(boolean enabled,
     public static ReconcilerConfig defaults() {
         return new ReconcilerConfig(true,
                                     DEFAULT_TICK_INTERVAL,
-                                    ReconcilerRulesConfig.dryRunDefaults(),
+                                    ReconcilerRulesConfig.enforcingDefaults(),
                                     DEFAULT_RECENT_DECISIONS_CAPACITY);
     }
 }

@@ -1690,10 +1690,11 @@ Options:
 `LifecycleReconciler` (cluster-convergence-reconciler-spec §7) is exposed through two
 existing channels:
 
-1. **`aether cluster audit --source reconciler`** — surfaces the would-have-fired set
-   (Phase 4 ships every rule in audit-only / dry-run mode; rule emissions land as
-   `CommandReceived(accepted=false, source=RECONCILER)` events in the local
-   `RecentCommandsBuffer`).
+1. **`aether cluster audit --source reconciler`** — surfaces the reconciler's rule
+   emissions. After the Phase 5 PR-E enforcing flip, five rules emit a
+   `CommandReceived` + `CommandApplied` pair (KV write applied); the two audit-only
+   rules (`JoiningStuckAlert`, `StoppedZombie`) and any rule with operator-overridden
+   `enforce=false` emit a `CommandReceived` only.
 2. **`GET /api/nodes/lifecycle/reconciler`** — direct REST surface for the reconciler's
    `active` state, last-tick / last-action timestamps, per-rule
    `{enabled, enforce, lastFiredAt, fireCount}` toggles, and the ring-buffered
@@ -1704,9 +1705,27 @@ existing channels:
 # Inspect reconciler state on the leader
 curl -s "http://${LEADER_HOST}:8080/api/nodes/lifecycle/reconciler" | jq
 
-# Tail dry-run reconciler activity (per spec §7.3)
+# Tail reconciler activity (per spec §7.3)
 aether cluster audit --source reconciler --since 5m
 ```
+
+**Operator escape hatch — dry-run override.** To roll an enforcing rule back to
+audit-only (e.g. when a false-positive storm surfaces in production), set
+`enforce = false` on the offending rule in `aether.toml`:
+
+```toml
+[reconciler.rules.joiningTimeout]
+enforce = false
+
+[reconciler.rules.onDutyFaulty]
+enforce = false
+```
+
+Setting all five enforcing rules to `enforce = false` reverts the reconciler to the
+Phase 4 dry-run shape. The rule still ticks and still emits `CommandReceived` audit
+events — only the KV write is suppressed. Note that `JoiningStuckAlert` and
+`StoppedZombie` are audit-only forever per spec §7.1 and do not honour a
+`enforce = true` override.
 
 ### `aether cluster tasks`
 

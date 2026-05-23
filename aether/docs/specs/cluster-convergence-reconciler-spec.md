@@ -359,6 +359,57 @@ Observability:
 - `aether cluster audit --source reconciler` — existing CLI; surfaces the dry-run
   would-have-fired set via the audit stream tee.
 
+### 9.2 Phase 5 PR-E — enforcing flip
+
+Phase 5 PR-E flips `ReconcilerConfig.defaults()` from the Phase 4 dry-run shape to an
+enforcing baseline. The flip lives entirely in `ReconcilerRulesConfig` — a new
+`enforcingDefaults()` factory is introduced alongside the existing `dryRunDefaults()`,
+and `ReconcilerConfig.defaults()` calls the enforcing factory.
+
+| Rule | Phase 5 default | Rationale |
+|---|---|---|
+| `joiningTimeout` | `enforce=true` | Phase 4 dry-run confirmed quiet; flips the §7.1 line. |
+| `joiningStuckAlert` | `enforce=false` (forever) | Observation-only — alerts on stuck-but-alive containers; operator decides whether to intervene. |
+| `onDutyFaulty` | `enforce=true` | Phase 4 quiet; SWIM `Faulty for ≥ 3× declaration window` is a definitive signal. |
+| `drainTimeout` | `enforce=true` | DRAIN_FAILED terminal — preferable to a zombie DRAINING entry. |
+| `generationLifecycleGap` | `enforce=true` | Auto-heals the JOINING-lifecycle write race; idempotent. |
+| `swimLifecycleGap` | `enforce=true` | Lookback guard already in place (snapshot's last-1h audit window — see §7.1 row). |
+| `stoppedZombie` | `enforce=false` (forever) | Invariant-violation surface; emits an alert so the responsible component can be diagnosed. The orchestration layer kills the container separately. |
+
+**Operator escape hatch.** Operators flip individual rules back to dry-run via TOML
+override. The reconciler section in `aether.toml` accepts per-rule `enforce` toggles:
+
+```toml
+[reconciler.rules.joiningTimeout]
+enforce = false
+
+[reconciler.rules.onDutyFaulty]
+enforce = false
+```
+
+Setting all five enforcing rules to `enforce = false` resolves to the Phase 4 dry-run
+shape (equivalent to passing `ReconcilerRulesConfig.dryRunDefaults()` to
+`ReconcilerConfig` directly in tests). Rules are never auto-disabled — `enabled=true`
+holds in both factories; the escape hatch flips `enforce`, not `enabled`.
+
+**Audit payload semantics.** The two dispatch paths share the
+`audit.lifecycle.commands` stream:
+
+- **Audit-only path (`enforce=false`)** — reconciler publishes a single
+  `CommandReceived(source=RECONCILER)` event with no follow-on `CommandApplied`. No KV
+  write happens. The "would have fired" set is reconstructed by filtering audit events
+  for `source=RECONCILER` and `commandType ∈ {ForceDecommission, ForceDrain, ...}`
+  without a matching `CommandApplied`.
+- **Enforcing path (`enforce=true`)** — reconciler routes through
+  `LifecycleWriter.applyCommand(command, SOURCE_RECONCILER)`. The writer emits
+  `CommandReceived(source=RECONCILER)` immediately and then `CommandApplied(...,
+  accepted=true)` on KV-write success (or `accepted=false` if the apply future fails).
+  The per-rule decision is also recorded in the reconciler's ring buffer with
+  `enforced=true`.
+
+Both paths additionally tee the events into the per-node `RecentCommandsBuffer` for
+the `GET /api/audit/commands?source=reconciler` query surface.
+
 ## 10. Failure modes & mitigations
 
 | Failure | Mitigation |

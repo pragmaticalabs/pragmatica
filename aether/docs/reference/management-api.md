@@ -3118,9 +3118,9 @@ curl -X POST http://localhost:8080/api/nodes/lifecycle/commands \
 
 ### GET /api/nodes/lifecycle/reconciler
 
-**Phase 4 PR-D (cluster-convergence-reconciler):** observability surface for the leader-only `LifecycleReconciler` component (cluster-convergence-reconciler-spec §7). Returns the reconciler's current activation state, last-tick and last-action timestamps, per-rule enable/enforce flags, and the most-recent ring-buffered decisions (default 50 entries).
+**Phase 4 PR-D (cluster-convergence-reconciler):** observability surface for the leader-only `LifecycleReconciler` component (cluster-convergence-reconciler-spec §7). Returns the reconciler's current activation state, last-tick and last-action timestamps, per-rule enable/enforce flags, and the most-recent ring-buffered decisions (default 50 entries). **Phase 5 PR-E flipped five of the seven rules to `enforce=true` by default**; the per-rule `enforce` field reflects the live setting after any `[reconciler.rules.<rule>]` overrides from `aether.toml`.
 
-**Scope note:** only the current leader's reconciler is `active=true`; followers report `active=false` and empty rule/decision sets. Phase 4 ships every rule in audit-only mode (`enforce=false`) — Phase 5 PR-E flips selected rules to enforcing.
+**Scope note:** only the current leader's reconciler is `active=true`; followers report `active=false` and empty rule/decision sets. Phase 5 PR-E shipped the enforcing flip — five rules (`JoiningTimeout`, `OnDutyFaulty`, `DrainTimeout`, `GenerationLifecycleGap`, `SwimLifecycleGap`) default to `enforce=true`; two rules (`JoiningStuckAlert`, `StoppedZombie`) remain audit-only forever per spec §7.1. Operators flip rules back to dry-run via `[reconciler.rules.<rule>] enforce=false` in `aether.toml`.
 
 **Authorization:** READ (observability surface).
 
@@ -3132,12 +3132,12 @@ curl -X POST http://localhost:8080/api/nodes/lifecycle/commands \
   "lastTickAt": 1748005400000,
   "lastActionAt": 1748005380000,
   "rules": [
-    {"name": "JoiningTimeout",         "enabled": true, "enforce": false, "lastFiredAt": 1748005380000, "fireCount": 3},
+    {"name": "JoiningTimeout",         "enabled": true, "enforce": true,  "lastFiredAt": 1748005380000, "fireCount": 3},
     {"name": "JoiningStuckAlert",      "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
-    {"name": "OnDutyFaulty",           "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
-    {"name": "DrainTimeout",           "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
-    {"name": "GenerationLifecycleGap", "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
-    {"name": "SwimLifecycleGap",       "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
+    {"name": "OnDutyFaulty",           "enabled": true, "enforce": true,  "lastFiredAt": null, "fireCount": 0},
+    {"name": "DrainTimeout",           "enabled": true, "enforce": true,  "lastFiredAt": null, "fireCount": 0},
+    {"name": "GenerationLifecycleGap", "enabled": true, "enforce": true,  "lastFiredAt": null, "fireCount": 0},
+    {"name": "SwimLifecycleGap",       "enabled": true, "enforce": true,  "lastFiredAt": null, "fireCount": 0},
     {"name": "StoppedZombie",          "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0}
   ],
   "recentDecisions": [
@@ -3147,7 +3147,7 @@ curl -X POST http://localhost:8080/api/nodes/lifecycle/commands \
       "commandType": "ForceDecommission",
       "reasonTag": "FORCED",
       "justification": "JoiningTimeout: peer node-2 has been JOINING past JOIN_DEADLINE × 1.5 with SWIM Faulty/absent",
-      "enforced": false,
+      "enforced": true,
       "at": 1748005380000
     }
   ]
@@ -3166,7 +3166,7 @@ curl -X POST http://localhost:8080/api/nodes/lifecycle/commands \
 }
 ```
 
-**Companion observation channel.** For commands the reconciler emits in audit-only mode the operator should consult `GET /api/audit/commands?source=reconciler` — every rule emission lands as a `CommandReceived` event on that stream with `accepted=false` (Phase 4 dry-run); enforcing rules under Phase 5 will additionally emit a `CommandApplied` after the underlying KV write resolves.
+**Companion observation channel.** For commands the reconciler emits in audit-only mode (`enforce=false`) the operator should consult `GET /api/audit/commands?source=reconciler` — those emissions land as a single `CommandReceived` event on the stream with no follow-on `CommandApplied`. Enforcing rules (Phase 5 PR-E default for five of seven rules) emit `CommandReceived` immediately and then `CommandApplied(..., accepted=true)` after the underlying KV write resolves (or `accepted=false` if the apply future fails).
 
 ---
 

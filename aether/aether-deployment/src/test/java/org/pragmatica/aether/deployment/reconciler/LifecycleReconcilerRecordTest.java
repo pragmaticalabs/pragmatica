@@ -159,7 +159,7 @@ class LifecycleReconcilerRecordTest {
             phaseRef.set(ClusterPhase.NORMAL);
             seedDecommissionableJoiner();
 
-            var reconciler = (LifecycleReconcilerRecord) buildReconciler(ReconcilerConfig.defaults());
+            var reconciler = (LifecycleReconcilerRecord) buildReconciler(dryRunConfig());
             reconciler.activate();
             invokeReconcileDirectly(reconciler);
 
@@ -190,7 +190,7 @@ class LifecycleReconcilerRecordTest {
             phaseRef.set(ClusterPhase.NORMAL);
             seedDecommissionableJoiner();
 
-            var reconciler = (LifecycleReconcilerRecord) buildReconciler(ReconcilerConfig.defaults());
+            var reconciler = (LifecycleReconcilerRecord) buildReconciler(dryRunConfig());
             reconciler.activate();
             invokeReconcileDirectly(reconciler);
 
@@ -222,6 +222,16 @@ class LifecycleReconcilerRecordTest {
         var enforce = RuleSpec.enforcing();
         var rules = new ReconcilerRulesConfig(enforce, enforce, enforce, enforce, enforce, enforce, enforce);
         return new ReconcilerConfig(true, TimeSpan.timeSpan(10).seconds(), rules, 50);
+    }
+
+    /// Phase 4 dry-run shape — every rule enabled, every rule audit-only. Kept for tests
+    /// that exercise the audit-only dispatch path now that `ReconcilerConfig.defaults()`
+    /// has been flipped to the Phase 5 PR-E enforcing baseline.
+    private static ReconcilerConfig dryRunConfig() {
+        return new ReconcilerConfig(true,
+                                    TimeSpan.timeSpan(10).seconds(),
+                                    ReconcilerRulesConfig.dryRunDefaults(),
+                                    50);
     }
 
     private LifecycleReconciler buildReconciler(ReconcilerConfig config) {

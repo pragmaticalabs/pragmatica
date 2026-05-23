@@ -31,11 +31,22 @@ test_cluster_ready() {
 test_tls_active() {
     local cert_info tls_enabled status
     cert_info=$(aether_json certs status)
+
+    # Distinguish "cluster unreachable" (empty/error CLI output) from "field missing
+    # from JSON body" (real API contract violation). When the cluster is in a degraded
+    # state (e.g. silent-divergence cascade) the CLI returns empty and the cert test
+    # would otherwise misattribute the failure to /api/certificates.
+    if [ -z "$cert_info" ] || [ "$cert_info" = "{}" ] || [ "$cert_info" = "null" ]; then
+        log_fail "Cluster unreachable: /api/certificates returned empty/null response (CLI got: '$(printf '%s' "$cert_info" | head -c 100)'). This is likely a network/auth failure, not a cert API issue."
+        return 1
+    fi
+
+    # Cluster reachable — verify the contract.
     tls_enabled=$(aether_field certs status tlsEnabled)
     status=$(aether_field certs status renewalStatus)
 
     if [ -z "$tls_enabled" ]; then
-        log_fail "TLS contract violation: /api/certificates response missing tlsEnabled field (got: $(printf '%s' "$cert_info" | head -c 200))"
+        log_fail "TLS contract violation: /api/certificates returned JSON body but missing tlsEnabled field (got: $(printf '%s' "$cert_info" | head -c 200))"
         return 1
     fi
 
@@ -83,11 +94,20 @@ test_tls_active() {
 # Load uses api_get-style _api_call semantics so 4xx/5xx surface as failures
 # (start_load classifies status >=400 as failure, see load.sh:35).
 test_rotation_under_load() {
-    local tls_enabled
+    local cert_info tls_enabled
+    cert_info=$(aether_json certs status)
+
+    # Same distinction as test_tls_active: empty/null CLI output indicates the cluster
+    # is unreachable, not that the /api/certificates contract was violated.
+    if [ -z "$cert_info" ] || [ "$cert_info" = "{}" ] || [ "$cert_info" = "null" ]; then
+        log_fail "Cluster unreachable: /api/certificates returned empty/null response (CLI got: '$(printf '%s' "$cert_info" | head -c 100)'). Cannot determine TLS state for rotation test."
+        return 1
+    fi
+
     tls_enabled=$(aether_field certs status tlsEnabled)
 
     if [ -z "$tls_enabled" ]; then
-        log_fail "TLS contract violation: /api/certificates response missing tlsEnabled field"
+        log_fail "TLS contract violation: /api/certificates returned JSON body but missing tlsEnabled field"
         return 1
     fi
 
