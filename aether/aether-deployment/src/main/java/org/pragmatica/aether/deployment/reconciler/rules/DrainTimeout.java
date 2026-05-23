@@ -10,7 +10,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -70,7 +69,7 @@ public final class DrainTimeout implements ReconciliationRule {
                                           new ForceDecommission(peer,
                                                                 StopReason.DRAIN_FAILED,
                                                                 justification,
-                                                                HlcTimestamp.ZERO),
+                                                                snapshot.at()),
                                           justification));
     }
 

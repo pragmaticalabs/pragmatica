@@ -201,7 +201,21 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     private Promise<ScheduledTaskInjectResponse> executeInject(ScheduledTaskInjectRequest req) {
         return findTask(req.section(), req.artifact(), req.method())
-                       .flatMap(task -> invokeAndAdvanceState(task, req));
+                       .flatMap(task -> ensureLocalThenInvoke(task, req));
+    }
+
+    /// Gate on `SliceInvoker.hasLocalSlice` before invoking — the inject path encodes the
+    /// `Unit.unit()` request via the slice's local bridge, which only exists on nodes that
+    /// host the slice. When invoked through the cluster's load balancer the request can
+    /// land on a non-hosting node; rather than 500 with the historic
+    /// "Option is empty" NPE from `findSenderBridge`, surface a structured error pointing
+    /// the caller at one of the nodes that owns the task so they can retry directly.
+    private Promise<ScheduledTaskInjectResponse> ensureLocalThenInvoke(ScheduledTask task,
+                                                                       ScheduledTaskInjectRequest req) {
+        if (invoker.hasLocalSlice(task.artifact())) {
+            return invokeAndAdvanceState(task, req);
+        }
+        return new InjectError.SliceNotLocal(task.registeredBy().id(), task.artifact().asString()).promise();
     }
 
     private Promise<ScheduledTaskInjectResponse> invokeAndAdvanceState(ScheduledTask task,
@@ -418,19 +432,40 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                                                                               state.lastExecutionAt()))));
     }
 
-    private enum InjectError implements Cause {
-        DEV_MODE_DISABLED("scheduled-tasks inject requires AETHER_INSECURE_DEV_MODE=true"),
-        MISSING_BODY("Request body is required"),
-        MISSING_SECTION("section field is required"),
-        MISSING_ARTIFACT("artifact field is required"),
-        MISSING_METHOD("method field is required");
-        private final String message;
-        InjectError(String message) {
-            this.message = message;
+    private sealed interface InjectError extends Cause permits InjectError.General, InjectError.SliceNotLocal {
+        InjectError DEV_MODE_DISABLED = General.DEV_MODE_DISABLED;
+        InjectError MISSING_BODY = General.MISSING_BODY;
+        InjectError MISSING_SECTION = General.MISSING_SECTION;
+        InjectError MISSING_ARTIFACT = General.MISSING_ARTIFACT;
+        InjectError MISSING_METHOD = General.MISSING_METHOD;
+
+        enum General implements InjectError {
+            DEV_MODE_DISABLED("scheduled-tasks inject requires AETHER_INSECURE_DEV_MODE=true"),
+            MISSING_BODY("Request body is required"),
+            MISSING_SECTION("section field is required"),
+            MISSING_ARTIFACT("artifact field is required"),
+            MISSING_METHOD("method field is required");
+            private final String message;
+            General(String message) {
+                this.message = message;
+            }
+            @Override
+            public String message() {
+                return message;
+            }
         }
-        @Override
-        public String message() {
-            return message;
+
+        /// Surfaced when the inject route lands on a node that does NOT host the target
+        /// slice's bridge. Callers (test harness, operator CLI) should retry the POST
+        /// against the management endpoint of the node returned in `hostingNodeId`. This
+        /// replaces the historic NPE that produced an opaque `500 {"error":"Internal Server
+        /// Error"}` from `SliceInvokerImpl.findSenderBridge.unwrap()`.
+        record SliceNotLocal(String hostingNodeId, String artifact) implements InjectError {
+            @Override
+            public String message() {
+                return "scheduled-tasks inject for artifact=" + artifact
+                       + " must run on a node hosting the slice; retry against node " + hostingNodeId;
+            }
         }
     }
 }

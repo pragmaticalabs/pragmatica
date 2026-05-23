@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DrainDeadlineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.JoinDeadlineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.swim.SwimHealth;
 
 import java.util.HashMap;
@@ -22,6 +23,12 @@ import java.util.Set;
 /// `build()` is called. Each rule unit test composes the minimal snapshot it needs
 /// without copy-pasting the verbose record constructor.
 final class SnapshotBuilder {
+    /// Sentinel HLC stamp used when a test does not care about the `at` field on
+    /// emitted commands. Tests that assert HLC propagation should pass an explicit
+    /// `.at(...)` value.
+    private static final HlcTimestamp DEFAULT_AT =
+        new HlcTimestamp(0L, NodeId.nodeId("test").unwrap());
+
     private final Map<NodeId, NodeLifecycleValue> lifecycleEntries = new HashMap<>();
     private final Map<NodeId, SwimHealth> swimHealth = new HashMap<>();
     private final Map<NodeId, Long> swimSinceMs = new HashMap<>();
@@ -30,6 +37,7 @@ final class SnapshotBuilder {
     private final Map<NodeId, DrainDeadlineValue> drainDeadlines = new HashMap<>();
     private final Set<NodeId> activeSyncHolds = new HashSet<>();
     private long nowMs = 0L;
+    private HlcTimestamp at = DEFAULT_AT;
     private MembershipFsmConfig fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
     private ReconcilerRulesConfig rulesConfig = ReconcilerRulesConfig.dryRunDefaults();
 
@@ -39,6 +47,11 @@ final class SnapshotBuilder {
 
     SnapshotBuilder nowMs(long nowMs) {
         this.nowMs = nowMs;
+        return this;
+    }
+
+    SnapshotBuilder at(HlcTimestamp at) {
+        this.at = at;
         return this;
     }
 
@@ -92,6 +105,7 @@ final class SnapshotBuilder {
                                           drainDeadlines,
                                           activeSyncHolds,
                                           nowMs,
+                                          at,
                                           fsmConfig,
                                           rulesConfig);
     }

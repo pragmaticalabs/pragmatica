@@ -42,11 +42,19 @@ public record ReconcilerRulesConfig(RuleSpec joiningTimeout,
                                          RuleSpec.dryRun());
     }
 
-    /// Phase 5 PR-E enforcing factory — five rules flip to `enforce=true`; two rules stay
+    /// Phase 5 PR-E enforcing factory — four rules flip to `enforce=true`; three rules stay
     /// audit-only forever per spec §7.1:
     ///
     ///   - `joiningStuckAlert` — observation-only alert for stuck-but-alive containers;
     ///     no destructive action is desired (the operator decides whether to intervene).
+    ///   - `swimLifecycleGap`  — observability signal for "SWIM sees peer but lifecycle KV
+    ///     does not" (commonly: a peer that was force-decommissioned and then GC'd from
+    ///     KV but SWIM has not yet forgotten). Auto-emitting `RecordJoining` here creates
+    ///     a phantom-recovery loop with `JoiningTimeout` (the GC'd peer is re-recorded as
+    ///     JOINING, never reaches ON_DUTY, gets force-decommissioned again, GC'd again,
+    ///     re-recorded again…). Audit-only with a future lookback guard (see spec §7.1) is
+    ///     the correct design — the alert prompts the operator to investigate why SWIM is
+    ///     not converging on a STOPPED peer rather than re-introducing it as JOINING.
     ///   - `stoppedZombie`     — invariant violation surface; emits an alert so the
     ///     responsible component can be diagnosed, but does not destroy the zombie
     ///     itself (containers are usually killed by the orchestration layer separately).
@@ -60,7 +68,7 @@ public record ReconcilerRulesConfig(RuleSpec joiningTimeout,
                                          RuleSpec.enforcing(),
                                          RuleSpec.enforcing(),
                                          RuleSpec.enforcing(),
-                                         RuleSpec.enforcing(),
+                                         RuleSpec.dryRun(),
                                          RuleSpec.dryRun());
     }
 }

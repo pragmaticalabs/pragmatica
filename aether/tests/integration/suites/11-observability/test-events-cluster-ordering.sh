@@ -66,6 +66,50 @@ test_wait_for_replication() {
     log_pass "Replication window elapsed (15s — marker not yet visible; order assertion follows)"
 }
 
+# Block until every reachable node has the SAME count of marker events visible. Without
+# this, the order-assertion below sees a snapshot taken mid-fan-out: node 0 may have a
+# late duplicate or retry already projected into its RingBuffer while node 1's
+# subscriber hasn't drained yet (commit-order replication is total but the post-commit
+# materialised-view subscriber runs async on each node). Waiting for count parity makes
+# the snapshot deterministic — the test then compares sequences taken under the same
+# fan-out completion state on every node.
+_count_marker_events() {
+    local port="$1"
+    curl -sfk -m 5 -H "X-API-Key: ${API_KEY}" \
+            "http://${TARGET_HOST}:${port}/api/events" 2>/dev/null \
+        | grep -oE "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*${MARKER}[^\"]*\"" \
+        | wc -l \
+        | tr -d ' '
+}
+
+test_wait_for_marker_count_convergence() {
+    local deadline=$((SECONDS + 30))
+    local stable_count=0
+    while [ $SECONDS -lt $deadline ]; do
+        local first_count="" diverged=0
+        for i in $(seq 0 $((NODE_COUNT - 1))); do
+            local port=$((MGMT_PORT + i))
+            local count
+            count=$(_count_marker_events "$port")
+            if [ -z "$first_count" ]; then
+                first_count="$count"
+                continue
+            fi
+            if [ "$count" != "$first_count" ]; then
+                diverged=1
+                break
+            fi
+        done
+        if [ "$diverged" -eq 0 ] && [ -n "$first_count" ] && [ "$first_count" -gt 0 ]; then
+            stable_count="$first_count"
+            log_pass "Marker counts converged on ${NODE_COUNT} nodes (count=${stable_count})"
+            return 0
+        fi
+        sleep 1
+    done
+    log_warn "Marker counts did not converge within 30s; proceeding with last observation"
+}
+
 # Read /api/events from every node, extract just the marker-bearing entries, and
 # assert all nodes agree on the same ordered subsequence. We compare summaries +
 # originEpoch/originSeq stamps that the new aggregator's `projectToEvent` adds
@@ -116,6 +160,7 @@ test_cluster_healthy_after() {
 run_test "Cluster ready"                test_cluster_ready
 run_test "Inject events round-robin"    test_inject_events_round_robin
 run_test "Wait for replication"         test_wait_for_replication
+run_test "Wait for marker convergence"  test_wait_for_marker_count_convergence
 run_test "All nodes agree on order"     test_all_nodes_agree_on_order
 run_test "Healthy after test"           test_cluster_healthy_after
 print_summary

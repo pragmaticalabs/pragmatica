@@ -63,9 +63,24 @@ test_task_last_execution_advances() {
     pre_ts=$(aether_field "scheduled-tasks list" "tasks.0.lastExecutionAt")
     pre_ts="${pre_ts:-0}"
     # Inject (synchronously trigger the task and advance its lastExecutionAt).
-    local inject_response inject_rc post_ts
+    #
+    # The inject endpoint runs the task on the receiving node — it requires the slice to
+    # be loaded on that node so it can encode the request payload (`Unit.unit()`) via the
+    # slice's bridge (see SliceInvokerImpl.findSenderBridge). When the LB routes the
+    # request to a non-hosting node the path used to NPE on the empty bridge Option and
+    # surface as a generic 500. Route the inject directly to a node that hosts the slice
+    # by parsing `tasks.0.registeredBy` (e.g. `node-5` → MGMT_PORT+4 in docker-compose).
+    local registered_by registered_offset
+    registered_by=$(aether_field "scheduled-tasks list" "tasks.0.registeredBy")
+    if [[ ! "$registered_by" =~ ^node-([0-9]+)$ ]]; then
+        log_fail "Cannot derive direct mgmt port from tasks.0.registeredBy='${registered_by}' (expected node-N pattern)"
+        return 1
+    fi
+    registered_offset=$(( ${BASH_REMATCH[1]} - 1 ))
+    local inject_body inject_response inject_rc post_ts
+    inject_body="{\"section\":\"${section}\",\"artifact\":\"${artifact}\",\"method\":\"${method}\"}"
     set +e
-    inject_response=$(aether_json scheduled-tasks inject --section "$section" --artifact "$artifact" --method "$method" 2>&1)
+    inject_response=$(node_api_post "$registered_offset" "/api/scheduled-tasks/inject" "$inject_body" 2>&1)
     inject_rc=$?
     set -e
     if [ "$inject_rc" -ne 0 ]; then
@@ -124,10 +139,15 @@ test_pause_task() {
         return 1
     fi
 
-    # Readback: confirm the task's `paused` field is now true.
-    local paused
-    paused=$(aether_field "scheduled-tasks list" "tasks.0.paused")
-    if [ "$paused" != "true" ]; then
+    # Readback: confirm the task's `paused` field is now true. The pause command
+    # writes to consensus on the leader; the readback may hit any node, so we poll
+    # for KV propagation rather than relying on an immediate read. Mirrors the
+    # `publish_blueprint` pattern in lib/cluster.sh:1131.
+    if ! wait_for "task ${section}/${method} reflects paused=true" \
+                  '[ "$(aether_field "scheduled-tasks list" "tasks.0.paused" 2>/dev/null)" = "true" ]' \
+                  10; then
+        local paused
+        paused=$(aether_field "scheduled-tasks list" "tasks.0.paused" 2>/dev/null || echo '')
         log_fail "Post-pause readback: expected tasks.0.paused=true, got '${paused}'"
         return 1
     fi
@@ -167,10 +187,13 @@ test_resume_task() {
         return 1
     fi
 
-    # Readback: confirm the task's `paused` field is now false.
-    local paused
-    paused=$(aether_field "scheduled-tasks list" "tasks.0.paused")
-    if [ "$paused" != "false" ]; then
+    # Readback: confirm the task's `paused` field is now false. Same KV-propagation
+    # consideration as the pause readback — poll instead of single-shot read.
+    if ! wait_for "task ${section}/${method} reflects paused=false" \
+                  '[ "$(aether_field "scheduled-tasks list" "tasks.0.paused" 2>/dev/null)" = "false" ]' \
+                  10; then
+        local paused
+        paused=$(aether_field "scheduled-tasks list" "tasks.0.paused" 2>/dev/null || echo '')
         log_fail "Post-resume readback: expected tasks.0.paused=false, got '${paused}'"
         return 1
     fi

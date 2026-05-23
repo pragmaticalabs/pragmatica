@@ -9,7 +9,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.swim.SwimHealth;
@@ -76,7 +75,7 @@ public final class OnDutyFaulty implements ReconciliationRule {
                                           new ForceDecommission(peer,
                                                                 StopReason.FORCED,
                                                                 justification,
-                                                                HlcTimestamp.ZERO),
+                                                                snapshot.at()),
                                           justification));
     }
 

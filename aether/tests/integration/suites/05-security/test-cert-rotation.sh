@@ -42,8 +42,15 @@ test_tls_active() {
     fi
 
     # Cluster reachable — verify the contract.
-    tls_enabled=$(aether_field certs status tlsEnabled)
-    status=$(aether_field certs status renewalStatus)
+    # NOTE: `certs status` is a 2-word subcommand. `aether_field <command> <field>` treats
+    # `$1` as the WHOLE command (which is then word-split before being passed to picocli),
+    # so the command must be a single quoted argument. Without quoting, `certs` becomes the
+    # command, `status` becomes the field, and the literal `tlsEnabled` arg is silently
+    # dropped — picocli then sees `--field status` (no value) and rejects the call with
+    # "Expected parameter for option '--field' but found 'status'" because `status` is a
+    # registered subcommand of `certs`.
+    tls_enabled=$(aether_field "certs status" tlsEnabled)
+    status=$(aether_field "certs status" renewalStatus)
 
     if [ -z "$tls_enabled" ]; then
         log_fail "TLS contract violation: /api/certificates returned JSON body but missing tlsEnabled field (got: $(printf '%s' "$cert_info" | head -c 200))"
@@ -104,7 +111,7 @@ test_rotation_under_load() {
         return 1
     fi
 
-    tls_enabled=$(aether_field certs status tlsEnabled)
+    tls_enabled=$(aether_field "certs status" tlsEnabled)
 
     if [ -z "$tls_enabled" ]; then
         log_fail "TLS contract violation: /api/certificates returned JSON body but missing tlsEnabled field"
