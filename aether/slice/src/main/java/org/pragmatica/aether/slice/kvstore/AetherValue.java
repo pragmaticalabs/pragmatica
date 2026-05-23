@@ -124,9 +124,25 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    record AppBlueprintValue(ExpandedBlueprint blueprint) implements AetherValue {
+    /// `registerOnly` semantically signals that this blueprint was registered via
+    /// `/api/blueprints/publish` (not `/api/blueprints/deploy`). The publish endpoint
+    /// stores the blueprint definition for use by a future strategy-based deploy upgrade
+    /// without immediately making it the active version. Consumed by
+    /// `ClusterDeploymentState.handleAppBlueprintChange`, which suppresses the
+    /// `SliceTargetValue` Put when `registerOnly && existing SliceTargetValue present`.
+    record AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) implements AetherValue {
+        /// Backward-compat constructor — pre-existing call sites pass blueprint only;
+        /// `registerOnly` defaults to `false` (the historical deploy-on-publish semantics).
+        public AppBlueprintValue(ExpandedBlueprint blueprint) {
+            this(blueprint, false);
+        }
+
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint) {
-            return new AppBlueprintValue(blueprint);
+            return new AppBlueprintValue(blueprint, false);
+        }
+
+        public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) {
+            return new AppBlueprintValue(blueprint, registerOnly);
         }
     }
 

@@ -245,11 +245,11 @@ public final class SliceRoutes implements RouteSource {
                      .async()
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
-                                                    .publishFromArtifact(coords))
+                                                    .publishFromArtifact(coords, true))
                      .map(expanded -> new BlueprintResponse("published",
                                                             expanded.id().asString(),
                                                             expanded.loadOrder().size()))
-                     .onSuccess(r -> log.info("Blueprint {} published (no security overrides applied)",
+                     .onSuccess(r -> log.info("Blueprint {} published (register-only — not activated)",
                                               r.blueprint()))
                      .onFailure(cause -> log.warn("Blueprint artifact publish failed: {}",
                                                   cause.message()));

@@ -745,6 +745,77 @@ class ClusterDeploymentManagerTest {
         assertThat(targetValue.owningBlueprint().unwrap()).isEqualTo(blueprintA.id());
     }
 
+    // === Register-only blueprint publish semantics (Fix A — RC1) ===
+    // Publish via /api/blueprints/publish stores AppBlueprintValue with registerOnly=true.
+    // SliceTargetValue Put MUST be suppressed iff (registerOnly && existing SliceTargetValue
+    // present) — first-ever publish always bootstraps the target.
+
+    @Test
+    void handleAppBlueprintChange_registerOnlyFalse_firstPublish_writesSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var blueprint = createNamedBlueprint("app-deploy-first", "service-deploy-first");
+        sendAppBlueprintPut(manager, blueprint, false);
+
+        assertThat(collectSliceTargetPuts()).hasSize(1);
+    }
+
+    @Test
+    void handleAppBlueprintChange_registerOnlyTrue_firstPublish_writesSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        // First-ever publish: register-only cannot suppress fresh-slice bootstrap.
+        var blueprint = createNamedBlueprint("app-register-first", "service-register-first");
+        sendAppBlueprintPut(manager, blueprint, true);
+
+        assertThat(collectSliceTargetPuts()).hasSize(1);
+    }
+
+    @Test
+    void handleAppBlueprintChange_registerOnlyFalse_rePublish_writesSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        // Seed an existing SliceTargetValue for the slice base (simulates a prior active version).
+        var sliceArtifact = Artifact.artifact("org.example:service-redeploy:1.0.0").unwrap();
+        kvStore.put(SliceTargetKey.sliceTargetKey(sliceArtifact.base()),
+                    SliceTargetValue.sliceTargetValue(sliceArtifact.version(), 3, 0, Option.none()));
+        clusterNode.appliedCommands.clear();
+
+        // Deploy (registerOnly=false) — must write SliceTargetValue (activate the new version).
+        var blueprint = createNamedBlueprint("app-redeploy", "service-redeploy");
+        sendAppBlueprintPut(manager, blueprint, false);
+
+        assertThat(collectSliceTargetPuts()).hasSize(1);
+    }
+
+    @Test
+    void handleAppBlueprintChange_registerOnlyTrue_rePublish_suppressesSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        // Seed an existing SliceTargetValue for the slice base (simulates a prior active version).
+        var sliceArtifact = Artifact.artifact("org.example:service-register-redeploy:1.0.0").unwrap();
+        kvStore.put(SliceTargetKey.sliceTargetKey(sliceArtifact.base()),
+                    SliceTargetValue.sliceTargetValue(sliceArtifact.version(), 3, 0, Option.none()));
+        clusterNode.appliedCommands.clear();
+
+        // Publish (registerOnly=true) — Fix A — MUST suppress SliceTargetValue Put.
+        var blueprint = createNamedBlueprint("app-register-redeploy", "service-register-redeploy");
+        sendAppBlueprintPut(manager, blueprint, true);
+
+        assertThat(collectSliceTargetPuts()).isEmpty();
+    }
+
+    private List<SliceTargetValue> collectSliceTargetPuts() {
+        return clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put<?, ?> put && put.key() instanceof SliceTargetKey)
+            .map(cmd -> (SliceTargetValue) ((KVCommand.Put<?, ?>) cmd).value())
+            .toList();
+    }
+
     @Test
     void handleSliceTargetChange_preservesOwner() {
         becomeLeader();
@@ -869,6 +940,14 @@ class ClusterDeploymentManagerTest {
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {
         var key = new AppBlueprintKey(blueprint.id());
         var value = new AppBlueprintValue(blueprint);
+        var command = new KVCommand.Put<>(key, value);
+        var notification = new ValuePut<>(command, Option.none());
+        mgr.onAppBlueprintPut(notification);
+    }
+
+    private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint, boolean registerOnly) {
+        var key = new AppBlueprintKey(blueprint.id());
+        var value = new AppBlueprintValue(blueprint, registerOnly);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onAppBlueprintPut(notification);

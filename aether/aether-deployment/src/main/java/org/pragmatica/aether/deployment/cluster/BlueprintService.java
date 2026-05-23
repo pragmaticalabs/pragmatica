@@ -50,6 +50,17 @@ import org.slf4j.LoggerFactory;
 public interface BlueprintService {
     Promise<ExpandedBlueprint> publish(String dsl);
     Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords);
+    /// Publish an artifact-based blueprint with explicit register-only semantics.
+    /// When `registerOnly == true`, the blueprint definition is stored in KV (so the
+    /// strategy-based deploy can later locate the upgrade target), but the
+    /// `SliceTargetValue` Put that would activate the new version is suppressed by
+    /// `ClusterDeploymentState.handleAppBlueprintChange` when an existing
+    /// `SliceTargetValue` already pins the slice to a different (active) version.
+    /// First-ever publish for a slice still bootstraps the `SliceTargetValue`
+    /// (register-only cannot suppress fresh-slice bootstrap).
+    /// When `registerOnly == false`, behaves as the default `publishFromArtifact` —
+    /// the new version is immediately activated.
+    Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
     Option<ExpandedBlueprint> get(BlueprintId id);
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
@@ -119,6 +130,11 @@ class BlueprintServiceInstance implements BlueprintService {
 
     @Override
     public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
+        return publishFromArtifact(artifactCoords, false);
+    }
+
+    @Override
+    public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
         var parsed = parseArtifactWithClassifier(artifactCoords);
 
         return parsed.artifact()
@@ -127,8 +143,10 @@ class BlueprintServiceInstance implements BlueprintService {
                                                                parsed.classifier()))
                      .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
                      .flatMap(artifact -> expandAndStoreArtifact(artifact,
-                                                                 parsed.baseCoords()))
-                     .onFailure(cause -> log.warn("Failed to publish blueprint from artifact: {}",
+                                                                 parsed.baseCoords(),
+                                                                 registerOnly))
+                     .onFailure(cause -> log.warn("Failed to publish blueprint from artifact (registerOnly={}): {}",
+                                                  registerOnly,
                                                   cause.message()));
     }
 
@@ -209,7 +227,8 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<ExpandedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
-                                                              String artifactCoords) {
+                                                              String artifactCoords,
+                                                              boolean registerOnly) {
         return BlueprintExpander.expand(blueprintArtifact.blueprint(),
                                         repository).flatMap(expanded -> applyResourcesConfig(expanded,
                                                                                              blueprintArtifact.resourcesConfig()))
@@ -217,14 +236,16 @@ class BlueprintServiceInstance implements BlueprintService {
                                        .flatMap(expanded -> storeAllInSingleBatch(expanded,
                                                                                   blueprintArtifact.resourcesConfig(),
                                                                                   blueprintArtifact.schemaMigrations(),
-                                                                                  artifactCoords));
+                                                                                  artifactCoords,
+                                                                                  registerOnly));
     }
 
     private Promise<ExpandedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
                                                              Option<String> resourcesConfig,
                                                              Map<String, List<MigrationEntry>> migrations,
-                                                             String artifactCoords) {
-        var commands = buildAllCommands(expanded, resourcesConfig, migrations, artifactCoords);
+                                                             String artifactCoords,
+                                                             boolean registerOnly) {
+        var commands = buildAllCommands(expanded, resourcesConfig, migrations, artifactCoords, registerOnly);
 
         return cluster.apply(commands)
                       .map(_ -> expanded);
@@ -233,9 +254,10 @@ class BlueprintServiceInstance implements BlueprintService {
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
                                                         Option<String> resourcesConfig,
                                                         Map<String, List<MigrationEntry>> migrations,
-                                                        String artifactCoords) {
+                                                        String artifactCoords,
+                                                        boolean registerOnly) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
-        commands.add(buildBlueprintPutCommand(expanded));
+        commands.add(buildBlueprintPutCommand(expanded, registerOnly));
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
@@ -245,9 +267,9 @@ class BlueprintServiceInstance implements BlueprintService {
         return commands;
     }
 
-    private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded) {
+    private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded, boolean registerOnly) {
         return new Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
-                         AppBlueprintValue.appBlueprintValue(expanded));
+                         AppBlueprintValue.appBlueprintValue(expanded, registerOnly));
     }
 
     private Promise<ExpandedBlueprint> applyResourcesConfig(ExpandedBlueprint expanded,

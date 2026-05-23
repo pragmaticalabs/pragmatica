@@ -526,13 +526,21 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void restoreAppBlueprint(AppBlueprintValue appBlueprintValue) {
             var expanded = appBlueprintValue.blueprint();
-            log.trace("Restored app blueprint: {} with {} slices",
+            var registerOnly = appBlueprintValue.registerOnly();
+            log.trace("Restored app blueprint: {} with {} slices (registerOnly={})",
                       expanded.id().asString(),
-                      expanded.loadOrder().size());
+                      expanded.loadOrder().size(),
+                      registerOnly);
             buildDependencyMap(expanded);
 
             for (var slice : expanded.loadOrder()) {
                 var artifact = slice.artifact();
+                if (shouldSuppressActivation(artifact, registerOnly)) {
+                    log.trace("Restore: register-only blueprint {} — skipping in-memory blueprints.put for slice {} (existing SliceTargetValue present)",
+                              expanded.id().asString(),
+                              artifact);
+                    continue;
+                }
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
                                                    slice.instances(),
@@ -872,11 +880,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void handleAppBlueprintChange(AppBlueprintKey key, AppBlueprintValue value) {
             var expanded = value.blueprint();
+            var registerOnly = value.registerOnly();
             var nodes = allocatableNodes();
-            log.info("App blueprint '{}' deployed with {} slices across {} allocatable nodes",
+            log.info("App blueprint '{}' deployed with {} slices across {} allocatable nodes (registerOnly={})",
                      expanded.id().asString(),
                      expanded.loadOrder().size(),
-                     nodes.size());
+                     nodes.size(),
+                     registerOnly);
             var previousExpanded = capturePreviousBlueprint(expanded);
             buildDependencyMap(expanded);
 
@@ -892,6 +902,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                          slice.instances(),
                          nodes.size());
                 permanentlyFailed.remove(artifact);
+
+                if (shouldSuppressActivation(artifact, registerOnly)) {
+                    log.info("Blueprint {} registered-only — skipping SliceTargetValue Put for slice {} (existing currentVersion preserved)",
+                             expanded.id().asString(),
+                             artifact);
+                    continue;
+                }
+
                 blueprints.put(artifact,
                                Blueprint.blueprint(artifact,
                                                    slice.instances(),
@@ -908,6 +926,19 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             collectStreamMetadataCommands(expanded.id(), consensusCommands);
             submitBatch(consensusCommands);
             trackInFlightBlueprint(expanded, previousExpanded);
+        }
+
+        /// Returns `true` when the per-slice `SliceTargetValue` Put MUST be suppressed because:
+        /// the publishing blueprint was registered via `/api/blueprints/publish` (`registerOnly=true`),
+        /// AND an existing `SliceTargetValue` already pins this slice base to an active version.
+        /// First-ever publishes (no existing `SliceTargetValue`) always proceed — register-only
+        /// cannot suppress fresh-slice bootstrap, otherwise the slice would have no target at all.
+        private boolean shouldSuppressActivation(Artifact artifact, boolean registerOnly) {
+            if (!registerOnly) {return false;}
+            return ctx.kvStore()
+                      .get(SliceTargetKey.sliceTargetKey(artifact.base()))
+                      .filter(SliceTargetValue.class::isInstance)
+                      .isPresent();
         }
 
         private boolean hasConflictingOwnership(ExpandedBlueprint expanded) {
