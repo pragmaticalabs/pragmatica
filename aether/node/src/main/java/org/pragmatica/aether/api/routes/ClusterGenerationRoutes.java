@@ -29,7 +29,6 @@ import java.util.stream.Stream;
 
 public final class ClusterGenerationRoutes implements RouteSource {
     private static final String MODE_UNKNOWN = "unknown";
-
     private static final String QUIESCENCE_UNKNOWN = "UNKNOWN";
 
     private final Supplier<ManageableNode> nodeSupplier;
@@ -42,15 +41,16 @@ public final class ClusterGenerationRoutes implements RouteSource {
         return new ClusterGenerationRoutes(nodeSupplier);
     }
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<ClusterGenerationResponse>route(ManagementRoute.CLUSTER_GENERATION)
-                                         .toJson(this::buildGenerationResponse));
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<ClusterGenerationResponse> route(ManagementRoute.CLUSTER_GENERATION).toJson(this::buildGenerationResponse));
     }
 
     private ClusterGenerationResponse buildGenerationResponse() {
-        return nodeSupplier.get().currentGenerationSnapshot()
-                               .map(ClusterGenerationRoutes::toResponse)
-                               .or(ClusterGenerationRoutes::emptyResponse);
+        return nodeSupplier.get()
+                           .currentGenerationSnapshot()
+                           .map(ClusterGenerationRoutes::toResponse)
+                           .or(ClusterGenerationRoutes::emptyResponse);
     }
 
     private static ClusterGenerationResponse emptyResponse() {
@@ -80,10 +80,11 @@ public final class ClusterGenerationRoutes implements RouteSource {
     }
 
     private static List<ClusterGenerationMember> toMembers(ClusterGenerationSnapshot snapshot) {
-        return snapshot.coreMembers().values()
-                                   .stream()
-                                   .map(ClusterGenerationRoutes::toMember)
-                                   .toList();
+        return snapshot.coreMembers()
+                       .values()
+                       .stream()
+                       .map(ClusterGenerationRoutes::toMember)
+                       .toList();
     }
 
     private static ClusterGenerationMember toMember(CoreMember member) {
@@ -97,10 +98,11 @@ public final class ClusterGenerationRoutes implements RouteSource {
     }
 
     private static List<ClusterGenerationCommunity> toCommunities(ClusterGenerationSnapshot snapshot) {
-        return snapshot.communities().values()
-                                   .stream()
-                                   .map(ClusterGenerationRoutes::toCommunity)
-                                   .toList();
+        return snapshot.communities()
+                       .values()
+                       .stream()
+                       .map(ClusterGenerationRoutes::toCommunity)
+                       .toList();
     }
 
     private static ClusterGenerationCommunity toCommunity(CommunitySummary summary) {
@@ -119,10 +121,11 @@ public final class ClusterGenerationRoutes implements RouteSource {
     }
 
     private static List<ClusterGenerationPartition> toPartitions(ClusterGenerationSnapshot snapshot) {
-        return snapshot.partitions().values()
-                                  .stream()
-                                  .map(ClusterGenerationRoutes::toPartition)
-                                  .toList();
+        return snapshot.partitions()
+                       .values()
+                       .stream()
+                       .map(ClusterGenerationRoutes::toPartition)
+                       .toList();
     }
 
     private static ClusterGenerationPartition toPartition(PartitionOwner owner) {

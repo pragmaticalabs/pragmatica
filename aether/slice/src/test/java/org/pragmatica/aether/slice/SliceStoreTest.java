@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.SliceStore.EntryState;
 import org.pragmatica.aether.slice.SliceStore.LoadedSliceEntry;
 import org.pragmatica.aether.slice.SliceStore.sliceStore;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -53,7 +54,7 @@ class SliceStoreTest {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, Option.empty(), EntryState.LOADED);
 
         assertThat(entry.artifact()).isEqualTo(artifact);
     }
@@ -63,7 +64,7 @@ class SliceStoreTest {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, Option.empty(), EntryState.LOADED);
 
         assertThat(entry.slice()).isSameAs(slice);
     }
@@ -73,7 +74,7 @@ class SliceStoreTest {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, Option.empty(), EntryState.LOADED);
 
         var activeEntry = entry.withState(EntryState.ACTIVE);
 
@@ -302,6 +303,41 @@ class SliceStoreTest {
                 .containsExactlyInAnyOrder(artifact1, artifact2);
     }
 
+    // === sliceComposite() Tests ===
+
+    @Test
+    void sliceComposite_returns_attached_provider_when_present() {
+        var slice = createTestSlice();
+        var provider = org.pragmatica.config.IntrinsicConfigProvider.intrinsicConfigProvider(
+                "test", java.util.Map.of("topics.events.topic_name", "events"));
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+        addPreloadedSliceWithConfig(store, artifact, slice, EntryState.LOADED, Option.some(provider));
+
+        var composite = store.sliceComposite(artifact);
+
+        assertThat(composite.isPresent()).isTrue();
+        assertThat(composite.unwrap().getString("topics.events.topic_name").unwrap()).isEqualTo("events");
+    }
+
+    @Test
+    void sliceComposite_returns_none_when_slice_has_no_config() {
+        var slice = createTestSlice();
+        var store = createStoreWithPreloadedSlice(slice, EntryState.LOADED);
+
+        var composite = store.sliceComposite(artifact);
+
+        assertThat(composite.isEmpty()).isTrue();
+    }
+
+    @Test
+    void sliceComposite_returns_none_when_slice_not_loaded() {
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
+
+        var composite = store.sliceComposite(artifact);
+
+        assertThat(composite.isEmpty()).isTrue();
+    }
+
     // === Helper Methods ===
 
     private Slice createTestSlice() {
@@ -340,11 +376,19 @@ class SliceStoreTest {
     }
 
     private void addPreloadedSlice(SliceStore store, Artifact artifact, Slice slice, EntryState state) {
+        addPreloadedSliceWithConfig(store, artifact, slice, state, Option.empty());
+    }
+
+    private void addPreloadedSliceWithConfig(SliceStore store,
+                                             Artifact artifact,
+                                             Slice slice,
+                                             EntryState state,
+                                             Option<org.pragmatica.config.ConfigurationProvider> sliceConfig) {
         // Access internal map via the record
         var impl = (sliceStore) store;
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, state);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, sliceConfig, state);
         impl.entries().put(artifact, Promise.success(entry));
     }
 }

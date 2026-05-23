@@ -155,7 +155,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                cause.message()));
     }
 
-    @MessageReceiver public void onStreamConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put) {
+    @Contract @MessageReceiver public void onStreamConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put) {
         var streamName = put.cause().key()
                                        .streamName();
         var config = put.cause().value()
@@ -163,7 +163,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         streams.computeIfAbsent(streamName, _ -> hydrateEntry(config));
     }
 
-    @MessageReceiver public void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> remove) {
+    @Contract @MessageReceiver public void onStreamConfigRemove(ValueRemove<StreamConfigKey, StreamConfigValue> remove) {
         var streamName = remove.cause().key()
                                              .streamName();
         removeAndReleaseIfPresent(streamName);
@@ -368,7 +368,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             return lastActivityRef.get();
         }
 
-        void updateActivity() {
+        @Contract void updateActivity() {
             lastActivityRef.set(System.currentTimeMillis());
         }
 

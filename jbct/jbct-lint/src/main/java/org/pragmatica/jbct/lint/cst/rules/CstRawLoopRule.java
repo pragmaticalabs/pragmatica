@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.stream.Stream;
 
@@ -22,22 +21,18 @@ public class CstRawLoopRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find all loop statements
         return findAllStatements(root).stream()
-                      .filter(stmt -> isLoopStatement(stmt, source))
-                      .map(stmt -> createDiagnostic(stmt, source, ctx));
+                      .filter(this::isLoopStatement)
+                      .map(stmt -> createDiagnostic(stmt, ctx));
     }
 
-    private boolean isLoopStatement(CstNode stmt, String source) {
-        var stmtText = text(stmt, source).trim();
+    private boolean isLoopStatement(Cursor stmt) {
+        var stmtText = text(stmt).trim();
         // Check for traditional for loop (exclude enhanced for-each which contains ":")
         if (stmtText.startsWith("for ") || stmtText.startsWith("for(")) {
             // Enhanced for-each has colon before the closing paren
@@ -54,8 +49,8 @@ public class CstRawLoopRule implements CstLintRule {
         stmtText.startsWith("do ");
     }
 
-    private Diagnostic createDiagnostic(CstNode stmt, String source, LintContext ctx) {
-        var stmtText = text(stmt, source).trim();
+    private Diagnostic createDiagnostic(Cursor stmt, LintContext ctx) {
+        var stmtText = text(stmt).trim();
         var loopType = stmtText.startsWith("for")
                        ? "for"
                        : stmtText.startsWith("while")

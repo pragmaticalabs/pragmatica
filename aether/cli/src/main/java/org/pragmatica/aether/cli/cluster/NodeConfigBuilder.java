@@ -13,8 +13,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface NodeConfigBuilder {
-    record unused() implements NodeConfigBuilder{}
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+sealed interface NodeConfigBuilder {
+    record unused() implements NodeConfigBuilder {}
 
     static Result<TomlDocument> compose(BootstrapContext ctx,
                                         SourceProfile source,
@@ -29,9 +30,9 @@ import org.pragmatica.lang.Result;
                                                         clusterSecret);
         return Result.all(DefaultNodeConfig.globalDefault(),
                           DefaultNodeConfig.sourceTypeDefault(source.type()))
-        .map((global, typeDefault) -> NodeConfigComposer.compose(global,
-                                                                 typeDefault,
-                                                                 source.nodeConfig(),
-                                                                 overlay));
+                     .map((global, typeDefault) -> NodeConfigComposer.compose(global,
+                                                                              typeDefault,
+                                                                              source.nodeConfig(),
+                                                                              overlay));
     }
 }

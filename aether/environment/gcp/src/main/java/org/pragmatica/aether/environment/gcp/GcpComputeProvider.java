@@ -55,6 +55,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return client.insertInstance(buildInsertRequest(Option.empty(),
                                                         config.userData(),
                                                         defaultLabels())).map(GcpComputeProvider::toInstanceInfo)
+                                    .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
 
@@ -63,7 +64,21 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         var userData = spec.userData().or(config.userData());
         var labels = labelsFor(spec.context());
         return client.insertInstance(buildInsertRequest(zone, userData, labels)).map(GcpComputeProvider::toInstanceInfo)
+                                    .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
                                     .mapError(GcpComputeProvider::toProvisionError);
+    }
+
+    /// Rollback acknowledgment for GCP provisions. GCP's `insertInstance` is a single
+    /// atomic operation: either it returns success with an Instance, or it returns
+    /// failure with no resource created. There is no separate "partial" state the
+    /// provider can observe here — async post-create polling for `RUNNING` would be
+    /// needed to detect a stuck-PROVISIONING VM, and that polling is owned at a higher
+    /// layer (CTM auto-heal). Surface a WARN so operators can correlate provision-flow
+    /// failures with any orphan that DOES appear; if a future code path adds a tagging
+    /// or post-create step, plumb a real terminateInstance rollback through this hook.
+    private static void logProvisionFailureRollbackGap(Cause cause) {
+        log.warn("GCP provision failed ({}); no instance-side rollback issued because insertInstance is atomic — relying on caller to retry or sweep",
+                 cause.message());
     }
 
     @Override public Promise<Unit> terminate(InstanceId instanceId) {
@@ -102,7 +117,9 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return "";
     }
 
-    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride, String userData, Map<String, String> labels) {
+    private InsertInstanceRequest buildInsertRequest(Option<String> zoneOverride,
+                                                     String userData,
+                                                     Map<String, String> labels) {
         var name = generateInstanceName();
         var machineType = config.machineType();
         var disk = buildBootDisk();
@@ -121,18 +138,22 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
     }
 
-    /// Translate a [ProvisionContext] into GCP labels. Well-known `aether-*`
-    /// slots are emitted alongside the managed marker; caller-supplied
-    /// [ProvisionContext#extraTags] are folded in last (extras win on collision).
     private static Map<String, String> labelsFor(ProvisionContext ctx) {
         var labels = new java.util.HashMap<String, String>();
         labels.put(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
-        if (!ctx.clusterName().isEmpty()) {labels.put("aether-cluster", ctx.clusterName());}
+        var clusterName = resolveClusterName(ctx);
+        if (!clusterName.isEmpty()) {labels.put("aether-cluster", clusterName);}
         if (!ctx.role().isEmpty()) {labels.put("aether-role", ctx.role());}
         if (!ctx.sourceName().isEmpty()) {labels.put("aether-source", ctx.sourceName());}
         ctx.nodeId().onPresent(value -> labels.put("aether-node-id", value));
         labels.putAll(ctx.extraTags());
         return Map.copyOf(labels);
+    }
+
+    private static String resolveClusterName(ProvisionContext ctx) {
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        return fromEnv != null && !fromEnv.isEmpty() ? fromEnv : "";
     }
 
     private static Option<String> extractZone(Option<PlacementHint> placement) {

@@ -18,7 +18,7 @@ services:
       - LOAD_RATE=1000
       - JAVA_OPTS=-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -Xms512m -Xmx2g
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8888/api/status"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8888/api/nodes/status"]
       interval: 10s
       timeout: 5s
       retries: 5

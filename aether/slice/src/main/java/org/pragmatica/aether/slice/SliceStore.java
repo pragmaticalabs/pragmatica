@@ -9,6 +9,12 @@ import org.pragmatica.aether.slice.dependency.DependencyResolver;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.IntrinsicConfigProvider;
+import org.pragmatica.config.LayeredConfigProvider;
+import org.pragmatica.config.NamedConfigProvider;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -18,7 +24,10 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
@@ -45,12 +54,39 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                  SliceInvokerFacade invokerFacade,
                                  ResourceProviderFacade resourceFacade,
                                  SliceActionConfig config) {
+        return sliceStore(registry,
+                          repositories,
+                          sharedLibraryLoader,
+                          invokerFacade,
+                          resourceFacade,
+                          config,
+                          Option.empty());
+    }
+
+    /// Constructor variant that accepts the node-composite (`KV-overlay ⊕ node.toml`).
+    ///
+    /// When present, each successfully loaded slice gets its own slice-composite
+    /// (`slice.toml ⊕ nodeComposite`) attached to the `LoadedSliceEntry`. The slice.toml
+    /// is the `META-INF/resources.toml` parsed from the slice JAR locally — it never
+    /// round-trips through KV.
+    ///
+    /// @param nodeComposite Layered node-level config (KV-overlay on top, node.toml beneath);
+    ///                      pass `Option.none()` to disable per-slice config (slices receive
+    ///                      no `sliceConfig` on their loaded-context).
+    static SliceStore sliceStore(SliceRegistry registry,
+                                 List<Repository> repositories,
+                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                 SliceInvokerFacade invokerFacade,
+                                 ResourceProviderFacade resourceFacade,
+                                 SliceActionConfig config,
+                                 Option<ConfigurationProvider> nodeComposite) {
         return new sliceStore(registry,
                               repositories,
                               sharedLibraryLoader,
                               invokerFacade,
                               resourceFacade,
                               config,
+                              nodeComposite,
                               new ConcurrentHashMap<>());
     }
 
@@ -81,6 +117,18 @@ import static org.pragmatica.lang.utils.Causes.cause;
     Promise<LoadedSlice> deactivateSlice(Artifact artifact);
     Promise<Unit> unloadSlice(Artifact artifact);
 
+    /// Return the slice-composite (`slice.toml ⊕ nodeComposite`) for a loaded slice.
+    ///
+    /// Returns `Option.none()` when:
+    /// - The slice is not loaded
+    /// - The slice's load Promise is unresolved or failed
+    /// - The store was constructed without a `nodeComposite` (per-slice config disabled)
+    ///
+    /// Callers (e.g. `NodeDeploymentState`) should consult this during activation to
+    /// resolve per-slice configuration (topics, schedules, streams, @ConfigUpdate
+    /// sections) without falling back to the global `ConfigService.instance()` singleton.
+    Option<ConfigurationProvider> sliceComposite(Artifact artifact);
+
     enum EntryState {
         LOADED,
         ACTIVE
@@ -90,13 +138,14 @@ import static org.pragmatica.lang.utils.Causes.cause;
                             Slice sliceInstance,
                             SliceClassLoader classLoader,
                             SliceLoadingContext loadingContext,
+                            Option<ConfigurationProvider> sliceConfig,
                             EntryState state) implements LoadedSlice {
         @Override public Slice slice() {
             return sliceInstance;
         }
 
         LoadedSliceEntry withState(EntryState newState) {
-            return new LoadedSliceEntry(artifact, sliceInstance, classLoader, loadingContext, newState);
+            return new LoadedSliceEntry(artifact, sliceInstance, classLoader, loadingContext, sliceConfig, newState);
         }
 
         LoadedSlice asLoadedSlice() {
@@ -110,8 +159,11 @@ import static org.pragmatica.lang.utils.Causes.cause;
                       SliceInvokerFacade invokerFacade,
                       ResourceProviderFacade resourceFacade,
                       SliceActionConfig config,
+                      Option<ConfigurationProvider> nodeComposite,
                       ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(sliceStore.class);
+
+        private static final String SLICE_RESOURCES_TOML = "META-INF/resources.toml";
 
         @Override public Promise<LoadedSlice> loadSlice(Artifact artifact) {
             return entries.computeIfAbsent(artifact, this::startLoading).map(entry -> (LoadedSlice) entry);
@@ -128,7 +180,9 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                          registry,
                                                          sharedLibraryLoader,
                                                          invokerFacade,
-                                                         resourceFacade).map(resolved -> {
+                                                         resourceFacade,
+                                                         Option.some(classLoader -> buildSliceCompositeFromClassLoader(artifact,
+                                                                                                                       classLoader))).map(resolved -> {
                                                                                  var sliceClassLoader = resolved.slice().getClass()
                                                                                                                       .getClassLoader();
                                                                                  if (sliceClassLoader instanceof SliceClassLoader scl) {return createEntry(artifact,
@@ -150,13 +204,106 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                                       cause.message()));
         }
 
+        /// Build the slice-composite (`slice.toml ⊕ nodeComposite`) from the slice classloader.
+        ///
+        /// Reads `META-INF/resources.toml` via the slice classloader, parses it into a flat
+        /// key/value map, wraps it in an `IntrinsicConfigProvider`, and layers it over the
+        /// node-composite. Returns `Option.none()` when the store was constructed without a
+        /// node-composite (per-slice config disabled).
+        ///
+        /// Emits one INFO log per intrinsic key whose value is shadowed by an existing KV
+        /// override at slice-load time (operator override preceded slice deploy) — see
+        /// [#logShadowedKeys].
+        private Option<ConfigurationProvider> buildSliceCompositeFromClassLoader(Artifact artifact, ClassLoader classLoader) {
+            return nodeComposite.flatMap(composite -> loadSliceIntrinsicProviderFromClassLoader(artifact, classLoader).map(intrinsic -> assembleSliceComposite(artifact,
+                                                                                                                                                              intrinsic,
+                                                                                                                                                              composite)));
+        }
+
+        private static ConfigurationProvider assembleSliceComposite(Artifact artifact,
+                                                                    ConfigurationProvider intrinsic,
+                                                                    ConfigurationProvider composite) {
+            logShadowedKeys(artifact, intrinsic, composite);
+            var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
+            return LayeredConfigProvider.layered(List.of(labelledIntrinsic, composite));
+        }
+
+        /// Emit one INFO log entry per intrinsic key whose value is shadowed by an existing
+        /// operator override in the node-composite (typically the KV-overlay layer). Triggered
+        /// at slice-load time only; subsequent reads are silent.
+        private static void logShadowedKeys(Artifact artifact, ConfigurationProvider intrinsic, ConfigurationProvider composite) {
+            for (var key : intrinsic.keys()) {
+                var intrinsicValue = intrinsic.getString(key);
+                var overrideValue = composite.getString(key);
+                if (intrinsicValue.isPresent() && overrideValue.isPresent() && !intrinsicValue.unwrap().equals(overrideValue.unwrap())) {
+                    log.info("slice {} intrinsic key {} shadowed by operator override (intrinsic={}, override={})",
+                             artifact.asString(),
+                             key,
+                             intrinsicValue.unwrap(),
+                             overrideValue.unwrap());
+                }
+            }
+        }
+
+        private Option<ConfigurationProvider> loadSliceIntrinsicProviderFromClassLoader(Artifact artifact, ClassLoader classLoader) {
+            var tomlContent = readSliceResourcesTomlFromClassLoader(classLoader);
+            if (tomlContent.isEmpty()) {
+                log.debug("Slice {} has no {}; intrinsic config provider omitted", artifact, SLICE_RESOURCES_TOML);
+                return Option.some(IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(), Map.of()));
+            }
+            return tomlContent.flatMap(content -> parseToFlatMap(artifact, content))
+                              .map(values -> {
+                                  log.info("Slice {} intrinsic config loaded from {}: {} keys",
+                                           artifact, SLICE_RESOURCES_TOML, values.size());
+                                  return IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(), values);
+                              });
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private static Option<String> readSliceResourcesTomlFromClassLoader(ClassLoader classLoader) {
+            try (var in = classLoader.getResourceAsStream(SLICE_RESOURCES_TOML)) {
+                if (in == null) {return Option.none();}
+                return Option.some(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+            } catch (IOException e) {
+                log.warn("Failed to read {} from slice classloader: {}", SLICE_RESOURCES_TOML, e.getMessage());
+                return Option.none();
+            }
+        }
+
         private LoadedSliceEntry createEntry(Artifact artifact,
                                              Slice slice,
                                              SliceClassLoader classLoader,
                                              SliceLoadingContext loadingContext) {
-            var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
+            var sliceConfig = loadingContext.sliceComposite()
+                                            .orElse(() -> buildSliceCompositeFromClassLoader(artifact, classLoader));
+            var entry = new LoadedSliceEntry(artifact,
+                                             slice,
+                                             classLoader,
+                                             loadingContext,
+                                             sliceConfig,
+                                             EntryState.LOADED);
             log.debug("Slice {} loaded", artifact);
             return entry;
+        }
+
+        private static Option<Map<String, String>> parseToFlatMap(Artifact artifact, String content) {
+            return TomlParser.parse(content)
+                             .map(sliceStore::flattenSections)
+                             .onFailure(cause -> log.warn("Failed to parse {} for slice {}: {}",
+                                                          SLICE_RESOURCES_TOML,
+                                                          artifact,
+                                                          cause.message()))
+                             .option();
+        }
+
+        private static Map<String, String> flattenSections(TomlDocument doc) {
+            var flat = new LinkedHashMap<String, String>();
+            for (var sectionName : doc.sectionNames()) {
+                if (sectionName.isEmpty()) {continue;}
+                var prefix = sectionName + ".";
+                doc.getSection(sectionName).forEach((key, value) -> flat.put(prefix + key, value));
+            }
+            return flat;
         }
 
         @Override public Promise<LoadedSlice> activateSlice(Artifact artifact) {
@@ -271,6 +418,12 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                   .fold(_ -> Stream.empty(),
                                                                         entry -> Stream.of(entry.asLoadedSlice())))
                                  .toList();
+        }
+
+        @Override public Option<ConfigurationProvider> sliceComposite(Artifact artifact) {
+            return option(entries.get(artifact)).filter(Promise::isResolved)
+                                                .flatMap(promise -> promise.await().option())
+                                                .flatMap(LoadedSliceEntry::sliceConfig);
         }
 
         private Promise<Location> locateInRepositories(Artifact artifact) {

@@ -37,86 +37,128 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
 
-@Command(name = "init", description = "Generate a cluster-config.toml interactively or from flags") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-EX-01"}) class ClusterInitCommand implements Callable<Integer> {
+@Command(name = "init", description = "Generate a cluster-config.toml interactively or from flags")
+@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-EX-01"})
+class ClusterInitCommand implements Callable<Integer> {
     private static final String DEFAULT_OUTPUT = "cluster-config.toml";
 
-    @Option(names = "--output", description = "Output path", defaultValue = DEFAULT_OUTPUT) private Path output;
+    @Option(names = "--output", description = "Output path", defaultValue = DEFAULT_OUTPUT)
+    private Path output;
 
-    @Option(names = "--force", description = "Overwrite existing output file") private boolean force;
+    @Option(names = "--force", description = "Overwrite existing output file")
+    private boolean force;
 
-    @Option(names = "--name", description = "Cluster name") private String name;
+    /// P-NEW-G (2026-05-21): Forces non-interactive (batch) mode and disables all prompts.
+    /// When set, `--target` defaults to `docker` if not provided, and any missing required
+    /// flag fails fast with a `MissingField` cause rather than prompting interactively.
+    /// Enables CI / integration-test usage (TC-07-J3) — see
+    /// `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-G.
+    @Option(names = "--non-interactive", description = "Force non-interactive mode; fail if required flags are missing")
+    private boolean nonInteractive;
 
-    @Option(names = "--target", description = "Deployment target: docker | ssh | cloud | forge") private String target;
+    @Option(names = "--name", description = "Cluster name")
+    private String name;
 
-    @Option(names = "--provider", description = "Cloud provider (cloud target only): hetzner | aws | gcp | azure") private String provider;
+    @Option(names = "--target", description = "Deployment target: docker | ssh | cloud | forge")
+    private String target;
 
-    @Option(names = "--region", description = "Cloud region (cloud target only)") private String region;
+    @Option(names = "--provider", description = "Cloud provider (cloud target only): hetzner | aws | gcp | azure")
+    private String provider;
 
-    @Option(names = "--instance-type", description = "Cloud instance type (cloud target only)") private String instanceType;
+    @Option(names = "--region", description = "Cloud region (cloud target only)")
+    private String region;
 
-    @Option(names = "--credential-env", description = "Env var name carrying provider credentials") private String credentialEnv;
+    @Option(names = "--instance-type", description = "Cloud instance type (cloud target only)")
+    private String instanceType;
 
-    @Option(names = "--hosts", description = "SSH hosts (ssh target only), comma-separated", split = ",") private List<String> hosts;
+    @Option(names = "--credential-env", description = "Env var name carrying provider credentials")
+    private String credentialEnv;
 
-    @Option(names = "--ssh-user", description = "SSH user (ssh target only)") private String sshUser;
+    @Option(names = "--hosts", description = "SSH hosts (ssh target only), comma-separated", split = ",")
+    private List<String> hosts;
 
-    @Option(names = "--ssh-key", description = "SSH private key path (ssh target only)") private String sshKey;
+    @Option(names = "--ssh-user", description = "SSH user (ssh target only)")
+    private String sshUser;
 
-    @Option(names = "--ssh-port", description = "SSH port (ssh target only)", defaultValue = "22") private Integer sshPort;
+    @Option(names = "--ssh-key", description = "SSH private key path (ssh target only)")
+    private String sshKey;
 
-    @Option(names = "--nodes", description = "Total node count (>= 3 required for non-SSH targets)") private Integer nodes;
+    @Option(names = "--ssh-port", description = "SSH port (ssh target only)", defaultValue = "22")
+    private Integer sshPort;
 
-    @Option(names = "--db-host", description = "Database host (optional)") private String dbHost;
+    @Option(names = "--nodes", description = "Total node count (>= 3 required for non-SSH targets)")
+    private Integer nodes;
 
-    @Option(names = "--db-port", description = "Database port (optional)", defaultValue = "5432") private Integer dbPort;
+    @Option(names = "--db-host", description = "Database host (optional)")
+    private String dbHost;
 
-    @Option(names = "--db-name", description = "Database name (optional)") private String dbName;
+    @Option(names = "--db-port", description = "Database port (optional)", defaultValue = "5432")
+    private Integer dbPort;
 
-    @Option(names = "--db-user", description = "Database user (optional)") private String dbUser;
+    @Option(names = "--db-name", description = "Database name (optional)")
+    private String dbName;
 
-    @Option(names = "--db-password-env", description = "Env var name carrying database password") private String dbPasswordEnv;
+    @Option(names = "--db-user", description = "Database user (optional)")
+    private String dbUser;
 
-    @Option(names = "--firewall", description = "Firewall preset: standard | restrictive | open | custom") private String firewall;
+    @Option(names = "--db-password-env", description = "Env var name carrying database password")
+    private String dbPasswordEnv;
 
-    @Option(names = "--admin-cidr", description = "Admin source CIDR (RESTRICTIVE preset)") private String adminCidr;
+    @Option(names = "--firewall", description = "Firewall preset: standard | restrictive | open | custom")
+    private String firewall;
 
-    @Option(names = "--internal-cidr", description = "Internal cluster CIDR (RESTRICTIVE preset)") private String internalCidr;
+    @Option(names = "--admin-cidr", description = "Admin source CIDR (RESTRICTIVE preset)")
+    private String adminCidr;
 
-    @Option(names = "--tls", description = "TLS mode: auto | env (env requires --tls-cert-env / --tls-key-env)") private String tls;
+    @Option(names = "--internal-cidr", description = "Internal cluster CIDR (RESTRICTIVE preset)")
+    private String internalCidr;
 
-    @Option(names = "--tls-cert-env", description = "Env var name carrying TLS cert path") private String tlsCertEnv;
+    @Option(names = "--tls", description = "TLS mode: auto | env (env requires --tls-cert-env / --tls-key-env)")
+    private String tls;
 
-    @Option(names = "--tls-key-env", description = "Env var name carrying TLS key path") private String tlsKeyEnv;
+    @Option(names = "--tls-cert-env", description = "Env var name carrying TLS cert path")
+    private String tlsCertEnv;
 
-    @Option(names = "--secret", description = "Cluster secret mode: auto | env") private String secret;
+    @Option(names = "--tls-key-env", description = "Env var name carrying TLS key path")
+    private String tlsKeyEnv;
 
-    @Option(names = "--secret-env", description = "Env var name carrying cluster secret") private String secretEnv;
+    @Option(names = "--secret", description = "Cluster secret mode: auto | env")
+    private String secret;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @Option(names = "--secret-env", description = "Env var name carrying cluster secret")
+    private String secretEnv;
 
-    @Override public Integer call() {
-        return collectAnswers().flatMap(this::writeOutput).fold(this::onFailure, this::onSuccess);
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
+
+    @Override
+    public Integer call() {
+        return collectAnswers().flatMap(this::writeOutput)
+                             .fold(this::onFailure, this::onSuccess);
     }
 
     private Result<ClusterConfigAnswers> collectAnswers() {
         return isBatchMode()
-              ? buildFromFlags()
-              : new ClusterConfigWizard().run();
+               ? buildFromFlags()
+               : new ClusterConfigWizard().run();
     }
 
     private boolean isBatchMode() {
-        return target != null;
+        return target != null || nonInteractive;
     }
 
     private Result<ClusterConfigAnswers> buildFromFlags() {
-        return parseTarget(target).flatMap(t -> InputValidators.validateClusterName(name == null
+        var effectiveTarget = target != null
+                              ? target
+                              : "docker";
+        return parseTarget(effectiveTarget).flatMap(t -> InputValidators.validateClusterName(name == null
                                                                                     ? ""
-                                                                                    : name)
-        .flatMap(validName -> buildAnswersForTarget(validName, t)));
+                                                                                    : name).flatMap(validName -> buildAnswersForTarget(validName,
+                                                                                                                                       t)));
     }
 
     private Result<ClusterConfigAnswers> buildAnswersForTarget(String clusterName, SourceType t) {
-        return switch (t){
+        return switch (t) {
             case CLOUD -> buildCloudAnswers(clusterName);
             case SSH -> buildSshAnswers(clusterName);
             case DOCKER, FORGE -> buildLocalAnswers(clusterName, t);
@@ -129,16 +171,15 @@ import picocli.CommandLine.Option;
         if (instanceType == null) return new ClusterInitError.MissingField("--instance-type").result();
         if (credentialEnv == null) return new ClusterInitError.MissingField("--credential-env").result();
         if (nodes == null) return new ClusterInitError.MissingField("--nodes").result();
-        return parseCloudProvider(provider).flatMap(p -> InputValidators.validateEnvVarName(credentialEnv)
-                                                                                           .flatMap(envOk -> TopologyDeriver.derive(nodes)
-                                                                                                                                   .flatMap(split -> assembleAnswers(clusterName,
-                                                                                                                                                                     SourceType.CLOUD,
-                                                                                                                                                                     org.pragmatica.lang.Option.some(new CloudAnswers(p,
-                                                                                                                                                                                                                      region,
-                                                                                                                                                                                                                      instanceType,
-                                                                                                                                                                                                                      envOk)),
-                                                                                                                                                                     org.pragmatica.lang.Option.none(),
-                                                                                                                                                                     split))));
+
+        return parseCloudProvider(provider).flatMap(p -> InputValidators.validateEnvVarName(credentialEnv).flatMap(envOk -> TopologyDeriver.derive(nodes).flatMap(split -> assembleAnswers(clusterName,
+                                                                                                                                                                                           SourceType.CLOUD,
+                                                                                                                                                                                           org.pragmatica.lang.Option.some(new CloudAnswers(p,
+                                                                                                                                                                                                                                            region,
+                                                                                                                                                                                                                                            instanceType,
+                                                                                                                                                                                                                                            envOk)),
+                                                                                                                                                                                           org.pragmatica.lang.Option.none(),
+                                                                                                                                                                                           split))));
     }
 
     private Result<ClusterConfigAnswers> buildSshAnswers(String clusterName) {
@@ -149,28 +190,28 @@ import picocli.CommandLine.Option;
             var validation = InputValidators.validateHostnameOrIp(host);
             if (validation.isFailure()) {
                 var cause = validation.fold(c -> c, _ -> null);
-                return Result.<ClusterConfigAnswers>failure(cause);
+
+                return Result.<ClusterConfigAnswers> failure(cause);
             }
         }
-        return TopologyDeriver.derive(hosts.size())
-                                     .flatMap(split -> assembleAnswers(clusterName,
-                                                                       SourceType.SSH,
-                                                                       org.pragmatica.lang.Option.none(),
-                                                                       org.pragmatica.lang.Option.some(new SshAnswers(hosts,
-                                                                                                                      sshUser,
-                                                                                                                      Path.of(sshKey),
-                                                                                                                      sshPort)),
-                                                                       split));
+
+        return TopologyDeriver.derive(hosts.size()).flatMap(split -> assembleAnswers(clusterName,
+                                                                                     SourceType.SSH,
+                                                                                     org.pragmatica.lang.Option.none(),
+                                                                                     org.pragmatica.lang.Option.some(new SshAnswers(hosts,
+                                                                                                                                    sshUser,
+                                                                                                                                    Path.of(sshKey),
+                                                                                                                                    sshPort)),
+                                                                                     split));
     }
 
     private Result<ClusterConfigAnswers> buildLocalAnswers(String clusterName, SourceType t) {
         if (nodes == null) return new ClusterInitError.MissingField("--nodes").result();
-        return TopologyDeriver.derive(nodes)
-                                     .flatMap(split -> assembleAnswers(clusterName,
-                                                                       t,
-                                                                       org.pragmatica.lang.Option.none(),
-                                                                       org.pragmatica.lang.Option.none(),
-                                                                       split));
+        return TopologyDeriver.derive(nodes).flatMap(split -> assembleAnswers(clusterName,
+                                                                              t,
+                                                                              org.pragmatica.lang.Option.none(),
+                                                                              org.pragmatica.lang.Option.none(),
+                                                                              split));
     }
 
     private Result<ClusterConfigAnswers> assembleAnswers(String clusterName,
@@ -198,39 +239,42 @@ import picocli.CommandLine.Option;
         if (dbName == null) return new ClusterInitError.MissingField("--db-name (--db-host given)").result();
         if (dbUser == null) return new ClusterInitError.MissingField("--db-user (--db-host given)").result();
         if (dbPasswordEnv == null) return new ClusterInitError.MissingField("--db-password-env (--db-host given)").result();
-        return InputValidators.validateHostnameOrIp(dbHost)
-                                                   .flatMap(host -> InputValidators.validateEnvVarName(dbPasswordEnv)
-                                                                                                      .map(envVar -> org.pragmatica.lang.Option.some(new DatabaseAnswers(host,
-                                                                                                                                                                         dbPort,
-                                                                                                                                                                         dbName,
-                                                                                                                                                                         dbUser,
-                                                                                                                                                                         new PasswordSource.FromEnv(envVar)))));
+
+        return InputValidators.validateHostnameOrIp(dbHost).flatMap(host -> InputValidators.validateEnvVarName(dbPasswordEnv).map(envVar -> org.pragmatica.lang.Option.some(new DatabaseAnswers(host,
+                                                                                                                                                                                                dbPort,
+                                                                                                                                                                                                dbName,
+                                                                                                                                                                                                dbUser,
+                                                                                                                                                                                                new PasswordSource.FromEnv(envVar)))));
     }
 
     private record FirewallChoice(FirewallPreset preset,
                                   org.pragmatica.lang.Option<String> adminCidr,
-                                  org.pragmatica.lang.Option<String> internalCidr){}
+                                  org.pragmatica.lang.Option<String> internalCidr) {}
 
     private Result<FirewallChoice> buildFirewall(SourceType t) {
-        if (t == SourceType.DOCKER || t == SourceType.FORGE) {return Result.success(new FirewallChoice(FirewallPreset.OPEN,
-                                                                                                       org.pragmatica.lang.Option.none(),
-                                                                                                       org.pragmatica.lang.Option.none()));}
+        if (t == SourceType.DOCKER || t == SourceType.FORGE) {
+            return Result.success(new FirewallChoice(FirewallPreset.OPEN,
+                                                     org.pragmatica.lang.Option.none(),
+                                                     org.pragmatica.lang.Option.none()));
+        }
+
         var preset = parseFirewallPreset(firewall == null
                                          ? "standard"
                                          : firewall);
         return preset.flatMap(p -> {
                                   if (p == FirewallPreset.RESTRICTIVE) {
-                                      var admin = adminCidr != null
-                                                 ? adminCidr
-                                                 : IpDetector.suggestAdminCidr();
-                                      var internal = internalCidr != null
-                                                    ? internalCidr
-                                                    : "10.0.0.0/8";
-                                      return InputValidators.validateCidr(admin).flatMap(_ -> InputValidators.validateCidr(internal))
-                                                                         .map(_ -> new FirewallChoice(p,
-                                                                                                      org.pragmatica.lang.Option.some(admin),
-                                                                                                      org.pragmatica.lang.Option.some(internal)));
-                                  }
+                                  var admin = adminCidr != null
+                                              ? adminCidr
+                                              : IpDetector.suggestAdminCidr();
+                                  var internal = internalCidr != null
+                                                 ? internalCidr
+                                                 : "10.0.0.0/8";
+                                  return InputValidators.validateCidr(admin)
+                                                        .flatMap(_ -> InputValidators.validateCidr(internal))
+                                                        .map(_ -> new FirewallChoice(p,
+                                                                                     org.pragmatica.lang.Option.some(admin),
+                                                                                     org.pragmatica.lang.Option.some(internal)));
+                              }
                                   return Result.success(new FirewallChoice(p,
                                                                            org.pragmatica.lang.Option.none(),
                                                                            org.pragmatica.lang.Option.none()));
@@ -239,10 +283,11 @@ import picocli.CommandLine.Option;
 
     private Result<TlsAnswers> buildTls(SourceType t) {
         if (t == SourceType.DOCKER || t == SourceType.FORGE) {return Result.success(new TlsAnswers.Skipped());}
+
         var mode = tls == null
-                  ? "auto"
-                  : tls.toLowerCase();
-        return switch (mode){
+                   ? "auto"
+                   : tls.toLowerCase();
+        return switch (mode) {
             case "auto" -> Result.success(new TlsAnswers.AutoGenerate());
             case "env" -> buildTlsFromEnv();
             default -> new ClusterInitError.InvalidValue("--tls", mode, "expected 'auto' or 'env'").result();
@@ -252,18 +297,18 @@ import picocli.CommandLine.Option;
     private Result<TlsAnswers> buildTlsFromEnv() {
         if (tlsCertEnv == null) {return new ClusterInitError.MissingField("--tls-cert-env (--tls=env)").result();}
         if (tlsKeyEnv == null) {return new ClusterInitError.MissingField("--tls-key-env (--tls=env)").result();}
-        return InputValidators.validateEnvVarName(tlsCertEnv)
-                                                 .flatMap(certOk -> InputValidators.validateEnvVarName(tlsKeyEnv)
-                                                                                                      .map(keyOk -> new TlsAnswers.Manual(certOk,
-                                                                                                                                          keyOk)));
+
+        return InputValidators.validateEnvVarName(tlsCertEnv).flatMap(certOk -> InputValidators.validateEnvVarName(tlsKeyEnv).map(keyOk -> new TlsAnswers.Manual(certOk,
+                                                                                                                                                                 keyOk)));
     }
 
     private Result<SecretAnswers> buildSecret(SourceType t) {
         if (t == SourceType.DOCKER || t == SourceType.FORGE) {return Result.success(new SecretAnswers.Skipped());}
+
         var mode = secret == null
-                  ? "auto"
-                  : secret.toLowerCase();
-        return switch (mode){
+                   ? "auto"
+                   : secret.toLowerCase();
+        return switch (mode) {
             case "auto" -> Result.success(new SecretAnswers.AutoGenerate());
             case "env" -> buildSecretFromEnv();
             default -> new ClusterInitError.InvalidValue("--secret", mode, "expected 'auto' or 'env'").result();
@@ -276,40 +321,43 @@ import picocli.CommandLine.Option;
     }
 
     private static Result<SourceType> parseTarget(String raw) {
-        var match = Arrays.stream(SourceType.values()).filter(t -> t.name().equalsIgnoreCase(raw))
-                                 .findFirst();
+        var match = Arrays.stream(SourceType.values()).filter(t -> t.name()
+                                                                    .equalsIgnoreCase(raw)).findFirst();
         return match.map(Result::success)
-                        .orElseGet(() -> new ClusterInitError.InvalidValue("--target",
-                                                                           raw,
-                                                                           "one of: docker, ssh, cloud, forge").result());
+                    .orElseGet(() -> new ClusterInitError.InvalidValue("--target",
+                                                                       raw,
+                                                                       "one of: docker, ssh, cloud, forge").result());
     }
 
     private static Result<CloudProviderName> parseCloudProvider(String raw) {
-        var match = Arrays.stream(CloudProviderName.values()).filter(p -> p.name().equalsIgnoreCase(raw))
-                                 .findFirst();
+        var match = Arrays.stream(CloudProviderName.values()).filter(p -> p.name()
+                                                                           .equalsIgnoreCase(raw)).findFirst();
         return match.map(Result::success)
-                        .orElseGet(() -> new ClusterInitError.InvalidValue("--provider",
-                                                                           raw,
-                                                                           "one of: hetzner, aws, gcp, azure").result());
+                    .orElseGet(() -> new ClusterInitError.InvalidValue("--provider",
+                                                                       raw,
+                                                                       "one of: hetzner, aws, gcp, azure").result());
     }
 
     private static Result<FirewallPreset> parseFirewallPreset(String raw) {
-        var match = Arrays.stream(FirewallPreset.values()).filter(p -> p.name().equalsIgnoreCase(raw))
-                                 .findFirst();
+        var match = Arrays.stream(FirewallPreset.values()).filter(p -> p.name()
+                                                                        .equalsIgnoreCase(raw)).findFirst();
         return match.map(Result::success)
-                        .orElseGet(() -> new ClusterInitError.InvalidValue("--firewall",
-                                                                           raw,
-                                                                           "one of: standard, restrictive, open, custom").result());
+                    .orElseGet(() -> new ClusterInitError.InvalidValue("--firewall",
+                                                                       raw,
+                                                                       "one of: standard, restrictive, open, custom").result());
     }
 
     private Result<Path> writeOutput(ClusterConfigAnswers answers) {
-        if (Files.exists(output) && !force) {if (!isBatchMode()) {
-            var prompt = new Prompt();
-            if (!prompt.confirm("Output file " + output + " exists. Overwrite?", false)) {return new ClusterInitError.OutputExists(output.toString()).result();}
-        } else {return new ClusterInitError.OutputExists(output.toString()).result();}}
+        if (Files.exists(output) && !force) {
+            if (!isBatchMode()) {
+                var prompt = new Prompt();
+                if (!prompt.confirm("Output file " + output + " exists. Overwrite?", false)) {return new ClusterInitError.OutputExists(output.toString()).result();}
+            } else {return new ClusterInitError.OutputExists(output.toString()).result();}
+        }
         try {
             var toml = ClusterConfigGenerator.generate(answers);
             Files.writeString(output, toml);
+
             return Result.success(output);
         } catch (IOException e) {
             return new ClusterInitError.IoFailure(output.toString(), e.getMessage()).result();
@@ -319,11 +367,13 @@ import picocli.CommandLine.Option;
     private int onSuccess(Path written) {
         System.out.println("Wrote " + written);
         System.out.println("Next: review the file, then run `aether cluster bootstrap " + written + "`.");
+
         return ExitCode.SUCCESS;
     }
 
     private int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

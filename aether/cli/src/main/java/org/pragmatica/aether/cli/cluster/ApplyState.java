@@ -22,13 +22,14 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public record ApplyState(String clusterName,
-                                                                            String configHash,
-                                                                            String startedAt,
-                                                                            int currentWaveIndex,
-                                                                            List<WaveStatus> waves,
-                                                                            List<CreatedResource> createdResources,
-                                                                            List<String> destroyedNodeIds) {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+public record ApplyState(String clusterName,
+                         String configHash,
+                         String startedAt,
+                         int currentWaveIndex,
+                         List<WaveStatus> waves,
+                         List<CreatedResource> createdResources,
+                         List<String> destroyedNodeIds) {
     public ApplyState {
         waves = List.copyOf(waves);
         createdResources = List.copyOf(createdResources);
@@ -53,24 +54,28 @@ import static org.pragmatica.lang.Result.success;
 
     public static ApplyState initialState(String clusterName, String configHash, String startedAt) {
         var waves = List.of(WaveStatus.PENDING, WaveStatus.PENDING, WaveStatus.PENDING);
+
         return applyState(clusterName, configHash, startedAt, 0, waves, List.of(), List.of());
     }
 
     public ApplyState withWaveStatus(int waveIndex, WaveStatus status) {
         var updated = new ArrayList<>(waves);
         updated.set(waveIndex, status);
+
         return applyState(clusterName, configHash, startedAt, waveIndex, updated, createdResources, destroyedNodeIds);
     }
 
     public ApplyState withResource(CreatedResource resource) {
         var updated = new ArrayList<>(createdResources);
         updated.add(resource);
+
         return applyState(clusterName, configHash, startedAt, currentWaveIndex, waves, updated, destroyedNodeIds);
     }
 
     public ApplyState withDestroyedNode(String nodeId) {
         var updated = new ArrayList<>(destroyedNodeIds);
         updated.add(nodeId);
+
         return applyState(clusterName, configHash, startedAt, currentWaveIndex, waves, createdResources, updated);
     }
 
@@ -82,7 +87,6 @@ import static org.pragmatica.lang.Result.success;
     }
 
     static final Path AETHER_DIR = Path.of(System.getProperty("user.home"), ".aether", "clusters");
-
     static final String STATE_FILE_NAME = "apply-state.json";
 
     static Result<Unit> save(ApplyState state) {
@@ -91,27 +95,34 @@ import static org.pragmatica.lang.Result.success;
 
     static Option<ApplyState> load(String clusterName) {
         var path = stateFilePath(clusterName);
+
         if (!Files.exists(path)) {return none();}
+
         return Result.lift(PersistenceError::new,
-                           () -> Files.readString(path)).flatMap(ApplyState::fromJson)
-                          .onFailure(cause -> System.err.println("Warning: failed to load apply state: " + cause.message()))
-                          .option();
+                           () -> Files.readString(path))
+                     .flatMap(ApplyState::fromJson)
+                     .onFailure(cause -> System.err.println("Warning: failed to load apply state: " + cause.message()))
+                     .option();
     }
 
     static Result<Unit> delete(String clusterName) {
         return Result.lift(PersistenceError::new, () -> doDelete(clusterName));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Unit doSave(ApplyState state) throws Exception {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Unit doSave(ApplyState state) throws Exception {
         var dir = AETHER_DIR.resolve(state.clusterName());
         Files.createDirectories(dir);
         Files.writeString(dir.resolve(STATE_FILE_NAME), toJson(state));
+
         return Unit.unit();
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Unit doDelete(String clusterName) throws Exception {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Unit doDelete(String clusterName) throws Exception {
         var path = stateFilePath(clusterName);
         Files.deleteIfExists(path);
+
         return Unit.unit();
     }
 
@@ -138,6 +149,7 @@ import static org.pragmatica.lang.Result.success;
         sb.append(",\n");
         appendStringList(sb, "destroyedNodeIds", state.destroyedNodeIds());
         sb.append("\n}");
+
         return sb.toString();
     }
 
@@ -145,7 +157,8 @@ import static org.pragmatica.lang.Result.success;
         return MAPPER.readTree(json).flatMap(ApplyState::parseTree);
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<ApplyState> parseTree(JsonNode root) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<ApplyState> parseTree(JsonNode root) {
         return Result.lift(ParseError::new, () -> doParse(root));
     }
 
@@ -157,15 +170,19 @@ import static org.pragmatica.lang.Result.success;
         var waves = parseWaves(root.path("waves"));
         var resources = parseResources(root.path("createdResources"));
         var destroyed = parseStringList(root.path("destroyedNodeIds"));
+
         return applyState(clusterName, configHash, startedAt, waveIndex, waves, resources, destroyed);
     }
 
     private static List<WaveStatus> parseWaves(JsonNode node) {
-        if (node.isMissingNode() || node.isNull() || !node.isArray()) {return List.of(WaveStatus.PENDING,
-                                                                                      WaveStatus.PENDING,
-                                                                                      WaveStatus.PENDING);}
+        if (node.isMissingNode() || node.isNull() || !node.isArray()) {
+            return List.of(WaveStatus.PENDING, WaveStatus.PENDING, WaveStatus.PENDING);
+        }
+
         var statuses = new ArrayList<WaveStatus>();
+
         for (var element : node) {statuses.add(parseWaveStatus(element.asText()));}
+
         return List.copyOf(statuses);
     }
 
@@ -173,78 +190,93 @@ import static org.pragmatica.lang.Result.success;
         return Result.lift(() -> WaveStatus.valueOf(name)).or(WaveStatus.PENDING);
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static List<CreatedResource> parseResources(JsonNode node) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static List<CreatedResource> parseResources(JsonNode node) {
         if (node.isMissingNode() || node.isNull() || !node.isArray()) {return List.of();}
+
         var resources = new ArrayList<CreatedResource>();
+
         for (var element : node) {
             var resource = BootstrapStateJson.parseSingleResourceNode(element);
             if (resource != null) {resources.add(resource);}
         }
+
         return List.copyOf(resources);
     }
 
     private static List<String> parseStringList(JsonNode node) {
         if (node.isMissingNode() || node.isNull() || !node.isArray()) {return List.of();}
+
         var result = new ArrayList<String>();
+
         for (var element : node) {result.add(element.asText());}
+
         return List.copyOf(result);
     }
 
-    @Contract private static void appendStringField(StringBuilder sb, String key, String value) {
-        sb.append("  \"").append(escapeJson(key))
-                 .append("\": \"")
-                 .append(escapeJson(value))
-                 .append('"');
+    @Contract
+    private static void appendStringField(StringBuilder sb, String key, String value) {
+        sb.append("  \"").append(escapeJson(key)).append("\": \"").append(escapeJson(value)).append('"');
     }
 
-    @Contract private static void appendWaves(StringBuilder sb, List<WaveStatus> waves) {
+    @Contract
+    private static void appendWaves(StringBuilder sb, List<WaveStatus> waves) {
         sb.append("  \"waves\": [");
+
         for (int i = 0;i <waves.size();i++) {
             if (i > 0) {sb.append(", ");}
-            sb.append('"').append(waves.get(i).name())
-                     .append('"');
+            sb.append('"').append(waves.get(i).name()).append('"');
         }
+
         sb.append(']');
     }
 
-    @Contract private static void appendResources(StringBuilder sb, List<CreatedResource> resources) {
+    @Contract
+    private static void appendResources(StringBuilder sb, List<CreatedResource> resources) {
         sb.append("  \"createdResources\": [");
+
         for (int i = 0;i <resources.size();i++) {
             if (i > 0) {sb.append(',');}
+
             sb.append("\n    ");
             BootstrapStateJson.appendResourceJson(sb, resources.get(i));
         }
         if (!resources.isEmpty()) {sb.append('\n');}
+
         sb.append("  ]");
     }
 
-    @Contract private static void appendStringList(StringBuilder sb, String key, List<String> values) {
-        sb.append("  \"").append(escapeJson(key))
-                 .append("\": [");
+    @Contract
+    private static void appendStringList(StringBuilder sb, String key, List<String> values) {
+        sb.append("  \"").append(escapeJson(key)).append("\": [");
+
         for (int i = 0;i <values.size();i++) {
             if (i > 0) {sb.append(", ");}
-            sb.append('"').append(escapeJson(values.get(i)))
-                     .append('"');
+            sb.append('"').append(escapeJson(values.get(i))).append('"');
         }
+
         sb.append(']');
     }
 
     private static String escapeJson(String value) {
         if (value == null) {return "";}
-        return value.replace("\\", "\\\\").replace("\"", "\\\"")
-                            .replace("\n", "\\n")
-                            .replace("\r", "\\r")
-                            .replace("\t", "\\t");
+        return value.replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t");
     }
 
     record PersistenceError(Throwable cause) implements Cause {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Apply state persistence error: " + cause.getMessage();
         }
     }
 
     record ParseError(Throwable cause) implements Cause {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Failed to parse apply state JSON: " + cause.getMessage();
         }
     }

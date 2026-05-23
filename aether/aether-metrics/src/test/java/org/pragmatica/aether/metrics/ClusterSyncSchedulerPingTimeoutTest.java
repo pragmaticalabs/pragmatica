@@ -40,7 +40,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
-        scheduler.onMembershipDecision(new MembershipDecision.NodeJoined(PEER_A, List.of(SELF, PEER_A)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
         scheduler.onQuorumStateChange(QuorumStateNotification.established());
 
         scheduler.sendPingsNow();
@@ -69,7 +69,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
-        scheduler.onMembershipDecision(new MembershipDecision.NodeJoined(PEER_A, List.of(SELF, PEER_A)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
         scheduler.onQuorumStateChange(QuorumStateNotification.established());
 
         scheduler.sendPingsNow();
@@ -90,7 +90,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
-        scheduler.onMembershipDecision(new MembershipDecision.NodeJoined(PEER_A, List.of(SELF, PEER_A)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
         scheduler.onQuorumStateChange(QuorumStateNotification.established());
 
         scheduler.sendPingsNow();
@@ -114,7 +114,7 @@ class ClusterSyncSchedulerPingTimeoutTest {
                                                            sink,
                                                            3,
                                                            () -> Epoch.epoch(7L, 0L));
-        scheduler.onMembershipDecision(new MembershipDecision.NodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B)));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B)));
         scheduler.onQuorumStateChange(QuorumStateNotification.established());
 
         scheduler.sendPingsNow();

@@ -13,14 +13,15 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.SlotSnapsho
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SlotClaimed;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimHealthy;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Draining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Joining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.OnDuty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Provisioning;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Stopped;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Untracked;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
@@ -28,6 +29,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimObservation.HealthyObserved;
 import org.pragmatica.swim.SwimObservation.SuspectObserved;
@@ -54,6 +56,10 @@ class MembershipFsmTest {
     private static final long T1 = 2_000L;
 
     private static final long T2 = 3_000L;
+
+    /// RC1 Step 4 — HLC equivalent of `T1` for events that now carry `HlcTimestamp`.
+    /// State assertions continue using the `long` form; KV-mint helpers use the `long` form.
+    private static final HlcTimestamp T1_HLC = new HlcTimestamp(HlcTimestamp.pack(T1 * 1000L, 0), new NodeId("test"));
 
     private FakeLifecycleSnapshot lifecycleSnapshot;
 
@@ -102,12 +108,12 @@ class MembershipFsmTest {
         @Test void start_mixedKvState_derivesCorrectStatePerPeer() {
             lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.JOINING, T0));
             lifecycleSnapshot.put(PEER_B, lifecycleValue(NodeLifecycleState.ON_DUTY, T1));
-            lifecycleSnapshot.put(PEER_C, lifecycleValue(NodeLifecycleState.DECOMMISSIONED, T2));
+            lifecycleSnapshot.put(PEER_C, lifecycleValue(NodeLifecycleState.STOPPED, T2));
             slotSnapshot.put(SLOT_A, slotValueAssigned(T0, PEER_A));
             var fsm = startedFsm();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Joining.class);
             assertThat(fsm.get(PEER_B).unwrap()).isInstanceOf(OnDuty.class);
-            assertThat(fsm.get(PEER_C).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_C).unwrap()).isInstanceOf(Stopped.class);
             var joining = (Joining) fsm.get(PEER_A).unwrap();
             assertThat(joining.slotId()).isEqualTo(Option.some(SLOT_A));
         }
@@ -119,16 +125,29 @@ class MembershipFsmTest {
             assertThat(((Provisioning) fsm.get(PEER_A).unwrap()).slotId()).isEqualTo(SLOT_A);
         }
 
-        @Test void start_failedDrainEntry_reconstructsFailedDrainState() {
-            lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.FAILED_DRAIN, T0));
+        @Test void start_stoppedDrainFailedEntry_reconstructsStoppedDrainFailedState() {
+            // Post-Step-I: FAILED_DRAIN legacy enum is gone; the equivalent KV value is now
+            // STOPPED with `stopReason = DRAIN_FAILED`. Replay must reconstruct a Stopped FSM
+            // state preserving the DRAIN_FAILED sidecar.
+            lifecycleSnapshot.put(PEER_A,
+                                  lifecycleValue(NodeLifecycleState.STOPPED, T0)
+                                          .withStopReason(Option.some(AetherValue.StopReason.DRAIN_FAILED)));
             var fsm = startedFsm();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(MembershipFsmState.FailedDrain.class);
+            var state = fsm.get(PEER_A).unwrap();
+            assertThat(state).isInstanceOf(Stopped.class);
+            assertThat(((Stopped) state).reason()).isEqualTo(AetherValue.StopReason.DRAIN_FAILED);
         }
 
-        @Test void start_shuttingDownLegacy_mapsToDraining() {
-            lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.SHUTTING_DOWN, T0));
+        @Test void start_stoppedGracefulEntry_reconstructsStoppedGracefulState() {
+            // Post-Step-I: SHUTTING_DOWN legacy enum is gone; graceful-shutdown KV value is
+            // STOPPED with `stopReason = GRACEFUL`. Replay reconstructs Stopped with GRACEFUL.
+            lifecycleSnapshot.put(PEER_A,
+                                  lifecycleValue(NodeLifecycleState.STOPPED, T0)
+                                          .withStopReason(Option.some(AetherValue.StopReason.GRACEFUL)));
             var fsm = startedFsm();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Draining.class);
+            var state = fsm.get(PEER_A).unwrap();
+            assertThat(state).isInstanceOf(Stopped.class);
+            assertThat(((Stopped) state).reason()).isEqualTo(AetherValue.StopReason.GRACEFUL);
         }
     }
 
@@ -171,12 +190,12 @@ class MembershipFsmTest {
         }
 
         @Test void onLifecycleKVRemove_dropsPeerToUntracked() {
-            lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.DECOMMISSIONED, T0));
+            lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.STOPPED, T0));
             var fsm = startedFsm();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
             var remove = new ValueRemove<NodeLifecycleKey, NodeLifecycleValue>(
                     new KVCommand.Remove<>(NodeLifecycleKey.nodeLifecycleKey(PEER_A)),
-                    Option.some(lifecycleValue(NodeLifecycleState.DECOMMISSIONED, T0)));
+                    Option.some(lifecycleValue(NodeLifecycleState.STOPPED, T0)));
             fsm.onNodeLifecycleRemove(remove);
             assertThat(fsm.get(PEER_A)).isEqualTo(Option.<MembershipFsmState>none());
         }
@@ -223,7 +242,7 @@ class MembershipFsmTest {
             // SlotClaimed is NOT a leader-writing event (no consensus write proposed), so it
             // flows through the shadow path even on the NEVER_LEADER read-only factory.
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new SlotClaimed(PEER_A, SLOT_A, T1));
+            fsm.enqueueOperatorEvent(new SlotClaimed(PEER_A, SLOT_A, T1_HLC));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Joining.class);
         }
 
@@ -233,7 +252,7 @@ class MembershipFsmTest {
             // SwimHealthy(JOINING) → ON_DUTY is covered in MembershipFsmSwimWriteTest.
             lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.JOINING, T0));
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new SwimHealthy(PEER_A, 1L, T1));
+            fsm.enqueueOperatorEvent(new SwimHealthy(PEER_A, 1L, T1_HLC));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Joining.class);
         }
 
@@ -244,7 +263,7 @@ class MembershipFsmTest {
             // MembershipFsmSwimWriteTest.swimFaulty_onDuty_leader_writesDecommissioned.
             lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.ON_DUTY, T0));
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new SwimFaulty(PEER_A, 7L, T1));
+            fsm.enqueueOperatorEvent(new SwimFaulty(PEER_A, 7L, T1_HLC));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
         }
     }

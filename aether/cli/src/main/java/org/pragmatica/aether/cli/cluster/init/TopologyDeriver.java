@@ -10,7 +10,7 @@ import org.pragmatica.lang.Result;
 public sealed interface TopologyDeriver {
     static Result<CoreWorkerSplit> derive(int totalNodes) {
         if (totalNodes <3) {return new ClusterInitError.TooFewNodes(totalNodes).result();}
-        return switch (totalNodes){
+        return switch (totalNodes) {
             case 3 -> CoreWorkerSplit.coreWorkerSplit(3, 0);
             case 4 -> CoreWorkerSplit.coreWorkerSplit(3, 1);
             case 5 -> CoreWorkerSplit.coreWorkerSplit(3, 2);
@@ -22,5 +22,5 @@ public sealed interface TopologyDeriver {
         };
     }
 
-    record unused() implements TopologyDeriver{}
+    record unused() implements TopologyDeriver {}
 }

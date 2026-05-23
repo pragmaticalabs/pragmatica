@@ -22,7 +22,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public final class WorkerDHTNetwork implements DHTNetwork {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+public final class WorkerDHTNetwork implements DHTNetwork {
     private static final Logger LOG = LoggerFactory.getLogger(WorkerDHTNetwork.class);
 
     private final DelegateRouter delegateRouter;
@@ -70,14 +71,19 @@ import org.slf4j.LoggerFactory;
                                     selfCommunityId);
     }
 
-    @Override public void send(NodeId target, ProtocolMessage message) {
+    @Override
+    public void send(NodeId target, ProtocolMessage message) {
         if (isLocalPeer(target)) {
             delegateRouter.route(new NetworkServiceMessage.Send(target, message));
+
             return;
         }
         if (tryCrossCommunityRelay(target, message)) {return;}
-        if (governorMesh.isPresent() && !isKnownInAnyCommunity(target)) {LOG.warn("DHT target {} not found in any known community — falling back to direct send (may fail)",
-                                                                                  target.id());}
+        if (governorMesh.isPresent() && !isKnownInAnyCommunity(target)) {
+            LOG.warn("DHT target {} not found in any known community — falling back to direct send (may fail)",
+                     target.id());
+        }
+
         delegateRouter.route(new NetworkServiceMessage.Send(target, message));
     }
 
@@ -86,23 +92,29 @@ import org.slf4j.LoggerFactory;
     }
 
     private boolean isLocalPeer(NodeId target) {
-        return connectedPeersSupplier.get().contains(target);
+        return connectedPeersSupplier.get()
+                                     .contains(target);
     }
 
     private boolean tryCrossCommunityRelay(NodeId target, ProtocolMessage message) {
         return governorMesh.flatMap(mesh -> serializer.map(ser -> relayCrossCommunity(mesh, ser, target, message)))
-                                   .or(false);
+                           .or(false);
     }
 
     private boolean relayCrossCommunity(GovernorMesh mesh, Serializer ser, NodeId target, ProtocolMessage message) {
         var targetCommunity = findCommunityFor(target);
+
         if (targetCommunity.isEmpty()) {return false;}
+
         var community = targetCommunity.unwrap();
         var governor = mesh.governorFor(community);
+
         if (governor.isEmpty()) {
             LOG.warn("No governor for community '{}' to relay DHT message to {}", community, target.id());
+
             return false;
         }
+
         var payload = ser.encode(message);
         var relay = DHTRelayMessage.dhtRelayMessage(target, payload);
         delegateRouter.route(new NetworkServiceMessage.Send(governor.unwrap(), relay));
@@ -110,6 +122,7 @@ import org.slf4j.LoggerFactory;
                   target.id(),
                   governor.unwrap().id(),
                   community);
+
         return true;
     }
 

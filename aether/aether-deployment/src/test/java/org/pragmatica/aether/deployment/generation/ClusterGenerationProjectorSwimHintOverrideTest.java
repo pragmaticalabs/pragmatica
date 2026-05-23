@@ -104,7 +104,7 @@ class ClusterGenerationProjectorSwimHintOverrideTest {
             // the node has left the cluster. Verify: member is absent from coreMembers,
             // swim hint is irrelevant.
             var lifecycles = Map.of(NODE_A,
-                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED,
                                                                             "host-a",
                                                                             9001));
             var swimHints = Map.of(NODE_A, HealthHint.SUSPECTED);

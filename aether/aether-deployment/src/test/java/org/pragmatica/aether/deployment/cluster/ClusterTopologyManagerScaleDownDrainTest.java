@@ -148,10 +148,10 @@ class ClusterTopologyManagerScaleDownDrainTest {
         assertThat(coordinator.awaitCount.get()).isGreaterThanOrEqualTo(1);
         assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
         assertThat(coordinator.markCompleteCount.get()).isGreaterThanOrEqualTo(1);
-        // Ordering: first lifecycle write must be DRAINING, eventually followed by DECOMMISSIONED.
+        // Ordering: first lifecycle write must be DRAINING, eventually followed by STOPPED.
         var ordering = configStore.observedLifecycleStates();
         assertThat(ordering.get(0)).isEqualTo(NodeLifecycleState.DRAINING);
-        assertThat(ordering).contains(NodeLifecycleState.DECOMMISSIONED);
+        assertThat(ordering).contains(NodeLifecycleState.STOPPED);
     }
 
     /// If the drain coordinator's `awaitDrainAck` never resolves within the timeout, CTM

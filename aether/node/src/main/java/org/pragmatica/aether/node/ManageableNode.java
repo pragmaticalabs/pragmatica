@@ -8,12 +8,14 @@ import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.audit.RecentCommandsBuffer;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.reconciler.LifecycleReconciler;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
 import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
@@ -45,6 +47,9 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.DHTNode;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.Message;
@@ -92,8 +97,20 @@ public interface ManageableNode {
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<ClusterTopologyManager> clusterTopologyManager();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
+
+    /// Runtime TLS posture. `true` when the node's app-HTTP server is bound with TLS
+    /// (equivalent to `AetherNodeConfig.tls().isPresent()` — i.e. `AetherConfig.tlsEnabled()`
+    /// was true at startup and a `CertificateProvider` resolved). Surfaced through
+    /// `GET /api/certificates` so integration tooling can assert active TLS without
+    /// inferring it from the `renewalStatus` placeholder. See
+    /// `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2.
+    boolean tlsEnabled();
+
     Option<ClusterGenerationSnapshot> currentGenerationSnapshot();
+
+    @SuppressWarnings("JBCT-RET-01")
     void requestGenerationSnapshotRefresh();
+
     int connectedNodeCount();
     Map<String, Number> transportMetrics();
     Set<NodeId> connectedPeerIds();
@@ -111,12 +128,55 @@ public interface ManageableNode {
     InFlightRequestTracker inFlightRequestTracker();
     DrainCoordinator drainCoordinator();
     NodeLifecycle nodeLifecycle();
+
+    /// Phase 3 PR-C (cluster-convergence-reconciler) — in-memory ring buffer of the most
+    /// recent `audit.lifecycle.commands` events seen by this node. Backs the
+    /// `GET /api/audit/commands` operator endpoint. Population is via a tee on the
+    /// outgoing `audit.lifecycle.commands` publisher so every command emitted from this
+    /// node lands in the buffer regardless of whether the stream write succeeded.
+    RecentCommandsBuffer recentCommandsBuffer();
+
     MembershipFsm membershipFsm();
+
+    /// Phase 4 PR-D (cluster-convergence-reconciler) — leader-only periodic
+    /// `LifecycleReconciler` (cluster-convergence-reconciler-spec §7). `Option.none()` on
+    /// nodes that have not been wired with a reconciler (legacy `ManageableNode`
+    /// adapters / test fixtures); on production nodes the option is always present and
+    /// the reconciler's `active()` toggle reflects whether this node currently holds
+    /// the leader lease. Backs `GET /api/nodes/lifecycle/reconciler`.
+    Option<LifecycleReconciler> lifecycleReconciler();
+
+    /// RC1 Step 4 — exposes the node's canonical Hybrid Logical Clock so request-handling
+    /// routes (e.g., `NodeLifecycleRoutes` constructing operator events) can stamp events
+    /// with the same clock the `MembershipFsm` uses, preserving causal ordering across the
+    /// admission and FSM-write paths.
+    HlcClock hlcClock();
+
+    /// P-NEW-B / P-NEW-F (RC1, 2026-05-21) — exposes the node's local DHT client so management
+    /// routes (`DhtRoutes`) can issue versioned puts with explicit HLC for deterministic
+    /// version-conflict tests, and surface the active replication map for operator inspection.
+    /// `Option.none()` only in tests that wire a `ManageableNode` proxy without DHT.
+    Option<DHTClient> dhtClient();
+
+    /// P-NEW-B / P-NEW-F (RC1, 2026-05-21) — exposes the local `DHTNode` for storage iteration
+    /// (`storage().keys()` powers the replication-map inspector) and direct versioned local
+    /// puts (`putLocalVersioned`, used by the dev-mode `/api/dht/inject` test hook to write a
+    /// value with an explicit HLC, bypassing the live-clock advancement the regular `put` path
+    /// performs). `Option.none()` only in tests that wire a `ManageableNode` proxy without DHT.
+    Option<DHTNode> dhtNode();
+
+    /// H.1 (spec §H): derived cluster-membership view. Computed from the local SWIM
+    /// `HealthSnapshot` plus `NodeLifecycleKey` KV overrides — SWIM is authoritative for
+    /// "alive", KV stores operator-declared transitions only. Reader-side replacement for
+    /// `membershipFsm().snapshot()` and direct `kvStore.forEach(NodeLifecycleKey, ...)`
+    /// iteration. Cheap to call repeatedly — recomputes on each query.
+    org.pragmatica.aether.deployment.membership.view.MembershipView membershipView();
 
     /// Post-E.8 (spec §7.2): unified `ClusterPhase` accessor that returns the value
     /// derived by `ClusterPhaseView.compute()`. Status routes and any dashboard consumer
     /// should call this rather than reading the KV atom directly.
     Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier();
 
-    @SuppressWarnings("JBCT-RET-01") void route(Message message);
+    @SuppressWarnings("JBCT-RET-01")
+    void route(Message message);
 }

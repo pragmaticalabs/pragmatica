@@ -126,9 +126,25 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    record AppBlueprintValue(ExpandedBlueprint blueprint) implements AetherValue {
+    /// `registerOnly` semantically signals that this blueprint was registered via
+    /// `/api/blueprints/publish` (not `/api/blueprints/deploy`). The publish endpoint
+    /// stores the blueprint definition for use by a future strategy-based deploy upgrade
+    /// without immediately making it the active version. Consumed by
+    /// `ClusterDeploymentState.handleAppBlueprintChange`, which suppresses the
+    /// `SliceTargetValue` Put when `registerOnly && existing SliceTargetValue present`.
+    record AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) implements AetherValue {
+        /// Backward-compat constructor — pre-existing call sites pass blueprint only;
+        /// `registerOnly` defaults to `false` (the historical deploy-on-publish semantics).
+        public AppBlueprintValue(ExpandedBlueprint blueprint) {
+            this(blueprint, false);
+        }
+
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint) {
-            return new AppBlueprintValue(blueprint);
+            return new AppBlueprintValue(blueprint, false);
+        }
+
+        public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) {
+            return new AppBlueprintValue(blueprint, registerOnly);
         }
     }
 
@@ -590,19 +606,24 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
+    /// Collapsed 4-value lifecycle (cluster-convergence-reconciler-spec §5.1, I-step). The pre-RC1
+    /// 6-value alphabet (`DECOMMISSIONED` / `SHUTTING_DOWN` / `FAILED_DRAIN`) is unified into the
+    /// single terminal `STOPPED`; the previously-distinct semantics survive via the [StopReason]
+    /// sidecar on `NodeLifecycleValue.stopReason`:
+    /// - `STOPPED + FORCED`        ← old `DECOMMISSIONED`
+    /// - `STOPPED + GRACEFUL`      ← old `SHUTTING_DOWN`
+    /// - `STOPPED + DRAIN_FAILED`  ← old `FAILED_DRAIN`
     @Codec enum NodeLifecycleState {
         JOINING,
         ON_DUTY,
         DRAINING,
-        DECOMMISSIONED,
-        SHUTTING_DOWN,
-        FAILED_DRAIN
+        STOPPED
     }
 
     /// Three-phase model (D.3, 2026-05-11):
     /// - `COLD_BOOT` — cluster never had quorum. SWIM suppresses `FaultyObserved` for
     ///   never-healthy peers (preserves the cold-boot-during-formation invariant).
-    ///   MembershipFsm structural bootstrap-safety suppresses DECOMMISSIONED/SHUTTING_DOWN/DRAINING writes.
+    ///   MembershipFsm structural bootstrap-safety suppresses STOPPED/DRAINING writes.
     ///   CTM auto-heal is suspended. Transition out: first time the cluster reaches a
     ///   quorum of ON_DUTY peers AND a leader is elected, sustained for `stableWindowMs`.
     /// - `NORMAL` — full failure semantics. No suppression anywhere.
@@ -639,18 +660,74 @@ import static org.pragmatica.lang.Option.none;
         UNKNOWN
     }
 
+    /// Reason a node entered the terminal `STOPPED` state. Sidecar to the collapsed
+    /// `NodeLifecycleState` enum (cluster-convergence-reconciler-spec §5.1, D2.2). Present
+    /// only when `state == STOPPED`; `Option.none()` otherwise. Read by observers that
+    /// previously distinguished `DECOMMISSIONED` / `SHUTTING_DOWN` / `FAILED_DRAIN` and by
+    /// the reconciler audit stream.
+    @Codec enum StopReason {
+        GRACEFUL,
+        FORCED,
+        DRAIN_FAILED
+    }
+
+    /// Replicated lifecycle truth for a peer.
+    ///
+    /// ### Versioning
+    /// `transitionedAt` = HLC stamp of the most recent state change (per-peer monotonic).
+    /// `version`        = wire-format schema version (global, monotonic per code release;
+    /// see [CURRENT_VERSION]). Placed LAST so auto-generated `@Codec` decoders remain
+    /// compatible with pre-RC1 persisted state — but RC1 is the version-floor:
+    /// pre-RC1 KV state lacking the trailing byte is not migrated.
+    /// Receiver policy on mismatch: fail-closed (membership truth must not be silently lost).
     record NodeLifecycleValue(NodeLifecycleState state,
                               long updatedAt,
                               String host,
                               int port,
                               Epoch observedCoreEpoch,
                               HlcTimestamp transitionedAt,
-                              ProvisioningSource provisioningSource) implements AetherValue {
+                              ProvisioningSource provisioningSource,
+                              Option<StopReason> stopReason,
+                              byte version) implements AetherValue {
+        /// Current schema version stamped onto every newly-constructed value.
+        /// Bump on any structural change to the record payload.
+        /// Version 3 (cluster-convergence-reconciler PR-A): `NodeLifecycleState` collapsed
+        /// from 6 values to 4 (`JOINING / ON_DUTY / DRAINING / STOPPED`); the prior
+        /// `DECOMMISSIONED` / `SHUTTING_DOWN` / `FAILED_DRAIN` ordinals are now invalid on
+        /// the wire.
+        public static final byte CURRENT_VERSION = 3;
+
         public NodeLifecycleValue {
             if (host == null) {host = "";}
             if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
             if (transitionedAt == null) {transitionedAt = HlcTimestamp.ZERO;}
             if (provisioningSource == null) {provisioningSource = ProvisioningSource.UNKNOWN;}
+            if (stopReason == null) {stopReason = none();}
+        }
+
+        /// Backward-compatible 7-arg constructor — preserves pre-stopReason call sites while
+        /// stamping `version = CURRENT_VERSION` and `stopReason = none()`.
+        public NodeLifecycleValue(NodeLifecycleState state,
+                                  long updatedAt,
+                                  String host,
+                                  int port,
+                                  Epoch observedCoreEpoch,
+                                  HlcTimestamp transitionedAt,
+                                  ProvisioningSource provisioningSource) {
+            this(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, provisioningSource, none(), CURRENT_VERSION);
+        }
+
+        /// Backward-compatible 8-arg constructor — preserves pre-stopReason call sites that
+        /// passed an explicit `version`. Defaults `stopReason = none()`.
+        public NodeLifecycleValue(NodeLifecycleState state,
+                                  long updatedAt,
+                                  String host,
+                                  int port,
+                                  Epoch observedCoreEpoch,
+                                  HlcTimestamp transitionedAt,
+                                  ProvisioningSource provisioningSource,
+                                  byte version) {
+            this(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, provisioningSource, none(), version);
         }
 
         @Deprecated(since = "rc1-wave3", forRemoval = false) public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
@@ -660,7 +737,8 @@ import static org.pragmatica.lang.Option.none;
                                           0,
                                           Epoch.ZERO,
                                           HlcTimestamp.ZERO,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
@@ -673,7 +751,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           observedCoreEpoch,
                                           HlcTimestamp.ZERO,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
@@ -683,7 +762,8 @@ import static org.pragmatica.lang.Option.none;
                                           0,
                                           Epoch.ZERO,
                                           HlcTimestamp.ZERO,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, String host, int port) {
@@ -693,7 +773,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           Epoch.ZERO,
                                           HlcTimestamp.ZERO,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
@@ -706,7 +787,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           Epoch.ZERO,
                                           HlcTimestamp.ZERO,
-                                          provisioningSource);
+                                          provisioningSource,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
@@ -721,7 +803,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           observedCoreEpoch,
                                           transitionedAt,
-                                          ProvisioningSource.UNKNOWN);
+                                          ProvisioningSource.UNKNOWN,
+                                          CURRENT_VERSION);
         }
 
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state,
@@ -737,7 +820,8 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           observedCoreEpoch,
                                           transitionedAt,
-                                          provisioningSource);
+                                          provisioningSource,
+                                          CURRENT_VERSION);
         }
 
         public boolean hasAddress() {
@@ -754,11 +838,50 @@ import static org.pragmatica.lang.Option.none;
                                           port,
                                           observedCoreEpoch,
                                           nextTransitionedAt,
-                                          provisioningSource);
+                                          provisioningSource,
+                                          stopReason,
+                                          version);
         }
 
         public NodeLifecycleValue withProvisioningSource(ProvisioningSource newSource) {
-            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, newSource);
+            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, newSource, stopReason, version);
+        }
+
+        /// Set or clear the `stopReason` sidecar. The reconciler / `LifecycleWriter`
+        /// command-handler calls this when transitioning to `STOPPED` to record `GRACEFUL` /
+        /// `FORCED` / `DRAIN_FAILED`. Reset to `none()` when leaving `STOPPED` (currently
+        /// only possible via re-join after slot reuse).
+        public NodeLifecycleValue withStopReason(Option<StopReason> newStopReason) {
+            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, provisioningSource, newStopReason, version);
+        }
+    }
+
+    /// Phase 1 step J — replicated mirror of the in-process `JOIN_DEADLINE` scheduler
+    /// entry. `deadlineMs` is wall-clock millis (epoch) when the join deadline fires;
+    /// `setAt` is the HLC stamp of the originating JOINING-entry transition (provides
+    /// causal ordering across leader takeover for observers reconstructing the deadline).
+    /// Pure observability atom — see [AetherKey.JoinDeadlineKey] for trigger semantics.
+    record JoinDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
+        public JoinDeadlineValue {
+            if (setAt == null) {setAt = HlcTimestamp.ZERO;}
+        }
+
+        public static JoinDeadlineValue joinDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
+            return new JoinDeadlineValue(deadlineMs, setAt);
+        }
+    }
+
+    /// Phase 1 step J — replicated mirror of the in-process `DRAIN_DEADLINE` scheduler
+    /// entry. `deadlineMs` is wall-clock millis (epoch) when the drain hard-deadline
+    /// fires; `setAt` is the HLC stamp of the DRAINING-entry transition. Pure
+    /// observability atom — see [AetherKey.DrainDeadlineKey] for trigger semantics.
+    record DrainDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
+        public DrainDeadlineValue {
+            if (setAt == null) {setAt = HlcTimestamp.ZERO;}
+        }
+
+        public static DrainDeadlineValue drainDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
+            return new DrainDeadlineValue(deadlineMs, setAt);
         }
     }
 
@@ -867,12 +990,6 @@ import static org.pragmatica.lang.Option.none;
 
         public NodeRoutesValue withObservedCoreEpoch(Epoch newEpoch) {
             return new NodeRoutesValue(routes, newEpoch);
-        }
-    }
-
-    record BlueprintResourcesValue(String tomlContent) implements AetherValue {
-        public static BlueprintResourcesValue blueprintResourcesValue(String tomlContent) {
-            return new BlueprintResourcesValue(tomlContent);
         }
     }
 
@@ -1409,6 +1526,102 @@ import static org.pragmatica.lang.Option.none;
     record GenerationSnapshotValue(ClusterGenerationSnapshot snapshot) implements AetherValue {
         public static GenerationSnapshotValue generationSnapshotValue(ClusterGenerationSnapshot snapshot) {
             return new GenerationSnapshotValue(snapshot);
+        }
+    }
+
+    /// RC1 Step 1 — cluster-scoped replicated event log value.
+    ///
+    /// Replicated via Rabia (KV-Store). One value per `(epoch, seq)` key. `nodeId` is the
+    /// originator (the node whose code emitted the event); for transport-derived events
+    /// (e.g., `PeerJoined`) only the LEADER publishes, so the leader's id is the originator.
+    ///
+    /// `at` is an HLC timestamp for human-readable timeline reconstruction and cross-cluster
+    /// diagnostics. Ordering uses the key's `(epoch, seq)`, NOT `at` — sidesteps OB1
+    /// receive-time races.
+    ///
+    /// `version` is the wire-format schema version (LAST-position default = 1) — follows the
+    /// same pattern as `NodeLifecycleValue` for forward/backward compatibility.
+    record ClusterEventValue(HlcTimestamp at,
+                              EventType type,
+                              Severity severity,
+                              String nodeId,
+                              String message,
+                              java.util.Map<String, String> metadata,
+                              byte version) implements AetherValue {
+        public static final byte CURRENT_VERSION = 1;
+
+        public ClusterEventValue {
+            if (at == null) {at = HlcTimestamp.ZERO;}
+            if (nodeId == null) {nodeId = "";}
+            if (message == null) {message = "";}
+            if (metadata == null) {metadata = java.util.Map.of();} else {metadata = java.util.Map.copyOf(metadata);}
+        }
+
+        public ClusterEventValue(HlcTimestamp at,
+                                 EventType type,
+                                 Severity severity,
+                                 String nodeId,
+                                 String message,
+                                 java.util.Map<String, String> metadata) {
+            this(at, type, severity, nodeId, message, metadata, CURRENT_VERSION);
+        }
+
+        public static ClusterEventValue clusterEventValue(HlcTimestamp at,
+                                                          EventType type,
+                                                          Severity severity,
+                                                          String nodeId,
+                                                          String message,
+                                                          java.util.Map<String, String> metadata) {
+            return new ClusterEventValue(at, type, severity, nodeId, message, metadata, CURRENT_VERSION);
+        }
+
+        /// Canonical cluster-event taxonomy. Mirrors `ClusterEvent.EventType` in `aether/node`
+        /// (the node module also re-exports these via a type-alias for API stability).
+        @Codec public enum EventType {
+            NODE_JOINED,
+            NODE_LEFT,
+            NODE_FAILED,
+            LEADER_ELECTED,
+            LEADER_LOST,
+            QUORUM_ESTABLISHED,
+            QUORUM_LOST,
+            DEPLOYMENT_STARTED,
+            DEPLOYMENT_COMPLETED,
+            DEPLOYMENT_FAILED,
+            SCALE_UP,
+            SCALE_DOWN,
+            SLICE_FAILURE,
+            CONNECTION_ESTABLISHED,
+            CONNECTION_FAILED,
+            COMMUNITY_SCALE_REQUEST,
+            COMMUNITY_METRICS_SNAPSHOT,
+            ACCESS_DENIED,
+            NODE_LIFECYCLE_CHANGED,
+            CONFIG_CHANGED,
+            BACKUP_CREATED,
+            BACKUP_RESTORED,
+            BLUEPRINT_DEPLOYED,
+            BLUEPRINT_DELETED,
+            GENERATION_CHANGED,
+            ALERT_INJECTED,
+            TRACE_INJECTED,
+            /// Emitted by the draining node itself when its `SelfDrainCoordinator` flips
+            /// from `ACTIVE` to `DRAINING` (membership-architecture-spec.md §16.1, scenarios
+            /// S19/S20). Severity WARNING — operational event indicating the node is about
+            /// to halt because it observed sustained-below-quorum visibility,
+            /// `QuorumStateNotification.DISAPPEARED`, or `RabiaEngine.Paused`. The originator
+            /// in `nodeId` is the draining node, NOT the cluster leader; this event is
+            /// intentionally NOT leader-gated because a partition victim is the only source
+            /// of truth for "I am self-draining" and may not even be able to reach the leader.
+            /// Details map carries `nodeId`, `reason` (one of `sustained-below-quorum`,
+            /// `quorum-disappeared`, `rabia-paused`), and `graceMs`.
+            SELF_DRAIN_INITIATED
+        }
+
+        @Codec public enum Severity {
+            INFO,
+            WARNING,
+            CRITICAL
         }
     }
 

@@ -4,10 +4,20 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
+import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.routing.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 
 
-public sealed interface ClusterConfigError extends Cause {
+public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
+    /// Default HTTP status for config errors is 400 (Bad Request) — most variants are
+    /// input validation failures. Variants with state-conflict, not-found, server-side,
+    /// or timeout semantics override.
+    @Override
+    default HttpStatus httpStatus() {
+        return HttpStatus.BAD_REQUEST;
+    }
+
     record InvalidDeploymentType(String value) implements ClusterConfigError {
         @Override public String message() {
             return "Invalid deployment type: '" + value + "'. Must be one of: hetzner, aws, gcp, azure, kubernetes, on-premises, embedded";
@@ -111,11 +121,17 @@ public sealed interface ClusterConfigError extends Cause {
         @Override public String message() {
             return "Config version conflict: expected " + expected + ", actual " + actual;
         }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
     }
 
     record ClusterAlreadyExists(String name) implements ClusterConfigError {
         @Override public String message() {
             return "Cluster '" + name + "' already exists. Use 'apply' to modify or 'destroy' first.";
+        }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 
@@ -123,11 +139,17 @@ public sealed interface ClusterConfigError extends Cause {
         @Override public String message() {
             return "Cluster '" + name + "' not found in registry.";
         }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.NOT_FOUND;
+        }
     }
 
     record BootstrapFailed(String phase, int nodesProvisioned, int nodesTotal, String detail) implements ClusterConfigError {
         @Override public String message() {
             return "Bootstrap failed at " + phase + " (" + nodesProvisioned + "/" + nodesTotal + " nodes provisioned): " + detail;
+        }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.INTERNAL_SERVER_ERROR;
         }
     }
 
@@ -135,11 +157,17 @@ public sealed interface ClusterConfigError extends Cause {
         @Override public String message() {
             return "Quorum safety violation: requested " + requested + " nodes, minimum is " + minimum;
         }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
     }
 
     record ImmutableFieldChange(String field) implements ClusterConfigError {
         @Override public String message() {
             return "Field '" + field + "' is immutable after bootstrap. Destroy and re-bootstrap to change.";
+        }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 
@@ -147,11 +175,17 @@ public sealed interface ClusterConfigError extends Cause {
         @Override public String message() {
             return "Upgrade already in progress: " + upgradeId + ". Wait for completion or rollback.";
         }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
     }
 
     record SecretResolutionFailed(String placeholder) implements ClusterConfigError {
         @Override public String message() {
             return "Failed to resolve secret: " + placeholder;
+        }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.INTERNAL_SERVER_ERROR;
         }
     }
 
@@ -159,17 +193,26 @@ public sealed interface ClusterConfigError extends Cause {
         @Override public String message() {
             return provider + " credentials missing. Set environment variable: " + envVar;
         }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.INTERNAL_SERVER_ERROR;
+        }
     }
 
     record ProvisionTimeout(String instanceId, long timeoutSeconds) implements ClusterConfigError {
         @Override public String message() {
             return "Instance " + instanceId + " did not become reachable within " + timeoutSeconds + " seconds.";
         }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.GATEWAY_TIMEOUT;
+        }
     }
 
     record QuorumTimeout(int healthyNodes, int requiredNodes, long timeoutSeconds) implements ClusterConfigError {
         @Override public String message() {
             return "Quorum not established: " + healthyNodes + "/" + requiredNodes + " healthy nodes after " + timeoutSeconds + " seconds.";
+        }
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.GATEWAY_TIMEOUT;
         }
     }
 

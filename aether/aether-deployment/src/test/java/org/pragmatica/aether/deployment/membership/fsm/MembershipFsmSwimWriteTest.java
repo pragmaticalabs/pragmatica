@@ -12,7 +12,7 @@ import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.LifecycleSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.SlotSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.TimerScheduler;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Stopped;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Joining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.OnDuty;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -100,17 +100,11 @@ class MembershipFsmSwimWriteTest {
     @Nested @DisplayName("Smoking gun: (ON_DUTY, SwimFaulty) on leader → DECOMMISSIONED write")
     class SmokingGunTests {
         @Test void swimFaulty_onDuty_leader_writesDecommissioned() {
-            // THE TEST that proves the structural fix works. Pre-state: peer is ON_DUTY.
-            // Event: FaultyObserved. Expected: single consensus write Put(NodeLifecycleKey,
-            // DECOMMISSIONED). Previously the legacy aggregator + threshold gate + phase
-            // suppression caused this transition to never fire — the bug E.5 closes.
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.STOPPED);
         }
     }
 
@@ -147,20 +141,26 @@ class MembershipFsmSwimWriteTest {
         }
     }
 
-    @Nested @DisplayName("SwimDeparted == SwimFaulty semantics on leader (spec §4)")
+    @Nested @DisplayName("SwimDeparted on leader → DECOMMISSIONED")
     class SwimDepartedTests {
         @Test void swimDeparted_onDuty_leader_writesDecommissioned() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
             fsm.onSwimObservation(new DepartedObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.STOPPED);
         }
     }
 
-    @Nested @DisplayName("SwimHealthy → leader-initiated JOINING promotion (Q1=A)")
+    @Nested @DisplayName("SwimHealthy → leader writes ON_DUTY")
     class SwimHealthyPromotionTests {
+        @Test void swimHealthy_untracked_leader_writesOnDuty() {
+            var fsm = startedFsm();
+            fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
+            assertThat(commandApplier.calls).hasSize(1);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
+        }
+
         @Test void swimHealthy_joining_leader_writesOnDuty() {
             // Q1=A: leader-initiated transition from JOINING → ON_DUTY when SWIM confirms peer
             // is healthy. Reducer cell `(JOINING, SwimHealthy) → ON_DUTY` writes Put(L=ON_DUTY).
@@ -189,6 +189,59 @@ class MembershipFsmSwimWriteTest {
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
             assertThat(commandApplier.calls).isEmpty();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+        }
+    }
+
+    @Nested @DisplayName("Decommissioned revival within TTL (spec §5.1 note 4)")
+    class DecommissionedRevivalTests {
+        @Test void swimHealthy_decommissioned_leader_isNop_hSeriesNoRevival() {
+            // H.3 (spec §H): the revival path is eliminated. A peer in KV DECOMMISSIONED
+            // stays operator-decommissioned regardless of SWIM gossip. To rejoin, an
+            // operator must clear the KV entry (or `DecommissionedAtomGc` ages it out, after
+            // which the SWIM-derived view promotes the peer back to ON_DUTY without any
+            // KV write).
+            var decommissionedAt = System.currentTimeMillis() - 40_000L;
+            lifecycleSnapshot.put(PEER_A,
+                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED,
+                                                                        decommissionedAt));
+            var fsm = startedFsm();
+            fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
+            assertThat(commandApplier.calls).isEmpty();
+        }
+
+        @Test void swimHealthy_decommissionedWithinRefractory_leader_staysDecommissioned() {
+            // Chaos-revival-storm fix (2026-05-12b): leader observes SwimHealthy for a peer
+            // decommissioned 5s ago — well inside the 30s SWIM refractory window. KV replay
+            // marks the state `swimDriven=true` so refractory blocks revival. FSM must NOT
+            // write Put(L=ON_DUTY); stale SWIM gossip / QUIC reconnect for a just-killed
+            // peer cannot resurrect it.
+            var withinRefractoryDecommissionedAt = System.currentTimeMillis() - 5_000L;
+            lifecycleSnapshot.put(PEER_A,
+                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED,
+                                                                        withinRefractoryDecommissionedAt));
+            var fsm = startedFsm();
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
+
+            fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
+
+            assertThat(commandApplier.calls).isEmpty();
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
+        }
+
+        @Test void swimHealthy_staleDecommissioned_leader_staysZombie() {
+            // Counter-case: DECOMMISSIONED entry is past the TTL window. Genuine zombie —
+            // FSM must NOT revive. Preserves the zombie-protection invariant.
+            var staleDecommissionedAt = System.currentTimeMillis() - 600_000L;  // 10 min ago
+            lifecycleSnapshot.put(PEER_A,
+                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED,
+                                                                        staleDecommissionedAt));
+            var fsm = startedFsm();
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
+
+            fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
+
+            assertThat(commandApplier.calls).isEmpty();
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
         }
     }
 
@@ -232,13 +285,15 @@ class MembershipFsmSwimWriteTest {
     private static void assertSingleLifecyclePut(List<KVCommand<AetherKey>> commands,
                                                   NodeId expectedPeer,
                                                   NodeLifecycleState expectedState) {
-        assertThat(commands).hasSize(1);
-        assertThat(commands.get(0)).isInstanceOf(Put.class);
-        var put = (Put<?, ?>) commands.get(0);
+        assertThat(commands).isNotEmpty();
+        var lifecyclePuts = commands.stream()
+                                    .filter(c -> c instanceof Put<?, ?> p && p.value() instanceof NodeLifecycleValue)
+                                    .toList();
+        assertThat(lifecyclePuts).as("expected exactly one NodeLifecycleValue Put").hasSize(1);
+        var put = (Put<?, ?>) lifecyclePuts.get(0);
         assertThat(put.key()).isInstanceOf(NodeLifecycleKey.class);
         var key = (NodeLifecycleKey) put.key();
         assertThat(key.nodeId()).isEqualTo(expectedPeer);
-        assertThat(put.value()).isInstanceOf(NodeLifecycleValue.class);
         var value = (NodeLifecycleValue) put.value();
         assertThat(value.state()).isEqualTo(expectedState);
     }

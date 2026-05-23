@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.List;
 import java.util.regex.Pattern;
@@ -66,27 +65,23 @@ public class CstVerifyPredicatesRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find if statements with validation patterns
         return findAllStatements(root).stream()
-                      .filter(stmt -> isIfStatement(stmt, source))
-                      .flatMap(stmt -> findValidationPatterns(stmt, source, ctx));
+                      .filter(this::isIfStatement)
+                      .flatMap(stmt -> findValidationPatterns(stmt, ctx));
     }
 
-    private boolean isIfStatement(CstNode stmt, String source) {
-        var stmtText = text(stmt, source).trim();
+    private boolean isIfStatement(Cursor stmt) {
+        var stmtText = text(stmt).trim();
         return stmtText.startsWith("if");
     }
 
-    private Stream<Diagnostic> findValidationPatterns(CstNode stmt, String source, LintContext ctx) {
-        var stmtText = text(stmt, source);
+    private Stream<Diagnostic> findValidationPatterns(Cursor stmt, LintContext ctx) {
+        var stmtText = text(stmt);
         return PATTERNS.stream()
                        .filter(pattern -> Pattern.compile(pattern.regex())
                                                  .matcher(stmtText)
@@ -95,7 +90,7 @@ public class CstVerifyPredicatesRule implements CstLintRule {
                        .limit(1);
     }
 
-    private Diagnostic createDiagnostic(CstNode node, ValidationPattern pattern, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor node, ValidationPattern pattern, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

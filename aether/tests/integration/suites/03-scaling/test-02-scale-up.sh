@@ -8,7 +8,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_seed_config() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_leader 60
     seed_cluster_config
 }
@@ -16,18 +16,18 @@ test_seed_config() {
 test_baseline_5_nodes() {
     wait_for_node_count_fast 5 60
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Baseline: 5 nodes"
 }
 
 test_scale_up_to_7() {
     log_info "Scaling up to 7 nodes"
     scale_cluster 7
-    # Fast-poll variant — `cluster_node_count` (CLI/double-curl) burned ~4-6s/iter
+    # Fast-poll variant — `cluster_member_count` (CLI/double-curl) burned ~4-6s/iter
     # and timed out at 300s on Hetzner remote even though the cluster reached 7.
     wait_for_node_count_fast 7 300
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "7" "Scaled to 7 nodes"
 }
 
@@ -40,7 +40,7 @@ test_restore_to_5() {
     scale_cluster 5
     wait_for_node_count_fast 5 180
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Restored to 5 nodes"
 }
 

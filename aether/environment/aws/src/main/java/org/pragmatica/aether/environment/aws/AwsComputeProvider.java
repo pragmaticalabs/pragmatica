@@ -49,7 +49,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.runInstances(buildRunRequest(Option.empty(),
-                                                   config.userData())).flatMap(response -> tagAndMapFirstInstance(response, defaultTags()))
+                                                   config.userData())).flatMap(response -> tagAndMapFirstInstance(response,
+                                                                                                                  defaultTags()))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 
@@ -57,7 +58,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         var zone = extractAvailabilityZone(spec.placement());
         var userData = spec.userData().or(config.userData());
         var tags = tagsFor(spec.context());
-        return client.runInstances(buildRunRequest(zone, userData)).flatMap(response -> tagAndMapFirstInstance(response, tags))
+        return client.runInstances(buildRunRequest(zone, userData)).flatMap(response -> tagAndMapFirstInstance(response,
+                                                                                                               tags))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 
@@ -97,28 +99,48 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     private Promise<InstanceInfo> tagAndMapFirstInstance(RunInstancesResponse response, Map<String, String> tags) {
         var instance = response.instances().getFirst();
         var instanceId = instance.instanceId();
-        return client.createTags(List.of(instanceId),
-                                 tags)
-        .map(unit -> toInstanceInfo(instance));
+        return client.createTags(List.of(instanceId), tags)
+                     .onFailure(cause -> rollbackPartialInstance(instanceId, cause))
+                     .map(unit -> toInstanceInfo(instance));
+    }
+
+    /// Rollback hook for partial provisions. `runInstances` succeeded (we have an
+    /// instance ID) but the post-create `createTags` call failed. Without rollback
+    /// the EC2 instance lingers untagged, unobserved by sweepers that filter on
+    /// `aether-managed=true`, and continues to accrue cost. Issue an asynchronous
+    /// `terminateInstances` against the orphan; log+swallow any rollback failure
+    /// so the original create-flow Cause is what callers see.
+    private void rollbackPartialInstance(String instanceId, Cause cause) {
+        log.warn("Provision failed for AWS instance {} after runInstances succeeded ({}); attempting rollback via terminateInstances",
+                 instanceId,
+                 cause.message());
+        client.terminateInstances(List.of(instanceId))
+              .onFailure(rollbackCause -> log.warn("Rollback terminateInstances for {} failed: {}",
+                                                    instanceId,
+                                                    rollbackCause.message()))
+              .onSuccess(ignored -> log.info("Rollback terminated partial AWS instance {}", instanceId));
     }
 
     private static Map<String, String> defaultTags() {
         return Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE);
     }
 
-    /// Translate a [ProvisionContext] into AWS tag entries. The well-known
-    /// `aether-cluster` / `aether-role` / `aether-source` slots are emitted
-    /// alongside the managed marker; caller-supplied [ProvisionContext#extraTags]
-    /// are folded in last (extras win on key collision).
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
         var tags = new java.util.HashMap<String, String>();
         tags.put(MANAGED_TAG_KEY, MANAGED_TAG_VALUE);
-        if (!ctx.clusterName().isEmpty()) {tags.put("aether-cluster", ctx.clusterName());}
+        var clusterName = resolveClusterName(ctx);
+        if (!clusterName.isEmpty()) {tags.put("aether-cluster", clusterName);}
         if (!ctx.role().isEmpty()) {tags.put("aether-role", ctx.role());}
         if (!ctx.sourceName().isEmpty()) {tags.put("aether-source", ctx.sourceName());}
         ctx.nodeId().onPresent(value -> tags.put("aether-node-id", value));
         tags.putAll(ctx.extraTags());
         return Map.copyOf(tags);
+    }
+
+    private static String resolveClusterName(ProvisionContext ctx) {
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        return fromEnv != null && !fromEnv.isEmpty() ? fromEnv : "";
     }
 
     private Promise<List<InstanceInfo>> describeByTag(String tagKey, String tagValue) {

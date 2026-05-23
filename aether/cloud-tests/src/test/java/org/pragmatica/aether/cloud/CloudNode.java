@@ -70,7 +70,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
 
     /// Queries the status endpoint of this node.
     public Result<String> getStatus() {
-        return httpGet("/api/status");
+        return httpGet("/api/nodes/status");
     }
 
     /// Queries the nodes endpoint of this node.
@@ -119,7 +119,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
             instances = %d
             """.formatted(blueprintId, artifact, instances);
 
-        return httpPost("/api/blueprint", blueprint, "application/toml");
+        return httpPost("/api/blueprints", blueprint, "application/toml");
     }
 
     /// Uploads an artifact JAR to the DHT repository via management API.
@@ -147,7 +147,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
 
     /// Undeploys a blueprint by ID.
     public Result<String> undeploy(String blueprintId) {
-        return httpDelete("/api/blueprint/" + blueprintId);
+        return httpDelete("/api/blueprints/" + blueprintId);
     }
 
     /// Scales a deployed slice.

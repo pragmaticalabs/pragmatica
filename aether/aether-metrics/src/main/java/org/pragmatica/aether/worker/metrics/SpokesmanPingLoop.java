@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SpokesmanKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
@@ -71,13 +72,37 @@ public interface SpokesmanPingLoop {
                                                Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
                                                Function<String, Option<NodeId>> governorLookup,
                                                SpokesmanStatusWriter statusWriter) {
+        return spokesmanPingLoop(self,
+                                 network,
+                                 interval,
+                                 rabiaTermSupplier,
+                                 allMetricsSupplier,
+                                 governorLookup,
+                                 statusWriter,
+                                 Option::none);
+    }
+
+    /// Full factory accepting a Tier-2 reachability-snapshot supplier. The supplier
+    /// is read at outbound-ping time and at CommunityReport-build time so the
+    /// snapshot propagates to (a) governors via Tier-2 ping cache for warm-takeover
+    /// and (b) the cluster leader via piggybacked CommunityReport.communityReachability.
+    /// See `aether/docs/specs/reachability-aggregator-spec.md` Layer 6.
+    static SpokesmanPingLoop spokesmanPingLoop(NodeId self,
+                                               ClusterNetwork network,
+                                               TimeSpan interval,
+                                               Supplier<Long> rabiaTermSupplier,
+                                               Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
+                                               Function<String, Option<NodeId>> governorLookup,
+                                               SpokesmanStatusWriter statusWriter,
+                                               Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier) {
         return new SpokesmanPingLoopImpl(self,
                                          network,
                                          interval,
                                          rabiaTermSupplier,
                                          allMetricsSupplier,
                                          governorLookup,
-                                         statusWriter);
+                                         statusWriter,
+                                         reachabilitySnapshotSupplier);
     }
 
     interface SpokesmanStatusWriter {
@@ -128,6 +153,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     private final Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier;
     private final Function<String, Option<NodeId>> governorLookup;
     private final SpokesmanStatusWriter statusWriter;
+    private final Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier;
 
     private final AtomicBoolean started = new AtomicBoolean(false);
 
@@ -148,6 +174,24 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
                           Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
                           Function<String, Option<NodeId>> governorLookup,
                           SpokesmanStatusWriter statusWriter) {
+        this(self,
+             network,
+             interval,
+             rabiaTermSupplier,
+             allMetricsSupplier,
+             governorLookup,
+             statusWriter,
+             Option::none);
+    }
+
+    SpokesmanPingLoopImpl(NodeId self,
+                          ClusterNetwork network,
+                          TimeSpan interval,
+                          Supplier<Long> rabiaTermSupplier,
+                          Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
+                          Function<String, Option<NodeId>> governorLookup,
+                          SpokesmanStatusWriter statusWriter,
+                          Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier) {
         this.self = self;
         this.network = network;
         this.interval = interval;
@@ -155,6 +199,9 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         this.allMetricsSupplier = allMetricsSupplier;
         this.governorLookup = governorLookup;
         this.statusWriter = statusWriter;
+        this.reachabilitySnapshotSupplier = reachabilitySnapshotSupplier == null
+                                            ? Option::none
+                                            : reachabilitySnapshotSupplier;
     }
 
     @Override@Contract public void start() {
@@ -267,35 +314,41 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     private void sendPing(NodeId governor, long rabiaTerm) {
         var epoch = Epoch.ZERO;
+        // Tier-2 outbound: include the spokesman's aggregated reachability snapshot
+        // so governors cache it for warm-takeover. See
+        // reachability-aggregator-spec.md Layer 6.
         var ping = new ClusterSyncPing(self,
                                        allMetricsSupplier.get(),
                                        rabiaTerm,
                                        epoch.rabiaTerm(),
-                                       epoch.localCounter());
+                                       epoch.localCounter(),
+                                       reachabilitySnapshotSupplier.get());
         network.send(governor, ping);
     }
 
     private void aggregatePong(String communityId, ClusterSyncPong pong) {
-        reports.updateAndGet(current -> mergeReport(current, communityId, pong));
+        reports.updateAndGet(current -> mergeReport(current, communityId, pong, reachabilitySnapshotSupplier.get()));
     }
 
     private static Map<String, CommunityReport> mergeReport(Map<String, CommunityReport> current,
                                                             String communityId,
-                                                            ClusterSyncPong pong) {
+                                                            ClusterSyncPong pong,
+                                                            Option<AggregatedReachabilitySnapshot> communityReachability) {
         var partitionsHeld = Option.option(current.get(communityId)).map(CommunityReport::partitionsHeld)
                                           .or(Set.of());
         var members = lifecycleCount(pong);
-        var report = CommunityReport.communityReport(communityId,
-                                                     0L,
-                                                     pong.observedEpochTerm(),
-                                                     pong.observedEpochCounter(),
-                                                     pong.sender(),
-                                                     members.total(),
-                                                     members.healthy(),
-                                                     members.suspected(),
-                                                     members.faulty(),
-                                                     partitionsHeld,
-                                                     System.currentTimeMillis());
+        var report = new CommunityReport(communityId,
+                                         0L,
+                                         pong.observedEpochTerm(),
+                                         pong.observedEpochCounter(),
+                                         pong.sender(),
+                                         members.total(),
+                                         members.healthy(),
+                                         members.suspected(),
+                                         members.faulty(),
+                                         partitionsHeld,
+                                         System.currentTimeMillis(),
+                                         communityReachability);
         var fresh = new HashMap<>(current);
         fresh.put(communityId, report);
         return Map.copyOf(fresh);

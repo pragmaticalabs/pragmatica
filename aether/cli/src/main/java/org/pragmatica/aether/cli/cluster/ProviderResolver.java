@@ -22,7 +22,8 @@ import java.util.stream.Collectors;
 import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public final class ProviderResolver {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+public final class ProviderResolver {
     private static final BootstrapError.ProvisionFailed NO_PROVIDER = new BootstrapError.ProvisionFailed("cloud",
                                                                                                          "No cloud provider specified in source profile");
 
@@ -41,49 +42,51 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
     public static Result<ComputeProvider> resolveCloudCompute(SourceProfile source,
                                                               List<Long> sshKeyIds,
                                                               String userData) {
-        return source.provider().toResult(NO_PROVIDER)
-                              .flatMap(provider -> lookupAndCreateCloud(provider.value(),
-                                                                        source,
-                                                                        sshKeyIds,
-                                                                        userData))
-                              .flatMap(ProviderResolver::extractCompute);
+        return source.provider()
+                     .toResult(NO_PROVIDER)
+                     .flatMap(provider -> lookupAndCreateCloud(provider.value(),
+                                                               source,
+                                                               sshKeyIds,
+                                                               userData))
+                     .flatMap(ProviderResolver::extractCompute);
     }
 
     public static Result<FloatingIpProvider> resolveFloatingIpProvider(SourceProfile source) {
-        return source.provider().toResult(NO_PROVIDER)
-                              .flatMap(provider -> lookupAndCreateCloud(provider.value(),
-                                                                        source))
-                              .flatMap(ProviderResolver::extractFloatingIp);
+        return source.provider()
+                     .toResult(NO_PROVIDER)
+                     .flatMap(provider -> lookupAndCreateCloud(provider.value(),
+                                                               source))
+                     .flatMap(ProviderResolver::extractFloatingIp);
     }
 
     public static Result<ComputeProvider> resolveCloudComputeForCleanup(String providerName) {
-        return CloudCredentials.fromEnvironment(providerName).flatMap(cloudConfig -> lookupFactory(providerName).flatMap(factory -> factory.create(cloudConfig)))
-                                               .flatMap(ProviderResolver::extractCompute);
+        return CloudCredentials.fromEnvironment(providerName)
+                               .flatMap(cloudConfig -> lookupFactory(providerName).flatMap(factory -> factory.create(cloudConfig)))
+                               .flatMap(ProviderResolver::extractCompute);
     }
 
-    /// Cleanup variant that honours the env-var NAMES recorded at bootstrap time.
-    /// Reads `System.getenv(name)` per credential field instead of the hardcoded
-    /// names baked into `CloudCredentials.fromEnvironment(providerName)`. This
-    /// lets `aether cluster destroy` succeed from a fresh shell when the operator
-    /// used non-default env-var names (e.g. `${env:HCLOUD_TOKEN_PROD}`).
     public static Result<ComputeProvider> resolveCloudComputeFromHandle(SourceCleanupHandle handle) {
         return buildHandleConfig(handle).flatMap(config -> lookupFactory(handle.provider()).flatMap(factory -> factory.create(config)))
-                                                     .flatMap(ProviderResolver::extractCompute);
+                                .flatMap(ProviderResolver::extractCompute);
     }
 
     private static Result<CloudConfig> buildHandleConfig(SourceCleanupHandle handle) {
         var creds = new HashMap<String, String>();
         var missing = new ArrayList<String>();
+
         for (var entry : handle.credentialEnvVars().entrySet()) {
             var value = System.getenv(entry.getValue());
-            if (value == null || value.isBlank()) {missing.add(entry.getValue());} else {creds.put(entry.getKey(),
-                                                                                                    value);}
+            if (value == null || value.isBlank()) {missing.add(entry.getValue());} else {creds.put(entry.getKey(), value);}
         }
-        if (!missing.isEmpty()) {return new BootstrapError.ProvisionFailed(handle.provider(),
-                                                                            "Missing credential env vars for cleanup: " + String.join(", ",
-                                                                                                                                       missing)).result();}
+        if (!missing.isEmpty()) {
+            return new BootstrapError.ProvisionFailed(handle.provider(),
+                                                      "Missing credential env vars for cleanup: " + String.join(", ",
+                                                                                                                missing)).result();
+        }
+
         var compute = new HashMap<String, String>();
         handle.region().onPresent(r -> compute.put("region", r));
+
         return Result.success(new CloudConfig(handle.provider(),
                                               Map.copyOf(creds),
                                               Map.copyOf(compute),
@@ -117,11 +120,13 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
     }
 
     private static Result<ComputeProvider> extractCompute(EnvironmentIntegration integration) {
-        return integration.compute().toResult(NO_COMPUTE);
+        return integration.compute()
+                          .toResult(NO_COMPUTE);
     }
 
     private static Result<FloatingIpProvider> extractFloatingIp(EnvironmentIntegration integration) {
-        return integration.floatingIp().toResult(NO_FLOATING_IP);
+        return integration.floatingIp()
+                          .toResult(NO_FLOATING_IP);
     }
 
     private static CloudConfig buildCloudConfig(String providerName, SourceProfile source) {
@@ -133,17 +138,18 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
                                                 List<Long> sshKeyIds,
                                                 String userData) {
         var credentials = new HashMap<String, String>();
-        source.credentials()
-                          .onPresent(c -> {
-                                         credentials.put("credentials_file", c);
-                                         credentials.put("api_token", c);
-                                         credentials.put("access_key", c);
-                                     });
+        source.credentials().onPresent(c -> {
+                                           credentials.put("credentials_file", c);
+                                           credentials.put("api_token", c);
+                                           credentials.put("access_key", c);
+                                       });
         var compute = new HashMap<String, String>();
         source.region().onPresent(r -> compute.put("region", r));
         source.zone().onPresent(z -> compute.put("zone", z));
+
         if (!sshKeyIds.isEmpty()) {compute.put("ssh_key_ids", joinLongs(sshKeyIds));}
         if (!userData.isEmpty()) {compute.put("user_data", userData);}
+
         return new CloudConfig(providerName,
                                Map.copyOf(credentials),
                                Map.copyOf(compute),
@@ -154,8 +160,9 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
     }
 
     private static String joinLongs(List<Long> ids) {
-        return ids.stream().map(String::valueOf)
-                         .collect(Collectors.joining(","));
+        return ids.stream()
+                  .map(String::valueOf)
+                  .collect(Collectors.joining(","));
     }
 
     private static CloudConfig dockerCloudConfig() {
@@ -164,6 +171,7 @@ import static org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.Boo
 
     private static BootstrapError.ProvisionFailed factoryNotFound(String providerName) {
         return new BootstrapError.ProvisionFailed(providerName,
-                                                  "No EnvironmentIntegrationFactory found for provider '" + providerName + "'");
+                                                  "No EnvironmentIntegrationFactory found for provider '" + providerName
+                                                 + "'");
     }
 }

@@ -24,6 +24,7 @@ import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ManageableNode;
@@ -34,6 +35,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -53,7 +55,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"}) public final class ClusterConfigRoutes implements RouteSource {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"})
+public final class ClusterConfigRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(ClusterConfigRoutes.class);
 
     private final Supplier<ManageableNode> nodeSupplier;
@@ -73,20 +76,21 @@ import org.slf4j.LoggerFactory;
         return new ClusterConfigRoutes(nodeSupplier, new ClusterConfigApplier.unused());
     }
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<ClusterConfigResponse>route(ManagementRoute.CLUSTER_CONFIG_GET)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<ClusterConfigResponse> route(ManagementRoute.CLUSTER_CONFIG_GET)
                                          .to(_ -> buildConfigResponse())
                                          .asJson(),
-                         ManagementRoutes.<ClusterStatusResponse>route(ManagementRoute.CLUSTER_CONFIG_STATUS)
+                         ManagementRoutes.<ClusterStatusResponse> route(ManagementRoute.CLUSTER_STATUS)
                                          .to(_ -> buildStatusResponse())
                                          .asJson(),
-                         ManagementRoutes.<Object>route(ManagementRoute.CLUSTER_CONFIG_APPLY)
+                         ManagementRoutes.<Object> route(ManagementRoute.CLUSTER_CONFIG_APPLY)
                                          .withBody(ApplyConfigRequest.class)
                                          .toJson(this::handleApplyConfig),
-                         ManagementRoutes.<ScaleClusterResponse>route(ManagementRoute.CLUSTER_SCALE)
+                         ManagementRoutes.<ScaleClusterResponse> route(ManagementRoute.CLUSTER_SCALE)
                                          .withBody(ScaleRequest.class)
                                          .toJson(this::handleScale),
-                         ManagementRoutes.<UpgradeResponse>route(ManagementRoute.CLUSTER_UPGRADE)
+                         ManagementRoutes.<UpgradeResponse> route(ManagementRoute.CLUSTER_UPGRADE)
                                          .withBody(UpgradeRequest.class)
                                          .toJson(this::handleUpgrade));
     }
@@ -109,18 +113,18 @@ import org.slf4j.LoggerFactory;
 
     private Promise<ClusterStatusResponse> buildStatusResponse() {
         var node = nodeSupplier.get();
+
         return lookupClusterConfig().map(config -> assembleStatus(node, config));
     }
 
     private ClusterStatusResponse assembleStatus(ManageableNode node, ClusterConfigValue config) {
-        var leaderId = node.leader().map(NodeId::id)
-                                  .or("none");
+        var leaderId = node.leader().map(NodeId::id).or("none");
         var nodeInfos = buildNodeInfos(node, leaderId);
-        var sliceCount = node.sliceStore().loaded()
-                                        .size();
+        var sliceCount = node.sliceStore().loaded().size();
         var sliceInstances = countSliceInstances(node);
         var certExpiry = buildCertificateExpiry(node);
         var lbInfo = buildLoadBalancerInfo(node);
+
         return new ClusterStatusResponse(config.clusterName(),
                                          config.version(),
                                          config.coreCount(),
@@ -138,59 +142,115 @@ import org.slf4j.LoggerFactory;
     }
 
     private static int countSliceInstances(ManageableNode node) {
-        return node.deploymentMap().allDeployments()
-                                 .stream()
-                                 .mapToInt(d -> d.instances().size())
-                                 .sum();
+        return node.deploymentMap()
+                   .allDeployments()
+                   .stream()
+                   .mapToInt(d -> d.instances()
+                                   .size())
+                   .sum();
     }
 
     private static List<ClusterStatusNodeInfo> buildNodeInfos(ManageableNode node, String leaderId) {
-        return node.metricsCollector().allMetrics()
-                                    .keySet()
-                                    .stream()
-                                    .map(nid -> toStatusNodeInfo(nid, leaderId))
-                                    .toList();
+        var leaderOpt = node.leader();
+        var view = node.membershipView();
+        var reachabilitySnapshot = node.metricsCollector().lastReachabilitySnapshot();
+        var selfId = node.self();
+        // Per-peer KV state pre-fetch — authoritative FSM intent, mirrors the kvState/derivedStatus
+        // split applied to /api/nodes/status NodeInfo. See aether/docs/specs/state-authority.md.
+        // TODO (B5, RC2): replace forEach with an indexed accessor for large clusters.
+        var kvStateMap = new java.util.HashMap<NodeId, String>();
+        node.kvStore().forEach(AetherKey.NodeLifecycleKey.class,
+                               AetherValue.NodeLifecycleValue.class,
+                               (key, value) -> kvStateMap.put(key.nodeId(), externalStateName(value.state())));
+
+        return node.metricsCollector()
+                   .allMetrics()
+                   .keySet()
+                   .stream()
+                   .map(nid -> toStatusNodeInfo(nid,
+                                                leaderOpt,
+                                                view,
+                                                reachabilitySnapshot,
+                                                selfId,
+                                                kvStateMap.getOrDefault(nid, ""),
+                                                leaderId))
+                   .toList();
     }
 
-    private static ClusterStatusNodeInfo toStatusNodeInfo(NodeId nid, String leaderId) {
+    private static ClusterStatusNodeInfo toStatusNodeInfo(NodeId nid,
+                                                          Option<NodeId> leaderOpt,
+                                                          MembershipView view,
+                                                          Option<AggregatedReachabilitySnapshot> reachabilitySnapshot,
+                                                          NodeId selfId,
+                                                          String kvState,
+                                                          String leaderId) {
+        // derivedStatus — operator-visible projection of KV ∪ SWIM ∪ aggregated reachability ∪ quorum,
+        // mirrors StatusRoutes.toNodeInfo. ROUTE-LAYER DOWNGRADE: if KV says ON_DUTY but a quorum of
+        // observers reports UNREACHABLE in the latest aggregated snapshot, we show UNKNOWN here so
+        // operator dashboards stop trusting a peer the cluster has consensus-lost.
+        var status = view.statusOf(nid);
+        var transportLag = status == MembershipView.MemberStatus.ON_DUTY && !nid.equals(selfId) && reachabilitySnapshot.fold(() -> false,
+                                                                                                                             s -> !s.isReachable(nid));
+        var derivedStatus = transportLag
+                            ? "UNKNOWN"
+                            : (status == MembershipView.MemberStatus.UNTRACKED
+                               ? "UNKNOWN"
+                               : status.name());
+        // TODO (follow-up): role is still hardcoded "core" — should read from ActivationDirectiveValue
+        // in kvStore (see StatusRoutes.collectNodeRoles). Out of scope for the state-authority split.
         return new ClusterStatusNodeInfo(nid.id(),
                                          "core",
-                                         "ON_DUTY",
+                                         kvState,
+                                         derivedStatus,
                                          AetherNode.VERSION,
                                          nid.id().equals(leaderId));
     }
 
+    /// External-viewer state name. Pre-Step-I this collapsed `SHUTTING_DOWN` → `DRAINING`;
+    /// post-Step-I (H/I collapse 2026-05-22) the slice-layer enum no longer carries
+    /// `SHUTTING_DOWN` — the three former terminal arms unified into `STOPPED` with a
+    /// `StopReason` sidecar — so this is now a passthrough.
+    /// See `aether/docs/specs/state-authority.md`.
+    private static String externalStateName(AetherValue.NodeLifecycleState state) {
+        return state.name();
+    }
+
     private static String reconcilerStateName(ManageableNode node) {
         var actualCount = node.connectedNodeCount() + 1;
-        return actualCount >= node.topologyConfig().clusterSize()
-              ? "CONVERGED"
-              : "RECONCILING";
+
+        return actualCount >= node.topologyConfig()
+                                  .clusterSize()
+               ? "CONVERGED"
+               : "RECONCILING";
     }
 
     private static Option<CertificateStatusResponse> buildCertificateExpiry(ManageableNode node) {
-        return node.certRenewalScheduler().map(ClusterConfigRoutes::toCertStatus);
+        return node.certRenewalScheduler()
+                   .map(scheduler -> toCertStatus(node.tlsEnabled(), scheduler));
     }
 
-    private static CertificateStatusResponse toCertStatus(CertificateRenewalScheduler scheduler) {
-        return new CertificateStatusResponse(scheduler.currentNotAfter().toString(),
+    private static CertificateStatusResponse toCertStatus(boolean tlsEnabled, CertificateRenewalScheduler scheduler) {
+        return new CertificateStatusResponse(tlsEnabled,
+                                             scheduler.currentNotAfter().toString(),
                                              scheduler.secondsUntilExpiry(),
                                              scheduler.lastRenewalAt().toString(),
                                              scheduler.renewalStatus().name());
     }
 
     private static Option<LoadBalancerStatusInfo> buildLoadBalancerInfo(ManageableNode node) {
-        return node.taskGroupAssignmentRegistry().ownerFor(TaskGroup.DEPLOYMENT)
-                                               .option()
-                                               .flatMap(ownerId -> node.topologyManager().get(ownerId)
-                                                                                       .map(info -> toLbStatusInfo(ownerId,
-                                                                                                                   info,
-                                                                                                                   node)));
+        return node.taskGroupAssignmentRegistry()
+                   .ownerFor(TaskGroup.DEPLOYMENT)
+                   .option()
+                   .flatMap(ownerId -> node.topologyManager()
+                                           .get(ownerId)
+                                           .map(info -> toLbStatusInfo(ownerId, info, node)));
     }
 
     private static LoadBalancerStatusInfo toLbStatusInfo(NodeId ownerId, NodeInfo info, ManageableNode node) {
         var host = info.address().host();
         var appEndpoint = "http://" + host + ":" + node.appHttpPort();
         var mgmtEndpoint = "http://" + host + ":" + node.managementPort();
+
         return new LoadBalancerStatusInfo("elected", ownerId.id(), appEndpoint, mgmtEndpoint);
     }
 
@@ -203,19 +263,14 @@ import org.slf4j.LoggerFactory;
                                                                                                              request.tomlContent())));
     }
 
-    @SuppressWarnings("unchecked") private Promise<Object> storeInitialConfig(ClusterBootstrapConfig desired,
-                                                                              String tomlContent) {
+    @SuppressWarnings("unchecked")
+    private Promise<Object> storeInitialConfig(ClusterBootstrapConfig desired, String tomlContent) {
         var cluster = desired.cluster();
         var coreCount = desired.derivedCoreCount();
-        var coreMin = desired.coreTopology().min()
-                                          .or(coreCount);
-        var coreMax = desired.coreTopology().max()
-                                          .or(coreCount);
-        var sourceType = desired.sources().values()
-                                        .stream()
-                                        .map(s -> s.type().value())
-                                        .findFirst()
-                                        .orElse("unknown");
+        var coreMin = desired.coreTopology().min().or(coreCount);
+        var coreMax = desired.coreTopology().max().or(coreCount);
+        var sourceType = desired.sources().values().stream().map(s -> s.type()
+                                                                       .value()).findFirst().orElse("unknown");
         var configValue = new ClusterConfigValue(tomlContent,
                                                  cluster.name(),
                                                  cluster.version(),
@@ -226,11 +281,13 @@ import org.slf4j.LoggerFactory;
                                                  1,
                                                  System.currentTimeMillis());
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
-        return nodeSupplier.get().<Object>apply(List.of(command))
-                               .map(_ -> (Object) new ApplyConfigResponse(1,
-                                                                          cluster.name(),
-                                                                          coreCount,
-                                                                          configValue.updatedAt()));
+
+        return nodeSupplier.get()
+                           .<Object> apply(List.of(command))
+                           .map(_ -> (Object) new ApplyConfigResponse(1,
+                                                                      cluster.name(),
+                                                                      coreCount,
+                                                                      configValue.updatedAt()));
     }
 
     private Promise<Object> processApply(ClusterConfigValue stored,
@@ -249,18 +306,18 @@ import org.slf4j.LoggerFactory;
                                         ClusterBootstrapConfig desired,
                                         String tomlContent) {
         var plan = ClusterBootstrapConfigDiff.diff(storedConfig, desired);
+
         if (plan.hasImmutableChanges()) {return buildImmutableChangeError(plan).promise();}
         if (plan.isEmpty()) {return buildDryRunResponse(stored, plan);}
+
         return applier.apply(plan.allActions())
-                            .flatMap(_ -> storeUpdatedConfig(desired,
-                                                             tomlContent,
-                                                             stored.configVersion() + 1));
+                      .flatMap(_ -> storeUpdatedConfig(desired,
+                                                       tomlContent,
+                                                       stored.configVersion() + 1));
     }
 
     private static ClusterConfigError.ValidationFailed buildImmutableChangeError(DiffPlan plan) {
-        var errors = plan.immutable().stream()
-                                   .map(a -> (ClusterConfigError) new ClusterConfigError.ImmutableFieldChange(a.description()))
-                                   .toList();
+        var errors = plan.immutable().stream().map(a -> (ClusterConfigError) new ClusterConfigError.ImmutableFieldChange(a.description())).toList();
         return new ClusterConfigError.ValidationFailed(errors);
     }
 
@@ -273,26 +330,21 @@ import org.slf4j.LoggerFactory;
     }
 
     private static Promise<Object> checkVersionAsync(long storedVersion, long expectedVersion) {
-        if (expectedVersion != 0 && storedVersion != expectedVersion) {return new ClusterConfigError.VersionConflict(expectedVersion,
-                                                                                                                     storedVersion).promise();}
+        if (expectedVersion != 0 && storedVersion != expectedVersion) {
+            return new ClusterConfigError.VersionConflict(expectedVersion, storedVersion).promise();
+        }
         return Promise.unitPromise().map(u -> (Object) u);
     }
 
-    @SuppressWarnings("unchecked") private Promise<Object> storeUpdatedConfig(ClusterBootstrapConfig desired,
-                                                                              String tomlContent,
-                                                                              long newVersion) {
+    @SuppressWarnings("unchecked")
+    private Promise<Object> storeUpdatedConfig(ClusterBootstrapConfig desired, String tomlContent, long newVersion) {
         var node = nodeSupplier.get();
         var cluster = desired.cluster();
         var coreCount = desired.derivedCoreCount();
-        var coreMin = desired.coreTopology().min()
-                                          .or(coreCount);
-        var coreMax = desired.coreTopology().max()
-                                          .or(coreCount);
-        var sourceType = desired.sources().values()
-                                        .stream()
-                                        .map(s -> s.type().value())
-                                        .findFirst()
-                                        .orElse("unknown");
+        var coreMin = desired.coreTopology().min().or(coreCount);
+        var coreMax = desired.coreTopology().max().or(coreCount);
+        var sourceType = desired.sources().values().stream().map(s -> s.type()
+                                                                       .value()).findFirst().orElse("unknown");
         var configValue = new ClusterConfigValue(tomlContent,
                                                  cluster.name(),
                                                  cluster.version(),
@@ -303,7 +355,8 @@ import org.slf4j.LoggerFactory;
                                                  newVersion,
                                                  System.currentTimeMillis());
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
-        return node.<Object>apply(List.of(command))
+
+        return node.<Object> apply(List.of(command))
                    .map(_ -> (Object) new ApplyConfigResponse(newVersion,
                                                               cluster.name(),
                                                               coreCount,
@@ -311,9 +364,7 @@ import org.slf4j.LoggerFactory;
     }
 
     private static Promise<Object> buildDryRunResponse(ClusterConfigValue stored, DiffPlan plan) {
-        var descriptions = plan.allActions().stream()
-                                          .map(ClusterConfigRoutes::formatAction)
-                                          .toList();
+        var descriptions = plan.allActions().stream().map(ClusterConfigRoutes::formatAction).toList();
         return Promise.success((Object) new DryRunResponse(stored.clusterName(),
                                                            stored.configVersion(),
                                                            stored.configVersion(),
@@ -342,6 +393,7 @@ import org.slf4j.LoggerFactory;
         var previousCount = stored.coreCount();
         var newVersion = stored.configVersion() + 1;
         emitSetDesiredSizeSignal(request.coreCount());
+
         return storeScaledConfig(stored, request.coreCount(), newVersion).map(_ -> new ScaleClusterResponse(true,
                                                                                                             previousCount,
                                                                                                             request.coreCount(),
@@ -349,8 +401,7 @@ import org.slf4j.LoggerFactory;
     }
 
     private void emitSetDesiredSizeSignal(int newSize) {
-        nodeSupplier.get().healthSignalSink()
-                        .emit(new HealthSignal.OperatorAction(new OperatorIntent.SetDesiredSize(newSize)));
+        nodeSupplier.get().healthSignalSink().emit(new HealthSignal.OperatorAction(new OperatorIntent.SetDesiredSize(newSize)));
     }
 
     private static Promise<Object> validateScaleAsync(int coreCount, int coreMin, int coreMax) {
@@ -358,12 +409,12 @@ import org.slf4j.LoggerFactory;
         if (coreCount % 2 == 0) {return new ClusterConfigError.InvalidCoreCount(coreCount).promise();}
         if (coreCount <coreMin) {return new ClusterConfigError.QuorumSafetyViolation(coreCount, coreMin).promise();}
         if (coreCount > coreMax) {return new ClusterConfigError.InvalidCoreMax(coreMax, coreCount).promise();}
+
         return Promise.unitPromise().map(u -> (Object) u);
     }
 
-    @SuppressWarnings("unchecked") private Promise<Object> storeScaledConfig(ClusterConfigValue stored,
-                                                                             int newCoreCount,
-                                                                             long newVersion) {
+    @SuppressWarnings("unchecked")
+    private Promise<Object> storeScaledConfig(ClusterConfigValue stored, int newCoreCount, long newVersion) {
         var configValue = new ClusterConfigValue(stored.tomlContent(),
                                                  stored.clusterName(),
                                                  stored.version(),
@@ -374,8 +425,10 @@ import org.slf4j.LoggerFactory;
                                                  newVersion,
                                                  System.currentTimeMillis());
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
-        return nodeSupplier.get().<Object>apply(List.of(command))
-                               .map(_ -> (Object) configValue);
+
+        return nodeSupplier.get()
+                           .<Object> apply(List.of(command))
+                           .map(_ -> (Object) configValue);
     }
 
     private Promise<UpgradeResponse> handleUpgrade(UpgradeRequest request) {
@@ -385,17 +438,20 @@ import org.slf4j.LoggerFactory;
     private Promise<UpgradeResponse> initiateUpgrade(ClusterConfigValue stored, UpgradeRequest request) {
         var currentVersion = stored.version();
         var targetVersion = request.targetVersion();
+
         if (currentVersion.equals(targetVersion)) {return new UpgradeError.AlreadyAtVersion(targetVersion).promise();}
+
         log.info("Cluster upgrade initiated: {} -> {}",
                  currentVersion,
                  targetVersion);
+
         return storeUpgradedVersion(stored, targetVersion).map(_ -> new UpgradeResponse("INITIATED",
                                                                                         currentVersion,
                                                                                         targetVersion));
     }
 
-    @SuppressWarnings("unchecked") private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored,
-                                                                                String targetVersion) {
+    @SuppressWarnings("unchecked")
+    private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, String targetVersion) {
         var configValue = new ClusterConfigValue(stored.tomlContent(),
                                                  stored.clusterName(),
                                                  targetVersion,
@@ -406,29 +462,33 @@ import org.slf4j.LoggerFactory;
                                                  stored.configVersion() + 1,
                                                  System.currentTimeMillis());
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
-        return nodeSupplier.get().<Object>apply(List.of(command))
-                               .map(_ -> (Object) configValue);
+
+        return nodeSupplier.get()
+                           .<Object> apply(List.of(command))
+                           .map(_ -> (Object) configValue);
     }
 
     sealed interface UpgradeError extends Cause {
         record AlreadyAtVersion(String version) implements UpgradeError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Cluster is already at version " + version;
             }
         }
     }
 
     private Promise<ClusterConfigValue> lookupClusterConfig() {
-        return nodeSupplier.get().kvStore()
-                               .get(ClusterConfigKey.CURRENT)
-                               .flatMap(ClusterConfigRoutes::narrowToConfig)
-                               .async(ConfigNotFoundError.NOT_FOUND);
+        return nodeSupplier.get()
+                           .kvStore()
+                           .get(ClusterConfigKey.CURRENT)
+                           .flatMap(ClusterConfigRoutes::narrowToConfig)
+                           .async(ConfigNotFoundError.NOT_FOUND);
     }
 
     private static Option<ClusterConfigValue> narrowToConfig(AetherValue value) {
         return value instanceof ClusterConfigValue config
-              ? Option.some(config)
-              : Option.empty();
+               ? Option.some(config)
+               : Option.empty();
     }
 
     private enum ConfigNotFoundError implements Cause {
@@ -437,7 +497,8 @@ import org.slf4j.LoggerFactory;
         ConfigNotFoundError(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }

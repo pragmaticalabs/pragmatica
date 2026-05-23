@@ -78,14 +78,13 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
-
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SelfStage builder() {
         return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
             var effectiveClusterSize = coreMax > 0
-                                      ? coreMax
-                                      : coreNodes.size();
+                                       ? coreMax
+                                       : coreNodes.size();
             var topology = new TopologyConfig(self,
                                               effectiveClusterSize,
                                               timeSpan(5).seconds(),
@@ -360,10 +359,13 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public Result<Unit> validate() {
-        if (managementPort <0 || managementPort > 65535) {return Causes.cause("Invalid management port: " + managementPort)
-                                                                             .result();}
-        if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {return Causes.cause("At least one core node required when management is enabled")
-                                                                                                         .result();}
+        if (managementPort <0 || managementPort > 65535) {
+            return Causes.cause("Invalid management port: " + managementPort).result();
+        }
+        if (managementPort != MANAGEMENT_DISABLED && topology.coreNodes().isEmpty()) {
+            return Causes.cause("At least one core node required when management is enabled").result();
+        }
+
         return Result.unitResult();
     }
 }

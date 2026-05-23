@@ -36,6 +36,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -46,6 +47,7 @@ import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
+import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimMessage.PingReq;
@@ -346,6 +348,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             case Ping ping -> handlePing(sender, ping);
             case Ack ack -> handleAck(ack);
             case PingReq pingReq -> handlePingReq(sender, pingReq);
+            case Announce announce -> handleAnnounce(announce);
         }
     }
 
@@ -573,6 +576,88 @@ public final class SwimProtocol implements SwimMessageHandler {
             .onPresent(target -> relayPingReq(requesterAddress, pingReq, target));
     }
 
+    private void handleAnnounce(Announce announce) {
+        var expectedName = config.clusterName();
+        if (!expectedName.isEmpty() && !expectedName.equals(announce.clusterName())) {
+            LOG.warn("ANNOUNCE from {} rejected: cluster name mismatch (got '{}', expected '{}')",
+                     announce.nodeInfo().id().id(), announce.clusterName(), expectedName);
+            return;
+        }
+
+        if (!members.containsKey(announce.nodeInfo().id())) {
+            var update = MembershipUpdate.membershipUpdate(
+                announce.nodeInfo().id(), MemberState.ALIVE, announce.incarnation(),
+                swimAddressFor(announce.nodeInfo()));
+            applyNewMember(update);
+            addMemberUpdate(update);
+        }
+
+        deliverObservation(new SwimObservation.JoinAnnounced(
+            announce.nodeInfo(), announce.clusterName(), announce.incarnation()));
+    }
+
+    /// Derive the authoritative SWIM listen address for a peer from its `NodeInfo`.
+    /// `NodeInfo.address()` carries the cluster's primary transport port (e.g. QUIC);
+    /// SWIM listens on `port + swimPortOffset`. Applied uniformly at every site that
+    /// learns a peer's address from a SWIM control message (ANNOUNCE/Ping/Ack).
+    /// Defaults preserve legacy behavior (offset == 0).
+    private InetSocketAddress swimAddressFor(NodeInfo nodeInfo) {
+        return new InetSocketAddress(nodeInfo.address().host(),
+                                     nodeInfo.address().port() + config.swimPortOffset());
+    }
+
+    /// Send ANNOUNCE to all seeds every 500ms until quorum is reached or 60 attempts are exhausted.
+    ///
+    /// Runs on the shared scheduler. Stops when `quorumReached` returns true or after 60 attempts (30s).
+    @Contract public void announceJoin(NodeInfo self, String clusterName, long incarnation,
+                                       List<InetSocketAddress> seeds, BooleanSupplier quorumReached) {
+        var attempts = new AtomicInteger(0);
+        var future = new AtomicReference<ScheduledFuture<?>>();
+        var task = SharedScheduler.scheduleAtFixedRate(
+            () -> runAnnounceAttempt(self, clusterName, incarnation, seeds, quorumReached, attempts, future),
+            TimeSpan.timeSpan(500).millis());
+        future.set(task);
+    }
+
+    /// Per-peer health view used by transport-side gates (e.g. `swimHealthGate`
+    /// in `QuicClusterNetwork`). Reads the last edge-emitted health; if none has
+    /// been emitted yet (startup window between `addSeedMember` and the first
+    /// probe-ack edge), fall back to the live `members` map so an ALIVE seed is
+    /// reported HEALTHY rather than UNKNOWN. Resolves the 1–2s startup window
+    /// where the gate would otherwise reject all peers (P3).
+    public SwimHealth healthOf(NodeId nodeId) {
+        var emitted = lastEmittedHealth.get(nodeId);
+        if (emitted != null) {
+            return emitted;
+        }
+        return option(members.get(nodeId))
+            .map(m -> m.state() == MemberState.ALIVE ? SwimHealth.HEALTHY : SwimHealth.UNKNOWN)
+            .or(SwimHealth.UNKNOWN);
+    }
+
+    private void runAnnounceAttempt(NodeInfo self, String clusterName, long incarnation,
+                                    List<InetSocketAddress> seeds, BooleanSupplier quorumReached,
+                                    AtomicInteger attempts, AtomicReference<ScheduledFuture<?>> future) {
+        if (quorumReached.getAsBoolean()) {
+            cancelAnnounce(future, self, "quorum reached");
+            return;
+        }
+
+        var attempt = attempts.incrementAndGet();
+        LOG.info("SWIM ANNOUNCE join attempt {}/60 for node {} to {} seeds",
+                 attempt, self.id().id(), seeds.size());
+        seeds.forEach(seed -> transport.send(seed, Announce.announce(self, clusterName, incarnation)));
+
+        if (attempt >= 60) {
+            cancelAnnounce(future, self, "max attempts reached");
+        }
+    }
+
+    private void cancelAnnounce(AtomicReference<ScheduledFuture<?>> future, NodeInfo self, String reason) {
+        option(future.getAndSet(null)).onPresent(f -> f.cancel(false));
+        LOG.info("SWIM ANNOUNCE join stopped for node {} ({})", self.id().id(), reason);
+    }
+
     private void relayPingReq(InetSocketAddress requesterAddress, PingReq pingReq, SwimMember target) {
         var relaySeq = sequenceCounter.incrementAndGet();
         pendingRelays.put(relaySeq, new RelayInfo(pingReq.sequence(), requesterAddress, System.currentTimeMillis()));
@@ -640,6 +725,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void applyNewMember(MembershipUpdate update) {
         var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
         members.put(update.nodeId(), member);
+        if (update.state() != MemberState.FAULTY) {
+            addMemberUpdate(update);
+        }
 
         switch (update.state()) {
             case ALIVE -> applyNewAliveMember(member);

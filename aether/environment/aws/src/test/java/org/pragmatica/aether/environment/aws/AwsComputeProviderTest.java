@@ -67,6 +67,33 @@ class AwsComputeProviderTest {
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
         }
+
+        @Test
+        void provisionFailure_runInstancesSucceedsButTaggingFails_rollbackTerminatesInstance() {
+            // runInstances succeeds — we obtain instance i-rollback-me.
+            testClient.runInstancesResponse = Promise.success(
+                TestAwsClient.runResponseWith(runningInstance("i-rollback-me")));
+            // createTags fails — must trigger terminateInstances rollback.
+            testClient.createTagsResponse = new AwsError.ApiError(500, "InternalError", "tag service down").promise();
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
+
+            assertThat(testClient.lastTerminatedIds).containsExactly("i-rollback-me");
+        }
+
+        @Test
+        void provisionSuccess_noTerminationCalled() {
+            testClient.runInstancesResponse = Promise.success(
+                TestAwsClient.runResponseWith(runningInstance("i-ok")));
+
+            provider.provision(InstanceType.ON_DEMAND).await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastTerminatedIds).isNull();
+        }
     }
 
     @Nested

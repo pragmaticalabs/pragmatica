@@ -16,9 +16,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"}) public interface MutationForwarder {
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+public interface MutationForwarder {
     Logger LOG = LoggerFactory.getLogger(MutationForwarder.class);
-
     void forward(WorkerMutation mutation);
     void onMutationFromFollower(WorkerMutation mutation);
     void updateGovernor(Option<NodeId> governor);
@@ -31,25 +31,32 @@ import org.slf4j.LoggerFactory;
         record mutationForwarder(NodeId selfId,
                                  DelegateRouter delegateRouter,
                                  AtomicReference<Option<NodeId>> currentGovernor) implements MutationForwarder {
-            @Override public void forward(WorkerMutation mutation) {
+            @Override
+            public void forward(WorkerMutation mutation) {
                 var governor = currentGovernor.get();
+
                 if (governor.isEmpty() || isGovernor(governor)) {
                     forwardToCore(mutation);
+
                     return;
                 }
+
                 forwardToGovernor(mutation, governor.unwrap());
             }
 
-            @Override public void onMutationFromFollower(WorkerMutation mutation) {
+            @Override
+            public void onMutationFromFollower(WorkerMutation mutation) {
                 forwardToCore(mutation);
             }
 
-            @Override public void updateGovernor(Option<NodeId> governor) {
+            @Override
+            public void updateGovernor(Option<NodeId> governor) {
                 currentGovernor.set(governor);
             }
 
             private boolean isGovernor(Option<NodeId> governor) {
-                return governor.map(selfId::equals).or(false);
+                return governor.map(selfId::equals)
+                               .or(false);
             }
 
             private void forwardToCore(WorkerMutation mutation) {

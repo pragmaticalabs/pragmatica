@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }
@@ -19,7 +19,7 @@ test_mgmt_health_endpoint() {
 test_mgmt_status_json() {
     local status
     status=$(cluster_status)
-    assert_ne "$status" "" "Management /api/status returns JSON"
+    assert_ne "$status" "" "Management /api/nodes/status returns JSON"
     # Use CLI --field which supports nested dot-path navigation
     local node_id
     node_id=$(aether_field status "cluster.nodes.0.id")
@@ -27,15 +27,17 @@ test_mgmt_status_json() {
 }
 
 test_mgmt_nodes_json() {
-    # Query directly via CLI which knows how to count nodes
+    # Query directly via CLI which knows how to count nodes.
+    # `aether topology` moved under `aether cluster topology` in T2.6; aether_field
+    # only takes single-word commands, so call aether_failover directly here.
     local count
-    count=$(aether_field topology coreCount)
+    count=$(aether_failover cluster topology --format value --field coreCount 2>/dev/null || echo 0)
     assert_gt "$count" "0" "Management cluster topology returns coreCount > 0"
 }
 
 test_mgmt_content_type() {
     local headers
-    headers=$(curl -sf -D - -o /dev/null -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/api/status")
+    headers=$(curl -sf -D - -o /dev/null -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/api/nodes/status")
     assert_contains "$headers" "application/json" "Status response has JSON content-type"
 }
 
@@ -53,7 +55,7 @@ test_mgmt_invalid_path() {
 test_mgmt_concurrent_requests() {
     local success=0 failure=0
     for i in $(seq 1 20); do
-        if api_get "/api/status" > /dev/null 2>&1; then
+        if api_get "/api/nodes/status" > /dev/null 2>&1; then
             success=$((success + 1))
         else
             failure=$((failure + 1))

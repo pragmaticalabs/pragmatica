@@ -18,11 +18,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") final class GovernorMeshInstance implements GovernorMesh {
+@SuppressWarnings("JBCT-RET-01")
+final class GovernorMeshInstance implements GovernorMesh {
     private static final Logger LOG = LoggerFactory.getLogger(GovernorMeshInstance.class);
 
     private final Map<String, NodeId> governors = new ConcurrentHashMap<>();
-
     private final Option<DelegateRouter> delegateRouter;
 
     GovernorMeshInstance() {
@@ -33,17 +33,20 @@ import org.slf4j.LoggerFactory;
         this.delegateRouter = Option.option(delegateRouter);
     }
 
-    @Override public void registerGovernor(String communityId, NodeId governorId) {
+    @Override
+    public void registerGovernor(String communityId, NodeId governorId) {
         registerGovernor(communityId, governorId, "");
     }
 
-    @Override public void registerGovernor(String communityId, NodeId governorId, String tcpAddress) {
+    @Override
+    public void registerGovernor(String communityId, NodeId governorId, String tcpAddress) {
         governors.put(communityId, governorId);
         registerPeerAddress(governorId, tcpAddress);
         LOG.debug("Registered governor {} for community '{}' at {}", governorId, communityId, tcpAddress);
     }
 
-    @Override public void unregisterGovernor(String communityId) {
+    @Override
+    public void unregisterGovernor(String communityId) {
         Option.option(governors.remove(communityId)).onPresent(removed -> handleGovernorRemoval(removed, communityId));
     }
 
@@ -52,15 +55,18 @@ import org.slf4j.LoggerFactory;
         LOG.debug("Unregistered governor {} for community '{}'", removed, communityId);
     }
 
-    @Override public Option<NodeId> governorFor(String communityId) {
+    @Override
+    public Option<NodeId> governorFor(String communityId) {
         return Option.option(governors.get(communityId));
     }
 
-    @Override public Map<String, NodeId> allGovernors() {
+    @Override
+    public Map<String, NodeId> allGovernors() {
         return Map.copyOf(governors);
     }
 
-    @Override public boolean hasGovernor(String communityId) {
+    @Override
+    public boolean hasGovernor(String communityId) {
         return governors.containsKey(communityId);
     }
 
@@ -78,8 +84,11 @@ import org.slf4j.LoggerFactory;
 
     private static Option<NodeAddress> parseTcpAddress(String tcpAddress) {
         var parts = tcpAddress.split(":");
+
         if (parts.length != 2) {return Option.empty();}
-        return Number.parseInt(parts[1]).option()
-                              .flatMap(port -> NodeAddress.nodeAddress(parts[0], port).option());
+
+        return Number.parseInt(parts[1])
+                     .option()
+                     .flatMap(port -> NodeAddress.nodeAddress(parts[0], port).option());
     }
 }

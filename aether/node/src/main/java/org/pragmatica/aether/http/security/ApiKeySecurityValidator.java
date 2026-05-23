@@ -29,7 +29,6 @@ import org.slf4j.LoggerFactory;
 
 class ApiKeySecurityValidator implements SecurityValidator {
     private static final Logger log = LoggerFactory.getLogger(ApiKeySecurityValidator.class);
-
     private static final String API_KEY_HEADER = "X-API-Key";
 
     private final Map<String, ApiKeyEntry> keyEntries;
@@ -43,15 +42,18 @@ class ApiKeySecurityValidator implements SecurityValidator {
     static Map<String, ApiKeyEntry> fromKeySet(Set<String> validKeys) {
         var entries = new HashMap<String, ApiKeyEntry>();
         validKeys.forEach(key -> entries.put(key, ApiKeyEntry.defaultEntry(key)));
+
         return entries;
     }
 
-    @Override public boolean hasConfiguredCredentials() {
+    @Override
+    public boolean hasConfiguredCredentials() {
         return ! keyEntries.isEmpty();
     }
 
-    @Override public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
-        return switch (policy){
+    @Override
+    public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
+        return switch (policy) {
             case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
             case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
             case SecurityPolicy.Authenticated() -> validateApiKey(request);
@@ -62,31 +64,32 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     private Result<SecurityContext> validateApiKey(HttpRequestContext request) {
-        return extractApiKey(request.headers()).toResult(SecurityError.MISSING_API_KEY).flatMap(this::checkApiKey);
+        return extractApiKey(request.headers()).toResult(SecurityError.MISSING_API_KEY)
+                            .flatMap(this::checkApiKey);
     }
 
     private Result<SecurityContext> checkApiKey(String apiKey) {
         var candidateHash = hashKey(apiKey).getBytes(StandardCharsets.UTF_8);
-        return Option.from(keyEntries.entrySet().stream()
-                                              .filter(e -> MessageDigest.isEqual(e.getKey()
-                                                                                         .getBytes(StandardCharsets.UTF_8),
-                                                                                 candidateHash))
-                                              .map(Map.Entry::getValue)
-                                              .findFirst()).toResult(SecurityError.INVALID_API_KEY)
-                          .flatMap(ApiKeySecurityValidator::toSecurityContext);
+
+        return Option.from(keyEntries.entrySet()
+                                     .stream()
+                                     .filter(e -> MessageDigest.isEqual(e.getKey().getBytes(StandardCharsets.UTF_8),
+                                                                        candidateHash))
+                                     .map(Map.Entry::getValue)
+                                     .findFirst())
+                     .toResult(SecurityError.INVALID_API_KEY)
+                     .flatMap(ApiKeySecurityValidator::toSecurityContext);
     }
 
     private static Result<SecurityContext> toSecurityContext(ApiKeyEntry entry) {
-        var roles = entry.roles().stream()
-                               .map(Role::role)
-                               .flatMap(r -> r.stream())
-                               .collect(Collectors.toSet());
+        var roles = entry.roles().stream().map(Role::role).flatMap(r -> r.stream()).collect(Collectors.toSet());
         var authRole = parseAuthorizationRole(entry.authorizationRole());
+
         return SecurityContext.securityContext(entry.name(), roles, authRole);
     }
 
     private static AuthorizationRole parseAuthorizationRole(String value) {
-        return switch (value){
+        return switch (value) {
             case "ADMIN" -> AuthorizationRole.ADMIN;
             case "OPERATOR" -> AuthorizationRole.OPERATOR;
             case "VIEWER" -> AuthorizationRole.VIEWER;
@@ -102,24 +105,22 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     private static Option<String> extractCaseSensitive(Map<String, List<String>> headers) {
-        return Option.option(headers.get(API_KEY_HEADER)).filter(values -> !values.isEmpty())
-                            .map(List::getFirst);
+        return Option.option(headers.get(API_KEY_HEADER))
+                     .filter(values -> !values.isEmpty())
+                     .map(List::getFirst);
     }
 
     private static Option<String> extractCaseInsensitive(Map<String, List<String>> headers) {
-        var value = headers.entrySet().stream()
-                                    .filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey()))
-                                    .map(Map.Entry::getValue)
-                                    .filter(values -> values != null && !values.isEmpty())
-                                    .map(List::getFirst)
-                                    .findFirst();
+        var value = headers.entrySet().stream().filter(e -> API_KEY_HEADER.equalsIgnoreCase(e.getKey())).map(Map.Entry::getValue).filter(values -> values != null && !values.isEmpty()).map(List::getFirst).findFirst();
         return Option.from(value);
     }
 
-    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-EX-01"}) private static String hashKey(String key) {
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-EX-01"})
+    private static String hashKey(String key) {
         try {
             var digest = MessageDigest.getInstance("SHA-256");
             var hash = digest.digest(key.getBytes(StandardCharsets.UTF_8));
+
             return HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException e) {
             throw new AssertionError("SHA-256 not available", e);

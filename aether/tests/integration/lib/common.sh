@@ -13,7 +13,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC
 # MGMT_PORT = base of the per-node direct mgmt port range (set by run-tests.sh:
 # 5151 for cluster A, 5161 for cluster B). MGMT_PORT+i resolves to node-{i+1}'s
 # direct host-mapped mgmt port (gateway-bypass; used by per-node probes such as
-# wait_for_all_nodes_ready and rotate_mgmt_entry_point on cloud env).
+# wait_for_cluster_ready and rotate_mgmt_entry_point on cloud env).
 MGMT_PORT="${MGMT_PORT:-5151}"
 APP_PORT="${APP_PORT:-8070}"
 LB_PORT="${LB_PORT:-9090}"
@@ -93,7 +93,11 @@ aether_failover() {
 # Example: aether_field status cluster.nodeCount
 aether_field() {
     local command="$1" field="$2"
-    aether_failover "$command" --format value --field "$field"
+    # Split $command on spaces so multi-word subcommands like "cluster topology" pass as
+    # separate args to picocli — quoting them as one string makes picocli see a literal
+    # "cluster topology" token that matches no subcommand.
+    # shellcheck disable=SC2086
+    aether_failover $command --format value --field "$field"
 }
 
 # Query a CLI command and return full JSON output
@@ -101,7 +105,9 @@ aether_field() {
 # Example: aether_json status
 aether_json() {
     local command="$1"; shift
-    aether_failover "$command" --format json "$@"
+    # Split $command on spaces (see aether_field for rationale).
+    # shellcheck disable=SC2086
+    aether_failover $command --format json "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -123,7 +129,16 @@ log_info()  { echo -e "${GREEN}[INFO]${NC}  $(_log_prefix)$1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(_log_prefix)$1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_pass()  { echo -e "${GREEN}[PASS]${NC}  $(_log_prefix)$1"; }
-log_fail()  { echo -e "${RED}[FAIL]${NC}  $(_log_prefix)$1"; }
+# log_fail: cosmetic-only used to lie about results. Now increments a per-test
+# latch (TEST_FAIL_COUNT) that run_test consults — so any test that emits a
+# [FAIL] line is recorded as failing even if the test function happened to
+# `return 0` afterwards (a real bug pattern: helpers report failure via log_fail
+# without latching, the caller's last command was an unrelated `true`, and
+# the test was counted as PASS).
+log_fail()  {
+    echo -e "${RED}[FAIL]${NC}  $(_log_prefix)$1"
+    TEST_FAIL_COUNT=$(( ${TEST_FAIL_COUNT:-0} + 1 ))
+}
 log_step()  { echo -e "${BLUE}[STEP]${NC}  $(_log_prefix)$1"; }
 
 # ---------------------------------------------------------------------------
@@ -148,6 +163,25 @@ _resolve_live_endpoint() {
         fi
     done
     echo "${CLUSTER_ENDPOINT}"  # fall back; caller will see curl failure
+    return 1
+}
+
+# Refresh the *exported* MGMT_ENTRY_POINT / CLUSTER_ENDPOINT to a live core node.
+# Differs from _resolve_live_endpoint: callers don't use $(...) command substitution,
+# so the export survives into subsequent helpers in the same shell. Used by
+# wait_for_cluster_ready's fast-fail probe and any caller that needs the env vars
+# themselves to be live (not just the return string).
+#
+# Returns 0 if a live endpoint was found (and exported); 1 if every probed port is
+# dead. Leaves env vars unchanged on failure so callers can still log the original
+# pinned endpoint in the error message.
+_refresh_mgmt_entry_point() {
+    local live
+    if live=$(_resolve_live_endpoint); then
+        export MGMT_ENTRY_POINT="${live}"
+        export CLUSTER_ENDPOINT="${live}"
+        return 0
+    fi
     return 1
 }
 
@@ -179,10 +213,10 @@ _api_call() {
     local method="$1" url="$2" body="${3:-}"
     local response status body_only
     if [ -n "$body" ]; then
-        response=$(curl -sk -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        response=$(curl -sk -m 10 -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
             -d "$body" -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     else
-        response=$(curl -sk -X "$method" -H "X-API-Key: ${API_KEY}" \
+        response=$(curl -sk -m 10 -X "$method" -H "X-API-Key: ${API_KEY}" \
             -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     fi
     status=$(printf '%s' "$response" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | sed 's/__API_HTTP_STATUS://;s/__//')
@@ -454,7 +488,7 @@ MGMT_SCHEME="${MGMT_SCHEME:-http}"
 # the bootstrap source prefix: `node-1` → `${CLOUD_SOURCE_NAME}-core-0`, etc.
 #
 # Use this whenever a test calls a management endpoint that takes a node-id path
-# parameter (e.g. /api/node/drain/<id>, /api/node/lifecycle/<id>). Test helpers
+# parameter (e.g. /api/nodes/drain/<id>, /api/node/lifecycle/<id>). Test helpers
 # that go through SSH (cloud_ssh / kill_node) already translate internally; use
 # this only when the node id reaches the runtime as-is.
 to_node_id() {
@@ -656,11 +690,35 @@ run_test() {
         collect_metrics_before "$sanitized_name"
     fi
 
-    local t_start t_elapsed
+    # H2 latch: log_fail increments TEST_FAIL_COUNT. Reset to 0 here so each test
+    # starts clean (any harness-scope log_fail calls before run_test are not
+    # attributed to this test). After the test function runs, treat the test as
+    # PASS only if BOTH the function returned 0 AND no [FAIL] lines were emitted.
+    # Without this, helpers that emit `log_fail "..."` without propagating a
+    # non-zero return (e.g. early in a long test, before later success-coded
+    # commands) caused the suite to record PASS while the logs screamed FAIL.
+    TEST_FAIL_COUNT=0
+    local t_start t_elapsed fn_rc
     t_start=$(date +%s)
+    # set -e abort guard: when the test script runs under `set -euo pipefail`, a
+    # failing command inside "$fn" (including an unhandled non-zero return from a
+    # helper like cluster_leader) propagates abort up through the function up
+    # through this caller up through the whole script — skipping cleanup() and
+    # leaving the cluster degraded for every subsequent test-*.sh in the suite.
+    # The `if/else` form makes "$fn" a condition: set -e is masked, we capture
+    # the return code, and the script keeps running so EXIT traps + explicit
+    # cleanup() at the end of the test file can still execute.
     if "$fn"; then
+        fn_rc=0
+    else
+        fn_rc=$?
+    fi
+    if [ "$fn_rc" -eq 0 ] && [ "${TEST_FAIL_COUNT:-0}" -eq 0 ]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
+        if [ "$fn_rc" -eq 0 ] && [ "${TEST_FAIL_COUNT:-0}" -gt 0 ]; then
+            log_warn "run_test: '${name}' function returned 0 but emitted ${TEST_FAIL_COUNT} [FAIL] line(s) — recording as FAIL"
+        fi
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
     t_elapsed=$(( $(date +%s) - t_start ))
@@ -675,6 +733,9 @@ run_test() {
         print_metrics_summary "$sanitized_name"
     fi
     unset TEST_TAG
+    # Clear the latch so any scaffolding between tests doesn't carry stale state
+    # into the next run_test invocation (defence in depth — run_test resets at top too).
+    TEST_FAIL_COUNT=0
 }
 
 skip_test() {

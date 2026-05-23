@@ -27,6 +27,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -130,12 +131,12 @@ class ClusterDeploymentManagerTest {
                                                                       NODE_2, NodeLifecycleState.ON_DUTY,
                                                                       NODE_3, NodeLifecycleState.ON_DUTY,
                                                                       DRAINING_NODE, NodeLifecycleState.DRAINING))));
-            var drainingPut = new ValuePut<>(
-                new KVCommand.Put<>(
-                    NodeLifecycleKey.nodeLifecycleKey(DRAINING_NODE),
-                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING)),
-                Option.<NodeLifecycleValue>empty());
-            cdm.onNodeLifecyclePut(drainingPut);
+            // RC1 Step 2: drain trigger is now a MembershipDecision.NodeDraining
+            // (TopologyObserver's lifecycle-projection walker emits one decision per
+            // lifecycle transition). The retired `onNodeLifecyclePut` path is gone.
+            cdm.onMembershipDecision(MembershipDecision.nodeDraining(
+                    DRAINING_NODE,
+                    List.of(NODE_1, NODE_2, NODE_3, DRAINING_NODE)));
 
             // Give async operations time to complete
             Thread.sleep(500);
@@ -221,7 +222,7 @@ class ClusterDeploymentManagerTest {
             snapshotRef.set(Option.some(snapshotWithLifecycles(Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
                                                                       NODE_2, NodeLifecycleState.ON_DUTY,
                                                                       NODE_3, NodeLifecycleState.ON_DUTY,
-                                                                      DRAINING_NODE, NodeLifecycleState.DECOMMISSIONED))));
+                                                                      DRAINING_NODE, NodeLifecycleState.STOPPED))));
             var activeIdsAfter = invokeActiveNodes(active);
             assertThat(activeIdsAfter).containsExactlyInAnyOrder(NODE_1, NODE_2, NODE_3);
         }

@@ -26,35 +26,35 @@ import org.pragmatica.consensus.topology.TransportObservation;
 
 
 public interface ClusterDeploymentEvents extends ClusterFsmEvent {
-    record Activate() implements ClusterDeploymentEvents{}
+    record Activate() implements ClusterDeploymentEvents {}
 
-    record Deactivate() implements ClusterDeploymentEvents{}
+    record Deactivate() implements ClusterDeploymentEvents {}
 
-    record AppBlueprintPutReceived(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) implements ClusterDeploymentEvents{}
+    record AppBlueprintPutReceived(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) implements ClusterDeploymentEvents {}
 
-    record SliceTargetPutReceived(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) implements ClusterDeploymentEvents{}
+    record SliceTargetPutReceived(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) implements ClusterDeploymentEvents {}
 
-    record VersionRoutingPutReceived(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) implements ClusterDeploymentEvents{}
+    record VersionRoutingPutReceived(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) implements ClusterDeploymentEvents {}
 
-    record AppBlueprintRemoveReceived(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) implements ClusterDeploymentEvents{}
+    record AppBlueprintRemoveReceived(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) implements ClusterDeploymentEvents {}
 
-    record SliceTargetRemoveReceived(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) implements ClusterDeploymentEvents{}
+    record SliceTargetRemoveReceived(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) implements ClusterDeploymentEvents {}
 
-    record VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) implements ClusterDeploymentEvents{}
+    record VersionRoutingRemoveReceived(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) implements ClusterDeploymentEvents {}
 
-    record MembershipDecisionReceived(MembershipDecision decision) implements ClusterDeploymentEvents{}
+    record MembershipDecisionReceived(MembershipDecision decision) implements ClusterDeploymentEvents {}
 
-    record SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) implements ClusterDeploymentEvents{}
+    record SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) implements ClusterDeploymentEvents {}
 
-    record NodeLifecyclePutReceived(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) implements ClusterDeploymentEvents{}
+    record NodeLifecyclePutReceived(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) implements ClusterDeploymentEvents {}
 
-    record ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) implements ClusterDeploymentEvents{}
+    record ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) implements ClusterDeploymentEvents {}
 
-    record ActivationDirectiveRemoveReceived(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) implements ClusterDeploymentEvents{}
+    record ActivationDirectiveRemoveReceived(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) implements ClusterDeploymentEvents {}
 
-    record NodeArtifactPutReceived(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) implements ClusterDeploymentEvents{}
+    record NodeArtifactPutReceived(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) implements ClusterDeploymentEvents {}
 
-    record NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) implements ClusterDeploymentEvents{}
+    record NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) implements ClusterDeploymentEvents {}
 
-    record SchemaVersionPutReceived(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) implements ClusterDeploymentEvents{}
+    record SchemaVersionPutReceived(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) implements ClusterDeploymentEvents {}
 }

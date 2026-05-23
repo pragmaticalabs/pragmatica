@@ -16,6 +16,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Promise;
@@ -151,6 +152,32 @@ class GenerationSnapshotPublisherAsyncTest {
 
     // ---- Awaiting helpers (no Awaitility on classpath; latch-based polling) ----
 
+    /// RC1 Step 2: `onMembershipDecision` is the snapshot-then-tail subscription entry
+    /// point. After leader-gained moves the FSM to Idle, a tail decision must trigger an
+    /// apply identical to the one a direct `markDirty()` call would issue.
+    @Test
+    void onMembershipDecision_postLeaderGained_marksDirtyAndTriggersApply() throws Exception {
+        var fixture = newFixture();
+        try {
+            fixture.publisher.onLeaderGained();
+            awaitApplyCount(fixture, 1);
+            fixture.cluster.completeNext();
+            awaitState(fixture, PublisherState.Idle.class);
+            assertThat(fixture.cluster.applyCount()).isEqualTo(1);
+
+            // RC1 Step 2 tail-decision: triggers the same Mark path.
+            fixture.publisher.onMembershipDecision(MembershipDecision.nodeJoining(
+                    new NodeId("peer-a"),
+                    List.of(SELF, new NodeId("peer-a"))));
+
+            awaitApplyCount(fixture, 2);
+            fixture.cluster.completeNext();
+            awaitState(fixture, PublisherState.Idle.class);
+        } finally {
+            fixture.shutdown();
+        }
+    }
+
     private static void awaitApplyCount(Fixture f, int target) throws InterruptedException {
         var deadline = System.currentTimeMillis() + DEADLINE_MS;
         while (f.cluster.applyCount() < target) {
@@ -176,7 +203,7 @@ class GenerationSnapshotPublisherAsyncTest {
     private static Fixture newFixture() {
         var router = MessageRouter.mutable();
         KVStore<AetherKey, AetherValue> kvStore = new KVStore<>(router, NoOpSerializer.INSTANCE, NoOpDeserializer.INSTANCE);
-        var hlcClock = HlcClock.hlcClock("test-self").unwrap();
+        var hlcClock = HlcClock.hlcClock(new NodeId("test-self"));
         var projector = ClusterGenerationProjector.clusterGenerationProjector();
         var isLeader = new AtomicBoolean(true);
         AtomicReference<Map<AetherKey, AetherValue>> kvRef = new AtomicReference<>(new HashMap<>());

@@ -236,12 +236,12 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_my_feature() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # Deterministic barrier — replaces ad-hoc sleeps.
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 30 || log_warn "pre-test snapshot not quiesced"
 
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "3" "Cluster has quorum"
 
     # HTTP helpers: api_get, api_post, api_put, api_delete (mgmt API)
@@ -284,8 +284,8 @@ If omitted, the suite runs on cluster A (parallel, non-destructive).
 | `sleep 10` after a deploy | `await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30` |
 | retry loop around `deploy_blueprint` | single call; preceding barrier guarantees cluster is ready |
 | `restart_all_nodes` / `self_heal` in cleanup | `await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 60` |
-| polling `cluster_node_count` after a kill | `await_generation_quiesced`, then assert count directly |
-| single-shot `cluster_node_count` after `scale_cluster` / `kill_node` | `cluster_node_count_quiesced` — flushes snapshot, returns count |
+| polling `cluster_member_count` after a kill | `await_generation_quiesced`, then assert count directly |
+| single-shot `cluster_member_count` after `scale_cluster` / `kill_node` | `cluster_node_count_quiesced` — flushes snapshot, returns count |
 
 See [`lib/generation.sh`](lib/generation.sh) for the full helper surface and [`aether/docs/specs/cluster-generation-spec.md`](../../docs/specs/cluster-generation-spec.md) for the semantics.
 

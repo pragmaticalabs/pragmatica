@@ -6,6 +6,7 @@ package org.pragmatica.aether.metrics.invocation;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -182,7 +183,7 @@ public final class InvocationMetricsCollector {
             this.metrics = new MethodMetrics(methodName);
         }
 
-        void addSlowInvocation(SlowInvocation slow) {
+        @Contract void addSlowInvocation(SlowInvocation slow) {
             lock.lock();
             try {
                 slowBuffer[writeIndex % MAX_SLOW_INVOCATIONS_PER_METHOD] = slow;

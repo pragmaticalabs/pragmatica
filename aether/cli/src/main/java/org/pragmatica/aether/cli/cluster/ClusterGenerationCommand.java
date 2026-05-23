@@ -23,7 +23,8 @@ import tools.jackson.databind.JsonNode;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_GENERATION;
 
 
-@Command(name = "generation", description = "Show current cluster generation snapshot") class ClusterGenerationCommand implements Callable<Integer> {
+@Command(name = "generation", description = "Show current cluster generation snapshot")
+class ClusterGenerationCommand implements Callable<Integer> {
     private static final TableSpec MEMBERS_TABLE = new TableSpec("Core Members",
                                                                  List.of(new Column("NODE", "nodeId", 18),
                                                                          new Column("LIFECYCLE", "lifecycle", 12),
@@ -32,25 +33,30 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_GEN
                                                                          new Column("PORT", "port", 6)),
                                                                  "core.members");
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+    @Mixin
+    ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
-    @Contract@Override public Integer call() {
-        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_GENERATION))
-                                           .fold(ClusterGenerationCommand::onFailure, this::onSuccess);
+    @Contract
+    @Override
+    public Integer call() {
+        return clusterTarget.applyOverrides()
+                            .flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_GENERATION))
+                            .fold(ClusterGenerationCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {
-        return parent.outputOptions().format() == OutputFormat.TABLE
-              ? printTableSummary(json)
-              : OutputFormatter.printQuery(json, parent.outputOptions(), MEMBERS_TABLE);
+        return parent.outputOptions()
+                     .format() == OutputFormat.TABLE
+               ? printTableSummary(json)
+               : OutputFormatter.printQuery(json, parent.outputOptions(), MEMBERS_TABLE);
     }
 
     private int printTableSummary(String json) {
-        return OutputFormatter.MAPPER.readTree(json)
-                                              .fold(ClusterGenerationCommand::onFailure,
-                                                    ClusterGenerationCommand::renderSummary);
+        return OutputFormatter.MAPPER.readTree(json).fold(ClusterGenerationCommand::onFailure,
+                                                          ClusterGenerationCommand::renderSummary);
     }
 
     private static int renderSummary(JsonNode node) {
@@ -63,58 +69,64 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_GEN
         out.printf("Core members:       %d%n", arraySize(childNode(node, "core"), "members"));
         out.printf("Communities:        %d%n", arraySize(node, "communities"));
         out.printf("Partitions:         %d%n", arraySize(node, "partitions"));
+
         return ExitCode.SUCCESS;
     }
 
     private static String epochString(JsonNode root) {
         var epochNode = root.get("epoch");
+
         return epochNode == null || epochNode.isNull()
-              ? "(unavailable)"
-              : epochNode.get("rabiaTerm").asLong() + ":" + epochNode.get("localCounter").asLong();
+               ? "(unavailable)"
+               : epochNode.get("rabiaTerm")
+                          .asLong() + ":" + epochNode.get("localCounter")
+                                                     .asLong();
     }
 
     private static String textField(JsonNode root, String field) {
         var value = root == null
-                   ? null
-                   : root.get(field);
+                    ? null
+                    : root.get(field);
         return value == null
-              ? ""
-              : value.asText();
+               ? ""
+               : value.asText();
     }
 
     private static long longField(JsonNode root, String field) {
         var value = root == null
-                   ? null
-                   : root.get(field);
+                    ? null
+                    : root.get(field);
         return value == null
-              ? 0L
-              : value.asLong();
+               ? 0L
+               : value.asLong();
     }
 
     private static int intField(JsonNode root, String field) {
         var value = root == null
-                   ? null
-                   : root.get(field);
+                    ? null
+                    : root.get(field);
         return value == null
-              ? 0
-              : value.asInt();
+               ? 0
+               : value.asInt();
     }
 
     private static JsonNode childNode(JsonNode root, String field) {
         return root == null
-              ? null
-              : root.get(field);
+               ? null
+               : root.get(field);
     }
 
     private static int arraySize(JsonNode root, String field) {
         var array = childNode(root, field);
+
         return array == null || !array.isArray()
-              ? 0
-              : array.size();
+               ? 0
+               : array.size();
     }
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

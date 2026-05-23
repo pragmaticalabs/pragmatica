@@ -5,9 +5,12 @@
 package org.pragmatica.aether.deployment.drain;
 
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -45,7 +48,7 @@ import org.slf4j.LoggerFactory;
 ///           │ both true (within deadline)
 ///           ▼
 ///   ┌──────────────────┐
-///   │ markDrainComplete│  → LifecycleWriter.requestDecommission(node)
+///   │ markDrainComplete│  → LifecycleWriter.applyCommand(ForceDecommission)
 ///   └──────────────────┘
 /// ```
 ///
@@ -62,7 +65,6 @@ import org.slf4j.LoggerFactory;
 /// (its task groups have already been reassigned via the lifecycle filter).
 public final class ConsensusDrainCoordinator implements DrainCoordinator {
     private static final Logger log = LoggerFactory.getLogger(ConsensusDrainCoordinator.class);
-
     private static final TimeSpan POLL_INTERVAL = TimeSpan.timeSpan(250).millis();
 
     private final LifecycleWriter lifecycleWriter;
@@ -70,43 +72,45 @@ public final class ConsensusDrainCoordinator implements DrainCoordinator {
     private final Fn1<Promise<Integer>, NodeId> inFlightProbe;
 
     private ConsensusDrainCoordinator(LifecycleWriter lifecycleWriter,
-                                       Fn1<Option<NodeLifecycleValue>, NodeId> lifecycleReader,
-                                       Fn1<Promise<Integer>, NodeId> inFlightProbe) {
+                                      Fn1<Option<NodeLifecycleValue>, NodeId> lifecycleReader,
+                                      Fn1<Promise<Integer>, NodeId> inFlightProbe) {
         this.lifecycleWriter = lifecycleWriter;
         this.lifecycleReader = lifecycleReader;
         this.inFlightProbe = inFlightProbe;
     }
 
     public static ConsensusDrainCoordinator consensusDrainCoordinator(LifecycleWriter lifecycleWriter,
-                                                                       Fn1<Option<NodeLifecycleValue>, NodeId> lifecycleReader,
-                                                                       Fn1<Promise<Integer>, NodeId> inFlightProbe) {
+                                                                      Fn1<Option<NodeLifecycleValue>, NodeId> lifecycleReader,
+                                                                      Fn1<Promise<Integer>, NodeId> inFlightProbe) {
         return new ConsensusDrainCoordinator(lifecycleWriter, lifecycleReader, inFlightProbe);
     }
 
     /// Step 1: write the DRAINING lifecycle atom via consensus. Idempotent — if the
     /// route handler already wrote it, the underlying LifecycleWriter.requestDrain
     /// is a no-op CAS.
-    @Override public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
+    @Override
+    public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
         log.info("Drain: prepareDrain {} (reason={})", nodeId, reason);
+
         return lifecycleWriter.requestDrain(nodeId)
                               .onFailure(cause -> log.warn("Drain: prepareDrain failed for {}: {}",
-                                                            nodeId,
-                                                            cause.message()));
+                                                           nodeId,
+                                                           cause.message()));
     }
 
     /// Step 2: wait for in-flight requests to complete AND the DRAINING atom to be
     /// observable. Polls every {@link #POLL_INTERVAL} until the deadline elapses.
-    @Override public Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout) {
+    @Override
+    public Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout) {
         log.info("Drain: awaitDrainAck {} (timeout={}ms)", nodeId, timeout.millis());
         var deadlineMs = System.currentTimeMillis() + timeout.millis();
+
         return pollUntilQuiesced(nodeId, deadlineMs).timeout(timeout)
-                                                    .onFailure(cause -> log.warn(
-                                                            "Drain: awaitDrainAck {} did not converge within {}ms: {}",
-                                                            nodeId,
-                                                            timeout.millis(),
-                                                            cause.message()))
-                                                    .onSuccess(_ -> log.info("Drain: {} fully quiesced",
-                                                                              nodeId));
+                                .onFailure(cause -> log.warn("Drain: awaitDrainAck {} did not converge within {}ms: {}",
+                                                             nodeId,
+                                                             timeout.millis(),
+                                                             cause.message()))
+                                .onSuccess(_ -> log.info("Drain: {} fully quiesced", nodeId));
     }
 
     private Promise<Unit> pollUntilQuiesced(NodeId nodeId, long deadlineMs) {
@@ -116,46 +120,54 @@ public final class ConsensusDrainCoordinator implements DrainCoordinator {
     private Promise<Unit> handlePollResult(NodeId nodeId, boolean quiesced, long deadlineMs) {
         if (quiesced) {return Promise.unitPromise();}
         if (System.currentTimeMillis() >= deadlineMs) {
-            return Causes.cause("Drain ack deadline exceeded for " + nodeId.id())
-                          .promise();
+            return Causes.cause("Drain ack deadline exceeded for " + nodeId.id()).promise();
         }
+
         Promise<Unit> next = Promise.promise();
         SharedScheduler.schedule(() -> chainPoll(next, nodeId, deadlineMs), POLL_INTERVAL);
+
         return next;
     }
 
-    @Contract private void chainPoll(Promise<Unit> sink, NodeId nodeId, long deadlineMs) {
+    @Contract
+    private void chainPoll(Promise<Unit> sink, NodeId nodeId, long deadlineMs) {
         pollUntilQuiesced(nodeId, deadlineMs).onResult(sink::resolve);
     }
 
     /// One round of quiescence check: lifecycle observable as DRAINING AND in-flight count is zero.
     private Promise<Boolean> checkQuiescenceOnce(NodeId nodeId) {
         if (!lifecycleObservableAsDraining(nodeId)) {return Promise.success(false);}
-        return inFlightProbe.apply(nodeId).map(count -> count <= 0)
-                                          .recover(cause -> recoverProbeFailure(nodeId, cause));
+        return inFlightProbe.apply(nodeId)
+                            .map(count -> count <= 0)
+                            .recover(cause -> recoverProbeFailure(nodeId, cause));
     }
 
     private boolean lifecycleObservableAsDraining(NodeId nodeId) {
-        return lifecycleReader.apply(nodeId).map(NodeLifecycleValue::state)
-                                            .map(state -> state == NodeLifecycleState.DRAINING)
-                                            .or(false);
+        return lifecycleReader.apply(nodeId)
+                              .map(NodeLifecycleValue::state)
+                              .map(state -> state == NodeLifecycleState.DRAINING)
+                              .or(false);
     }
 
     private static boolean recoverProbeFailure(NodeId nodeId, Cause cause) {
-        log.debug("Drain: inflight probe for {} failed: {} — treating as not-quiesced",
-                  nodeId,
-                  cause.message());
+        log.debug("Drain: inflight probe for {} failed: {} — treating as not-quiesced", nodeId, cause.message());
+
         return false;
     }
 
     /// Step 3: write the DECOMMISSIONED lifecycle atom via consensus. Best-effort
     /// fire-and-forget; the caller has already learned drain completed via the
     /// `Promise<Unit>` returned from `awaitDrainAck`.
-    @Contract@Override public void markDrainComplete(NodeId nodeId) {
+    @Contract
+    @Override
+    public void markDrainComplete(NodeId nodeId) {
         log.info("Drain: markDrainComplete {}", nodeId);
-        lifecycleWriter.requestDecommission(nodeId)
-                       .onFailure(cause -> log.warn("Drain: markDrainComplete failed for {}: {}",
-                                                     nodeId,
-                                                     cause.message()));
+        var command = new ForceDecommission(nodeId,
+                                            StopReason.GRACEFUL,
+                                            Causes.cause("Drain: markDrainComplete for " + nodeId),
+                                            HlcTimestamp.ZERO);
+        lifecycleWriter.applyCommand(command).onFailure(cause -> log.warn("Drain: markDrainComplete failed for {}: {}",
+                                                                          nodeId,
+                                                                          cause.message()));
     }
 }

@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
@@ -21,15 +22,18 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoining;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -47,6 +51,10 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
     Map<NodeId, Epoch> observedEpochs();
     @Contract void onPongReceived(NodeId nodeId);
     @Contract void sendPingsNow();
+    /// Drive one periodic `PeerConnectivityObservation` emission synchronously.
+    /// Wired by the scheduled task at `PeriodicObservationConfig.period()` cadence
+    /// and exposed for deterministic testing. NOT leader-gated.
+    @Contract void emitPeriodicConnectivityNow();
     @Contract@Override void pushHealth(PeerHealthObservation observation);
     @Contract@Override void pushConnectivity(PeerConnectivityObservation observation);
     @Override List<PeerHealthObservation> drainHealth();
@@ -111,6 +119,52 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                                      int pingTimeoutThreshold,
                                                      Supplier<Epoch> epochSupplier,
                                                      PeerObservationStore observationStore) {
+        return clusterSyncScheduler(self,
+                                    network,
+                                    clusterSyncCollector,
+                                    interval,
+                                    rabiaTermSupplier,
+                                    signalSink,
+                                    pingTimeoutThreshold,
+                                    epochSupplier,
+                                    observationStore,
+                                    Option::none);
+    }
+
+    static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
+                                                     ClusterNetwork network,
+                                                     ClusterSyncCollector clusterSyncCollector,
+                                                     TimeSpan interval,
+                                                     Supplier<Long> rabiaTermSupplier,
+                                                     HealthSignalSink signalSink,
+                                                     int pingTimeoutThreshold,
+                                                     Supplier<Epoch> epochSupplier,
+                                                     PeerObservationStore observationStore,
+                                                     Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier) {
+        return clusterSyncScheduler(self,
+                                    network,
+                                    clusterSyncCollector,
+                                    interval,
+                                    rabiaTermSupplier,
+                                    signalSink,
+                                    pingTimeoutThreshold,
+                                    epochSupplier,
+                                    observationStore,
+                                    reachabilitySnapshotSupplier,
+                                    PeriodicObservationConfig.defaultConfig());
+    }
+
+    static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
+                                                     ClusterNetwork network,
+                                                     ClusterSyncCollector clusterSyncCollector,
+                                                     TimeSpan interval,
+                                                     Supplier<Long> rabiaTermSupplier,
+                                                     HealthSignalSink signalSink,
+                                                     int pingTimeoutThreshold,
+                                                     Supplier<Epoch> epochSupplier,
+                                                     PeerObservationStore observationStore,
+                                                     Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
+                                                     PeriodicObservationConfig periodicConfig) {
         var ctxHolder = new AtomicReference<ClusterSyncContext>();
         Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
                                                                                                                                ctxHolder,
@@ -122,7 +176,9 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                                                                                                                signalSink,
                                                                                                                                pingTimeoutThreshold,
                                                                                                                                epochSupplier,
-                                                                                                                               observationStore);
+                                                                                                                               observationStore,
+                                                                                                                               reachabilitySnapshotSupplier,
+                                                                                                                               periodicConfig);
         var _fsm = Fsm.fsm("cluster-sync", self.id(), initialStateFactory);
         return new ClusterSyncSchedulerAdapter(ctxHolder.get());
     }
@@ -146,7 +202,9 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                                            HealthSignalSink signalSink,
                                                            int pingTimeoutThreshold,
                                                            Supplier<Epoch> epochSupplier,
-                                                           PeerObservationStore observationStore) {
+                                                           PeerObservationStore observationStore,
+                                                           Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
+                                                           PeriodicObservationConfig periodicConfig) {
         var ctx = new ClusterSyncContext(fsm,
                                          self,
                                          network,
@@ -156,7 +214,9 @@ public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservatio
                                          signalSink,
                                          pingTimeoutThreshold,
                                          epochSupplier,
-                                         observationStore);
+                                         observationStore,
+                                         reachabilitySnapshotSupplier,
+                                         periodicConfig);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }
@@ -189,10 +249,30 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
 
     @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
         switch (decision){
-            case NodeJoined(_, List<NodeId> newTopology) -> context.setTopology(newTopology);
-            case NodeRemoved(NodeId removed, List<NodeId> newTopology) -> handleNodeRemoved(removed, newTopology);
-            case NodeDecommissioned(NodeId removed, List<NodeId> newTopology) -> handleNodeRemoved(removed, newTopology);
+            case NodeJoined(_, List<NodeId> newTopology, _, _) -> context.setTopology(newTopology);
+            case NodeRemoved(NodeId removed, List<NodeId> newTopology, _, _) -> handleNodeRemoved(removed, newTopology);
+            case NodeDecommissioned(NodeId removed, List<NodeId> newTopology, _, _) -> handleNodeRemoved(removed, newTopology);
+            // RC1 resilience: JOINING peers are pre-commit replacement candidates not yet in
+            // `coreMemberIds`. Add the joining nodeId to the metrics-emission topology so the
+            // periodic `PeerConnectivityObservation` stream covers them — without this, the
+            // ReachabilityAggregator never receives DISCONNECTED evidence for crashed JOINING
+            // peers and the aggregator-quorum gate refuses to confirm UNREACHABLE, leaving
+            // stale ON_DUTY NodeLifecycleKeys for CTM-provisioned replacements.
+            case NodeJoining(NodeId joining, List<NodeId> newTopology, _, _) -> context.setTopology(augmentWith(newTopology, joining));
+            // DRAINING / FAILED_DRAIN / SHUTTING_DOWN nodes are still in `coreMemberIds` so the
+            // accompanying `topology` field already covers them — no augmentation needed.
+            case MembershipDecision.NodeDraining _,
+                 MembershipDecision.NodeFailedDrain _,
+                 MembershipDecision.NodeShuttingDown _ -> {}
         }
+    }
+
+    private static List<NodeId> augmentWith(List<NodeId> topology, NodeId extra) {
+        if (topology.contains(extra)) {return topology;}
+        var merged = new ArrayList<NodeId>(topology.size() + 1);
+        merged.addAll(topology);
+        merged.add(extra);
+        return List.copyOf(merged);
     }
 
     private void handleNodeRemoved(NodeId removed, List<NodeId> newTopology) {
@@ -227,6 +307,10 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
 
     @Override@Contract public void sendPingsNow() {
         context.dispatch(new ClusterSyncEvents.PingTick(context.epochSupplier().get()));
+    }
+
+    @Override@Contract public void emitPeriodicConnectivityNow() {
+        context.emitPeriodicConnectivityNow();
     }
 
     @Override@Contract public void pushHealth(PeerHealthObservation observation) {

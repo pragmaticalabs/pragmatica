@@ -40,13 +40,14 @@ public record ClusterBootstrapConfig(String configVersion,
     }
 
     public Result<ClusterBootstrapConfig> withClusterName(String newName) {
-        return cluster.withName(newName).map(updated -> new ClusterBootstrapConfig(configVersion,
-                                                                                    updated,
-                                                                                    coreTopology,
-                                                                                    sources,
-                                                                                    runtimes,
-                                                                                    infrastructure,
-                                                                                    operations));
+        return cluster.withName(newName)
+                               .map(updated -> new ClusterBootstrapConfig(configVersion,
+                                                                          updated,
+                                                                          coreTopology,
+                                                                          sources,
+                                                                          runtimes,
+                                                                          infrastructure,
+                                                                          operations));
     }
 
     public int derivedCoreCount() {

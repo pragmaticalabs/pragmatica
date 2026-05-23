@@ -213,6 +213,35 @@ class QuicClusterNetworkTest {
                 .containsExactly(peerId);
         }
 
+        /// P1 regression: `finalizeReconnect` MUST propagate the Hello-derived
+        /// `NodeInfo` into the routed `ConnectionEstablished` so the SWIM handler
+        /// in `AetherNode` can resolve the peer's address without falling back to
+        /// a stale static-topology lookup. Without this, CTM-replaced peers stay
+        /// permanently UNKNOWN and the QUIC eviction storm recurs.
+        @Test
+        void finalizeReconnect_unknownNodeInfo_propagatedIntoRoutedMessage() {
+            var router = MessageRouter.mutable();
+            var captured = new CopyOnWriteArrayList<NetworkServiceMessage.ConnectionEstablished>();
+            router.addRoute(NetworkServiceMessage.ConnectionEstablished.class, captured::add);
+
+            var network = createNetworkWithStubTopology(NodeId.randomNodeId(), router);
+
+            var peerId = NodeId.randomNodeId();
+            var address = NodeAddress.nodeAddress("10.0.0.5", 19500)
+                                     .fold(_ -> fail("Invalid address"), addr -> addr);
+            var info = NodeInfo.nodeInfo(peerId, address, NodeRole.ACTIVE, Map.of());
+
+            network.finalizeReconnect(peerId, Option.some(info));
+
+            assertThat(captured).hasSize(1);
+            var msg = captured.getFirst();
+            assertThat(msg.nodeId()).isEqualTo(peerId);
+            assertThat(msg.nodeInfo().isPresent())
+                .as("transport-supplied NodeInfo must propagate to the routed ConnectionEstablished")
+                .isTrue();
+            assertThat(msg.nodeInfo().unwrap()).isEqualTo(info);
+        }
+
         @Test
         void finalizeReconnect_knownPeer_routesConnectionEstablished() {
             var router = MessageRouter.mutable();

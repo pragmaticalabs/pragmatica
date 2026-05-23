@@ -292,6 +292,10 @@ class NodeDeploymentFsmTest {
             @Override public Promise<Unit> unloadSlice(Artifact artifact) {
                 return Promise.unitPromise();
             }
+
+            @Override public Option<org.pragmatica.config.ConfigurationProvider> sliceComposite(Artifact artifact) {
+                return Option.none();
+            }
         };
     }
 

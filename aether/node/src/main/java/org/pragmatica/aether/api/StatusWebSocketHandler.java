@@ -14,19 +14,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public class StatusWebSocketHandler implements WebSocketHandler {
+@SuppressWarnings("JBCT-RET-01")
+public class StatusWebSocketHandler implements WebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(StatusWebSocketHandler.class);
 
     private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
-
     private final WebSocketAuthenticator authenticator;
 
     public StatusWebSocketHandler(WebSocketAuthenticator authenticator) {
         this.authenticator = authenticator;
     }
 
-    @Override public void handle(WebSocketSession session, WebSocketMessage message) {
-        switch (message){
+    @Override
+    public void handle(WebSocketSession session, WebSocketMessage message) {
+        switch (message) {
             case WebSocketMessage.Open _ -> onOpen(session);
             case WebSocketMessage.Text text -> onText(session, text.content());
             case WebSocketMessage.Binary _ -> {}
@@ -61,6 +62,7 @@ import org.slf4j.LoggerFactory;
 
     public int connectedClients() {
         sessions.values().removeIf(session -> !session.isOpen());
+
         return sessions.size();
     }
 }

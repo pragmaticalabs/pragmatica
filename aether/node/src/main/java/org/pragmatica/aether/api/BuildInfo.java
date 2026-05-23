@@ -18,13 +18,12 @@ public record BuildInfo(String buildTimestamp, String buildVersion) {
 
     private static BuildInfo loadBuildInfo() {
         var props = new Properties();
-        StreamOps.openResource(BuildInfo.class.getClassLoader(),
-                               "build-info.properties")
-        .onSuccess(is -> {
-                                  try {
-                                      props.load(is);
-                                  } catch (Exception ignored) {}
-                              });
+        StreamOps.openResource(BuildInfo.class.getClassLoader(), "build-info.properties").onSuccess(is -> {
+                                                                                                        try {
+                                                                                                        props.load(is);
+                                                                                                    } catch (Exception ignored) {}
+                                                                                                    });
+
         return new BuildInfo(props.getProperty("build.timestamp", "unknown"),
                              props.getProperty("build.version", "unknown"));
     }

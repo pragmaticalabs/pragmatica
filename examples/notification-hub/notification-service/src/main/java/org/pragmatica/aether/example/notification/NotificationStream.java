@@ -9,4 +9,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-@ResourceQualifier(type = StreamPublisher.class, config = "streams.notifications") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public@interface NotificationStream {}
+@ResourceQualifier(type = StreamPublisher.class, config = "streams.notifications")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface NotificationStream {}

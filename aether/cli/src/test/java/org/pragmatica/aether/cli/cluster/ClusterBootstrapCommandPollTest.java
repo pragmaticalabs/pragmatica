@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Regression tests for Bug 19 (corrected by Bug 19a): post-bootstrap `--wait` queries the
 /// cluster-deployment-status endpoint to determine readiness. These tests pin the behavior:
-///   - Poll route is `CLUSTER_CONFIG_STATUS` (resolves to `/api/cluster/status`).
+///   - Poll route is `CLUSTER_STATUS` (resolves to `/api/cluster/status`).
 ///   - JSON field consulted is `state` (the `ClusterDeploymentState` enum name on the wire).
 ///   - Success token is `"CONVERGED"`.
 /// (Earlier Bug 19 fix used `/api/status` + `clusterPhase` + `NORMAL`; that endpoint exposes
@@ -51,9 +51,9 @@ class ClusterBootstrapCommandPollTest {
 
         var rc = ClusterBootstrapCommand.waitForClusterPhase(fetcher, 5, 1, silentStream(), silentStream());
 
-        assertAll("converges on CONVERGED via CLUSTER_CONFIG_STATUS",
+        assertAll("converges on CONVERGED via CLUSTER_STATUS",
                   () -> assertEquals(ExitCode.SUCCESS, rc),
-                  () -> assertSame(ManagementRoute.CLUSTER_CONFIG_STATUS, routeSeen.get(), "must poll /api/cluster/status, not /api/status or /api/health"),
+                  () -> assertSame(ManagementRoute.CLUSTER_STATUS, routeSeen.get(), "must poll /api/cluster/status, not /api/nodes/status or /api/health"),
                   () -> assertTrue(attempts.get() >= 2, "should have polled at least twice"));
     }
 

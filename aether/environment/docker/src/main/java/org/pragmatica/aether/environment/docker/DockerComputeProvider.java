@@ -42,16 +42,95 @@ import static org.pragmatica.lang.Result.success;
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        var ctx = ProvisionContext.provisionContext("default", "core", "default", ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+        var ctx = ProvisionContext.provisionContext("default",
+                                                    "core",
+                                                    "default",
+                                                    ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
         return provision(ProvisionSpec.provisionSpec(instanceType, "docker", "default", ctx).unwrap());
     }
 
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
+        var preflight = preflightCheck(spec);
+        if (preflight.isPresent()) {
+            return preflight.unwrap();
+        }
         var nodeIndex = nodeCounter.getAndIncrement();
         var containerName = buildContainerName(spec, nodeIndex);
         var command = buildRunCommand(spec, containerName, nodeIndex);
         return runner.execute(command).map(containerId -> toProvisionedInfo(containerId, containerName, spec, nodeIndex))
+                             .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause))
                              .mapError(DockerComputeProvider::toProvisionError);
+    }
+
+    /// Pre-flight validation: CTM auto-heal provisioning REQUIRES a non-empty `peers`
+    /// bootstrap list (3-part `nodeId:host:port` entries) so the new container can join
+    /// the existing consensus group. Without peers the container starts with `PEERS=`
+    /// (empty), the JVM cold-boots in isolation (`quorate=false, leaderId=none`), and
+    /// nginx upstream resolvers in front of the cluster may route real management
+    /// traffic to it — returning empty `/api/nodes/lifecycle` snapshots and corrupting
+    /// the test view of cluster state.
+    ///
+    /// Bootstrap-time provisioning (`provisionedBy=bootstrap`) is intentionally exempt
+    /// — the first node legitimately has no peers and is responsible for forming the
+    /// cluster. Future enhancement: also fail when `bootstrap` is observed after
+    /// cluster formation (would require a "formed" signal threaded through here).
+    private Option<Promise<InstanceInfo>> preflightCheck(ProvisionSpec spec) {
+        var ctx = spec.context();
+        if (!ProvisionContext.PROVISIONED_BY_CTM.equals(ctx.provisionedBy())) {
+            return Option.empty();
+        }
+        if (!ctx.peers().or("").isEmpty()) {
+            return Option.empty();
+        }
+        var message = "DockerComputeProvider.provision rejected: CTM auto-heal requires a non-empty PEERS bootstrap list, "
+                       + "but the provided ProvisionContext.peers is absent or empty. Refusing to spawn an orphan container "
+                       + "that would cold-boot in isolation and corrupt cluster management views. "
+                       + "Caller (ClusterTopologyManager) should defer provisioning until at least one healthy peer is "
+                       + "visible in the observed topology.";
+        log.warn(message);
+        return Option.some(EnvironmentError.provisionFailed(new IllegalStateException(message)).promise());
+    }
+
+    /// Rollback hook for partial provisions. When `docker run -d` fails after the container
+    /// shell was created (typical for port-bind collisions: the container is in `Created` state
+    /// but `docker run` exits non-zero), the orphaned shell stays in Docker's container table
+    /// and leaks SWIM gossip into the cluster. Issue `docker rm -f <containerName>` against the
+    /// pre-generated name so any partial leftover is evicted before we surface the original
+    /// failure to the caller. If the container never reached Created (run aborted earlier),
+    /// the rm fails harmlessly and we log a WARN so the gap is explicit, not silent.
+    private void rollbackOnProvisionFailure(String containerName, Cause cause) {
+        log.warn("Provision failed for container {} ({}); attempting rollback via docker rm -f",
+                 containerName,
+                 cause.message());
+        runner.execute(buildForceRemoveCommand(containerName))
+              .onFailure(rollbackCause -> log.warn("Rollback rm -f {} returned non-zero (likely no partial container existed): {}",
+                                                    containerName,
+                                                    rollbackCause.message()))
+              .onSuccess(ignored -> log.info("Rollback removed partial container {}", containerName));
+    }
+
+    @Override public void resetProvisionerState(String clusterName) {
+        nodeCounter.set(0);
+        if (!clusterName.isEmpty()) {
+            runner.execute(buildCtmPruneCommand(clusterName))
+                  .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}", clusterName, cause.message()))
+                  .onSuccess(out -> { if (!out.isBlank()) {log.info("CTM sweep for cluster {}: {}", clusterName, out.strip());}});
+        }
+    }
+
+    private static List<String> buildCtmPruneCommand(String clusterName) {
+        return List.of("docker",
+                       "container",
+                       "prune",
+                       "--force",
+                       "--filter",
+                       "label=aether.cluster=" + clusterName,
+                       "--filter",
+                       "label=aether.provisioned-by=ctm");
+    }
+
+    private static List<String> buildForceRemoveCommand(String containerName) {
+        return List.of("docker", "rm", "-f", containerName);
     }
 
     @Override public Promise<Unit> terminate(InstanceId instanceId) {
@@ -91,10 +170,21 @@ import static org.pragmatica.lang.Result.success;
                                                      .promise();
     }
 
-    private String buildContainerName(ProvisionSpec spec, int nodeIndex) {
+    /// Build a cluster-scoped, pool-scoped, index-scoped container name.
+    ///
+    /// Format: `aether-<clusterName>-<pool>-node-<index>-<hex>`
+    ///
+    /// The cluster segment disambiguates concurrent clusters (e.g., integration-test
+    /// clusters A and B sharing a Docker host) so orphan sweepers that filter by
+    /// `aether-<clusterName>-` cannot accidentally cross-evict containers from a
+    /// sibling cluster. `clusterName` is sourced from [ProvisionContext#clusterName]
+    /// (set by CTM from `[cluster].name`), defaulting to `"default"` for callers
+    /// that haven't set it explicitly.
+    String buildContainerName(ProvisionSpec spec, int nodeIndex) {
+        var cluster = clusterOrDefault(spec.context());
         var pool = spec.pool();
         var suffix = Long.toHexString(System.nanoTime()).substring(4);
-        return "aether-" + pool + "-node-" + nodeIndex + "-" + suffix;
+        return "aether-" + cluster + "-" + pool + "-node-" + nodeIndex + "-" + suffix;
     }
 
     private List<String> buildRunCommand(ProvisionSpec spec, String containerName, int nodeIndex) {
@@ -123,6 +213,8 @@ import static org.pragmatica.lang.Result.success;
                                               "aether.role=" + role,
                                               "--label",
                                               "aether.node-id=" + nodeId,
+                                              "--label",
+                                              "aether.provisioned-by=ctm",
                                               "-e",
                                               "NODE_ID=" + nodeId,
                                               "-e",
@@ -269,9 +361,16 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static String clusterOrDefault(ProvisionContext ctx) {
-        return ctx.clusterName().isEmpty()
-              ? "default"
-              : ctx.clusterName();
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        // Fallback: when ClusterConfigValue isn't yet seeded in KV-Store (e.g., compose-only
+        // deployments that never ran `aether cluster bootstrap`), source the cluster name
+        // from the AETHER_CLUSTER_NAME env var so CTM-provisioned replacements still get a
+        // matching `aether.cluster=<name>` label. The integration test compose YAMLs set
+        // this env to `a` / `b` so cluster A/B's CTM replacements carry the same label as
+        // their compose-fixed siblings — closes the spec's caveat-c gap.
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        if (fromEnv != null && !fromEnv.isEmpty()) {return fromEnv;}
+        return "default";
     }
 
     static List<InstanceInfo> parseContainerList(String output) {

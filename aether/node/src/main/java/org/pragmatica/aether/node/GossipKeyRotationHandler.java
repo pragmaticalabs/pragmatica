@@ -29,7 +29,8 @@ public final class GossipKeyRotationHandler {
         return new GossipKeyRotationHandler(encryptor);
     }
 
-    @SuppressWarnings("JBCT-RET-01") public void onGossipKeyRotationPut(ValuePut<GossipKeyRotationKey, GossipKeyRotationValue> put) {
+    @SuppressWarnings("JBCT-RET-01")
+    public void onGossipKeyRotationPut(ValuePut<GossipKeyRotationKey, GossipKeyRotationValue> put) {
         var value = put.cause().value();
         log.info("Gossip key rotation received: currentKeyId={}, previousKeyId={}",
                  value.currentKeyId(),
@@ -37,16 +38,15 @@ public final class GossipKeyRotationHandler {
         applyRotation(value);
     }
 
-    @SuppressWarnings("JBCT-RET-01") private void applyRotation(GossipKeyRotationValue value) {
+    @SuppressWarnings("JBCT-RET-01")
+    private void applyRotation(GossipKeyRotationValue value) {
         var currentKey = Base64.getDecoder().decode(value.currentKey());
         var hasPrevious = value.previousKeyId() != 0 && !value.previousKey().isEmpty();
         var result = hasPrevious
-                    ? buildDualKeyEncryptor(currentKey, value.currentKeyId(), value)
-                    : AesGcmGossipEncryptor.aesGcmGossipEncryptor(currentKey, value.currentKeyId());
-        result.onSuccess(newEncryptor -> rotateAndLog(newEncryptor,
-                                                      value.currentKeyId()))
-        .onFailure(cause -> log.error("Failed to apply gossip key rotation: {}",
-                                      cause.message()));
+                     ? buildDualKeyEncryptor(currentKey, value.currentKeyId(), value)
+                     : AesGcmGossipEncryptor.aesGcmGossipEncryptor(currentKey, value.currentKeyId());
+        result.onSuccess(newEncryptor -> rotateAndLog(newEncryptor, value.currentKeyId())).onFailure(cause -> log.error("Failed to apply gossip key rotation: {}",
+                                                                                                                        cause.message()));
     }
 
     private void rotateAndLog(org.pragmatica.swim.GossipEncryptor newEncryptor, int keyId) {
@@ -58,6 +58,7 @@ public final class GossipKeyRotationHandler {
                                                                                                          int currentKeyId,
                                                                                                          GossipKeyRotationValue value) {
         var previousKey = Base64.getDecoder().decode(value.previousKey());
+
         return AesGcmGossipEncryptor.aesGcmGossipEncryptor(currentKey, currentKeyId, previousKey, value.previousKeyId());
     }
 }

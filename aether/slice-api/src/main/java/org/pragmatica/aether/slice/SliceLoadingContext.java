@@ -4,7 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -14,6 +17,7 @@ import org.pragmatica.lang.type.TypeToken;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
@@ -25,6 +29,8 @@ public final class SliceLoadingContext implements SliceCreationContext {
     private final BufferingInvokerFacade bufferingInvoker;
 
     private final AtomicBoolean materialized = new AtomicBoolean(false);
+    private final AtomicReference<Option<ConfigurationProvider>> sliceComposite = new AtomicReference<>(Option.none());
+    private final AtomicReference<Option<Fn1<Option<ConfigurationProvider>, ClassLoader>>> compositeBuilder = new AtomicReference<>(Option.none());
 
     private SliceLoadingContext(SliceCreationContext delegate) {
         this.delegate = delegate;
@@ -67,9 +73,47 @@ public final class SliceLoadingContext implements SliceCreationContext {
     }
 
     @Override public ResourceProviderFacade resources() {
-        return delegate.sliceId().map(id -> sliceAwareResourceProvider(delegate.resources(),
+        var base = delegate.sliceId().map(id -> sliceAwareResourceProvider(delegate.resources(),
                                                                        id))
                                .or(delegate.resources());
+        return new CompositeAwareResourceProvider(base, sliceComposite);
+    }
+
+    /// Set the slice-composite (`slice.toml ⊕ nodeComposite`) for this loading context.
+    ///
+    /// Must be called BEFORE the slice factory invokes `ctx.resources().provide(...)`. The
+    /// composite will be attached to every `ProvisioningContext` produced by `resources()`
+    /// so resource factories can read per-slice configuration without consulting the global
+    /// `ConfigService.instance()` singleton.
+    ///
+    /// Calling with `Option.none()` is a no-op. Subsequent calls overwrite the prior value.
+    @Contract public void setSliceComposite(Option<ConfigurationProvider> composite) {
+        composite.onPresent(_ -> sliceComposite.set(composite));
+    }
+
+    /// Register a deferred composite builder that will be invoked once the slice classloader
+    /// is available (just before the slice factory runs). The builder reads slice-local
+    /// resources (e.g. `META-INF/resources.toml`) and layers them over the node-composite.
+    ///
+    /// Use this when the caller can't construct the composite up front because it depends on
+    /// the slice JAR's contents loaded via the slice classloader. Call `materializeComposite`
+    /// with the resolved classloader to trigger the build and attach the result.
+    @Contract public void setCompositeBuilder(Fn1<Option<ConfigurationProvider>, ClassLoader> builder) {
+        compositeBuilder.set(Option.some(builder));
+    }
+
+    /// Invoke the registered composite builder with the slice's classloader (if a builder is
+    /// registered) and attach the resulting composite. Idempotent — once a non-empty composite
+    /// is attached, subsequent calls don't overwrite it.
+    @Contract public void materializeComposite(ClassLoader sliceClassLoader) {
+        if (sliceComposite.get().isPresent()) {return;}
+        compositeBuilder.get()
+                        .onPresent(builder -> setSliceComposite(builder.apply(sliceClassLoader)));
+    }
+
+    /// Return the currently-attached slice-composite, if any.
+    public Option<ConfigurationProvider> sliceComposite() {
+        return sliceComposite.get();
     }
 
     public Result<Unit> materializeAll() {
@@ -100,6 +144,44 @@ public final class SliceLoadingContext implements SliceCreationContext {
 
     private static ResourceProviderFacade sliceAwareResourceProvider(ResourceProviderFacade delegate, String sliceId) {
         return new SliceAwareResourceProvider(delegate, sliceId);
+    }
+
+    /// Resource facade that attaches the slice-composite to every `ProvisioningContext`
+    /// it forwards to the delegate. Calls to the no-context overload are upgraded to use
+    /// the context overload when a slice-composite is present, so the composite reaches
+    /// downstream resource factories regardless of which `provide(...)` overload the
+    /// generated slice factory uses.
+    private static final class CompositeAwareResourceProvider implements ResourceProviderFacade {
+        private final ResourceProviderFacade delegate;
+        private final AtomicReference<Option<ConfigurationProvider>> compositeRef;
+
+        CompositeAwareResourceProvider(ResourceProviderFacade delegate,
+                                        AtomicReference<Option<ConfigurationProvider>> compositeRef) {
+            this.delegate = delegate;
+            this.compositeRef = compositeRef;
+        }
+
+        @Override public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            return compositeRef.get()
+                               .map(composite -> delegate.provide(resourceType,
+                                                                  configSection,
+                                                                  ProvisioningContext.provisioningContext()
+                                                                                     .withExtension(ConfigurationProvider.class, composite)))
+                               .or(() -> delegate.provide(resourceType, configSection));
+        }
+
+        @Override public <T> Promise<T> provide(Class<T> resourceType,
+                                                String configSection,
+                                                ProvisioningContext context) {
+            var enriched = compositeRef.get()
+                                       .map(composite -> context.withExtension(ConfigurationProvider.class, composite))
+                                       .or(context);
+            return delegate.provide(resourceType, configSection, enriched);
+        }
+
+        @Override public Promise<Unit> releaseAll(String sliceId) {
+            return delegate.releaseAll(sliceId);
+        }
     }
 
     private static final class SliceAwareResourceProvider implements ResourceProviderFacade {
@@ -167,7 +249,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
             return bufferedHandles;
         }
 
-        void stopBuffering() {
+        @Contract void stopBuffering() {
             buffering.set(false);
         }
     }

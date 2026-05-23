@@ -139,6 +139,8 @@ import static org.pragmatica.lang.Result.success;
             case ScheduledTaskKey _ -> "scheduled-task";
             case ScheduledTaskStateKey _ -> "scheduled-task-state";
             case NodeLifecycleKey _ -> "node-lifecycle";
+            case JoinDeadlineKey _ -> "join-deadline";
+            case DrainDeadlineKey _ -> "drain-deadline";
             case ConfigKey _ -> "config";
             case WorkerSliceDirectiveKey _ -> "worker-directive";
             case ActivationDirectiveKey _ -> "activation";
@@ -146,7 +148,6 @@ import static org.pragmatica.lang.Result.success;
             case GovernorAnnouncementKey _ -> "governor-announcement";
             case NodeArtifactKey _ -> "node-artifact";
             case NodeRoutesKey _ -> "node-routes";
-            case BlueprintResourcesKey _ -> "blueprint-resources";
             case SchemaVersionKey _ -> "schema-version";
             case SchemaMigrationLockKey _ -> "schema-lock";
             case AbTestKey _ -> "ab-test";
@@ -172,6 +173,7 @@ import static org.pragmatica.lang.Result.success;
             case ClusterPhaseKey _ -> "cluster-phase";
             case BlueprintStreamBindingsKey _ -> "blueprint-stream-bindings";
             case StreamRegistryKey _ -> "stream-registry";
+            case ClusterEventLogKey _ -> "cluster-event-log";
         };
     }
 
@@ -212,11 +214,12 @@ import static org.pragmatica.lang.Result.success;
             case ActivationDirectiveValue v -> v.role();
             case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);
             case NodeLifecycleValue v -> serializeNodeLifecycle(v);
+            case JoinDeadlineValue v -> v.deadlineMs() + PIPE + v.setAt();
+            case DrainDeadlineValue v -> v.deadlineMs() + PIPE + v.setAt();
             case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);
             case NodeArtifactValue v -> serializeNodeArtifact(v);
             case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";
-            case BlueprintResourcesValue v -> v.tomlContent();
             case SchemaVersionValue v -> serializeSchemaVersion(v);
             case SchemaMigrationLockValue v -> serializeSchemaMigrationLock(v);
             case AbTestValue v -> serializeAbTest(v);
@@ -242,6 +245,7 @@ import static org.pragmatica.lang.Result.success;
             case ClusterPhaseValue v -> v.phase().name();
             case BlueprintStreamBindingsValue v -> serializeBlueprintStreamBindings(v);
             case StreamRegistryValue v -> serializeStreamRegistry(v);
+            case ClusterEventValue _ -> "";
         };
     }
 
@@ -424,7 +428,6 @@ import static org.pragmatica.lang.Result.success;
             case "governor-announcement" -> parseGovernorAnnouncementEntry(identity, rawValue);
             case "node-artifact" -> parseNodeArtifactEntry(identity, rawValue);
             case "node-routes" -> parseNodeRoutesEntry(identity, rawValue);
-            case "blueprint-resources" -> parseBlueprintResourcesEntry(identity, rawValue);
             case "schema-version" -> parseSchemaVersionEntry(identity, rawValue);
             case "schema-lock" -> parseSchemaMigrationLockEntry(identity, rawValue);
             case "ab-test" -> parseAbTestEntry(identity, rawValue);
@@ -785,12 +788,6 @@ import static org.pragmatica.lang.Result.success;
 
     private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
         return v.datasourceName() + PIPE + v.heldBy().id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt();
-    }
-
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseBlueprintResourcesEntry(String identity, String raw) {
-        return BlueprintResourcesKey.blueprintResourcesKey("blueprint-resources/" + identity)
-                                                          .map(key -> entry(key,
-                                                                            new BlueprintResourcesValue(raw)));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaVersionEntry(String identity, String raw) {

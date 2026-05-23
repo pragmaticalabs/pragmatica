@@ -293,7 +293,7 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private Promise<Unit> sendFireAndForget(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
-        var senderBridge = findSenderBridge(request);
+        var senderBridge = findSenderBridge(slice, request);
         return senderBridge.encode(request)
                                   .flatMap(payload -> sendFireAndForgetPayload(endpoint, slice, method, payload));
     }
@@ -340,7 +340,7 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private <R> Promise<R> sendRequestResponse(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
-        var senderBridge = findSenderBridge(request);
+        var senderBridge = findSenderBridge(slice, request);
         return senderBridge.encode(request)
                                   .flatMap(payload -> sendAndAwaitResponse(endpoint,
                                                                            slice,
@@ -497,7 +497,7 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private <R> void invokeRemoteForFailover(Promise<R> promise, FailoverContext<R> ctx, NodeId targetNode) {
-        var senderBridge = findSenderBridge(ctx.request);
+        var senderBridge = findSenderBridge(ctx.slice(), ctx.request);
         senderBridge.encode(ctx.request).onSuccess(payload -> sendFailoverPayload(promise,
                                                                                   ctx,
                                                                                   targetNode,
@@ -659,15 +659,24 @@ class SliceInvokerImpl implements SliceInvoker {
     @SuppressWarnings("unchecked") private <R> Promise<R> invokeViaBridge(SliceBridge targetBridge,
                                                                           MethodName method,
                                                                           Object request) {
-        var senderBridge = findSenderBridge(request);
-        return senderBridge.encode(request).flatMap(inputBytes -> targetBridge.invoke(method.name(),
+        // Local invoke: target bridge IS the slice's own bridge — encode via the
+        // same bridge instead of round-tripping through classloader-based sender
+        // lookup, which fails when `request` lives in a parent loader (Unit, etc.).
+        return targetBridge.encode(request).flatMap(inputBytes -> targetBridge.invoke(method.name(),
                                                                                       inputBytes))
-                                  .flatMap(responseBytes -> senderBridge.decode(responseBytes))
+                                  .flatMap(responseBytes -> targetBridge.decode(responseBytes))
                                   .map(result -> (R) result);
     }
 
-    private SliceBridge findSenderBridge(Object request) {
-        return invocationHandler.findBridgeByClassLoader(request.getClass().getClassLoader()).unwrap();
+    private SliceBridge findSenderBridge(Artifact slice, Object request) {
+        // Prefer artifact-based lookup: works even when `request` lives in a parent
+        // classloader (e.g. `Unit.unit()` from the scheduled-tasks inject path, whose
+        // class is in pragmatica-core, not the slice loader — classloader-only lookup
+        // would miss the bridge). Fall back to classloader lookup for back-compat with
+        // request types that genuinely live in the slice loader.
+        return invocationHandler.localSlice(slice)
+                                .orElse(() -> invocationHandler.findBridgeByClassLoader(request.getClass().getClassLoader()))
+                                .unwrap();
     }
 
     @Override@SuppressWarnings({"JBCT-RET-01"}) public void onInvokeResponse(InvokeResponse response) {

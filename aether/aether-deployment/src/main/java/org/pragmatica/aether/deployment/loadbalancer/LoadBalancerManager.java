@@ -46,11 +46,19 @@ import static org.pragmatica.aether.environment.LoadBalancerState.loadBalancerSt
 import static org.pragmatica.aether.environment.RouteChange.routeChange;
 
 
-@SuppressWarnings("JBCT-RET-01") public interface LoadBalancerManager extends DelegatedComponent {
-    @MessageReceiver void onMembershipDecision(MembershipDecision decision);
-    @MessageReceiver void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
-    @MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
-    @MessageReceiver void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
+@SuppressWarnings("JBCT-RET-01")
+public interface LoadBalancerManager extends DelegatedComponent {
+    @MessageReceiver
+    void onMembershipDecision(MembershipDecision decision);
+
+    @MessageReceiver
+    void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
+
+    @MessageReceiver
+    void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+
+    @MessageReceiver
+    void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
 
     sealed interface LoadBalancerManagerState {
         default void onMembershipDecision(MembershipDecision decision) {}
@@ -61,7 +69,7 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
 
         default void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {}
 
-        record Dormant() implements LoadBalancerManagerState{}
+        record Dormant() implements LoadBalancerManagerState {}
 
         record Active(LoadBalancerProvider provider,
                       TopologyManager topologyManager,
@@ -74,24 +82,30 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                       ReentrantLock activationLock) implements LoadBalancerManagerState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
-            @Override public void onMembershipDecision(MembershipDecision decision) {
-                switch (decision){
-                    case NodeRemoved(NodeId removedNode, _) -> handleNodeDeparture(removedNode);
-                    case NodeDecommissioned(NodeId decommissioned, _) -> handleNodeDeparture(decommissioned);
+            @Override
+            public void onMembershipDecision(MembershipDecision decision) {
+                switch (decision) {
+                    case NodeRemoved(NodeId removedNode, _, _, _) -> handleNodeDeparture(removedNode);
+                    case NodeDecommissioned(NodeId decommissioned, _, _, _) -> handleNodeDeparture(decommissioned);
                     default -> {}
                 }
             }
 
-            @Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+            @Override
+            public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
                 handleNodeDeparture(selfShutdown.nodeId());
             }
 
-            @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+            @Override
+            public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
                 if (activated.get()) {
                     applyPut(valuePut);
+
                     return;
                 }
+
                 activationLock.lock();
+
                 try {
                     if (activated.get()) {applyPut(valuePut);} else {pendingEvents.add(new PendingRouteEvent.Put(valuePut));}
                 } finally {
@@ -99,12 +113,16 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                 }
             }
 
-            @Override public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+            @Override
+            public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
                 if (activated.get()) {
                     applyRemove(valueRemove);
+
                     return;
                 }
+
                 activationLock.lock();
+
                 try {
                     if (activated.get()) {applyRemove(valueRemove);} else {pendingEvents.add(new PendingRouteEvent.Remove(valueRemove));}
                 } finally {
@@ -116,8 +134,10 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                 var key = valuePut.cause().key();
                 var value = valuePut.cause().value();
                 var nodeId = key.nodeId();
+
                 for (var route : value.routes()) {
                     if (!route.isRoutable()) {continue;}
+
                     var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
                     routeNodes.computeIfAbsent(routeIdentity, _ -> new HashSet<>()).add(nodeId);
                     handleRouteChange(route.httpMethod(), route.pathPrefix(), routeNodes.get(routeIdentity));
@@ -127,14 +147,14 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
             private void applyRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
                 var key = valueRemove.cause().key();
                 var nodeId = key.nodeId();
-                var affectedRoutes = routeNodes.entrySet().stream()
-                                                        .filter(e -> e.getValue().contains(nodeId))
-                                                        .map(Map.Entry::getKey)
-                                                        .toList();
+                var affectedRoutes = routeNodes.entrySet().stream().filter(e -> e.getValue()
+                                                                                 .contains(nodeId)).map(Map.Entry::getKey).toList();
+
                 for (var routeIdentity : affectedRoutes) {
                     var nodes = routeNodes.get(routeIdentity);
                     nodes.remove(nodeId);
                     var parts = routeIdentity.split(":", 2);
+
                     if (nodes.isEmpty()) {
                         routeNodes.remove(routeIdentity);
                         handleRouteRemoval(parts[0], parts[1]);
@@ -162,10 +182,9 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                     replaceTrackedIps(allNodeIps);
                     log.info("Reconciling load balancer: {} routes, {} node IPs", routes.size(), allNodeIps.size());
                     loadBalancerState(allNodeIps, routes).onSuccess(state -> provider.reconcile(state)
-                                                                                               .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
-                                                                                                                             cause.message())))
-                                     .onFailure(cause -> log.error("Failed to build load balancer state: {}",
-                                                                   cause.message()));
+                                                                                     .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
+                                                                                                                   cause.message()))).onFailure(cause -> log.error("Failed to build load balancer state: {}",
+                                                                                                                                                                   cause.message()));
                 } finally {
                     activationLock.unlock();
                 }
@@ -177,7 +196,7 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
             }
 
             private void dispatchPending(PendingRouteEvent event) {
-                switch (event){
+                switch (event) {
                     case PendingRouteEvent.Put put -> applyPut(put.put());
                     case PendingRouteEvent.Remove remove -> applyRemove(remove.remove());
                 }
@@ -195,25 +214,24 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                 var parts = routeIdentity.split(":", 2);
                 var nodeIps = resolveNodeIps(nodeIds);
                 allNodeIps.addAll(nodeIps);
-                if (!nodeIps.isEmpty()) {routeChange(parts[0], parts[1], nodeIps).onSuccess(routes::add)
-                                                    .onFailure(cause -> log.warn("Failed to create route change for {}: {}",
-                                                                                 routeIdentity,
-                                                                                 cause.message()));}
+
+                if (!nodeIps.isEmpty()) {
+                    routeChange(parts[0], parts[1], nodeIps).onSuccess(routes::add).onFailure(cause -> log.warn("Failed to create route change for {}: {}",
+                                                                                                                routeIdentity,
+                                                                                                                cause.message()));
+                }
             }
 
             private void handleRouteRemoval(String httpMethod, String pathPrefix) {
                 log.info("Route removed: {} {}", httpMethod, pathPrefix);
-                routeChange(httpMethod,
-                            pathPrefix,
-                            Set.of()).onSuccess(change -> provider.onRouteChanged(change)
-                                                                                 .onFailure(cause -> log.error("Failed to remove load balancer route {} {}: {}",
-                                                                                                               httpMethod,
-                                                                                                               pathPrefix,
-                                                                                                               cause.message())))
-                           .onFailure(cause -> log.error("Failed to create route change for removal of {} {}: {}",
-                                                         httpMethod,
-                                                         pathPrefix,
-                                                         cause.message()));
+                routeChange(httpMethod, pathPrefix, Set.of()).onSuccess(change -> provider.onRouteChanged(change)
+                                                                                          .onFailure(cause -> log.error("Failed to remove load balancer route {} {}: {}",
+                                                                                                                        httpMethod,
+                                                                                                                        pathPrefix,
+                                                                                                                        cause.message()))).onFailure(cause -> log.error("Failed to create route change for removal of {} {}: {}",
+                                                                                                                                                                        httpMethod,
+                                                                                                                                                                        pathPrefix,
+                                                                                                                                                                        cause.message()));
             }
 
             private void handleRouteChange(String httpMethod, String pathPrefix, Set<NodeId> nodeIds) {
@@ -224,37 +242,35 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                           pathPrefix,
                           nodeIps.size());
                 routeChange(httpMethod, pathPrefix, nodeIps).onSuccess(change -> provider.onRouteChanged(change)
-                                                                                                        .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
-                                                                                                                                      httpMethod,
-                                                                                                                                      pathPrefix,
-                                                                                                                                      cause.message())))
-                           .onFailure(cause -> log.error("Failed to create route change for {} {}: {}",
-                                                         httpMethod,
-                                                         pathPrefix,
-                                                         cause.message()));
+                                                                                         .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
+                                                                                                                       httpMethod,
+                                                                                                                       pathPrefix,
+                                                                                                                       cause.message()))).onFailure(cause -> log.error("Failed to create route change for {} {}: {}",
+                                                                                                                                                                       httpMethod,
+                                                                                                                                                                       pathPrefix,
+                                                                                                                                                                       cause.message()));
             }
 
             private void handleNodeDeparture(NodeId departedNode) {
-                topologyManager.get(departedNode).map(NodeInfo::address)
-                                   .map(addr -> addr.host())
-                                   .onPresent(this::removeNodeIp);
+                topologyManager.get(departedNode).map(NodeInfo::address).map(addr -> addr.host()).onPresent(this::removeNodeIp);
             }
 
             private void removeNodeIp(String ip) {
                 if (trackedNodeIps.remove(ip)) {
                     log.info("Node departed, removing IP {} from load balancer", ip);
-                    provider.onNodeRemoved(ip)
-                                          .onFailure(cause -> log.error("Failed to remove node {} from load balancer: {}",
-                                                                        ip,
-                                                                        cause.message()));
+                    provider.onNodeRemoved(ip).onFailure(cause -> log.error("Failed to remove node {} from load balancer: {}",
+                                                                            ip,
+                                                                            cause.message()));
                 }
             }
 
             private Set<String> resolveNodeIps(Set<NodeId> nodeIds) {
-                return nodeIds.stream().flatMap(nodeId -> topologyManager.get(nodeId).map(NodeInfo::address)
-                                                                             .map(addr -> addr.host())
-                                                                             .stream())
-                                     .collect(Collectors.toSet());
+                return nodeIds.stream()
+                              .flatMap(nodeId -> topologyManager.get(nodeId)
+                                                                .map(NodeInfo::address)
+                                                                .map(addr -> addr.host())
+                                                                .stream())
+                              .collect(Collectors.toSet());
             }
 
             private static void aggregateNodeRoutes(NodeRoutesKey key,
@@ -262,6 +278,7 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                                                     Map<String, Set<NodeId>> aggregated) {
                 for (var route : value.routes()) {
                     if (!route.isRoutable()) {continue;}
+
                     var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
                     aggregated.computeIfAbsent(routeIdentity, _ -> new HashSet<>()).add(key.nodeId());
                 }
@@ -269,9 +286,9 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
         }
 
         sealed interface PendingRouteEvent {
-            record Put(ValuePut<NodeRoutesKey, NodeRoutesValue> put) implements PendingRouteEvent{}
+            record Put(ValuePut<NodeRoutesKey, NodeRoutesValue> put) implements PendingRouteEvent {}
 
-            record Remove(ValueRemove<NodeRoutesKey, NodeRoutesValue> remove) implements PendingRouteEvent{}
+            record Remove(ValueRemove<NodeRoutesKey, NodeRoutesValue> remove) implements PendingRouteEvent {}
         }
     }
 
@@ -288,7 +305,8 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                                    AtomicReference<LoadBalancerManagerState> state) implements LoadBalancerManager {
             private static final Logger log = LoggerFactory.getLogger(loadBalancerManager.class);
 
-            @Override public Promise<Unit> activate() {
+            @Override
+            public Promise<Unit> activate() {
                 log.info("Node {} became leader, activating load balancer manager", self);
                 var activeState = new LoadBalancerManagerState.Active(provider,
                                                                       topologyManager,
@@ -301,36 +319,45 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
                                                                       new ReentrantLock());
                 state.set(activeState);
                 activeState.reconcile();
+
                 return Promise.unitPromise();
             }
 
-            @Override public Promise<Unit> deactivate() {
+            @Override
+            public Promise<Unit> deactivate() {
                 log.info("Node {} is not leader, deactivating load balancer manager", self);
                 state.set(new LoadBalancerManagerState.Dormant());
+
                 return Promise.unitPromise();
             }
 
-            @Override public TaskGroup taskGroup() {
+            @Override
+            public TaskGroup taskGroup() {
                 return TaskGroup.DEPLOYMENT;
             }
 
-            @Override public boolean isActive() {
+            @Override
+            public boolean isActive() {
                 return state.get() instanceof LoadBalancerManagerState.Active;
             }
 
-            @Override public void onMembershipDecision(MembershipDecision decision) {
+            @Override
+            public void onMembershipDecision(MembershipDecision decision) {
                 state.get().onMembershipDecision(decision);
             }
 
-            @Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+            @Override
+            public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
                 state.get().onSelfShutdown(selfShutdown);
             }
 
-            @Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+            @Override
+            public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
                 state.get().onNodeRoutesPut(valuePut);
             }
 
-            @Override public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+            @Override
+            public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
                 state.get().onNodeRoutesRemove(valueRemove);
             }
         }

@@ -10,7 +10,8 @@ import picocli.CommandLine.IVersionProvider;
 
 
 public final class AetherVersionProvider implements IVersionProvider {
-    @Override public String[] getVersion() {
+    @Override
+    public String[] getVersion() {
         return new String[]{"Aether " + BuildInfo.current().displayString()};
     }
 }

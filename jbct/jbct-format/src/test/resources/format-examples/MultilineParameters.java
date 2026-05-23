@@ -47,7 +47,7 @@ public class MultilineParameters {
         R apply(T1 first, T2 second, T3 third);
     }
 
-    record LongRecord(String field1, String field2, int field3, boolean field4, Option<String> field5){}
+    record LongRecord(String field1, String field2, int field3, boolean field4, Option<String> field5) {}
 
     interface Email {}
 

@@ -25,19 +25,22 @@ public sealed interface MigrationError extends Cause {
         General(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }
 
     record StepFailed(String stepDescription, Cause cause) implements MigrationError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Migration step failed: " + stepDescription + " — " + cause.message();
         }
     }
 
     record InvalidRequest(String detail) implements MigrationError {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Invalid migration request: " + detail;
         }
     }

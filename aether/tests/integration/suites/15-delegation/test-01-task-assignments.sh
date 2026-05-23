@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 # Prerequisite: cluster must be healthy with a leader
 # ---------------------------------------------------------------------------
 test_cluster_ready() {
-    wait_for_cluster 120
+    wait_for_cluster_ready 120
     local leader
     leader=$(cluster_leader)
     assert_ne "$leader" "" "Leader elected: ${leader}"
@@ -58,13 +58,34 @@ test_all_groups_active() {
 # Test: Tasks are distributed across nodes (not all on leader)
 # ---------------------------------------------------------------------------
 test_tasks_distributed() {
+    # Audit 2026-05-21 §1.17 / §2.2 #27: prior assertion was `>=1`, which is a
+    # vacuous tautology — any non-empty assignments map satisfies it, including
+    # the leader-only failure mode this test is supposed to catch. Strict check
+    # now requires distribution across ≥2 distinct nodes.
+    local node_count="${NODE_COUNT:-5}"
+    if [ "$node_count" -lt 2 ]; then
+        skip_test "Tasks distributed" "NODE_COUNT=${node_count} < 2 — distribution check requires multi-node cluster"
+        return 0
+    fi
+
     local tasks
     tasks=$(cluster_tasks)
-    local unique_nodes
-    unique_nodes=$(echo "$tasks" | grep -o '"assignedTo"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' | sort -u | wc -l | tr -d ' ')
-    # With 5 nodes and 6 groups, we should have assignments on at least 2 nodes
-    # (initial election assigns all to leader, then redistributes)
-    assert_ge "$unique_nodes" "1" "Tasks distributed across at least 1 node (got ${unique_nodes})"
+    local assigned_nodes unique_nodes
+    assigned_nodes=$(echo "$tasks" | grep -o '"assignedTo"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' | sort -u)
+    unique_nodes=$(printf '%s\n' "$assigned_nodes" | grep -c -v '^$' || echo "0")
+
+    # Leader-only failure mode: surface diagnostic before the assertion fires so
+    # the failure message names the culprit instead of just the count.
+    if [ "$unique_nodes" = "1" ]; then
+        local sole_node leader
+        sole_node=$(printf '%s' "$assigned_nodes" | head -n1)
+        leader=$(cluster_leader 2>/dev/null || echo "<unknown>")
+        log_warn "All task groups assigned to ${sole_node} (leader=${leader}); expected distribution across multiple nodes"
+    fi
+
+    # With 5 nodes and 6 groups, the CDM should redistribute beyond the leader
+    # within wait_for_all_tasks_active. ≥2 catches the all-on-leader anti-pattern.
+    assert_ge "$unique_nodes" "2" "Task groups distributed across at least 2 distinct nodes (got ${unique_nodes})"
 }
 
 # ---------------------------------------------------------------------------

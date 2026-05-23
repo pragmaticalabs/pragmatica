@@ -22,3 +22,20 @@ max-event-size = "64KB"
 username = "forge"
 password = "forge"
 async_url = "postgresql://forge-postgres:5432/forge"
+
+[scheduling.heartbeat]
+# Fixed-rate interval — leader-only (default). Short period so suite 08's
+# `test_task_last_execution_advances` observes a >0 lastExecutionAt soon
+# after slice activation. Resolved by @Heartbeat (Scheduled qualifier).
+# The slice processor emits a reactive manifest entry with category=scheduled,
+# config=scheduling.heartbeat, method=heartbeat; the runtime publishes a
+# ScheduledTaskKey to the cluster KV-Store on slice activation so the
+# /api/scheduled-tasks Management API enumerates the task.
+# `cron` must be present (even empty) because ProviderBasedConfigService's
+# record-binding requires every component to be resolvable from TOML
+# (it has no DEFAULT-field fallback for ScheduleConfig). Key naming is
+# snake_case — the binder calls `toSnakeCase` on Java record component
+# names before lookup, so `executionMode` becomes `execution_mode`.
+interval = "10s"
+cron = ""
+execution_mode = "SINGLE"

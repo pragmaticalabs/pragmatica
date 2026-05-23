@@ -118,7 +118,8 @@ public final class ClusterDeploymentContext {
         return fsm;
     }
 
-    @Contract public void dispatch(ClusterFsmEvent event) {
+    @Contract
+    public void dispatch(ClusterFsmEvent event) {
         fsm.dispatch(event);
     }
 

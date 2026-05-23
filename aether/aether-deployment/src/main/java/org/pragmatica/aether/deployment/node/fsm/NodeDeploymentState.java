@@ -26,27 +26,17 @@ import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.RetentionPolicy;
-import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
-import org.pragmatica.aether.slice.stream.StreamAddress;
-import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.StreamNameConfig;
 import org.pragmatica.aether.resource.TopicConfig;
@@ -54,6 +44,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.config.ConfigService;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumDisappeared;
@@ -72,7 +64,6 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -84,15 +75,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState, ClusterFsmEvent> permits NodeDeploymentState.Dormant, NodeDeploymentState.Active, NodeDeploymentState.Leaving, NodeDeploymentState.Stopped {
+@SuppressWarnings("JBCT-RET-01")
+public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState, ClusterFsmEvent> permits NodeDeploymentState.Dormant, NodeDeploymentState.Active, NodeDeploymentState.Leaving, NodeDeploymentState.Stopped {
     Logger LOG = LoggerFactory.getLogger(NodeDeploymentState.class);
-
     NodeDeploymentContext ctx();
 
     record Dormant(NodeDeploymentContext ctx, List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
-        @Override public void handle(ClusterFsmEvent event,
-                                     TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case QuorumEstablished _ -> tx.transitionTo(ctx.newActive(suspendedSlices));
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
@@ -101,12 +92,13 @@ import org.slf4j.LoggerFactory;
     }
 
     record Stopped(NodeDeploymentContext ctx) implements NodeDeploymentState {
-        @Override public void onEntry() {
+        @Override
+        public void onEntry() {
             LOG.debug("NodeDeploymentManager stopped");
         }
 
-        @Override public void handle(ClusterFsmEvent event,
-                                     TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
             tx.ignore();
         }
     }
@@ -117,11 +109,8 @@ import org.slf4j.LoggerFactory;
                   RoutingEpochAckTracker routingEpochAckTracker,
                   List<SuspendedSlice> pendingReactivation) implements NodeDeploymentState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
-
         private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
-
         private static final int CONSENSUS_MAX_RETRIES = 2;
-
         private static final int MAX_TRANSITION_RETRIES = 5;
 
         private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice %s during abrupt removal");
@@ -134,11 +123,13 @@ import org.slf4j.LoggerFactory;
 
         private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: %s");
 
-        @Override public void onEntry() {
+        @Override
+        public void onEntry() {
             log.info("Node {} NodeDeploymentManager activated",
                      ctx.self().id());
             ctx.activeOnEntryCallback().onPresent(Runnable::run);
             processPendingLoadCommands();
+
             if (!pendingReactivation.isEmpty()) {
                 log.info("Node {} has {} suspended slices to reactivate",
                          ctx.self().id(),
@@ -147,9 +138,9 @@ import org.slf4j.LoggerFactory;
             }
         }
 
-        @Override public void handle(ClusterFsmEvent event,
-                                     TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case NodeArtifactPutReceived(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) -> handleNodeArtifactPut(valuePut,
                                                                                                                              tx);
                 case NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) -> handleNodeArtifactRemove(valueRemove,
@@ -181,10 +172,13 @@ import org.slf4j.LoggerFactory;
         private void handleNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut,
                                            TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
             var key = valuePut.cause().key();
+
             if (!key.isForNode(ctx.self())) {
                 tx.ignore();
+
                 return;
             }
+
             tx.handle(() -> processNodeArtifactPut(valuePut));
         }
 
@@ -201,10 +195,13 @@ import org.slf4j.LoggerFactory;
         private void handleNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove,
                                               TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
             var key = valueRemove.cause().key();
+
             if (!key.isForNode(ctx.self())) {
                 tx.ignore();
+
                 return;
             }
+
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
             tx.handle(() -> handleSliceValueRemove(sliceKey));
         }
@@ -218,18 +215,17 @@ import org.slf4j.LoggerFactory;
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), ctx.self());
-            routingEpochAckTracker.observeAck(sliceKey,
-                                              key.nodeId(),
-                                              value.observedCoreEpoch())
-            .onPresent(this::fastTransitionToActive);
+            routingEpochAckTracker.observeAck(sliceKey, key.nodeId(), value.observedCoreEpoch()).onPresent(this::fastTransitionToActive);
         }
 
-        @Contract public void processPendingLoadCommands() {
+        @Contract
+        public void processPendingLoadCommands() {
             ctx.kvStore().forEach(NodeArtifactKey.class, NodeArtifactValue.class, this::processPendingLoadEntry);
         }
 
         private void processPendingLoadEntry(NodeArtifactKey key, NodeArtifactValue value) {
             if (!key.isForNode(ctx.self()) || value.state() != SliceState.LOAD) {return;}
+
             log.info("Node {} found pending LOAD command for {}, processing",
                      ctx.self().id(),
                      key.artifact());
@@ -240,15 +236,34 @@ import org.slf4j.LoggerFactory;
         }
 
         private Option<SliceStore.LoadedSlice> findLoadedSlice(Artifact artifact) {
-            return Option.from(ctx.sliceStore().loaded()
-                                             .stream()
-                                             .filter(ls -> ls.artifact().equals(artifact))
-                                             .findFirst());
+            return Option.from(ctx.sliceStore()
+                                  .loaded()
+                                  .stream()
+                                  .filter(ls -> ls.artifact()
+                                                  .equals(artifact))
+                                  .findFirst());
+        }
+
+        /// Look up the slice-composite for `artifact` and wrap it as a `ConfigService`.
+        ///
+        /// Returns `Option.none()` when the slice has no composite (e.g. node was started
+        /// without a node-composite, slice isn't loaded yet, or load failed). Callers must
+        /// fall back to global `ConfigService.instance()` or treat as missing config.
+        private Option<ConfigService> sliceConfigService(Artifact artifact) {
+            return ctx.sliceStore()
+                      .sliceComposite(artifact)
+                      .map(Active::wrapAsConfigService);
+        }
+
+        private static ConfigService wrapAsConfigService(ConfigurationProvider provider) {
+            return ProviderBasedConfigService.providerBasedConfigService(provider);
         }
 
         private void fastTransitionToActive(SliceNodeKey sliceKey) {
             var current = Option.option(deployments.get(sliceKey)).map(SliceDeployment::state);
+
             if (!current.map(state -> state == SliceState.ROUTING).or(false)) {return;}
+
             log.debug("Cross-node ack threshold reached for {} — fast-transitioning ROUTING → ACTIVE",
                       sliceKey.artifact());
             transitionTo(sliceKey, SliceState.ACTIVE);
@@ -258,6 +273,7 @@ import org.slf4j.LoggerFactory;
             log.debug("ValueRemove received for key: {}", sliceKey);
             var deployment = Option.option(deployments.remove(sliceKey));
             routingEpochAckTracker.clear(sliceKey);
+
             if (shouldForceCleanup(deployment)) {forceCleanupSlice(sliceKey);}
         }
 
@@ -269,45 +285,42 @@ import org.slf4j.LoggerFactory;
             var deployment = SliceDeployment.sliceDeployment(sliceKey, state, timestamp);
             deployments.put(sliceKey, deployment);
             var effectiveFromState = previousState.or(state);
-            ctx.router()
-                      .route(StateTransition.stateTransition(sliceKey.artifact(),
-                                                             ctx.self(),
-                                                             effectiveFromState,
-                                                             state,
-                                                             timestamp));
+            ctx.router().route(StateTransition.stateTransition(sliceKey.artifact(),
+                                                               ctx.self(),
+                                                               effectiveFromState,
+                                                               state,
+                                                               timestamp));
+
             if (state == SliceState.FAILED) {
                 var errorMessage = sliceNodeValue.failureReason().or("Unknown failure");
                 previousState.onPresent(prevState -> ctx.router()
-                                                               .route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
-                                                                                                        ctx.self(),
-                                                                                                        prevState,
-                                                                                                        errorMessage,
-                                                                                                        timestamp)));
+                                                        .route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
+                                                                                                 ctx.self(),
+                                                                                                 prevState,
+                                                                                                 errorMessage,
+                                                                                                 timestamp)));
             }
         }
 
         private boolean shouldForceCleanup(Option<SliceDeployment> deployment) {
-            return deployment.map(d -> d.state() == SliceState.ACTIVE).or(false);
+            return deployment.map(d -> d.state() == SliceState.ACTIVE)
+                             .or(false);
         }
 
         private void forceCleanupSlice(SliceNodeKey sliceKey) {
-            unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions)
-                              .flatMap(this::unpublishStreamSubscriptions)
-                              .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
-                              .flatMap(this::unpublishScheduledTasks)
-                              .flatMap(this::unpublishHttpRoutes)
-                              .withSuccess(this::unregisterSliceFromInvocation)
-                              .flatMap(key -> ctx.sliceStore().deactivateSlice(key.artifact()))
-                              .flatMap(_ -> ctx.sliceStore().unloadSlice(sliceKey.artifact()))
-                              .onFailure(cause -> logCleanupFailure(sliceKey, cause));
+            unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions).flatMap(this::unpublishStreamSubscriptions).flatMap(this::unpublishScheduledTasks).flatMap(this::unpublishHttpRoutes).withSuccess(this::unregisterSliceFromInvocation).flatMap(key -> ctx.sliceStore()
+                                                                                                                                                                                                                                                                             .deactivateSlice(key.artifact())).flatMap(_ -> ctx.sliceStore()
+                                                                                                                                                                                                                                                                                                                               .unloadSlice(sliceKey.artifact())).onFailure(cause -> logCleanupFailure(sliceKey,
+                                                                                                                                                                                                                                                                                                                                                                                                       cause));
         }
 
         private void logCleanupFailure(SliceNodeKey sliceKey, Cause cause) {
             logError(CLEANUP_FAILED, sliceKey, cause);
         }
 
-        @Contract public void processStateTransition(SliceNodeKey sliceKey, SliceState state) {
-            switch (state){
+        @Contract
+        public void processStateTransition(SliceNodeKey sliceKey, SliceState state) {
+            switch (state) {
                 case LOAD -> handleLoading(sliceKey);
                 case LOADING -> {}
                 case LOADED -> handleLoaded(sliceKey);
@@ -324,17 +337,19 @@ import org.slf4j.LoggerFactory;
         }
 
         private void handleLoading(SliceNodeKey sliceKey) {
-            transitionTo(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
-                        .flatMap(key -> transitionTo(key, SliceState.LOADED))
-                        .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
+            transitionTo(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout).flatMap(key -> transitionTo(key,
+                                                                                                                       SliceState.LOADED)).withFailure(cause -> handleLoadingFailure(sliceKey,
+                                                                                                                                                                                     cause));
         }
 
         private Promise<SliceNodeKey> loadSliceWithTimeout(SliceNodeKey sliceKey) {
-            return ctx.configuration().timeoutFor(SliceState.LOADING)
-                                    .async()
-                                    .flatMap(timeout -> ctx.sliceStore().loadSlice(sliceKey.artifact())
-                                                                      .timeout(timeout))
-                                    .map(_ -> sliceKey);
+            return ctx.configuration()
+                      .timeoutFor(SliceState.LOADING)
+                      .async()
+                      .flatMap(timeout -> ctx.sliceStore()
+                                             .loadSlice(sliceKey.artifact())
+                                             .timeout(timeout))
+                      .map(_ -> sliceKey);
         }
 
         private void handleLoadingFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -347,8 +362,7 @@ import org.slf4j.LoggerFactory;
         }
 
         private void handleActivating(SliceNodeKey sliceKey) {
-            findLoadedSlice(sliceKey.artifact()).onEmpty(() -> handleSliceNotFoundForActivation(sliceKey))
-                           .onPresent(_ -> performActivation(sliceKey));
+            findLoadedSlice(sliceKey.artifact()).onEmpty(() -> handleSliceNotFoundForActivation(sliceKey)).onPresent(_ -> performActivation(sliceKey));
         }
 
         private void handleSliceNotFoundForActivation(SliceNodeKey sliceKey) {
@@ -358,17 +372,9 @@ import org.slf4j.LoggerFactory;
         }
 
         private void performActivation(SliceNodeKey sliceKey) {
-            transitionTo(sliceKey, SliceState.ACTIVATING).flatMap(this::activateSliceWithTimeout)
-                        .flatMap(this::registerSliceForInvocation)
-                        .flatMap(this::publishTopicSubscriptions)
-                        .flatMap(this::publishStreamSubscriptions)
-                        .flatMap(this::publishScheduledTasks)
-                        .flatMap(this::registerAndNotifyConfig)
-                        .flatMap(this::publishRoutesIfPresent)
-                        .flatMap(this::transitionToActiveWithStreamRefs)
-                        .flatMap(this::publishEndpoints)
-                        .timeout(ctx.activationChainTimeout())
-                        .withFailure(cause -> handleActivationFailure(sliceKey, cause));
+            transitionTo(sliceKey, SliceState.ACTIVATING).flatMap(this::activateSliceWithTimeout).flatMap(this::registerSliceForInvocation).flatMap(this::publishTopicSubscriptions).flatMap(this::publishStreamSubscriptions).flatMap(this::publishScheduledTasks).flatMap(this::registerAndNotifyConfig).flatMap(this::publishRoutesIfPresent).flatMap(key -> transitionTo(key,
+                                                                                                                                                                                                                                                                                                                                                                             SliceState.ACTIVE)).flatMap(this::publishEndpoints).timeout(ctx.activationChainTimeout()).withFailure(cause -> handleActivationFailure(sliceKey,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    cause));
         }
 
         private Promise<SliceNodeKey> publishRoutesIfPresent(SliceNodeKey sliceKey) {
@@ -379,16 +385,18 @@ import org.slf4j.LoggerFactory;
 
         private void registerEpochAckExpectation(SliceNodeKey sliceKey) {
             var targets = collectTargetNodesForArtifact(sliceKey);
+
             if (targets.isEmpty()) {return;}
+
             routingEpochAckTracker.registerExpectation(sliceKey, Epoch.ZERO, targets);
         }
 
         private Set<NodeId> collectTargetNodesForArtifact(SliceNodeKey sliceKey) {
             var targets = new HashSet<NodeId>();
-            ctx.kvStore()
-                       .forEach(NodeArtifactKey.class,
-                                NodeArtifactValue.class,
-                                (k, v) -> collectTargetIfMatches(targets, sliceKey, k, v));
+            ctx.kvStore().forEach(NodeArtifactKey.class,
+                                  NodeArtifactValue.class,
+                                  (k, v) -> collectTargetIfMatches(targets, sliceKey, k, v));
+
             return Set.copyOf(targets);
         }
 
@@ -399,35 +407,36 @@ import org.slf4j.LoggerFactory;
             if (!key.artifact().equals(sliceKey.artifact())) {return;}
             if (key.nodeId().equals(ctx.self())) {return;}
             if (value.state() == SliceState.FAILED || value.state() == SliceState.UNLOAD || value.state() == SliceState.UNLOADING) {return;}
+
             targets.add(key.nodeId());
         }
 
         private boolean sliceHasHttpRoutes(Artifact artifact) {
-            return ctx.httpRoutePublisher().flatMap(publisher -> findLoadedSlice(artifact).map(ls -> publisher.hasRoutes(ls.slice().getClass()
-                                                                                                                                 .getClassLoader(),
-                                                                                                                         ls.slice())))
-                                         .or(false);
+            return ctx.httpRoutePublisher()
+                      .flatMap(publisher -> findLoadedSlice(artifact).map(ls -> publisher.hasRoutes(ls.slice()
+                                                                                                      .getClass()
+                                                                                                      .getClassLoader(),
+                                                                                                    ls.slice())))
+                      .or(false);
         }
 
         private Promise<SliceNodeKey> activateSliceWithTimeout(SliceNodeKey sliceKey) {
-            return ctx.configuration().timeoutFor(SliceState.ACTIVATING)
-                                    .async()
-                                    .flatMap(timeout -> ctx.sliceStore().activateSlice(sliceKey.artifact())
-                                                                      .timeout(timeout))
-                                    .map(_ -> sliceKey);
+            return ctx.configuration()
+                      .timeoutFor(SliceState.ACTIVATING)
+                      .async()
+                      .flatMap(timeout -> ctx.sliceStore()
+                                             .activateSlice(sliceKey.artifact())
+                                             .timeout(timeout))
+                      .map(_ -> sliceKey);
         }
 
         private void handleActivationFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Activation failed for {}: {}", sliceKey.artifact(), cause.message());
             unregisterSliceFromInvocation(sliceKey);
-            unpublishEndpoints(sliceKey).flatMap(this::unpublishHttpRoutes)
-                              .flatMap(this::unpublishTopicSubscriptions)
-                              .flatMap(this::unpublishStreamSubscriptions)
-                              .flatMap(this::unpublishScheduledTasks)
-                              .withFailure(partialCause -> log.warn("Partial unpublish during activation-failure cleanup for {}: {}",
-                                                                    sliceKey.artifact(),
-                                                                    partialCause.message()))
-                              .withResult(_ -> transitionToFailed(sliceKey, cause));
+            unpublishEndpoints(sliceKey).flatMap(this::unpublishHttpRoutes).flatMap(this::unpublishTopicSubscriptions).flatMap(this::unpublishStreamSubscriptions).flatMap(this::unpublishScheduledTasks).withFailure(partialCause -> log.warn("Partial unpublish during activation-failure cleanup for {}: {}",
+                                                                                                                                                                                                                                               sliceKey.artifact(),
+                                                                                                                                                                                                                                               partialCause.message())).withResult(_ -> transitionToFailed(sliceKey,
+                                                                                                                                                                                                                                                                                                           cause));
         }
 
         private void handleActive(SliceNodeKey sliceKey) {
@@ -441,34 +450,37 @@ import org.slf4j.LoggerFactory;
                       artifact,
                       ctx.httpRoutePublisher().isPresent(),
                       ctx.sliceInvokerFacade().isPresent());
-            return ctx.httpRoutePublisher().flatMap(publisher -> ctx.sliceInvokerFacade()
-                                                                                       .flatMap(facade -> findLoadedSlice(artifact).map(ls -> doPublishHttpRoutes(artifact,
-                                                                                                                                                                  publisher,
-                                                                                                                                                                  facade,
-                                                                                                                                                                  ls))))
-                                         .or(Promise.unitPromise());
+
+            return ctx.httpRoutePublisher()
+                      .flatMap(publisher -> ctx.sliceInvokerFacade()
+                                               .flatMap(facade -> findLoadedSlice(artifact).map(ls -> doPublishHttpRoutes(artifact,
+                                                                                                                          publisher,
+                                                                                                                          facade,
+                                                                                                                          ls))))
+                      .or(Promise.unitPromise());
         }
 
         private Promise<Unit> doPublishHttpRoutes(Artifact artifact,
                                                   HttpRoutePublisher publisher,
                                                   SliceInvokerFacade facade,
                                                   SliceStore.LoadedSlice ls) {
-            var classLoader = ls.slice().getClass()
-                                      .getClassLoader();
+            var classLoader = ls.slice().getClass().getClassLoader();
             log.debug("Publishing HTTP routes for {} using classLoader={}",
                       artifact,
                       classLoader.getClass().getName());
+
             return publisher.publishRoutes(artifact,
                                            classLoader,
                                            ls.slice(),
                                            facade)
-            .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
-                                         artifact,
-                                         cause.message()));
+                            .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
+                                                         artifact,
+                                                         cause.message()));
         }
 
         private Promise<SliceNodeKey> registerSliceForInvocation(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             return findLoadedSlice(artifact).toResult(SLICE_NOT_LOADED_FOR_REGISTRATION.apply(artifact.asString()))
                                   .flatMap(ls -> registerSliceBridge(artifact,
                                                                      ls.slice()))
@@ -481,6 +493,7 @@ import org.slf4j.LoggerFactory;
             var sliceBridge = DefaultSliceBridge.defaultSliceBridge(artifact, slice, sliceCodec);
             ctx.invocationHandler().registerSlice(artifact, sliceBridge);
             log.debug("Registered slice {} for invocation", artifact);
+
             return Result.unitResult();
         }
 
@@ -492,6 +505,7 @@ import org.slf4j.LoggerFactory;
 
         private Promise<Unit> publishEndpoints(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             return findLoadedSlice(artifact).map(ls -> publishEndpointsForSlice(artifact,
                                                                                 ls.slice()))
                                   .or(Promise.unitPromise());
@@ -499,14 +513,16 @@ import org.slf4j.LoggerFactory;
 
         private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
             var methods = slice.methods();
+
             if (methods.isEmpty()) {return Promise.unitPromise();}
-            int instanceNumber = Math.abs(ctx.self().id()
-                                                  .hashCode());
-            var methodNames = methods.stream().map(m -> m.name().name())
-                                            .toList();
+
+            int instanceNumber = Math.abs(ctx.self().id().hashCode());
+            var methodNames = methods.stream().map(m -> m.name()
+                                                         .name()).toList();
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), artifact);
             var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
             KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
+
             return applyWithRetry(List.of(command),
                                   0).onSuccess(_ -> log.debug("Published {} endpoints for slice {}",
                                                               methods.size(),
@@ -517,8 +533,7 @@ import org.slf4j.LoggerFactory;
         }
 
         private void handleDeactivating(SliceNodeKey sliceKey) {
-            findLoadedSlice(sliceKey.artifact()).onEmpty(() -> handleSliceNotFoundForDeactivation(sliceKey))
-                           .onPresent(_ -> performDeactivation(sliceKey));
+            findLoadedSlice(sliceKey.artifact()).onEmpty(() -> handleSliceNotFoundForDeactivation(sliceKey)).onPresent(_ -> performDeactivation(sliceKey));
         }
 
         private void handleSliceNotFoundForDeactivation(SliceNodeKey sliceKey) {
@@ -527,25 +542,19 @@ import org.slf4j.LoggerFactory;
         }
 
         private void performDeactivation(SliceNodeKey sliceKey) {
-            transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(this::unpublishEndpoints)
-                        .flatMap(this::unpublishTopicSubscriptions)
-                        .flatMap(this::unpublishStreamSubscriptions)
-                        .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
-                        .flatMap(this::unpublishScheduledTasks)
-                        .flatMap(this::unpublishHttpRoutes)
-                        .withSuccess(this::unregisterSliceFromInvocation)
-                        .withSuccess(this::unregisterConfig)
-                        .flatMap(this::deactivateSliceWithTimeout)
-                        .flatMap(key -> transitionTo(key, SliceState.LOADED))
-                        .withFailure(cause -> handleDeactivationFailure(sliceKey, cause));
+            transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(this::unpublishEndpoints).flatMap(this::unpublishTopicSubscriptions).flatMap(this::unpublishStreamSubscriptions).flatMap(this::unpublishScheduledTasks).flatMap(this::unpublishHttpRoutes).withSuccess(this::unregisterSliceFromInvocation).withSuccess(this::unregisterConfig).flatMap(this::deactivateSliceWithTimeout).flatMap(key -> transitionTo(key,
+                                                                                                                                                                                                                                                                                                                                                                                                                          SliceState.LOADED)).withFailure(cause -> handleDeactivationFailure(sliceKey,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             cause));
         }
 
         private Promise<SliceNodeKey> deactivateSliceWithTimeout(SliceNodeKey sliceKey) {
-            return ctx.configuration().timeoutFor(SliceState.DEACTIVATING)
-                                    .async()
-                                    .flatMap(timeout -> ctx.sliceStore().deactivateSlice(sliceKey.artifact())
-                                                                      .timeout(timeout))
-                                    .map(_ -> sliceKey);
+            return ctx.configuration()
+                      .timeoutFor(SliceState.DEACTIVATING)
+                      .async()
+                      .flatMap(timeout -> ctx.sliceStore()
+                                             .deactivateSlice(sliceKey.artifact())
+                                             .timeout(timeout))
+                      .map(_ -> sliceKey);
         }
 
         private void handleDeactivationFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -554,13 +563,15 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<SliceNodeKey> unpublishHttpRoutes(SliceNodeKey sliceKey) {
-            return ctx.httpRoutePublisher().map(publisher -> publisher.unpublishRoutes(sliceKey.artifact()))
-                                         .or(Promise.unitPromise())
-                                         .map(_ -> sliceKey);
+            return ctx.httpRoutePublisher()
+                      .map(publisher -> publisher.unpublishRoutes(sliceKey.artifact()))
+                      .or(Promise.unitPromise())
+                      .map(_ -> sliceKey);
         }
 
         private Promise<SliceNodeKey> unpublishEndpoints(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             return findLoadedSlice(artifact).map(ls -> unpublishEndpointsForSlice(artifact,
                                                                                   ls.slice()))
                                   .or(Promise.unitPromise())
@@ -569,10 +580,13 @@ import org.slf4j.LoggerFactory;
 
         private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
             var methods = slice.methods();
+
             if (methods.isEmpty()) {return Promise.unitPromise();}
+
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), artifact);
             var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
             KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
+
             return applyWithRetry(List.of(command),
                                   0).onSuccess(_ -> log.debug("Unpublished {} endpoints for slice {}",
                                                               methods.size(),
@@ -584,6 +598,7 @@ import org.slf4j.LoggerFactory;
 
         private Promise<SliceNodeKey> publishTopicSubscriptions(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             return findLoadedSlice(artifact).map(ls -> doPublishTopicSubscriptions(artifact,
                                                                                    ls.slice()))
                                   .or(Promise.unitPromise())
@@ -591,11 +606,13 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<Unit> doPublishTopicSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readSubscriptionsFromManifest(slice);
+            var entries = readSubscriptionsFromManifest(artifact, slice);
+
             if (entries.isEmpty()) {return Promise.unitPromise();}
-            var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildTopicSubscriptionPutCommand(artifact,
-                                                                                                                entry))
-                                         .toList();
+
+            var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionPutCommand(artifact,
+                                                                                                                 entry)).toList();
+
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} topic subscriptions for {}",
                                                                         entries.size(),
                                                                         artifact))
@@ -608,11 +625,13 @@ import org.slf4j.LoggerFactory;
                                                                       SubscriptionManifestEntry entry) {
             var key = TopicSubscriptionKey.topicSubscriptionKey(entry.topicName(), artifact, entry.methodName());
             var value = TopicSubscriptionValue.topicSubscriptionValue(ctx.self());
+
             return new KVCommand.Put<>(key, value);
         }
 
         private Promise<SliceNodeKey> unpublishTopicSubscriptions(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             return findLoadedSlice(artifact).map(ls -> doUnpublishTopicSubscriptions(artifact,
                                                                                      ls.slice()))
                                   .or(Promise.unitPromise())
@@ -620,11 +639,13 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<Unit> doUnpublishTopicSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readSubscriptionsFromManifest(slice);
+            var entries = readSubscriptionsFromManifest(artifact, slice);
+
             if (entries.isEmpty()) {return Promise.unitPromise();}
-            var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
-                                                                                                                   entry))
-                                         .toList();
+
+            var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
+                                                                                                                    entry)).toList();
+
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} topic subscriptions for {}",
                                                                         entries.size(),
                                                                         artifact))
@@ -636,12 +657,13 @@ import org.slf4j.LoggerFactory;
         private KVCommand<AetherKey> buildTopicSubscriptionRemoveCommand(Artifact artifact,
                                                                          SubscriptionManifestEntry entry) {
             var key = TopicSubscriptionKey.topicSubscriptionKey(entry.topicName(), artifact, entry.methodName());
+
             return new KVCommand.Remove<>(key);
         }
 
-        private record SubscriptionManifestEntry(String topicName, MethodName methodName){}
+        private record SubscriptionManifestEntry(String topicName, MethodName methodName) {}
 
-        private record ScheduledTaskManifestEntry(String configSection, MethodName methodName){}
+        private record ScheduledTaskManifestEntry(String configSection, MethodName methodName) {}
 
         private record ReactiveManifestEntry(String category,
                                              String method,
@@ -653,25 +675,32 @@ import org.slf4j.LoggerFactory;
             }
         }
 
-        @SuppressWarnings("JBCT-EX-01") private List<ReactiveManifestEntry> readReactiveBindingsFromManifest(Slice slice) {
+        @SuppressWarnings("JBCT-EX-01")
+        private List<ReactiveManifestEntry> readReactiveBindingsFromManifest(Slice slice) {
             var result = new ArrayList<ReactiveManifestEntry>();
             var classLoader = slice.getClass().getClassLoader();
+
             for (var iface : slice.getClass().getInterfaces()) {
                 if (iface == Slice.class) {continue;}
+
                 var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
                 readReactiveEntriesFromManifest(classLoader, manifestPath, result);
             }
+
             return result;
         }
 
-        @SuppressWarnings("JBCT-EX-01") private void readReactiveEntriesFromManifest(ClassLoader classLoader,
-                                                                                     String manifestPath,
-                                                                                     List<ReactiveManifestEntry> result) {
+        @SuppressWarnings("JBCT-EX-01")
+        private void readReactiveEntriesFromManifest(ClassLoader classLoader,
+                                                     String manifestPath,
+                                                     List<ReactiveManifestEntry> result) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
                 if (is == null) {return;}
+
                 var props = new Properties();
                 props.load(is);
                 var count = Integer.parseInt(props.getProperty("reactive.count", "0"));
+
                 for (int i = 0;i <count;i++) {
                     var prefix = "reactive." + i + ".";
                     var category = props.getProperty(prefix + "category", "");
@@ -684,25 +713,31 @@ import org.slf4j.LoggerFactory;
             }
         }
 
-        @SuppressWarnings("JBCT-EX-01") private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Slice slice) {
+        @SuppressWarnings("JBCT-EX-01")
+        private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Artifact artifact, Slice slice) {
             var reactive = readReactiveBindingsFromManifest(slice);
             var result = new ArrayList<SubscriptionManifestEntry>();
-            for (var entry : reactive) {if ("subscription".equals(entry.category())) {resolveTopicName(entry.config()).flatMap(topicName -> MethodName.methodName(entry.method())
-                                                                                                                                                                 .map(method -> new SubscriptionManifestEntry(topicName,
-                                                                                                                                                                                                              method)))
-                                                                                                      .option()
-                                                                                                      .onPresent(result::add);}}
+
+            for (var entry : reactive) {
+                if ("subscription".equals(entry.category())) {
+                    resolveTopicName(artifact, entry.config()).flatMap(topicName -> MethodName.methodName(entry.method()).map(method -> new SubscriptionManifestEntry(topicName,
+                                                                                                                                                                      method))).option().onPresent(result::add);
+                }
+            }
+
             return result;
         }
 
-        private Result<String> resolveTopicName(String configSection) {
-            return ConfigService.instance().toResult(Causes.cause("ConfigService not available for topic resolution"))
-                                         .flatMap(svc -> svc.config(configSection, TopicConfig.class))
-                                         .map(TopicConfig::topicName);
+        private Result<String> resolveTopicName(Artifact artifact, String configSection) {
+            return sliceConfigService(artifact).orElse(ConfigService::instance)
+                                     .toResult(Causes.cause("ConfigService not available for topic resolution"))
+                                     .flatMap(svc -> svc.config(configSection, TopicConfig.class))
+                                     .map(TopicConfig::topicName);
         }
 
         private Promise<SliceNodeKey> publishScheduledTasks(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             return findLoadedSlice(artifact).map(ls -> doPublishScheduledTasks(artifact,
                                                                                ls.slice()))
                                   .or(Promise.unitPromise())
@@ -711,12 +746,18 @@ import org.slf4j.LoggerFactory;
 
         private Promise<Unit> doPublishScheduledTasks(Artifact artifact, Slice slice) {
             var entries = readScheduledTasksFromManifest(slice);
+
             if (entries.isEmpty()) {return Promise.unitPromise();}
+
             var commands = new ArrayList<KVCommand<AetherKey>>();
-            for (var entry : entries) {resolveScheduleConfig(entry.configSection()).onPresent(config -> commands.add(buildScheduledTaskPutCommand(artifact,
-                                                                                                                                                  entry,
-                                                                                                                                                  config)));}
+
+            for (var entry : entries) {
+                resolveScheduleConfig(artifact, entry.configSection()).onPresent(config -> commands.add(buildScheduledTaskPutCommand(artifact,
+                                                                                                                                     entry,
+                                                                                                                                     config)));
+            }
             if (commands.isEmpty()) {return Promise.unitPromise();}
+
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
                                                                         commands.size(),
                                                                         artifact))
@@ -730,13 +771,15 @@ import org.slf4j.LoggerFactory;
                                                                   ScheduleConfig config) {
             var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
             var value = config.interval().isEmpty()
-                       ? ScheduledTaskValue.cronTask(ctx.self(), config.cron(), config.executionMode())
-                       : ScheduledTaskValue.intervalTask(ctx.self(), config.interval(), config.executionMode());
+                        ? ScheduledTaskValue.cronTask(ctx.self(), config.cron(), config.executionMode())
+                        : ScheduledTaskValue.intervalTask(ctx.self(), config.interval(), config.executionMode());
+
             return new KVCommand.Put<>(key, value);
         }
 
         private Promise<SliceNodeKey> unpublishScheduledTasks(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             return findLoadedSlice(artifact).map(ls -> doUnpublishScheduledTasks(artifact,
                                                                                  ls.slice()))
                                   .or(Promise.unitPromise())
@@ -745,10 +788,12 @@ import org.slf4j.LoggerFactory;
 
         private Promise<Unit> doUnpublishScheduledTasks(Artifact artifact, Slice slice) {
             var entries = readScheduledTasksFromManifest(slice);
+
             if (entries.isEmpty()) {return Promise.unitPromise();}
-            var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildScheduledTaskRemoveCommand(artifact,
-                                                                                                               entry))
-                                         .toList();
+
+            var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildScheduledTaskRemoveCommand(artifact,
+                                                                                                                entry)).toList();
+
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
                                                                         entries.size(),
                                                                         artifact))
@@ -760,27 +805,30 @@ import org.slf4j.LoggerFactory;
         private KVCommand<AetherKey> buildScheduledTaskRemoveCommand(Artifact artifact,
                                                                      ScheduledTaskManifestEntry entry) {
             var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
+
             return new KVCommand.Remove<>(key);
         }
 
-        private record ConfigUpdateManifestEntry(String configSection, String factoryClassName){}
+        private record ConfigUpdateManifestEntry(String configSection, String factoryClassName) {}
 
         private Promise<SliceNodeKey> registerAndNotifyConfig(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
             findLoadedSlice(artifact).onPresent(ls -> registerSliceForConfigUpdates(artifact, ls.slice()));
+
             return Promise.success(sliceKey);
         }
 
         private void registerSliceForConfigUpdates(Artifact artifact, Slice slice) {
             var entries = readConfigUpdateEntriesFromManifest(slice);
+
             if (entries.isEmpty()) {return;}
+
             var classLoader = slice.getClass().getClassLoader();
             var factoryClassName = entries.getFirst().factoryClassName();
             var sliceInstance = extractSliceInstance(slice);
             configNotificationManager.register(artifact, sliceInstance, classLoader, factoryClassName);
-            var sections = entries.stream().map(ConfigUpdateManifestEntry::configSection)
-                                         .toList();
-            configNotificationManager.notifyInitial(artifact, sections, buildConfigFacade());
+            var sections = entries.stream().map(ConfigUpdateManifestEntry::configSection).toList();
+            configNotificationManager.notifyInitial(artifact, sections, buildConfigFacade(artifact));
             log.debug("Registered slice {} for config updates on sections: {}", artifact, sections);
         }
 
@@ -793,34 +841,45 @@ import org.slf4j.LoggerFactory;
             return slice;
         }
 
-        @SuppressWarnings("JBCT-EX-01") private List<ConfigUpdateManifestEntry> readConfigUpdateEntriesFromManifest(Slice slice) {
+        @SuppressWarnings("JBCT-EX-01")
+        private List<ConfigUpdateManifestEntry> readConfigUpdateEntriesFromManifest(Slice slice) {
             var result = new ArrayList<ConfigUpdateManifestEntry>();
             var classLoader = slice.getClass().getClassLoader();
+
             for (var iface : slice.getClass().getInterfaces()) {
                 if (iface == Slice.class) {continue;}
+
                 var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
                 readConfigUpdateEntries(classLoader, manifestPath, result);
             }
+
             return result;
         }
 
-        @SuppressWarnings("JBCT-EX-01") private void readConfigUpdateEntries(ClassLoader classLoader,
-                                                                             String manifestPath,
-                                                                             List<ConfigUpdateManifestEntry> result) {
+        @SuppressWarnings("JBCT-EX-01")
+        private void readConfigUpdateEntries(ClassLoader classLoader,
+                                             String manifestPath,
+                                             List<ConfigUpdateManifestEntry> result) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
                 if (is == null) {return;}
+
                 var props = new Properties();
                 props.load(is);
                 var factoryClassName = props.getProperty("slice.factory", "");
+
                 if (factoryClassName.isEmpty()) {return;}
+
                 var count = Integer.parseInt(props.getProperty("reactive.count", "0"));
+
                 for (int i = 0;i <count;i++) {
                     var prefix = "reactive." + i + ".";
                     var category = props.getProperty(prefix + "category", "");
+
                     if ("config-update".equals(category)) {
                         var configSection = props.getProperty(prefix + "config");
-                        if (configSection != null) {result.add(new ConfigUpdateManifestEntry(configSection,
-                                                                                             factoryClassName));}
+                        if (configSection != null) {
+                            result.add(new ConfigUpdateManifestEntry(configSection, factoryClassName));
+                        }
                     }
                 }
             } catch (Exception e) {
@@ -828,27 +887,40 @@ import org.slf4j.LoggerFactory;
             }
         }
 
-        private ConfigFacade buildConfigFacade() {
-            return ConfigService.instance().map(org.pragmatica.aether.deployment.node.NodeDeploymentManager::configServiceToFacade)
-                                         .or(org.pragmatica.aether.deployment.node.NodeDeploymentManager.NO_OP_CONFIG);
+        private ConfigFacade buildConfigFacade(Artifact artifact) {
+            return sliceConfigService(artifact).orElse(ConfigService::instance)
+                                     .map(org.pragmatica.aether.deployment.node.NodeDeploymentManager::configServiceToFacade)
+                                     .or(org.pragmatica.aether.deployment.node.NodeDeploymentManager.NO_OP_CONFIG);
         }
 
-        @SuppressWarnings("JBCT-EX-01") private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
+        @SuppressWarnings("JBCT-EX-01")
+        private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
             var reactive = readReactiveBindingsFromManifest(slice);
             var result = new ArrayList<ScheduledTaskManifestEntry>();
-            for (var entry : reactive) {if ("scheduled".equals(entry.category())) {MethodName.methodName(entry.method()).map(method -> new ScheduledTaskManifestEntry(entry.config(),
-                                                                                                                                                                      method))
-                                                                                                        .option()
-                                                                                                        .onPresent(result::add);}}
+
+            for (var entry : reactive) {
+                if ("scheduled".equals(entry.category())) {
+                    MethodName.methodName(entry.method()).map(method -> new ScheduledTaskManifestEntry(entry.config(),
+                                                                                                       method)).option().onPresent(result::add);
+                }
+            }
+
             return result;
         }
 
-        private Option<ScheduleConfig> resolveScheduleConfig(String configSection) {
-            return ConfigService.instance().flatMap(svc -> svc.config(configSection, ScheduleConfig.class).option());
+        private Option<ScheduleConfig> resolveScheduleConfig(Artifact artifact, String configSection) {
+            return sliceConfigService(artifact).orElse(ConfigService::instance)
+                                     .flatMap(svc -> svc.config(configSection, ScheduleConfig.class)
+                                                        .onFailure(cause -> log.warn("Slice {} schedule config binding failed for section {}: {}",
+                                                                                     artifact,
+                                                                                     configSection,
+                                                                                     cause.message()))
+                                                        .option());
         }
 
         private Promise<SliceNodeKey> publishStreamSubscriptions(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             return findLoadedSlice(artifact).map(ls -> doPublishStreamSubscriptions(artifact,
                                                                                     ls.slice()))
                                   .or(Promise.unitPromise())
@@ -856,11 +928,13 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<Unit> doPublishStreamSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readStreamSubscriptionsFromManifest(slice);
+            var entries = readStreamSubscriptionsFromManifest(artifact, slice);
+
             if (entries.isEmpty()) {return Promise.unitPromise();}
-            var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildStreamSubscriptionPutCommand(artifact,
-                                                                                                                 entry))
-                                         .toList();
+
+            var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildStreamSubscriptionPutCommand(artifact,
+                                                                                                                  entry)).toList();
+
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} stream subscriptions for {}",
                                                                         entries.size(),
                                                                         artifact))
@@ -881,11 +955,13 @@ import org.slf4j.LoggerFactory;
                                                                         consumerGroup,
                                                                         entry.batchMode(),
                                                                         entry.eventType());
+
             return new KVCommand.Put<>(key, value);
         }
 
         private Promise<SliceNodeKey> unpublishStreamSubscriptions(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
+
             return findLoadedSlice(artifact).map(ls -> doUnpublishStreamSubscriptions(artifact,
                                                                                       ls.slice()))
                                   .or(Promise.unitPromise())
@@ -893,11 +969,13 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<Unit> doUnpublishStreamSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readStreamSubscriptionsFromManifest(slice);
+            var entries = readStreamSubscriptionsFromManifest(artifact, slice);
+
             if (entries.isEmpty()) {return Promise.unitPromise();}
-            var commands = entries.stream().<KVCommand<AetherKey>>map(entry -> buildStreamSubscriptionRemoveCommand(artifact,
-                                                                                                                    entry))
-                                         .toList();
+
+            var commands = entries.stream().<KVCommand<AetherKey>> map(entry -> buildStreamSubscriptionRemoveCommand(artifact,
+                                                                                                                     entry)).toList();
+
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} stream subscriptions for {}",
                                                                         entries.size(),
                                                                         artifact))
@@ -913,6 +991,7 @@ import org.slf4j.LoggerFactory;
                                                                   entry.configSection(),
                                                                   artifact,
                                                                   entry.methodName());
+
             return new KVCommand.Remove<>(key);
         }
 
@@ -920,30 +999,34 @@ import org.slf4j.LoggerFactory;
                                                        String configSection,
                                                        MethodName methodName,
                                                        boolean batchMode,
-                                                       String eventType){}
+                                                       String eventType) {}
 
-        @SuppressWarnings("JBCT-EX-01") private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Slice slice) {
+        @SuppressWarnings("JBCT-EX-01")
+        private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Artifact artifact,
+                                                                                          Slice slice) {
             var reactive = readReactiveBindingsFromManifest(slice);
             var result = new ArrayList<StreamSubscriptionManifestEntry>();
-            for (var entry : reactive) {if ("stream".equals(entry.category())) {
-                var batchMode = Boolean.parseBoolean(entry.getProperty("batch"));
-                var eventType = entry.getProperty("eventType");
-                resolveStreamName(entry.config()).flatMap(streamName -> MethodName.methodName(entry.method())
-                                                                                             .map(method -> new StreamSubscriptionManifestEntry(streamName,
-                                                                                                                                                entry.config(),
-                                                                                                                                                method,
-                                                                                                                                                batchMode,
-                                                                                                                                                eventType)))
-                                 .option()
-                                 .onPresent(result::add);
-            }}
+
+            for (var entry : reactive) {
+                if ("stream".equals(entry.category())) {
+                    var batchMode = Boolean.parseBoolean(entry.getProperty("batch"));
+                    var eventType = entry.getProperty("eventType");
+                    resolveStreamName(artifact, entry.config()).flatMap(streamName -> MethodName.methodName(entry.method()).map(method -> new StreamSubscriptionManifestEntry(streamName,
+                                                                                                                                                                              entry.config(),
+                                                                                                                                                                              method,
+                                                                                                                                                                              batchMode,
+                                                                                                                                                                              eventType))).option().onPresent(result::add);
+                }
+            }
+
             return result;
         }
 
-        private Result<String> resolveStreamName(String configSection) {
-            return ConfigService.instance().toResult(Causes.cause("ConfigService not available for stream name resolution"))
-                                         .flatMap(svc -> svc.config(configSection, StreamNameConfig.class))
-                                         .map(StreamNameConfig::streamName);
+        private Result<String> resolveStreamName(Artifact artifact, String configSection) {
+            return sliceConfigService(artifact).orElse(ConfigService::instance)
+                                     .toResult(Causes.cause("ConfigService not available for stream name resolution"))
+                                     .flatMap(svc -> svc.config(configSection, StreamNameConfig.class))
+                                     .map(StreamNameConfig::streamName);
         }
 
         private void handleFailed(SliceNodeKey sliceKey) {
@@ -951,38 +1034,31 @@ import org.slf4j.LoggerFactory;
         }
 
         private void handleUnloading(SliceNodeKey sliceKey) {
-            transitionTo(sliceKey, SliceState.UNLOADING).flatMap(this::unpublishEndpoints)
-                        .flatMap(this::unpublishTopicSubscriptions)
-                        .flatMap(this::unpublishStreamSubscriptions)
-                        .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
-                        .flatMap(this::unpublishScheduledTasks)
-                        .flatMap(this::unpublishHttpRoutes)
-                        .withSuccess(this::unregisterSliceFromInvocation)
-                        .flatMap(this::unloadSliceWithTimeout)
-                        .flatMap(this::deleteSliceNodeKey)
-                        .withSuccess(this::removeFromDeployments)
-                        .withFailure(cause -> handleUnloadFailure(sliceKey, cause));
+            transitionTo(sliceKey, SliceState.UNLOADING).flatMap(this::unpublishEndpoints).flatMap(this::unpublishTopicSubscriptions).flatMap(this::unpublishStreamSubscriptions).flatMap(this::unpublishScheduledTasks).flatMap(this::unpublishHttpRoutes).withSuccess(this::unregisterSliceFromInvocation).flatMap(this::unloadSliceWithTimeout).flatMap(this::deleteSliceNodeKey).withSuccess(this::removeFromDeployments).withFailure(cause -> handleUnloadFailure(sliceKey,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                       cause));
         }
 
         private Promise<SliceNodeKey> unloadSliceWithTimeout(SliceNodeKey sliceKey) {
-            return ctx.configuration().timeoutFor(SliceState.UNLOADING)
-                                    .async()
-                                    .flatMap(timeout -> ctx.sliceStore().unloadSlice(sliceKey.artifact())
-                                                                      .timeout(timeout))
-                                    .map(_ -> sliceKey);
+            return ctx.configuration()
+                      .timeoutFor(SliceState.UNLOADING)
+                      .async()
+                      .flatMap(timeout -> ctx.sliceStore()
+                                             .unloadSlice(sliceKey.artifact())
+                                             .timeout(timeout))
+                      .map(_ -> sliceKey);
         }
 
         private void handleUnloadFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Failed to unload {}: {}", sliceKey.artifact(), cause.message());
-            deleteSliceNodeKey(sliceKey).onSuccess(this::removeFromDeployments)
-                              .onFailure(deleteCause -> log.error("Failed to delete slice-node-key {} after unload failure: {}",
-                                                                  sliceKey,
-                                                                  deleteCause.message()));
+            deleteSliceNodeKey(sliceKey).onSuccess(this::removeFromDeployments).onFailure(deleteCause -> log.error("Failed to delete slice-node-key {} after unload failure: {}",
+                                                                                                                   sliceKey,
+                                                                                                                   deleteCause.message()));
         }
 
         private Promise<SliceNodeKey> deleteSliceNodeKey(SliceNodeKey sliceKey) {
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
             KVCommand<AetherKey> removeArtifact = new KVCommand.Remove<>(nodeArtifactKey);
+
             return applyWithRetry(List.of(removeArtifact),
                                   0).map(_ -> sliceKey)
                                  .onSuccess(_ -> log.debug("Deleted node-artifact-key {} from KV-Store", nodeArtifactKey));
@@ -990,234 +1066,6 @@ import org.slf4j.LoggerFactory;
 
         private Promise<SliceNodeKey> transitionTo(SliceNodeKey sliceKey, SliceState newState) {
             return updateSliceState(sliceKey, SliceNodeValue.sliceNodeValue(newState));
-        }
-
-        /// Spec event-stream-namespaces §8.5: piggyback per-stream refcount increments on the same
-        /// consensus round as the SliceNodeValue ACTIVE put, so the refcount mutation is
-        /// consensus-ordered relative to the slice state mutation.
-        private Promise<SliceNodeKey> transitionToActiveWithStreamRefs(SliceNodeKey sliceKey) {
-            var refCommands = buildStreamRefCommands(sliceKey, RefcountAction.ACQUIRE);
-            return updateSliceStateWithExtraCommands(sliceKey,
-                                                       SliceNodeValue.sliceNodeValue(SliceState.ACTIVE),
-                                                       refCommands);
-        }
-
-        /// Mirror of [#transitionToActiveWithStreamRefs] for transitions OUT of ACTIVE. Decrements
-        /// (or removes when refcount drops to zero) the per-stream refcount entries this slice
-        /// instance had been holding.
-        private Promise<Unit> releaseStreamReferences(SliceNodeKey sliceKey) {
-            var commands = buildStreamRefCommands(sliceKey, RefcountAction.RELEASE);
-            if (commands.isEmpty()) {return Promise.unitPromise();}
-            return applyWithRetry(commands, 0)
-                       .onSuccess(_ -> log.debug("Released {} stream refs for {}",
-                                                  commands.size(),
-                                                  sliceKey.artifact()))
-                       .onFailure(cause -> log.warn("Failed to release stream refs for {}: {}",
-                                                     sliceKey.artifact(),
-                                                     cause.message()));
-        }
-
-        private enum RefcountAction { ACQUIRE, RELEASE }
-
-        private List<KVCommand<AetherKey>> buildStreamRefCommands(SliceNodeKey sliceKey,
-                                                                    RefcountAction action) {
-            var artifact = sliceKey.artifact();
-            var loaded = findLoadedSlice(artifact);
-            if (loaded.isEmpty()) {return List.of();}
-            var slice = loaded.unwrap().slice();
-            var declarations = readStreamRoleDeclarationsFromManifest(slice);
-            if (declarations.isEmpty()) {return List.of();}
-            var bindings = lookupStreamBindings(sliceKey);
-            if (bindings.isEmpty()) {return List.of();}
-            var commands = new ArrayList<KVCommand<AetherKey>>();
-            for (var declaration : declarations) {
-                bindings.flatMap(b -> b.addressFor(declaration.alias()))
-                              .onPresent(address -> appendRefCommand(commands, address, action));
-            }
-            return List.copyOf(commands);
-        }
-
-        private void appendRefCommand(List<KVCommand<AetherKey>> sink,
-                                       StreamAddress address,
-                                       RefcountAction action) {
-            var current = readStreamRegistryEntry(address);
-            switch (action) {
-                case ACQUIRE -> sink.add(buildAcquireCommand(address, current));
-                case RELEASE -> current.onPresent(entry -> sink.add(buildReleaseCommand(address, entry)));
-            }
-        }
-
-        private KVCommand<AetherKey> buildAcquireCommand(StreamAddress address,
-                                                          Option<StreamRegistryEntry> current) {
-            var next = current.map(StreamRegistryEntry::incrementRef)
-                                     .or(StreamRegistryEntry.blueprint(address,
-                                                                          RetentionPolicy.retentionPolicy(),
-                                                                          Instant.ofEpochMilli(ctx.nowMs())));
-            return new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
-                                        StreamRegistryValue.streamRegistryValue(next));
-        }
-
-        private static KVCommand<AetherKey> buildReleaseCommand(StreamAddress address, StreamRegistryEntry entry) {
-            if (entry.refCount() <= 1) {
-                return new KVCommand.Remove<>(StreamRegistryKey.streamRegistryKey(address));
-            }
-            return new KVCommand.Put<>(StreamRegistryKey.streamRegistryKey(address),
-                                        StreamRegistryValue.streamRegistryValue(entry.decrementRef()));
-        }
-
-        private Option<StreamRegistryEntry> readStreamRegistryEntry(StreamAddress address) {
-            return ctx.kvStore().get(StreamRegistryKey.streamRegistryKey(address))
-                              .filter(StreamRegistryValue.class::isInstance)
-                              .map(StreamRegistryValue.class::cast)
-                              .map(StreamRegistryValue::entry);
-        }
-
-        private Option<BlueprintStreamBindingsValue> lookupStreamBindings(SliceNodeKey sliceKey) {
-            return lookupOwningBlueprintId(sliceKey).flatMap(this::lookupBindingsFor);
-        }
-
-        private Option<BlueprintStreamBindingsValue> lookupBindingsFor(BlueprintId blueprintId) {
-            return ctx.kvStore().get(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprintId))
-                              .filter(BlueprintStreamBindingsValue.class::isInstance)
-                              .map(BlueprintStreamBindingsValue.class::cast);
-        }
-
-        private Option<BlueprintId> lookupOwningBlueprintId(SliceNodeKey sliceKey) {
-            return ctx.kvStore().get(SliceTargetKey.sliceTargetKey(sliceKey.artifact().base()))
-                              .filter(SliceTargetValue.class::isInstance)
-                              .map(SliceTargetValue.class::cast)
-                              .flatMap(SliceTargetValue::owningBlueprint);
-        }
-
-        /// Per-slice (alias, role) pair extracted from the slice manifest. The `role` field is
-        /// retained even though refcount accounting (§8.1) treats producer and consumer references
-        /// uniformly — future RBAC work (issue #205) will read it without a manifest reread.
-        private record StreamRoleDeclaration(String alias, @SuppressWarnings("unused") String role) {}
-
-        private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Slice slice) {
-            var result = new ArrayList<StreamRoleDeclaration>();
-            var classLoader = slice.getClass().getClassLoader();
-            for (var iface : slice.getClass().getInterfaces()) {
-                if (iface == Slice.class) {continue;}
-                var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
-                loadManifestProperties(classLoader, manifestPath)
-                        .onSuccess(propsOpt -> propsOpt.onPresent(props -> {
-                            appendRoleEntries(props, "stream.publisher.", "stream.publishers.count", "producer", result);
-                            appendRoleEntries(props, "stream.access.", "stream.access.count", "consumer", result);
-                        }))
-                        .onFailure(cause -> log.debug("Could not read stream role declarations from manifest {}: {}",
-                                                      manifestPath, cause.message()));
-            }
-            return result;
-        }
-
-        /// Adapter Leaf: load a manifest properties file from the slice classloader. Wraps the
-        /// underlying [java.io.IOException] with a [ManifestLoadFailure] cause so the caller stays
-        /// in the [Result] monad. Absent resource → [Result#success] of [Option#none]; present →
-        /// `success(some(props))`; IO error → `failure`.
-        private static Result<Option<Properties>> loadManifestProperties(ClassLoader classLoader, String manifestPath) {
-            return Result.lift(ManifestLoadFailure::manifestLoadFailure, () -> readManifestPropertiesUnchecked(classLoader, manifestPath));
-        }
-
-        private static Option<Properties> readManifestPropertiesUnchecked(ClassLoader classLoader, String manifestPath) throws java.io.IOException {
-            try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                if (is == null) {return Option.none();}
-                var props = new Properties();
-                props.load(is);
-                return Option.some(props);
-            }
-        }
-
-        private record ManifestLoadFailure(Throwable cause) implements org.pragmatica.lang.Cause {
-            static ManifestLoadFailure manifestLoadFailure(Throwable cause) {
-                return new ManifestLoadFailure(cause);
-            }
-
-            @Override public String message() {
-                return "Manifest load failure: " + cause.getMessage();
-            }
-        }
-
-        private static void appendRoleEntries(Properties props,
-                                               String prefix,
-                                               String countKey,
-                                               String defaultRole,
-                                               List<StreamRoleDeclaration> sink) {
-            int count = parseManifestCount(props.getProperty(countKey));
-            for (int i = 0; i < count; i++) {
-                var configSection = props.getProperty(prefix + i + ".config");
-                if (configSection == null || configSection.isEmpty()) {continue;}
-                var alias = aliasOf(configSection);
-                if (alias.isEmpty()) {continue;}
-                var role = props.getProperty(prefix + i + ".role", defaultRole);
-                sink.add(new StreamRoleDeclaration(alias, role));
-            }
-        }
-
-        private static int parseManifestCount(String raw) {
-            if (raw == null || raw.isEmpty()) {return 0;}
-            try { return Integer.parseInt(raw.trim()); } catch (NumberFormatException _) { return 0; }
-        }
-
-        private static String aliasOf(String configSection) {
-            var prefix = "streams.";
-            return configSection.startsWith(prefix)
-                  ? configSection.substring(prefix.length())
-                  : "";
-        }
-
-        private Promise<SliceNodeKey> updateSliceStateWithExtraCommands(SliceNodeKey sliceKey,
-                                                                         SliceNodeValue value,
-                                                                         List<KVCommand<AetherKey>> extraCommands) {
-            return updateSliceStateWithExtraCommandsAndRetry(sliceKey, value, extraCommands, 0);
-        }
-
-        private Promise<SliceNodeKey> updateSliceStateWithExtraCommandsAndRetry(SliceNodeKey sliceKey,
-                                                                                  SliceNodeValue value,
-                                                                                  List<KVCommand<AetherKey>> extraCommands,
-                                                                                  int attempt) {
-            log.debug("updateSliceStateWithExtraCommands: {} -> {} (attempt {}, +{} extras)",
-                      sliceKey,
-                      value.state(),
-                      attempt,
-                      extraCommands.size());
-            var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
-            var transitionedAt = value.state().isTransitional()
-                                ? ctx.nowMs()
-                                : 0L;
-            var nodeArtifactValue = value.state() == SliceState.FAILED
-                                   ? new NodeArtifactValue(SliceState.FAILED,
-                                                           value.failureReason(),
-                                                           value.fatal(),
-                                                           0,
-                                                           List.of(),
-                                                           0L)
-                                   : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
-            var commands = new ArrayList<KVCommand<AetherKey>>();
-            commands.add(new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue));
-            commands.addAll(extraCommands);
-            return ctx.cluster().apply(commands)
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .map(_ -> sliceKey)
-                              .onSuccess(_ -> log.debug("State+refs update succeeded: {} -> {}",
-                                                          sliceKey.artifact(),
-                                                          value.state()))
-                              .orElse(() -> retryConsensusBatch(sliceKey, value, extraCommands, attempt));
-        }
-
-        private Promise<SliceNodeKey> retryConsensusBatch(SliceNodeKey sliceKey,
-                                                            SliceNodeValue value,
-                                                            List<KVCommand<AetherKey>> extraCommands,
-                                                            int attempt) {
-            if (attempt >= CONSENSUS_MAX_RETRIES) {
-                log.warn("Consensus batch failed after {} retries for {} -> {}",
-                          CONSENSUS_MAX_RETRIES,
-                          sliceKey.artifact(),
-                          value.state());
-                return Causes.cause("Consensus batch timed out after " + CONSENSUS_MAX_RETRIES + " retries")
-                                   .promise();
-            }
-            return updateSliceStateWithExtraCommandsAndRetry(sliceKey, value, extraCommands, attempt + 1);
         }
 
         private Promise<SliceNodeKey> transitionToFailed(SliceNodeKey sliceKey, Cause cause) {
@@ -1246,9 +1094,11 @@ import org.slf4j.LoggerFactory;
                          writeCause.message());
                 SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey, originalCause, attempt + 1),
                                          ctx.transitionRetryDelay());
-            } else {log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
-                              sliceKey.artifact(),
-                              MAX_TRANSITION_RETRIES);}
+            } else {
+                log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
+                          sliceKey.artifact(),
+                          MAX_TRANSITION_RETRIES);
+            }
         }
 
         private void removeFromDeployments(SliceNodeKey sliceKey) {
@@ -1268,24 +1118,26 @@ import org.slf4j.LoggerFactory;
                       attempt);
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
             var transitionedAt = value.state().isTransitional()
-                                ? ctx.nowMs()
-                                : 0L;
+                                 ? ctx.nowMs()
+                                 : 0L;
             var nodeArtifactValue = value.state() == SliceState.FAILED
-                                   ? new NodeArtifactValue(SliceState.FAILED,
-                                                           value.failureReason(),
-                                                           value.fatal(),
-                                                           0,
-                                                           List.of(),
-                                                           0L)
-                                   : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
+                                    ? new NodeArtifactValue(SliceState.FAILED,
+                                                            value.failureReason(),
+                                                            value.fatal(),
+                                                            0,
+                                                            List.of(),
+                                                            0L)
+                                    : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
             KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
-            return ctx.cluster().apply(List.of(putArtifact))
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .map(_ -> sliceKey)
-                              .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
-                                                        sliceKey.artifact(),
-                                                        value.state()))
-                              .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
+
+            return ctx.cluster()
+                      .apply(List.of(putArtifact))
+                      .timeout(CONSENSUS_OPERATION_TIMEOUT)
+                      .map(_ -> sliceKey)
+                      .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
+                                                sliceKey.artifact(),
+                                                value.state()))
+                      .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
         }
 
         private Promise<SliceNodeKey> retryConsensusOperation(SliceNodeKey sliceKey,
@@ -1296,9 +1148,9 @@ import org.slf4j.LoggerFactory;
                          CONSENSUS_MAX_RETRIES,
                          sliceKey.artifact(),
                          value.state());
-                return Causes.cause("Consensus operation timed out after " + CONSENSUS_MAX_RETRIES + " retries")
-                                   .promise();
+                return Causes.cause("Consensus operation timed out after " + CONSENSUS_MAX_RETRIES + " retries").promise();
             }
+
             log.debug("Retrying consensus operation for {} -> {} (attempt {})",
                       sliceKey.artifact(),
                       value.state(),
@@ -1307,17 +1159,20 @@ import org.slf4j.LoggerFactory;
         }
 
         private Promise<Unit> applyWithRetry(List<KVCommand<AetherKey>> commands, int attempt) {
-            return ctx.cluster().apply(commands)
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .mapToUnit()
-                              .orElse(() -> retryApply(commands, attempt));
+            return ctx.cluster()
+                      .apply(commands)
+                      .timeout(CONSENSUS_OPERATION_TIMEOUT)
+                      .mapToUnit()
+                      .orElse(() -> retryApply(commands, attempt));
         }
 
         private Promise<Unit> retryApply(List<KVCommand<AetherKey>> commands, int attempt) {
             if (attempt >= CONSENSUS_MAX_RETRIES) {
                 log.warn("Consensus batch failed after {} retries ({} commands)", CONSENSUS_MAX_RETRIES, commands.size());
+
                 return Causes.cause("Consensus batch timed out after " + CONSENSUS_MAX_RETRIES + " retries").promise();
             }
+
             log.debug("Retrying consensus batch ({} commands, attempt {}/{})",
                       commands.size(),
                       attempt + 1,
@@ -1333,16 +1188,20 @@ import org.slf4j.LoggerFactory;
         public List<SuspendedSlice> suspendSlices() {
             log.warn("Suspending {} slices due to quorum loss (keeping loaded in memory)", deployments.size());
             var suspended = new ArrayList<SuspendedSlice>();
+
             for (var entry : deployments.entrySet()) {
                 var sliceKey = entry.getKey();
                 var deployment = entry.getValue();
+
                 if (deployment.state() == SliceState.ACTIVE) {
                     log.debug("Suspending active slice {}", sliceKey.artifact());
                     suspendSlice(sliceKey);
                     suspended.add(SuspendedSlice.suspendedSlice(sliceKey, deployment));
                 } else {log.debug("Slice {} in state {} - not suspending", sliceKey.artifact(), deployment.state());}
             }
+
             log.debug("Suspended {} active slices, ready for reactivation", suspended.size());
+
             return suspended;
         }
 
@@ -1356,12 +1215,16 @@ import org.slf4j.LoggerFactory;
             log.debug("Unpublished HTTP routes for suspended slice {}", sliceKey.artifact());
         }
 
-        @Contract public void reactivateSuspendedSlices(List<SuspendedSlice> suspended) {
+        @Contract
+        public void reactivateSuspendedSlices(List<SuspendedSlice> suspended) {
             if (suspended.isEmpty()) {
                 log.debug("No suspended slices to reactivate");
+
                 return;
             }
+
             log.info("Reactivating {} suspended slices after quorum restored", suspended.size());
+
             for (var suspendedSlice : suspended) {reactivateSingleSuspendedSlice(suspendedSlice);}
         }
 
@@ -1370,52 +1233,55 @@ import org.slf4j.LoggerFactory;
             var deployment = suspendedSlice.deployment();
             deployments.put(sliceKey, deployment);
             var loadedSlice = findLoadedSlice(sliceKey.artifact());
+
             if (loadedSlice.isEmpty()) {
                 log.warn("Suspended slice {} no longer in SliceStore, skipping reactivation", sliceKey.artifact());
                 deployments.remove(sliceKey);
+
                 return;
             }
+
             log.debug("Reactivating suspended slice {}", sliceKey.artifact());
-            registerSliceForInvocation(sliceKey).flatMap(this::publishRoutesIfPresent)
-                                      .flatMap(key -> publishEndpoints(key).map(_ -> key))
-                                      .flatMap(this::publishTopicSubscriptions)
-                                      .flatMap(this::publishScheduledTasks)
-                                      .onSuccess(_ -> log.debug("Reactivated slice {}",
-                                                                sliceKey.artifact()))
-                                      .onFailure(cause -> handleReactivationFailure(sliceKey, cause));
+            registerSliceForInvocation(sliceKey).flatMap(this::publishRoutesIfPresent).flatMap(key -> publishEndpoints(key).map(_ -> key)).flatMap(this::publishTopicSubscriptions).flatMap(this::publishScheduledTasks).onSuccess(_ -> log.debug("Reactivated slice {}",
+                                                                                                                                                                                                                                                  sliceKey.artifact())).onFailure(cause -> handleReactivationFailure(sliceKey,
+                                                                                                                                                                                                                                                                                                                     cause));
         }
 
-        @Contract private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
+        @Contract
+        private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Failed to reactivate slice {}: {}", sliceKey.artifact(), cause.message());
             unregisterSliceFromInvocation(sliceKey);
-            unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions)
-                              .flatMap(this::unpublishScheduledTasks)
-                              .flatMap(this::unpublishHttpRoutes);
+            unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions).flatMap(this::unpublishScheduledTasks).flatMap(this::unpublishHttpRoutes);
             deployments.remove(sliceKey);
         }
 
-        @Contract public void deactivateAllSlices() {
+        @Contract
+        public void deactivateAllSlices() {
             log.warn("Deactivating all {} slices due to quorum loss", deployments.size());
+
             for (var entry : deployments.entrySet()) {
                 var sliceKey = entry.getKey();
                 var deployment = entry.getValue();
+
                 if (deployment.state() == SliceState.ACTIVE) {forceCleanupSlice(sliceKey);}
             }
+
             deployments.clear();
         }
     }
 
     record Leaving(NodeDeploymentContext ctx, DrainReason reason, List<SuspendedSlice> suspendedAtEntry) implements NodeDeploymentState {
-        @Override public void onEntry() {
+        @Override
+        public void onEntry() {
             LOG.info("Node {} entering Leaving state (reason={}); suspending {} slices",
                      ctx.self().id(),
                      reason,
                      suspendedAtEntry.size());
         }
 
-        @Override public void handle(ClusterFsmEvent event,
-                                     TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
             }

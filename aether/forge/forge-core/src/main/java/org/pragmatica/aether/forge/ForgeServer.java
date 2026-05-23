@@ -354,11 +354,11 @@ import org.slf4j.LoggerFactory;
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
-        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + leaderPort + "/api/blueprint/deploy"))
+        var request = HttpRequest.newBuilder().uri(URI.create("http://localhost:" + leaderPort + "/api/blueprints/deploy"))
                                             .header("Content-Type", "application/json")
                                             .POST(HttpRequest.BodyPublishers.ofString(body))
                                             .build();
-        log.info("Deploying blueprint by coordinates: POST /api/blueprint/deploy — {}", artifactCoords);
+        log.info("Deploying blueprint by coordinates: POST /api/blueprints/deploy — {}", artifactCoords);
         http.sendString(request).await(TimeSpan.timeSpan(10).seconds())
                        .onSuccess(result -> handleDeployResponse(result, artifactCoords))
                        .onFailure(cause -> log.error("Failed to deploy blueprint: {}",

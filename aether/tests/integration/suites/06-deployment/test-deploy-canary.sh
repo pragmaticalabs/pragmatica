@@ -15,7 +15,7 @@ BLUEPRINT_V2="org.pragmatica.aether.example:url-shortener:1.0.1"
 DEPLOYMENT_ID=""
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }
@@ -46,10 +46,27 @@ test_canary_list() {
 test_canary_promote() {
     assert_ne "$DEPLOYMENT_ID" "" "Have deployment ID"
     deploy_promote "$DEPLOYMENT_ID"
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "promote did not quiesce"
-    local status_result
-    status_result=$(deploy_status "$DEPLOYMENT_ID" 2>/dev/null || echo "")
-    log_info "Deployment status after promote: $status_result"
+    if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then
+        log_fail "Canary promote of ${DEPLOYMENT_ID} did not quiesce within 30s"
+        return 1
+    fi
+    # Strict post-promote state check. Canary promote() either advances the stage
+    # (state=ROUTING) when intermediate stages remain, or transitions to PROMOTING
+    # when ALL_NEW is reached (DeploymentManagerImpl.transitionForPromote). Accept
+    # the union of legal forward states; PROMOTING may async-advance to
+    # DRAINING/COMPLETED before this assertion observes it.
+    local status_result state
+    status_result=$(deploy_status "$DEPLOYMENT_ID")
+    state=$(json_value "$status_result" "state")
+    case "$state" in
+        ROUTING|PROMOTING|DRAINING|COMPLETED)
+            log_pass "Canary promote of ${DEPLOYMENT_ID} reached post-promote state=${state}"
+            ;;
+        *)
+            log_fail "Canary promote of ${DEPLOYMENT_ID} did not reach a post-promote state — got state='${state}'; deploy_status: $(printf '%s' "$status_result" | head -c 500)"
+            return 1
+            ;;
+    esac
 }
 
 test_canary_complete() {
@@ -73,7 +90,7 @@ cleanup() {
     # Restore baseline v1.0.0 ACTIVE so the next test (blue-green / rolling) can
     # cleanly upgrade to v1.0.1. Without this, canary's `deploy_complete` leaves
     # v1.0.1 ACTIVE and the next `deploy_start v1.0.1` returns 500 "already active".
-    # `/api/blueprint/deploy` is the redeployment-safe endpoint (downgrade allowed).
+    # `/api/blueprints/deploy` is the redeployment-safe endpoint (downgrade allowed).
     deploy_cleanup || true
     deploy_blueprint "$BLUEPRINT_V1" >/dev/null 2>&1 || \
         log_warn "cleanup: failed to revert active version to ${BLUEPRINT_V1}"

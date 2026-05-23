@@ -7,7 +7,8 @@ package org.pragmatica.aether.worker.governor;
 import org.pragmatica.consensus.NodeId;
 
 
-@SuppressWarnings("JBCT-STY-04") public sealed interface GovernorState {
+@SuppressWarnings("JBCT-STY-04")
+public sealed interface GovernorState {
     record Governor(NodeId self) implements GovernorState {
         public static Governor governor(NodeId self) {
             return new Governor(self);

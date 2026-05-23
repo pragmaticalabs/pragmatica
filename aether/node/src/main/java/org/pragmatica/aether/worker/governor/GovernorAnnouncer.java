@@ -32,9 +32,15 @@ import org.slf4j.LoggerFactory;
 public interface GovernorAnnouncer {
     TimeSpan DEFAULT_REANNOUNCE_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
-    @Contract void start();
-    @Contract void stop();
-    @Contract void onMembershipChange(List<SwimMember> swimMembers);
+    @Contract
+    void start();
+
+    @Contract
+    void stop();
+
+    @Contract
+    void onMembershipChange(List<SwimMember> swimMembers);
+
     boolean isGovernor();
     Option<NodeId> currentGovernor();
 
@@ -90,50 +96,65 @@ record GovernorAnnouncerRecord(NodeId self,
                                CancellableTask periodicTask) implements GovernorAnnouncer {
     private static final Logger log = LoggerFactory.getLogger(GovernorAnnouncerRecord.class);
 
-    @Contract@Override public void start() {
+    @Contract
+    @Override
+    public void start() {
         started.set(true);
     }
 
-    @Contract@Override public void stop() {
+    @Contract
+    @Override
+    public void stop() {
         started.set(false);
         periodicTask.cancel();
     }
 
-    @Override public boolean isGovernor() {
-        return currentGovernorRef.get().filter(self::equals)
-                                     .isPresent();
+    @Override
+    public boolean isGovernor() {
+        return currentGovernorRef.get()
+                                 .filter(self::equals)
+                                 .isPresent();
     }
 
-    @Override public Option<NodeId> currentGovernor() {
+    @Override
+    public Option<NodeId> currentGovernor() {
         return currentGovernorRef.get();
     }
 
-    @Contract@Override public void onMembershipChange(List<SwimMember> swimMembers) {
+    @Contract
+    @Override
+    public void onMembershipChange(List<SwimMember> swimMembers) {
         if (!started.get()) {return;}
+
         var previous = currentGovernorRef.get();
         var elected = GovernorElection.evaluateElection(self, swimMembers, previous);
-        var aliveMembers = swimMembers.stream().filter(m -> m.state() == SwimMember.MemberState.ALIVE)
-                                             .map(SwimMember::nodeId)
-                                             .toList();
+        var aliveMembers = swimMembers.stream().filter(m -> m.state() == SwimMember.MemberState.ALIVE).map(SwimMember::nodeId).toList();
         lastAliveMembers.set(List.copyOf(aliveMembers));
-        switch (elected){
+
+        switch (elected) {
             case GovernorState.Governor g -> onSelfElected(previous, aliveMembers);
             case GovernorState.Follower f -> onFollowerElected(previous, f.governorId(), aliveMembers);
         }
     }
 
-    @Contract private void onSelfElected(Option<NodeId> previous, List<NodeId> aliveMembers) {
+    @Contract
+    private void onSelfElected(Option<NodeId> previous, List<NodeId> aliveMembers) {
         if (aliveMembers.isEmpty()) {
             log.debug("Self elected but community has no alive members — skipping announcement");
+
             return;
         }
+
         currentGovernorRef.set(Option.some(self));
+
         if (previous.filter(self::equals).isPresent()) {return;}
+
         writeGovernorChange(aliveMembers);
         startPeriodicReannouncement();
     }
 
-    @Contract private void onFollowerElected(Option<NodeId> previous, NodeId governorId, List<NodeId> aliveMembers) {
+    @Contract
+    private void onFollowerElected(Option<NodeId> previous, NodeId governorId, List<NodeId> aliveMembers) {
         currentGovernorRef.set(Option.some(governorId));
         if (previous.filter(self::equals).isPresent()) {
             periodicTask.cancel();
@@ -141,7 +162,8 @@ record GovernorAnnouncerRecord(NodeId self,
         }
     }
 
-    @Contract private void writeGovernorChange(List<NodeId> aliveMembers) {
+    @Contract
+    private void writeGovernorChange(List<NodeId> aliveMembers) {
         var priorValue = lastAnnouncement.get();
         var updated = priorValue.withGovernorChange(self,
                                                     aliveMembers,
@@ -151,46 +173,57 @@ record GovernorAnnouncerRecord(NodeId self,
         applyAnnouncement(updated, "governor-change");
     }
 
-    @Contract private void writeReannouncement() {
+    @Contract
+    private void writeReannouncement() {
         var current = lastAnnouncement.get();
         var refreshed = current.withMembers(lastAliveMembers.get(), tcpAddressSupplier.get());
         applyAnnouncement(refreshed, "reannounce");
     }
 
-    @Contract private void writeDissolved() {
+    @Contract
+    private void writeDissolved() {
         var current = lastAnnouncement.get();
         var dissolved = current.withDissolved();
         applyAnnouncement(dissolved, "dissolved");
     }
 
-    @Contract private void applyAnnouncement(GovernorAnnouncementValue value, String reason) {
+    @Contract
+    private void applyAnnouncement(GovernorAnnouncementValue value, String reason) {
         var communityId = communityIdSupplier.get();
+
         if (communityId == null || communityId.isEmpty()) {
             log.warn("Cannot announce governor: communityId is blank ({})", reason);
+
             return;
         }
+
         var key = GovernorAnnouncementKey.forCommunity(communityId);
         var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-        cluster.apply(List.<KVCommand<AetherKey>>of(command)).onFailure(cause -> log.warn("Failed to write GovernorAnnouncementKey({}) [{}]: {}",
-                                                                                          communityId,
-                                                                                          reason,
-                                                                                          cause.message()))
-                     .onSuccess(_ -> lastAnnouncement.set(value));
+        cluster.apply(List.<KVCommand<AetherKey>> of(command)).onFailure(cause -> log.warn("Failed to write GovernorAnnouncementKey({}) [{}]: {}",
+                                                                                           communityId,
+                                                                                           reason,
+                                                                                           cause.message())).onSuccess(_ -> lastAnnouncement.set(value));
     }
 
-    @Contract private void startPeriodicReannouncement() {
+    @Contract
+    private void startPeriodicReannouncement() {
         periodicTask.cancel();
         periodicTask.set(SharedScheduler.scheduleAtFixedRate(this::tickReannounce, reannounceInterval));
     }
 
-    @Contract private void tickReannounce() {
+    @Contract
+    private void tickReannounce() {
         if (!started.get() || !isGovernor()) {return;}
+
         var alive = lastAliveMembers.get();
+
         if (alive.isEmpty()) {
             writeDissolved();
             periodicTask.cancel();
+
             return;
         }
+
         writeReannouncement();
     }
 }

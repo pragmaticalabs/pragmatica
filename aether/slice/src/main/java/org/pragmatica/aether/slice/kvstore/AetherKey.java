@@ -438,6 +438,63 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
+    /// Phase 1 step J — observability atom mirroring the in-process `JOIN_DEADLINE`
+    /// scheduler entry the leader's `MembershipFsm` arms when a peer enters JOINING.
+    /// Replicated via Rabia so a new leader on takeover can reconstruct the deadline from
+    /// KV state instead of relying on the prior leader's in-memory scheduler. The atom is
+    /// pure observability — the scheduler is still the trigger; the KV `Remove` on
+    /// JOINING-exit is what stops the new leader from re-arming a stale timer.
+    record JoinDeadlineKey(NodeId nodeId) implements AetherKey {
+        private static final String PREFIX = "join-deadline/";
+
+        @Override public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static JoinDeadlineKey joinDeadlineKey(NodeId nodeId) {
+            return new JoinDeadlineKey(nodeId);
+        }
+
+        public static Result<JoinDeadlineKey> joinDeadlineKey(String key) {
+            if (!key.startsWith(PREFIX)) {return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            var nodeIdPart = key.substring(PREFIX.length());
+            if (nodeIdPart.isEmpty()) {return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            return NodeId.nodeId(nodeIdPart).map(JoinDeadlineKey::new);
+        }
+    }
+
+    /// Phase 1 step J — observability atom mirroring the in-process `DRAIN_DEADLINE`
+    /// scheduler entry. Written on DRAINING entry, removed on any DRAINING-exit
+    /// (DECOMMISSIONED, FAILED_DRAIN). The new leader inspects this atom on takeover to
+    /// resume the drain hard-deadline countdown against wall-clock instead of the prior
+    /// leader's elapsed timer.
+    record DrainDeadlineKey(NodeId nodeId) implements AetherKey {
+        private static final String PREFIX = "drain-deadline/";
+
+        @Override public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static DrainDeadlineKey drainDeadlineKey(NodeId nodeId) {
+            return new DrainDeadlineKey(nodeId);
+        }
+
+        public static Result<DrainDeadlineKey> drainDeadlineKey(String key) {
+            if (!key.startsWith(PREFIX)) {return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            var nodeIdPart = key.substring(PREFIX.length());
+            if (nodeIdPart.isEmpty()) {return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            return NodeId.nodeId(nodeIdPart).map(DrainDeadlineKey::new);
+        }
+    }
+
     record ConfigKey(String key, Option<NodeId> nodeScope) implements AetherKey {
         private static final String CLUSTER_PREFIX = "config/";
 
@@ -538,28 +595,6 @@ import static org.pragmatica.lang.Result.success;
             var nodeIdPart = key.substring(PREFIX.length());
             if (nodeIdPart.isEmpty()) {return ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR.apply(key).result();}
             return NodeId.nodeId(nodeIdPart).map(ActivationDirectiveKey::new);
-        }
-    }
-
-    record BlueprintResourcesKey(BlueprintId blueprintId) implements AetherKey {
-        private static final String PREFIX = "blueprint-resources/";
-
-        @Override public String asString() {
-            return PREFIX + blueprintId.asString();
-        }
-
-        @Override public String toString() {
-            return asString();
-        }
-
-        public static BlueprintResourcesKey blueprintResourcesKey(BlueprintId blueprintId) {
-            return new BlueprintResourcesKey(blueprintId);
-        }
-
-        public static Result<BlueprintResourcesKey> blueprintResourcesKey(String key) {
-            if (!key.startsWith(PREFIX)) {return BLUEPRINT_RESOURCES_KEY_FORMAT_ERROR.apply(key).result();}
-            var idPart = key.substring(PREFIX.length());
-            return BlueprintId.blueprintId(idPart).map(BlueprintResourcesKey::new);
         }
     }
 
@@ -800,11 +835,13 @@ import static org.pragmatica.lang.Result.success;
 
     Fn1<Cause, String> NODE_LIFECYCLE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-lifecycle key format: %s");
 
+    Fn1<Cause, String> JOIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid join-deadline key format: %s");
+
+    Fn1<Cause, String> DRAIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid drain-deadline key format: %s");
+
     Fn1<Cause, String> WORKER_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid worker-directive key format: %s");
 
     Fn1<Cause, String> ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid activation key format: %s");
-
-    Fn1<Cause, String> BLUEPRINT_RESOURCES_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint-resources key format: %s");
 
     Fn1<Cause, String> SCHEMA_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid schema-version key format: %s");
 
@@ -1340,6 +1377,8 @@ import static org.pragmatica.lang.Result.success;
 
     Fn1<Cause, String> STREAM_REGISTRY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-registry key format: %s");
 
+    Fn1<Cause, String> CLUSTER_EVENT_LOG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-event-log key format: %s");
+
     /// Per-blueprint alias→StreamAddress map persisted at deploy time so per-slice runtime FSM
     /// transitions (Active.handleActivating / handleDeactivating) can resolve the slice manifest's
     /// `stream.publisher.<i>.config` / `stream.access.<i>.config` aliases into fully-qualified
@@ -1405,6 +1444,60 @@ import static org.pragmatica.lang.Result.success;
             var stream = rest.substring(0, secondSlash);
             var version = rest.substring(secondSlash + 1);
             return StreamAddress.streamAddress(namespace, stream, version).map(StreamRegistryKey::new);
+        }
+    }
+
+    /// RC1 Step 1 — cluster-scoped replicated event log key.
+    ///
+    /// `(epoch, nodeId, seq)` is the Rabia-committed triple that gives strict total order
+    /// across the cluster without HLC ties. Total order is established by the commit, not the
+    /// HLC stamp inside the value — sidesteps the OB1 receive-time race where two events
+    /// POSTed to two nodes within the same wall-clock tick could otherwise interleave
+    /// differently per node.
+    ///
+    /// **`nodeId` is included to prevent cross-node `(epoch, seq)` collisions.** The
+    /// publisher's `seq` is a per-node `AtomicLong`; without `nodeId` in the key two nodes
+    /// publishing the same `(epoch, seq)` pair would collide on KV (last-write-wins),
+    /// silently dropping events. With `nodeId` each node owns a disjoint sub-keyspace; total
+    /// cross-node order is recovered at read time via Rabia commit order (commitOrder of
+    /// `KVCommand.Put`s on the materialised-view subscriber).
+    ///
+    /// `epoch` is also the sweep unit: `ClusterEventLogSweeper` deletes all keys with
+    /// `epoch < currentEpoch - retainedEpochs` in a single pass. See spec §3.6.
+    ///
+    /// **String form:** `cluster-event-log/<epoch>/<nodeId>/<seq>`. The parser splits the
+    /// stripped suffix into exactly three parts on `/` — `nodeId` is the middle slot and
+    /// must not contain `/` itself (no current call site produces that; `NodeId.nodeId(...)`
+    /// validates non-blank but does not forbid `/`, so we keep this an in-process invariant).
+    record ClusterEventLogKey(long epoch, NodeId nodeId, long seq) implements AetherKey {
+        private static final String PREFIX = "cluster-event-log/";
+
+        @Override public String asString() {
+            return PREFIX + epoch + "/" + nodeId.id() + "/" + seq;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static ClusterEventLogKey clusterEventLogKey(long epoch, NodeId nodeId, long seq) {
+            return new ClusterEventLogKey(epoch, nodeId, seq);
+        }
+
+        public static Result<ClusterEventLogKey> clusterEventLogKey(String key) {
+            if (!key.startsWith(PREFIX)) {return CLUSTER_EVENT_LOG_KEY_FORMAT_ERROR.apply(key).result();}
+            var content = key.substring(PREFIX.length());
+            var firstSlash = content.indexOf('/');
+            var lastSlash = content.lastIndexOf('/');
+            if (firstSlash <= 0 || lastSlash <= firstSlash || lastSlash >= content.length() - 1) {return CLUSTER_EVENT_LOG_KEY_FORMAT_ERROR.apply(key)
+                                                                                                                                                  .result();}
+            var epochPart = content.substring(0, firstSlash);
+            var nodeIdPart = content.substring(firstSlash + 1, lastSlash);
+            var seqPart = content.substring(lastSlash + 1);
+            return Result.all(Number.parseLong(epochPart),
+                              NodeId.nodeId(nodeIdPart),
+                              Number.parseLong(seqPart))
+            .map(ClusterEventLogKey::new);
         }
     }
 }

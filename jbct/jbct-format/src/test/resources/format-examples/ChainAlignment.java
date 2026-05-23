@@ -6,55 +6,69 @@ import org.pragmatica.lang.Result;
 
 
 public class ChainAlignment {
+    // Even a 2-method chain breaks — Sequencer-as-steps is intentional vertical cost.
     Result<String> shortChain(Result<String> input) {
-        return input.map(String::trim).map(String::toUpperCase);
+        return input.map(String::trim)
+                    .map(String::toUpperCase);
     }
 
     Result<String> mediumChain(Result<String> input) {
-        return input.map(String::trim).map(String::toUpperCase)
-                        .filter(s -> !s.isEmpty());
+        return input.map(String::trim)
+                    .map(String::toUpperCase)
+                    .filter(s -> !s.isEmpty());
     }
 
     Result<String> chainFromMethodCall(Request request) {
-        return ValidRequest.validRequest(request).map(ValidRequest::email)
-                                        .map(Email::value);
+        return ValidRequest.validRequest(request)
+                           .map(ValidRequest::email)
+                           .map(Email::value);
     }
 
     Result<String> chainFromStaticMethod(String value) {
-        return Result.success(value).map(String::trim)
-                             .filter(s -> !s.isEmpty());
+        return Result.success(value)
+                     .map(String::trim)
+                     .filter(s -> !s.isEmpty());
     }
 
     Promise<Response> sequencerChain(Request request) {
-        return ValidRequest.validRequest(request).async()
-                                        .flatMap(checkCredentials::apply)
-                                        .flatMap(checkAccountStatus::apply)
-                                        .flatMap(generateToken::apply);
+        return ValidRequest.validRequest(request)
+                           .async()
+                           .flatMap(checkCredentials::apply)
+                           .flatMap(checkAccountStatus::apply)
+                           .flatMap(generateToken::apply);
     }
 
     Result<String> mixedChain(Result<String> input) {
-        return input.map(String::trim).flatMap(this::validate)
-                        .onSuccess(this::log)
-                        .onFailure(this::logError)
-                        .map(String::toUpperCase);
+        return input.map(String::trim)
+                    .flatMap(this::validate)
+                    .onSuccess(this::log)
+                    .onFailure(this::logError)
+                    .map(String::toUpperCase);
     }
 
+    // Args wrap (each on own line aligned to first) but the outer chain stays inline-then-break;
+    // .flatMap aligns to first `.` of chain (which is Result.all's `.all`).
     Result<Response> nestedChains(Result<User> user, Result<Account> account) {
-        return Result.all(user.map(User::id), account.map(Account::status)).flatMap(this::createResponse);
+        return Result.all(user.map(User::id),
+                          account.map(Account::status))
+                     .flatMap(this::createResponse);
     }
 
     Result<ValidRequest> forkJoinChain(Request raw) {
         return Result.all(Email.email(raw.email()),
                           Password.password(raw.password()),
                           ReferralCode.referralCode(raw.referral()))
-        .flatMap(ValidRequest::validRequest);
+                     .flatMap(ValidRequest::validRequest);
     }
 
     Result<String> brokenChain(Result<String> input) {
-        return input.map(String::trim).flatMap(this::expensiveValidation)
-                        .map(String::toUpperCase);
+        return input.map(String::trim)
+                    .flatMap(this::expensiveValidation)
+                    .map(String::toUpperCase);
     }
 
+    // Nested-lambda chains stay inline — they are not flat chains; each .flatMap is a
+    // continuation INSIDE a lambda body, not a sibling step at the outer chain level.
     Result<String> deepNestedChain(Result<A> a, Result<B> b, Result<C> c) {
         return a.flatMap(va -> b.flatMap(vb -> c.map(vc -> combine(va, vb, vc))));
     }

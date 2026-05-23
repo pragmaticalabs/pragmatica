@@ -11,17 +11,17 @@ import java.util.List;
 
 
 public sealed interface NodeReconcilerState {
-    record Inactive(String reason) implements NodeReconcilerState{}
+    record Inactive(String reason) implements NodeReconcilerState {}
 
-    record Forming(Instant since) implements NodeReconcilerState{}
+    record Forming(Instant since) implements NodeReconcilerState {}
 
-    record Converged() implements NodeReconcilerState{}
+    record Converged() implements NodeReconcilerState {}
 
     record Reconciling(int targetSize,
                        int currentSize,
                        List<ProvisioningSlot> inFlight,
                        List<NodeId> terminating,
-                       Instant startedAt) implements NodeReconcilerState{}
+                       Instant startedAt) implements NodeReconcilerState {}
 
-    record ProvisioningSlot(long spawnedAtMs, long deadlineMs){}
+    record ProvisioningSlot(long spawnedAtMs, long deadlineMs) {}
 }

@@ -5,14 +5,11 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
-import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifactParser;
 import org.pragmatica.aether.slice.blueprint.BlueprintExpander;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
@@ -20,19 +17,11 @@ import org.pragmatica.aether.slice.blueprint.PubSubValidator;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintResourcesKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
-import org.pragmatica.aether.slice.stream.StreamAddress;
-import org.pragmatica.aether.slice.stream.StreamResource;
-import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.topology.SliceTopology;
@@ -61,25 +50,21 @@ import org.slf4j.LoggerFactory;
 public interface BlueprintService {
     Promise<ExpandedBlueprint> publish(String dsl);
     Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords);
+    /// Publish an artifact-based blueprint with explicit register-only semantics.
+    /// When `registerOnly == true`, the blueprint definition is stored in KV (so the
+    /// strategy-based deploy can later locate the upgrade target), but the
+    /// `SliceTargetValue` Put that would activate the new version is suppressed by
+    /// `ClusterDeploymentState.handleAppBlueprintChange` when an existing
+    /// `SliceTargetValue` already pins the slice to a different (active) version.
+    /// First-ever publish for a slice still bootstraps the `SliceTargetValue`
+    /// (register-only cannot suppress fresh-slice bootstrap).
+    /// When `registerOnly == false`, behaves as the default `publishFromArtifact` —
+    /// the new version is immediately activated.
+    Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
     Option<ExpandedBlueprint> get(BlueprintId id);
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
     Result<Blueprint> validate(String dsl);
-
-    /// Validate the structural blueprint DSL and (if present) the resources.toml stream
-    /// declarations as a single combined gate. Returns the parsed [Blueprint] together with the
-    /// validated stream-resource map and any non-blocking warnings. Failures are aggregated via
-    /// [StreamResourceValidator] (spec §15.1.1) so the operator sees every error in one pass.
-    Result<ValidatedBlueprint> validateBlueprint(String dsl, Option<String> resourcesConfig);
-
-    /// Combined validation result returned by [#validateBlueprint(String, Option)].
-    record ValidatedBlueprint(Blueprint blueprint, ValidatedStreamResources streamResources) {
-        public static ValidatedBlueprint validatedBlueprint(Blueprint blueprint,
-                                                            ValidatedStreamResources streamResources) {
-            return new ValidatedBlueprint(blueprint, streamResources);
-        }
-    }
-
     Cause ARTIFACT_STORE_NOT_CONFIGURED = Causes.cause("ArtifactStore not configured");
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -96,19 +81,25 @@ public interface BlueprintService {
     }
 
     static List<SliceTopology> flattenTopologyResults(List<Result<List<SliceTopology>>> results) {
-        return results.stream().flatMap(result -> result.or(List.of()).stream())
-                             .toList();
+        return results.stream()
+                      .flatMap(result -> result.or(List.of())
+                                               .stream())
+                      .toList();
     }
 
     static int extractVersionNumber(String filename) {
         var underscoreIdx = filename.indexOf("__");
+
         if (underscoreIdx <= 1) {return 0;}
+
         var numPart = filename.substring(1, underscoreIdx);
+
         return Result.lift1(Causes::fromThrowable, Integer::parseInt, numPart).or(0);
     }
 }
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) class BlueprintServiceInstance implements BlueprintService {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+class BlueprintServiceInstance implements BlueprintService {
     private static final Logger log = LoggerFactory.getLogger(BlueprintServiceInstance.class);
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
@@ -126,30 +117,43 @@ public interface BlueprintService {
         this.artifactStore = artifactStore;
     }
 
-    @Override public Promise<ExpandedBlueprint> publish(String dsl) {
-        return BlueprintParser.parse(dsl).async()
-                                    .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
-                                    .flatMap(this::validatePubSub)
-                                    .flatMap(this::storeBlueprint)
-                                    .onFailure(cause -> log.warn("Failed to publish blueprint: {}",
-                                                                 cause.message()));
-    }
-
-    @Override public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
-        var parsed = parseArtifactWithClassifier(artifactCoords);
-        return parsed.artifact().async()
-                              .flatMap(artifact -> resolveArtifactBytes(artifact,
-                                                                        parsed.classifier()))
-                              .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
-                              .flatMap(artifact -> expandAndStoreArtifact(artifact,
-                                                                          parsed.baseCoords()))
-                              .onFailure(cause -> log.warn("Failed to publish blueprint from artifact: {}",
+    @Override
+    public Promise<ExpandedBlueprint> publish(String dsl) {
+        return BlueprintParser.parse(dsl)
+                              .async()
+                              .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
+                              .flatMap(this::validatePubSub)
+                              .flatMap(this::storeBlueprint)
+                              .onFailure(cause -> log.warn("Failed to publish blueprint: {}",
                                                            cause.message()));
     }
 
+    @Override
+    public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
+        return publishFromArtifact(artifactCoords, false);
+    }
+
+    @Override
+    public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
+        var parsed = parseArtifactWithClassifier(artifactCoords);
+
+        return parsed.artifact()
+                     .async()
+                     .flatMap(artifact -> resolveArtifactBytes(artifact,
+                                                               parsed.classifier()))
+                     .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
+                     .flatMap(artifact -> expandAndStoreArtifact(artifact,
+                                                                 parsed.baseCoords(),
+                                                                 registerOnly))
+                     .onFailure(cause -> log.warn("Failed to publish blueprint from artifact (registerOnly={}): {}",
+                                                  registerOnly,
+                                                  cause.message()));
+    }
+
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact, String classifier) {
-        return repository.locate(artifact, classifier).flatMap(BlueprintServiceInstance::readLocationBytes)
-                                .orElse(() -> resolveFromArtifactStore(artifact));
+        return repository.locate(artifact, classifier)
+                         .flatMap(BlueprintServiceInstance::readLocationBytes)
+                         .orElse(() -> resolveFromArtifactStore(artifact));
     }
 
     private record ParsedArtifactCoords(Result<Artifact> artifact, String classifier, String baseCoords) {
@@ -164,172 +168,108 @@ public interface BlueprintService {
 
     private static ParsedArtifactCoords parseArtifactWithClassifier(String coords) {
         var parts = coords.split(":");
+
         if (parts.length == 4) {
             var baseCoords = parts[0] + ":" + parts[1] + ":" + parts[2];
+
             return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(baseCoords), parts[3], baseCoords);
         }
-        if (parts.length == 3) {return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(coords),
-                                                                                 "blueprint",
-                                                                                 coords);}
+        if (parts.length == 3) {
+            return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(coords), "blueprint", coords);
+        }
+
         return ParsedArtifactCoords.parsedArtifactCoords(MISSING_CLASSIFIER.result(), "", coords);
     }
 
     private Promise<byte[]> resolveFromArtifactStore(Artifact artifact) {
-        return artifactStore.async(ARTIFACT_STORE_NOT_CONFIGURED).flatMap(store -> store.resolve(artifact));
+        return artifactStore.async(ARTIFACT_STORE_NOT_CONFIGURED)
+                            .flatMap(store -> store.resolve(artifact));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Promise<byte[]> readLocationBytes(Location location) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Promise<byte[]> readLocationBytes(Location location) {
         return Promise.lift(Causes::fromThrowable, () -> readStreamBytes(location));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static byte[] readStreamBytes(Location location) throws Exception {
+    @SuppressWarnings("JBCT-EX-01")
+    private static byte[] readStreamBytes(Location location) throws Exception {
         try (var stream = location.url().openStream()) {
             return stream.readAllBytes();
         }
     }
 
-    @Override public Option<ExpandedBlueprint> get(BlueprintId id) {
-        return store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id)).flatMap(this::extractBlueprint);
+    @Override
+    public Option<ExpandedBlueprint> get(BlueprintId id) {
+        return store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id))
+                    .flatMap(this::extractBlueprint);
     }
 
-    @Override public List<ExpandedBlueprint> list() {
+    @Override
+    public List<ExpandedBlueprint> list() {
         var result = new ArrayList<ExpandedBlueprint>();
         store.forEach(AetherKey.AppBlueprintKey.class,
                       AetherValue.AppBlueprintValue.class,
                       (_, value) -> result.add(value.blueprint()));
+
         return result;
     }
 
-    @Override public Promise<Unit> delete(BlueprintId id) {
+    @Override
+    public Promise<Unit> delete(BlueprintId id) {
         return removeFromStore(AetherKey.AppBlueprintKey.appBlueprintKey(id)).onFailure(cause -> log.warn("Failed to delete blueprint {}: {}",
                                                                                                           id.asString(),
                                                                                                           cause.message()));
     }
 
-    @Override public Result<Blueprint> validate(String dsl) {
+    @Override
+    public Result<Blueprint> validate(String dsl) {
         return BlueprintParser.parse(dsl);
     }
 
-    @Override public Result<ValidatedBlueprint> validateBlueprint(String dsl, Option<String> resourcesConfig) {
-        return BlueprintParser.parse(dsl)
-                              .flatMap(blueprint -> StreamResourceValidator.validate(resourcesConfig,
-                                                                                       blueprint.id().artifact())
-                                                                            .map(validated -> ValidatedBlueprint
-                                                                                    .validatedBlueprint(blueprint,
-                                                                                                          validated)));
-    }
-
     private Promise<ExpandedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
-                                                              String artifactCoords) {
+                                                              String artifactCoords,
+                                                              boolean registerOnly) {
         return BlueprintExpander.expand(blueprintArtifact.blueprint(),
                                         repository).flatMap(expanded -> applyResourcesConfig(expanded,
                                                                                              blueprintArtifact.resourcesConfig()))
-                                       .flatMap(expanded -> runStreamResourceGate(expanded,
-                                                                                    blueprintArtifact.resourcesConfig(),
-                                                                                    blueprintArtifact.roleHints()))
-                                       .flatMap(pair -> validatePubSub(pair.expanded()).map(_ -> pair))
-                                       .flatMap(pair -> storeAllInSingleBatch(pair.expanded(),
-                                                                              pair.validated(),
-                                                                              blueprintArtifact.resourcesConfig(),
-                                                                              blueprintArtifact.schemaMigrations(),
-                                                                              artifactCoords));
-    }
-
-    /// Internal pair carrying the expanded blueprint together with the parsed-and-validated stream
-    /// resource map produced by [StreamResourceValidator]. The map is needed downstream by
-    /// [#storeAllInSingleBatch] to emit the per-blueprint alias→`StreamAddress` bindings (consumed
-    /// by the per-slice runtime FSM at ACTIVE-state transitions per spec §8.5).
-    private record ExpandedWithValidation(ExpandedBlueprint expanded, ValidatedStreamResources validated) {}
-
-    /// Runtime gate per spec §15.1: synchronous, atomic, all-failures-aggregated stream-resource
-    /// validation that must pass **before** any cluster state mutation. On failure the deploy
-    /// short-circuits with a structured cause that the route handler maps to HTTP 422.
-    ///
-    /// `roleHints` (spec §11.1.2) is the alias→role map aggregated from the blueprint artifact's
-    /// bundled slice manifests by [BlueprintArtifactParser]. Empty when the artifact ships no
-    /// slice manifests (legacy DSL path / pre-Wave-3 blueprint JARs) — the validator then
-    /// behaves identically to its no-hints overload.
-    private Promise<ExpandedWithValidation> runStreamResourceGate(ExpandedBlueprint expanded,
-                                                                   Option<String> resourcesConfig,
-                                                                   Map<String, String> roleHints) {
-        return StreamResourceValidator.validate(resourcesConfig,
-                                                  expanded.id().artifact(),
-                                                  roleHints)
-                                       .map(validated -> new ExpandedWithValidation(expanded, validated))
-                                       .async();
+                                       .flatMap(this::validatePubSub)
+                                       .flatMap(expanded -> storeAllInSingleBatch(expanded,
+                                                                                  blueprintArtifact.resourcesConfig(),
+                                                                                  blueprintArtifact.schemaMigrations(),
+                                                                                  artifactCoords,
+                                                                                  registerOnly));
     }
 
     private Promise<ExpandedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
-                                                             ValidatedStreamResources validated,
                                                              Option<String> resourcesConfig,
                                                              Map<String, List<MigrationEntry>> migrations,
-                                                             String artifactCoords) {
-        var commands = buildAllCommands(expanded, validated, resourcesConfig, migrations, artifactCoords);
-        return cluster.apply(commands).map(_ -> expanded);
+                                                             String artifactCoords,
+                                                             boolean registerOnly) {
+        var commands = buildAllCommands(expanded, resourcesConfig, migrations, artifactCoords, registerOnly);
+
+        return cluster.apply(commands)
+                      .map(_ -> expanded);
     }
 
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
-                                                        ValidatedStreamResources validated,
                                                         Option<String> resourcesConfig,
                                                         Map<String, List<MigrationEntry>> migrations,
-                                                        String artifactCoords) {
+                                                        String artifactCoords,
+                                                        boolean registerOnly) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
-        commands.add(buildBlueprintPutCommand(expanded));
-        resourcesConfig.onPresent(content -> commands.add(buildResourcesPutCommand(expanded, content)));
-        commands.add(buildStreamBindingsCommand(expanded, validated));
+        commands.add(buildBlueprintPutCommand(expanded, registerOnly));
+        // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
+        // each node and applied via the per-slice intrinsic config layer at slice load
+        // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
+        // ExpandedBlueprint already embeds it for downstream consumers (e.g., schema gating).
         if (!migrations.isEmpty()) {commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));}
+
         return commands;
     }
 
-    /// Build the per-blueprint stream bindings put command (spec §8.5 prerequisite).
-    /// Emitted unconditionally for consistency — a blueprint with zero stream resources still gets
-    /// an empty bindings entry so the FSM lookup path can distinguish "missing blueprint" from
-    /// "blueprint with no streams" without ambiguity.
-    private static KVCommand<AetherKey> buildStreamBindingsCommand(ExpandedBlueprint expanded,
-                                                                    ValidatedStreamResources validated) {
-        return new Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(expanded.id()),
-                         BlueprintStreamBindingsValue.blueprintStreamBindingsValue(toNamedAddresses(expanded.id(), validated)));
-    }
-
-    private static List<NamedAddress> toNamedAddresses(BlueprintId blueprintId,
-                                                        ValidatedStreamResources validated) {
-        var namespace = BlueprintNamespace.deriveNamespace(blueprintId).or("");
-        var collected = new ArrayList<NamedAddress>();
-        validated.resources().forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource)
-                .onPresent(collected::add));
-        return List.copyOf(collected);
-    }
-
-    private static Option<NamedAddress> resolveBindingEntry(String namespace,
-                                                             String alias,
-                                                             StreamResource resource) {
-        return switch (resource) {
-            case StreamResource.Owned owned -> resolveOwnedAddress(namespace, alias, owned)
-                    .map(address -> NamedAddress.namedAddress(alias, address));
-            case StreamResource.External external -> Option.some(NamedAddress.namedAddress(alias, external.target()));
-        };
-    }
-
-    /// Owned-resource address resolution. The blueprint's derived namespace + the local alias +
-    /// the explicit version produce the fully-qualified address. `Latest` version specs (only valid
-    /// on consumer-only resources per spec §11) have no concrete address at deploy time — the
-    /// consumer resolves them at subscribe-time against the live registry, so they're omitted from
-    /// the bindings map.
-    private static Option<StreamAddress> resolveOwnedAddress(String namespace, String alias, StreamResource.Owned owned) {
-        return switch (owned.version()) {
-            case StreamVersionSpec.Exact exact -> StreamAddress.streamAddress(namespace, alias, exact.version()).option();
-            case StreamVersionSpec.Latest _ -> Option.none();
-        };
-    }
-
-    private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded) {
+    private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded, boolean registerOnly) {
         return new Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
-                         AppBlueprintValue.appBlueprintValue(expanded));
-    }
-
-    private static KVCommand<AetherKey> buildResourcesPutCommand(ExpandedBlueprint expanded, String content) {
-        return new Put<>(BlueprintResourcesKey.blueprintResourcesKey(expanded.id()),
-                         BlueprintResourcesValue.blueprintResourcesValue(content));
+                         AppBlueprintValue.appBlueprintValue(expanded, registerOnly));
     }
 
     private Promise<ExpandedBlueprint> applyResourcesConfig(ExpandedBlueprint expanded,
@@ -338,53 +278,50 @@ public interface BlueprintService {
                                                                                              expanded.loadOrder(),
                                                                                              Option.some(rc),
                                                                                              expanded.securityOverrides()))
-        .or(expanded));
+                                              .or(expanded));
     }
 
     private List<KVCommand<AetherKey>> buildSchemaMigrationCommands(Map<String, List<MigrationEntry>> migrations,
                                                                     String artifactCoords) {
-        return migrations.entrySet().stream()
-                                  .map(entry -> buildMigrationCommand(entry, artifactCoords))
-                                  .toList();
+        return migrations.entrySet()
+                         .stream()
+                         .map(entry -> buildMigrationCommand(entry, artifactCoords))
+                         .toList();
     }
 
     private KVCommand<AetherKey> buildMigrationCommand(Map.Entry<String, List<MigrationEntry>> entry,
                                                        String artifactCoords) {
         var datasource = entry.getKey();
         var migrationList = entry.getValue();
-        var maxVersion = migrationList.stream().map(MigrationEntry::filename)
-                                             .filter(f -> f.startsWith("V"))
-                                             .mapToInt(BlueprintService::extractVersionNumber)
-                                             .max()
-                                             .orElse(0);
+        var maxVersion = migrationList.stream().map(MigrationEntry::filename).filter(f -> f.startsWith("V")).mapToInt(BlueprintService::extractVersionNumber).max().orElse(0);
         var lastFilename = migrationList.isEmpty()
-                          ? ""
-                          : migrationList.getLast().filename();
+                           ? ""
+                           : migrationList.getLast().filename();
         var key = SchemaVersionKey.schemaVersionKey(datasource);
         var value = SchemaVersionValue.schemaVersionValue(datasource,
                                                           maxVersion,
                                                           lastFilename,
                                                           SchemaStatus.PENDING,
                                                           artifactCoords);
+
         return new Put<>(key, value);
     }
 
     private Promise<ExpandedBlueprint> validatePubSub(ExpandedBlueprint expanded) {
-        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> PubSubValidator.validate(topologies).map(_ -> expanded)
-                                                                                                     .async());
+        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> PubSubValidator.validate(topologies)
+                                                                                            .map(_ -> expanded)
+                                                                                            .async());
     }
 
     private Promise<List<SliceTopology>> loadAllTopologies(List<ResolvedSlice> slices) {
-        return Promise.allOf(slices.stream().map(this::loadTopology)
-                                          .toList())
-        .map(BlueprintService::flattenTopologyResults);
+        return Promise.allOf(slices.stream().map(this::loadTopology).toList()).map(BlueprintService::flattenTopologyResults);
     }
 
     private Promise<List<SliceTopology>> loadTopology(ResolvedSlice slice) {
         return repository.locate(slice.artifact())
-                                .map(location -> TopologyParser.parseFromJar(location.url(),
-                                                                             slice.artifact().asString())
-        .or(List.of()));
+                         .map(location -> TopologyParser.parseFromJar(location.url(),
+                                                                      slice.artifact().asString())
+                                                        .or(List.of()));
     }
 
     private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {
@@ -396,16 +333,20 @@ public interface BlueprintService {
                                                              ExpandedBlueprint expanded) {
         var value = AppBlueprintValue.appBlueprintValue(expanded);
         KVCommand<AetherKey> command = new Put<>(key, value);
-        return cluster.apply(List.of(command)).map(_ -> expanded);
+
+        return cluster.apply(List.of(command))
+                      .map(_ -> expanded);
     }
 
     private Promise<Unit> removeFromStore(AetherKey.AppBlueprintKey key) {
         KVCommand<AetherKey> command = new Remove<>(key);
-        return cluster.apply(List.of(command)).mapToUnit();
+
+        return cluster.apply(List.of(command))
+                      .mapToUnit();
     }
 
     private Option<ExpandedBlueprint> extractBlueprint(AetherValue value) {
-        return switch (value){
+        return switch (value) {
             case AetherValue.AppBlueprintValue appValue -> Option.some(appValue.blueprint());
             default -> Option.none();
         };

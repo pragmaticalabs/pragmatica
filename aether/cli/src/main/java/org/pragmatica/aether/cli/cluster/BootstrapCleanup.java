@@ -19,8 +19,9 @@ import java.util.Collections;
 import java.util.List;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface BootstrapCleanup {
-    record unused() implements BootstrapCleanup{}
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+sealed interface BootstrapCleanup {
+    record unused() implements BootstrapCleanup {}
 
     static Result<Unit> cleanup(BootstrapState state) {
         return cleanup(state, ProviderResolver::resolveCloudComputeForCleanup, BootstrapCleanup::defaultHetznerClient);
@@ -37,6 +38,7 @@ import java.util.List;
         var resources = new ArrayList<>(state.createdResources());
         Collections.reverse(resources);
         var failures = collectCleanupFailures(state, resources, cloudComputeResolver, hetznerClientResolver);
+
         return finishCleanup(state, failures);
     }
 
@@ -45,17 +47,20 @@ import java.util.List;
                                                        Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
                                                        Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
         var failures = new ArrayList<String>();
+
         for (var resource : resources) {
             var result = destroyResource(state, resource, cloudComputeResolver, hetznerClientResolver);
             logResourceResult(result, resource);
             var _ = result.onFailure(cause -> failures.add(resource.description() + ": " + cause.message()));
         }
+
         return List.copyOf(failures);
     }
 
-    @Contract private static void logResourceResult(Result<Unit> result, CreatedResource resource) {
-        var _ = result.onSuccess(_ -> System.out.println("  Cleaned up " + resource.description()))
-                                .onFailure(cause -> System.err.println("  WARN: Failed to cleanup " + resource.description() + ": " + cause.message()));
+    @Contract
+    private static void logResourceResult(Result<Unit> result, CreatedResource resource) {
+        var _ = result.onSuccess(_ -> System.out.println("  Cleaned up " + resource.description())).onFailure(cause -> System.err.println("  WARN: Failed to cleanup " + resource.description()
+                                                                                                                                         + ": " + cause.message()));
     }
 
     private static Result<Unit> finishCleanup(BootstrapState state, List<String> failures) {
@@ -63,11 +68,12 @@ import java.util.List;
         return BootstrapStatePersistence.delete(state.clusterName());
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<Unit> destroyResource(BootstrapState state,
-                                                                                 CreatedResource resource,
-                                                                                 Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
-                                                                                 Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
-        return switch (resource){
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<Unit> destroyResource(BootstrapState state,
+                                                CreatedResource resource,
+                                                Fn1<Result<ComputeProvider>, String> cloudComputeResolver,
+                                                Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
+        return switch (resource) {
             case CreatedResource.ProvisionedVm vm -> destroyVm(state, vm, cloudComputeResolver);
             case CreatedResource.FirewallRule rule -> deleteFirewallRule(rule);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
@@ -77,81 +83,97 @@ import java.util.List;
         };
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> deleteSshKey(CreatedResource.SshKeyResource key,
-                                                                             Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> deleteSshKey(CreatedResource.SshKeyResource key,
+                                             Fn1<Result<HetznerClient>, String> hetznerClientResolver) {
         System.out.printf("  Deleting SSH key %d (%s) from %s...%n", key.sshKeyId(), key.name(), key.provider());
+
         if (!"hetzner".equals(key.provider())) {return new UnsupportedSshKeyProvider(key.provider()).result();}
+
         return hetznerClientResolver.apply(key.provider())
-                                          .flatMap(client -> client.deleteSshKey(key.sshKeyId()).await());
+                                    .flatMap(client -> client.deleteSshKey(key.sshKeyId())
+                                                             .await());
     }
 
     private static Result<HetznerClient> defaultHetznerClient(String providerName) {
         if (!"hetzner".equals(providerName)) {return new UnsupportedSshKeyProvider(providerName).result();}
+
         var token = System.getenv("HCLOUD_TOKEN");
+
         if (token == null || token.isBlank()) {return new HetznerCredentialsMissing().result();}
+
         return Result.success(HetznerClient.hetznerClient(HetznerConfig.hetznerConfig(token)));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> destroyVm(BootstrapState state,
-                                                                          CreatedResource.ProvisionedVm vm,
-                                                                          Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> destroyVm(BootstrapState state,
+                                          CreatedResource.ProvisionedVm vm,
+                                          Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         System.out.printf("  Destroying VM %s (provider: %s)...%n", vm.resourceId(), vm.provider());
+
         return resolveComputeForVm(state, vm, cloudComputeResolver).flatMap(compute -> terminateInstance(compute,
-                                                                                                          vm.resourceId()));
+                                                                                                         vm.resourceId()));
     }
 
-    /// Prefer the persisted source handle (env-var names + region as recorded at
-    /// bootstrap time). Fall back to the legacy hardcoded-env-var resolver only
-    /// when the state file predates the handle (backward compat).
     private static Result<ComputeProvider> resolveComputeForVm(BootstrapState state,
-                                                                CreatedResource.ProvisionedVm vm,
-                                                                Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
+                                                               CreatedResource.ProvisionedVm vm,
+                                                               Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         var handle = state.sources().get(vm.sourceName());
+
         if (handle == null) {return cloudComputeResolver.apply(vm.provider());}
+
         return ProviderResolver.resolveCloudComputeFromHandle(handle);
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> terminateInstance(ComputeProvider compute,
-                                                                                  String resourceId) {
-        return InstanceId.instanceId(resourceId).flatMap(id -> compute.terminate(id).await());
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> terminateInstance(ComputeProvider compute, String resourceId) {
+        return InstanceId.instanceId(resourceId).flatMap(id -> compute.terminate(id)
+                                                                      .await());
     }
 
     private static Result<Unit> deleteFirewallRule(CreatedResource.FirewallRule rule) {
         System.out.printf("  Deleting firewall rule %s...%n", rule.resourceId());
+
         return Result.unitResult();
     }
 
     private static Result<Unit> detachFloatingIp(CreatedResource.FloatingIpAssignment ip) {
         System.out.printf("  Detaching floating IP %s from %s...%n", ip.floatingIp(), ip.targetNodeId());
+
         return Result.unitResult();
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<Unit> removeContainer(CreatedResource.DockerContainer container) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> removeContainer(CreatedResource.DockerContainer container) {
         System.out.printf("  Removing container %s...%n", container.containerId());
-        return ProviderResolver.resolveDockerCompute()
-                                                    .flatMap(compute -> terminateInstance(compute,
-                                                                                          container.containerId()));
+
+        return ProviderResolver.resolveDockerCompute().flatMap(compute -> terminateInstance(compute,
+                                                                                            container.containerId()));
     }
 
     private static Result<Unit> removeRemoteConfig(CreatedResource.SshDeployedConfig config) {
         System.out.printf("  Removing config %s from %s...%n", config.remotePath(), config.host());
+
         return Result.unitResult();
     }
 
     record CleanupError(String detail) implements Cause {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Cleanup completed with failures: " + detail;
         }
     }
 
     record UnsupportedSshKeyProvider(String provider) implements Cause {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Unsupported SSH key provider for cleanup: '" + provider + "'";
         }
     }
 
     record HetznerCredentialsMissing() implements Cause {
-        @Override public String message() {
+        @Override
+        public String message() {
             return "Hetzner credentials missing for SSH key cleanup: set HCLOUD_TOKEN env var";
         }
     }

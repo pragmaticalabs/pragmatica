@@ -77,6 +77,10 @@ public record Deployment(String deploymentId,
         return transitionTo(DeploymentState.ROLLING_BACK);
     }
 
+    public Result<Deployment> rolledBack() {
+        return transitionTo(DeploymentState.ROLLED_BACK);
+    }
+
     public Result<Deployment> complete() {
         return transitionTo(DeploymentState.COMPLETED);
     }

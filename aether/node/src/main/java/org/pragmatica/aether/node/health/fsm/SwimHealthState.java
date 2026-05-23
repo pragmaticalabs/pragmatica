@@ -35,15 +35,14 @@ import org.slf4j.LoggerFactory;
 
 public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHealthEvents> {
     int SWIM_PORT_OFFSET = 100;
-
     Logger LOG = LoggerFactory.getLogger(SwimHealthState.class);
-
     SwimHealthContext ctx();
 
     record Stopped(SwimHealthContext ctx) implements SwimHealthState {
-        @Override@Contract public void handle(SwimHealthEvents event,
-                                              TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
-            switch (event){
+        @Override
+        @Contract
+        public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
+            switch (event) {
                 case StartRequested _ -> tx.transitionTo(ctx.starting());
                 case PeerJoined pj -> tx.handle(() -> handleStoppedPeerJoined(ctx, pj.member()));
                 case PeerSuspect ps -> tx.handle(() -> ctx.reportHint(ps.member().nodeId(),
@@ -64,9 +63,10 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
     }
 
     record Starting(SwimHealthContext ctx) implements SwimHealthState {
-        @Override@Contract public void handle(SwimHealthEvents event,
-                                              TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
-            switch (event){
+        @Override
+        @Contract
+        public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
+            switch (event) {
                 case ProtocolReady ready -> tx.transitionTo(new Running(ctx,
                                                                         ready.swim(),
                                                                         ready.transport(),
@@ -92,8 +92,9 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                    SwimTransport transport,
                    GossipEncryptor encryptor,
                    Option<NodeId> currentLeader) implements SwimHealthState {
-        @Override public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
-            switch (event){
+        @Override
+        public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
+            switch (event) {
                 case StopRequested _ -> tx.transitionTo(ctx.stopped(), this::stopProtocolAndTransport);
                 case LeaderChanged lc -> handleLeaderChanged(lc, tx);
                 case PeerJoined pj -> tx.handle(() -> handlePeerJoined(pj.member()));
@@ -110,6 +111,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         private void handleLeaderChanged(LeaderChanged event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
             if (event.leader().equals(currentLeader)) {
                 tx.ignore();
+
                 return;
             }
             tx.transitionTo(new Running(ctx, swim, transport, encryptor, event.leader()));
@@ -124,6 +126,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         private void handlePeerFaulty(SwimMember member, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
             if (isLocalDisconnect(member)) {
                 tx.transitionTo(new LocalDisconnect(ctx, swim, transport, encryptor, currentLeader));
+
                 return;
             }
             tx.handle(() -> routeFaultyPeer(member));
@@ -141,9 +144,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
 
         private void handlePeerConnected(PeerConnected event) {
             var peer = event.peer();
-            event.info().onPresent(info -> readdOrMarkAlive(peer,
-                                                            addressOf(info)))
-                      .onEmpty(() -> readdOrMarkAliveFromTopology(peer));
+            event.info().onPresent(info -> readdOrMarkAlive(peer, addressOf(info))).onEmpty(() -> readdOrMarkAliveFromTopology(peer));
             ctx.resetFaultyWindow(ctx.nowMs());
             ctx.reportHint(peer, HealthHint.HEALTHY);
         }
@@ -151,6 +152,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         private void readdOrMarkAliveFromTopology(NodeId peer) {
             if (swim.members().containsKey(peer)) {
                 swim.markAlive(peer);
+
                 return;
             }
             ctx.resolveSwimAddress(peer, SWIM_PORT_OFFSET).onPresent(addr -> addSeedAndLog(peer, addr));
@@ -159,6 +161,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         private void readdOrMarkAlive(NodeId peer, InetSocketAddress address) {
             if (swim.members().containsKey(peer)) {
                 swim.markAlive(peer);
+
                 return;
             }
             addSeedAndLog(peer, address);
@@ -177,6 +180,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
             var now = ctx.nowMs();
             var count = ctx.incrementAndGetFaulty(now);
             var totalMembers = swim.members().size();
+
             if (totalMembers > 0 && count > totalMembers / 2) {
                 LOG.warn("Local disconnect detected: {}/{} peers FAULTY — suppressing topology drain for {}",
                          count,
@@ -184,6 +188,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                          member.nodeId().id());
                 return true;
             }
+
             return false;
         }
 
@@ -198,12 +203,15 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                            SwimTransport transport,
                            GossipEncryptor encryptor,
                            Option<NodeId> currentLeader) implements SwimHealthState {
-        @Override public void onEntry() {
-            LOG.warn("Entering LocalDisconnect — majority of peers FAULTY within suspect window, " + "suppressing topology drain until a peer re-connects");
+        @Override
+        public void onEntry() {
+            LOG.warn("Entering LocalDisconnect — majority of peers FAULTY within suspect window, "
+                    + "suppressing topology drain until a peer re-connects");
         }
 
-        @Override public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
-            switch (event){
+        @Override
+        public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
+            switch (event) {
                 case StopRequested _ -> tx.transitionTo(ctx.stopped(), this::stopProtocolAndTransport);
                 case PeerConnected pc -> recoverOnPeerConnected(pc, tx);
                 case PeerJoined pj -> recoverOnPeerJoined(pj, tx);
@@ -231,8 +239,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         private void applyPeerConnectedRecovery(PeerConnected event) {
             var peer = event.peer();
             event.info().onPresent(info -> readdOrMarkAlive(peer,
-                                                            SwimHealthContext.toSwimAddress(info, SWIM_PORT_OFFSET)))
-                      .onEmpty(() -> readdOrMarkAliveFromTopology(peer));
+                                                            SwimHealthContext.toSwimAddress(info, SWIM_PORT_OFFSET))).onEmpty(() -> readdOrMarkAliveFromTopology(peer));
             ctx.resetFaultyWindow(ctx.nowMs());
             ctx.reportHint(peer, HealthHint.HEALTHY);
         }
@@ -246,6 +253,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         private void readdOrMarkAliveFromTopology(NodeId peer) {
             if (swim.members().containsKey(peer)) {
                 swim.markAlive(peer);
+
                 return;
             }
             ctx.resolveSwimAddress(peer, SWIM_PORT_OFFSET).onPresent(addr -> addSeedAndLog(peer, addr));
@@ -254,6 +262,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         private void readdOrMarkAlive(NodeId peer, InetSocketAddress address) {
             if (swim.members().containsKey(peer)) {
                 swim.markAlive(peer);
+
                 return;
             }
             addSeedAndLog(peer, address);
@@ -267,6 +276,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         private void handleLeaderChanged(LeaderChanged event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
             if (event.leader().equals(currentLeader)) {
                 tx.ignore();
+
                 return;
             }
             tx.transitionTo(new LocalDisconnect(ctx, swim, transport, encryptor, event.leader()));

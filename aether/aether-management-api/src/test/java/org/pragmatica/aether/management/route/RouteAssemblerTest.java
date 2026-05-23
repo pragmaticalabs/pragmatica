@@ -18,7 +18,7 @@ class RouteAssemblerTest {
     @Test
     void assemble_parameterlessRoute_returnsPrefixUnchanged() {
         var path = ManagementRoute.CLUSTER_STATUS.assemble(List.of());
-        path.onSuccess(p -> assertThat(p).isEqualTo("/api/status"));
+        path.onSuccess(p -> assertThat(p).isEqualTo("/api/cluster/status"));
         assertThat(path.isSuccess()).isTrue();
     }
 

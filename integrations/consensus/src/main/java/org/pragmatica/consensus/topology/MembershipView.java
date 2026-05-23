@@ -18,6 +18,7 @@ package org.pragmatica.consensus.topology;
 
 import org.pragmatica.consensus.NodeId;
 
+import java.util.Map;
 import java.util.Set;
 
 /// Read-only projection of cluster membership used by `TopologyObserver` read paths
@@ -76,5 +77,17 @@ public interface MembershipView {
     /// do not carry artifact-presence metadata.
     default Set<NodeId> nodesWithoutSlices() {
         return Set.of();
+    }
+
+    /// Per-core-member lifecycle state at the snapshot's epoch. Used by `TopologyObserver`
+    /// (RC1 Step 2) to derive the lifecycle-projection `MembershipDecision` variants
+    /// (`NodeJoining` / `NodeDraining` / `NodeFailedDrain`) — variant emission diffs the
+    /// previous snapshot's map against the current one.
+    ///
+    /// Default implementation returns the empty map — safe-by-default for views that do
+    /// not carry lifecycle metadata (e.g. legacy / test stubs). Snapshot adapters in
+    /// `aether-deployment` populate this from the slice-level `NodeLifecycleState`.
+    default Map<NodeId, LifecycleState> lifecycleStates() {
+        return Map.of();
     }
 }

@@ -15,6 +15,15 @@ import org.pragmatica.lang.io.TimeSpan;
 /// on the wiring layer, not here.
 ///
 /// Post-E.8 (spec §9): The FSM is always active (no feature flag).
+/// Post-H.4 (spec §H): the `(DECOMMISSIONED, SwimHealthy)` revival path is removed; the
+/// associated refractory + revival-TTL config fields are gone with it.
+///
+/// **TODO Phase 4 (cluster-convergence-reconciler) — `[reconciler.holds]` section.** The
+/// per-snapshot sync-hold configuration (`min_hold_ms`, `max_hold_ms`, `expected_sync_bps`)
+/// currently lives on `org.pragmatica.cluster.node.rabia.SyncHoldConfig` (defaults: 5s/60s/
+/// 10 MB/s). When `ReconcilerConfig` lands in Phase 4 with `[reconciler.rules]` and
+/// `[reconciler.holds]`, `SyncHoldConfig` should be plumbed from the parsed TOML section
+/// rather than the static `defaults()` factory.
 public record MembershipFsmConfig(TimeSpan joinDeadline, TimeSpan drainTimeout) {
     public static final TimeSpan DEFAULT_JOIN_DEADLINE = TimeSpan.timeSpan(60).seconds();
 

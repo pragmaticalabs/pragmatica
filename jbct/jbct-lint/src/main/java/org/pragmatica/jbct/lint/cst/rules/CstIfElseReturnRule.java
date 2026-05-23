@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -28,27 +28,25 @@ public class CstIfElseReturnRule implements CstLintRule {
     /// Detects else-if chains — these should NOT be flagged
     private static final Pattern ELSE_IF = Pattern.compile("else\\s+if\\s*\\(");
 
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
+
     @Override
     public String ruleId() {
         return RULE_ID;
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class)
-                .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                .map(qn -> text(qn, source))
-                .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         return findAllStatements(root).stream()
-                      .filter(stmt -> isSimpleIfElseReturn(stmt, source))
-                      .map(stmt -> createDiagnostic(root, stmt, source, ctx));
+                      .filter(this::isSimpleIfElseReturn)
+                      .map(stmt -> createDiagnostic(root, stmt, ctx));
     }
 
-    private boolean isSimpleIfElseReturn(CstNode stmt, String source) {
-        var stmtText = text(stmt, source).trim();
+    private boolean isSimpleIfElseReturn(Cursor stmt) {
+        var stmtText = text(stmt).trim();
         if (!stmtText.startsWith("if ") && !stmtText.startsWith("if(")) {
             return false;
         }
@@ -59,10 +57,9 @@ public class CstIfElseReturnRule implements CstLintRule {
         return IF_ELSE_RETURN.matcher(stmtText).find();
     }
 
-    private Diagnostic createDiagnostic(CstNode root, CstNode stmt, String source, LintContext ctx) {
-        var methodName = findAncestor(root, stmt, RuleId.Member.class)
-                .flatMap(md -> childByRule(md, RuleId.Identifier.class))
-                .map(id -> text(id, source))
+    private Diagnostic createDiagnostic(Cursor root, Cursor stmt, LintContext ctx) {
+        var methodName = findAncestor(root, stmt, RuleKind.MEMBER)
+                .map(member -> extractMethodName(text(member)))
                 .or("(unknown)");
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
@@ -86,5 +83,10 @@ public class CstIfElseReturnRule implements CstLintRule {
                 ? Result.success(amount)
                 : ValidationError.NEGATIVE.result();
             """);
+    }
+
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

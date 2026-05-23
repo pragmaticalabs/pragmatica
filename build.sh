@@ -38,7 +38,7 @@ echo "=== Pragmatica Build ==="
 
 # Step 1: Bootstrap annotation processors and Maven plugins
 echo ""
-echo "Step 1/5: Bootstrap annotation processors and Maven plugins..."
+echo "Step 1/6: Bootstrap annotation processors and Maven plugins..."
 mvn_quiet install -DskipTests -Djbct.skip=true -pl jbct,jbct/slice-processor,aether/pg-tools/pg-codegen -am
 
 # Step 2: Lint all non-jbct modules
@@ -46,25 +46,32 @@ mvn_quiet install -DskipTests -Djbct.skip=true -pl jbct,jbct/slice-processor,aet
 # javadoc and selected `//` block comments; mangles lambda indentation. See
 # docs/contributors/jbct-formatter-disabled.md. Re-enable conditions are listed there.
 echo ""
-echo "Step 2/5: Lint..."
+echo "Step 2/6: Lint..."
 mvn_lint org.pragmatica-lite:jbct-maven-plugin:lint -pl '!jbct'
 
 # Step 3: Install all main modules (includes examples)
 echo ""
-echo "Step 3/5: Install all modules..."
+echo "Step 3/6: Install all modules..."
 mvn_quiet install -DskipTests
 
 # Step 4: Build e2e and forge tests (compile only)
 echo ""
-echo "Step 4/5: Build e2e and forge tests..."
+echo "Step 4/6: Build e2e and forge tests..."
 mvn_quiet compile test-compile -Pwith-e2e -pl aether/e2e-tests,aether/forge/forge-tests
 
 # Step 5: Build test blueprints
 echo ""
-echo "Step 5/5: Build test blueprints..."
+echo "Step 5/6: Build test blueprints..."
 for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full; do
     mvn_quiet -f "$bp/pom.xml" install -DskipTests
 done
+
+# Step 6: Lint integration test infra (ratchet against baseline)
+# See aether/docs/internal/audits/integration-test-audit-2026-05-21.md §2.2 and
+# aether/tests/integration/lint-baseline.txt for known-issue list.
+echo ""
+echo "Step 6/6: Lint integration tests..."
+./aether/tests/integration/lint-tests.sh
 
 echo ""
 echo "=== Build Complete ==="

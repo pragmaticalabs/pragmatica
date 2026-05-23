@@ -93,7 +93,7 @@ class ClusterGenerationProjectorTest {
             // ClusterResult.DEGRADED via deriveClusterQuiescence and `await-quiesced` could
             // never reach QUIESCED until DecommissionedAtomGc removes the atom (24h default).
             var lifecycles = Map.of(NODE_A,
-                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED, "host-a", 9001));
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED, "host-a", 9001));
             var input = inputWithLifecycles(lifecycles);
 
             var snapshot = PROJECTOR.project(input);
@@ -365,11 +365,12 @@ class ClusterGenerationProjectorTest {
 
         @Test
         void project_faultyMember_clusterIsDegraded() {
-            // DECOMMISSIONED is now filtered out of the projection (it's a tombstone, not a
-            // member). To reach DEGRADED via FAULTY, use SHUTTING_DOWN — also maps to FAULTY
-            // and represents a member still nominally present.
+            // Post-Step-I: STOPPED is filtered out of the projection (it's a tombstone, not a
+            // member), and SHUTTING_DOWN no longer exists. The remaining path to FAULTY is via
+            // a SWIM hint override on an ON_DUTY lifecycle entry — the projector takes the
+            // worse-of(lifecycle-derived, swim-hint) hint.
             var lifecycles = Map.of(NODE_A,
-                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.SHUTTING_DOWN,
+                                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
                                                                            "host-a",
                                                                            9001));
             var input = ProjectionInput.projectionInput(1L,
@@ -383,7 +384,9 @@ class ClusterGenerationProjectorTest {
                                                          Map.of(),
                                                          Map.of(),
                                                          Map.of(),
-                                                         Map.of());
+                                                         Map.of(),
+                                                         java.util.Set.of(),
+                                                         Map.of(NODE_A, HealthHint.FAULTY));
 
             var snapshot = PROJECTOR.project(input);
 

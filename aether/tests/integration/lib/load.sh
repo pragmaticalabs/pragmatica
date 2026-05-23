@@ -32,7 +32,7 @@ start_load() {
                     -H "Content-Type: application/json" \
                     -d "$body")
             fi
-            if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+            if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
             else
                 failure=$((failure + 1))
@@ -49,7 +49,7 @@ start_load() {
 # The witness node is stable by fixture contract; client-side failover was removed to
 # exercise the product's HttpForwardRequest contract under chaos rather than masking
 # forwarding bugs with per-request port-hopping.
-# A tick is success if MGMT_ENTRY_POINT responds 2xx/3xx, failure otherwise.
+# A tick is success if MGMT_ENTRY_POINT responds 2xx, failure otherwise.
 start_mgmt_load() {
     local rps="$1" duration="$2" path="$3"
     local interval
@@ -63,7 +63,7 @@ start_mgmt_load() {
         while [ "$(now_epoch)" -lt "$end_time" ]; do
             local status
             status=$(http_status "${MGMT_ENTRY_POINT}${path}" -H "X-API-Key: ${API_KEY}")
-            if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+            if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
             else
                 failure=$((failure + 1))
@@ -159,7 +159,7 @@ start_sustained_load() {
             end_ms=$(date +%s%3N)
             latency=$((end_ms - start_ms))
 
-            if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+            if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
             else
                 failure=$((failure + 1))
@@ -198,7 +198,7 @@ burst_load() {
                 -H "Content-Type: application/json" \
                 -d "$body")
         fi
-        if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+        if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
             success=$((success + 1))
         else
             failure=$((failure + 1))

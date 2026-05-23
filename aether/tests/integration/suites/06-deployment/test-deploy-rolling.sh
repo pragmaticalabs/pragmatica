@@ -10,7 +10,7 @@ BLUEPRINT_V1="org.pragmatica.aether.example:url-shortener:1.0.0"
 BLUEPRINT_V2="org.pragmatica.aether.example:url-shortener:1.0.1"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }
@@ -34,10 +34,28 @@ test_rolling_promote() {
     did=$(deploy_extract_id "$deployments")
     assert_ne "$did" "" "Got deployment ID"
     deploy_promote "$did"
-    await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "promote did not quiesce"
-    local status_result
+    if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then
+        log_fail "Rolling promote of ${did} did not quiesce within 30s"
+        return 1
+    fi
+    # Strict post-promote state check. Rolling promote() drives routing → ALL_NEW
+    # and transitions PROMOTING (DeploymentManagerImpl.applyPromoteRouting,
+    # DeploymentState.PROMOTING → DRAINING → COMPLETED). Accept any forward state;
+    # reject pre-promote (PENDING/DEPLOYING/DEPLOYED/ROUTING) or failure terminals
+    # (FAILED/ROLLED_BACK). The exact terminal at observation time is timing-sensitive,
+    # so the set is the union of legal post-promote states.
+    local status_result state
     status_result=$(deploy_status "$did")
-    log_info "Deployment status after promote: $status_result"
+    state=$(json_value "$status_result" "state")
+    case "$state" in
+        PROMOTING|DRAINING|COMPLETED)
+            log_pass "Rolling promote of ${did} reached post-promote state=${state}"
+            ;;
+        *)
+            log_fail "Rolling promote of ${did} did not reach a post-promote state — got state='${state}'; deploy_status: $(printf '%s' "$status_result" | head -c 500)"
+            return 1
+            ;;
+    esac
 }
 
 test_rolling_complete() {

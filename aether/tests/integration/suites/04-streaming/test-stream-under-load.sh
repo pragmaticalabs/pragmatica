@@ -15,10 +15,12 @@ max_rps=100
 if [ "$STREAM_RPS" -gt "$max_rps" ] 2>/dev/null; then
     STREAM_RPS="$max_rps"
 fi
+# Mid-flight ops tier — see aether/docs/specs/test-readiness-contract.md §4 (5.0%).
+# Streaming reconfiguration during concurrent load; partition reassignment + retries.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-5.0}"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }
@@ -68,7 +70,7 @@ test_stream_info_after_load() {
 
 test_cluster_stable() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Cluster stable: 5 nodes after stream load"
     assert_cluster_healthy "Cluster healthy after stream load"
 }

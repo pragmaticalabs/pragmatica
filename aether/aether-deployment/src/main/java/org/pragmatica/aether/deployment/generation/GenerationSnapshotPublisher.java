@@ -26,6 +26,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -98,51 +99,70 @@ public final class GenerationSnapshotPublisher {
                                                executor);
     }
 
-    @Contract public void onLeaderGained() {
+    @Contract
+    public void onLeaderGained() {
         dispatch(PublisherEvent.LeaderGained.INSTANCE);
     }
 
-    @Contract public void onLeaderLost() {
+    @Contract
+    public void onLeaderLost() {
         dispatch(PublisherEvent.LeaderLost.INSTANCE);
     }
 
-    @Contract public void markDirty() {
+    @Contract
+    public void markDirty() {
         dispatch(PublisherEvent.Mark.INSTANCE);
+    }
+
+    /// RC1 Step 2: receive `MembershipDecision` events from the canonical
+    /// `TopologyObserver` emitter. Membership changes alter the lifecycle map that
+    /// `projectFromKv` consumes, so every decision flips the publisher into the
+    /// Mark/Publishing path. The KV snapshot supplier is still used to actually project
+    /// the next generation snapshot — the subscription only tells the publisher *when*
+    /// the projection must re-run (snapshot-then-tail: initialise from KV snapshot at
+    /// construction; tail MembershipDecision for dirty signalling).
+    @Contract
+    public void onMembershipDecision(MembershipDecision decision) {
+        log.debug("GenerationSnapshotPublisher received {}", decision);
+        markDirty();
     }
 
     PublisherState currentState() {
         return state.get();
     }
 
-    @Contract private void dispatch(PublisherEvent event) {
+    @Contract
+    private void dispatch(PublisherEvent event) {
         while (true) {
             var prev = state.get();
             var next = transition(prev, event);
+
             if (state.compareAndSet(prev, next)) {
                 onEnter(prev, next);
+
                 return;
             }
         }
     }
 
     static PublisherState transition(PublisherState prev, PublisherEvent event) {
-        return switch (prev){
-            case PublisherState.Disabled _ -> switch (event){
+        return switch (prev) {
+            case PublisherState.Disabled _ -> switch (event) {
                 case PublisherEvent.LeaderGained _ -> PublisherState.Idle.INSTANCE;
                 case PublisherEvent.LeaderLost _, PublisherEvent.Mark _, PublisherEvent.ApplyDone _ -> prev;
             };
-            case PublisherState.Idle _ -> switch (event){
+            case PublisherState.Idle _ -> switch (event) {
                 case PublisherEvent.Mark _ -> PublisherState.Publishing.INSTANCE;
                 case PublisherEvent.LeaderLost _ -> PublisherState.Disabled.INSTANCE;
                 case PublisherEvent.LeaderGained _, PublisherEvent.ApplyDone _ -> prev;
             };
-            case PublisherState.Publishing _ -> switch (event){
+            case PublisherState.Publishing _ -> switch (event) {
                 case PublisherEvent.Mark _ -> PublisherState.PublishingDirty.INSTANCE;
                 case PublisherEvent.ApplyDone _ -> PublisherState.Idle.INSTANCE;
                 case PublisherEvent.LeaderLost _ -> PublisherState.Disabled.INSTANCE;
                 case PublisherEvent.LeaderGained _ -> prev;
             };
-            case PublisherState.PublishingDirty _ -> switch (event){
+            case PublisherState.PublishingDirty _ -> switch (event) {
                 case PublisherEvent.ApplyDone _ -> PublisherState.Publishing.INSTANCE;
                 case PublisherEvent.LeaderLost _ -> PublisherState.Disabled.INSTANCE;
                 case PublisherEvent.Mark _, PublisherEvent.LeaderGained _ -> prev;
@@ -150,33 +170,37 @@ public final class GenerationSnapshotPublisher {
         };
     }
 
-    @Contract private void onEnter(PublisherState prev, PublisherState next) {
+    @Contract
+    private void onEnter(PublisherState prev, PublisherState next) {
         if (next instanceof PublisherState.Idle && prev instanceof PublisherState.Disabled) {
             executor.execute(() -> dispatch(PublisherEvent.Mark.INSTANCE));
+
             return;
         }
         if (next instanceof PublisherState.Publishing && !(prev instanceof PublisherState.Publishing)) {executor.execute(this::runApply);}
     }
 
-    @Contract private void runApply() {
+    @Contract
+    private void runApply() {
         if (!isLeader.getAsBoolean()) {
             dispatch(PublisherEvent.LeaderLost.INSTANCE);
+
             return;
         }
+
         var current = readCurrentFromKv();
         var projected = projectFromKv(current);
-        cluster.apply(List.<KVCommand<AetherKey>>of(new KVCommand.Put<>(GenerationSnapshotKey.SINGLETON,
-                                                                        GenerationSnapshotValue.generationSnapshotValue(projected))))
-        .onResult(result -> {
-                      result.onFailure(cause -> log.warn("snapshot publish failed (will retry on next mark): {}",
-                                                         cause.message()));
-                      dispatch(PublisherEvent.ApplyDone.INSTANCE);
-                  });
+        cluster.apply(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(GenerationSnapshotKey.SINGLETON,
+                                                                         GenerationSnapshotValue.generationSnapshotValue(projected)))).onResult(result -> {
+                                                                                                                                                    result.onFailure(cause -> log.warn("snapshot publish failed (will retry on next mark): {}",
+                                                                                                                                                                                       cause.message()));
+                                                                                                                                                    dispatch(PublisherEvent.ApplyDone.INSTANCE);
+                                                                                                                                                });
     }
 
     private Option<ClusterGenerationSnapshot> readCurrentFromKv() {
         return kvStore.getTyped(GenerationSnapshotKey.SINGLETON, GenerationSnapshotValue.class)
-                               .map(GenerationSnapshotValue::snapshot);
+                      .map(GenerationSnapshotValue::snapshot);
     }
 
     private ClusterGenerationSnapshot projectFromKv(Option<ClusterGenerationSnapshot> currentInKv) {
@@ -187,7 +211,8 @@ public final class GenerationSnapshotPublisher {
         var spokesmen = collectSpokesmen(kv);
         var nodesWithArtifacts = collectNodesWithArtifacts(kv);
         var term = rabiaTermSupplier.get();
-        var counter = currentInKv.map(s -> s.epoch().localCounter() + 1L).or(0L);
+        var counter = currentInKv.map(s -> s.epoch()
+                                            .localCounter() + 1L).or(0L);
         var desiredCoreSize = collectDesiredCoreSize(kv).or(lifecycles.size());
         var hints = swimHints.currentTtlFiltered();
         var input = ClusterGenerationProjector.ProjectionInput.projectionInput(term,
@@ -199,51 +224,58 @@ public final class GenerationSnapshotPublisher {
                                                                                governors,
                                                                                partitions,
                                                                                spokesmen,
-                                                                               Map.<NodeId, Epoch>of(),
-                                                                               Map.<String, Epoch>of(),
+                                                                               Map.<NodeId, Epoch> of(),
+                                                                               Map.<String, Epoch> of(),
                                                                                Map.of(),
                                                                                nodesWithArtifacts,
                                                                                hints);
+
         return projector.project(input);
     }
 
     private static Option<Integer> collectDesiredCoreSize(Map<AetherKey, AetherValue> kv) {
-        return Option.option(kv.get(ClusterConfigKey.CURRENT)).filter(v -> v instanceof ClusterConfigValue)
-                            .map(v -> ((ClusterConfigValue) v).coreCount());
+        return Option.option(kv.get(ClusterConfigKey.CURRENT))
+                     .filter(v -> v instanceof ClusterConfigValue)
+                     .map(v -> ((ClusterConfigValue) v).coreCount());
     }
 
     private static Map<NodeId, NodeLifecycleValue> collectLifecycles(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet().stream()
-                          .filter(entry -> entry.getKey() instanceof NodeLifecycleKey && entry.getValue() instanceof NodeLifecycleValue)
-                          .collect(Collectors.toUnmodifiableMap(entry -> ((NodeLifecycleKey) entry.getKey()).nodeId(),
-                                                                entry -> (NodeLifecycleValue) entry.getValue()));
+        return kv.entrySet()
+                 .stream()
+                 .filter(entry -> entry.getKey() instanceof NodeLifecycleKey && entry.getValue() instanceof NodeLifecycleValue)
+                 .collect(Collectors.toUnmodifiableMap(entry -> ((NodeLifecycleKey) entry.getKey()).nodeId(),
+                                                       entry -> (NodeLifecycleValue) entry.getValue()));
     }
 
     private static Map<String, GovernorAnnouncementValue> collectGovernors(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet().stream()
-                          .filter(entry -> entry.getKey() instanceof GovernorAnnouncementKey && entry.getValue() instanceof GovernorAnnouncementValue)
-                          .collect(Collectors.toUnmodifiableMap(entry -> ((GovernorAnnouncementKey) entry.getKey()).communityId(),
-                                                                entry -> (GovernorAnnouncementValue) entry.getValue()));
+        return kv.entrySet()
+                 .stream()
+                 .filter(entry -> entry.getKey() instanceof GovernorAnnouncementKey && entry.getValue() instanceof GovernorAnnouncementValue)
+                 .collect(Collectors.toUnmodifiableMap(entry -> ((GovernorAnnouncementKey) entry.getKey()).communityId(),
+                                                       entry -> (GovernorAnnouncementValue) entry.getValue()));
     }
 
     private static Map<String, DhtPartitionOwnershipValue> collectPartitions(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet().stream()
-                          .filter(entry -> entry.getKey() instanceof DhtPartitionOwnershipKey && entry.getValue() instanceof DhtPartitionOwnershipValue)
-                          .collect(Collectors.toUnmodifiableMap(entry -> ((DhtPartitionOwnershipKey) entry.getKey()).partitionId(),
-                                                                entry -> (DhtPartitionOwnershipValue) entry.getValue()));
+        return kv.entrySet()
+                 .stream()
+                 .filter(entry -> entry.getKey() instanceof DhtPartitionOwnershipKey && entry.getValue() instanceof DhtPartitionOwnershipValue)
+                 .collect(Collectors.toUnmodifiableMap(entry -> ((DhtPartitionOwnershipKey) entry.getKey()).partitionId(),
+                                                       entry -> (DhtPartitionOwnershipValue) entry.getValue()));
     }
 
     private static Map<NodeId, SpokesmanValue> collectSpokesmen(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet().stream()
-                          .filter(entry -> entry.getKey() instanceof SpokesmanKey && entry.getValue() instanceof SpokesmanValue)
-                          .collect(Collectors.toUnmodifiableMap(entry -> ((SpokesmanKey) entry.getKey()).coreNodeId(),
-                                                                entry -> (SpokesmanValue) entry.getValue()));
+        return kv.entrySet()
+                 .stream()
+                 .filter(entry -> entry.getKey() instanceof SpokesmanKey && entry.getValue() instanceof SpokesmanValue)
+                 .collect(Collectors.toUnmodifiableMap(entry -> ((SpokesmanKey) entry.getKey()).coreNodeId(),
+                                                       entry -> (SpokesmanValue) entry.getValue()));
     }
 
     private static Set<NodeId> collectNodesWithArtifacts(Map<AetherKey, AetherValue> kv) {
-        return kv.entrySet().stream()
-                          .filter(entry -> entry.getKey() instanceof NodeArtifactKey)
-                          .map(entry -> ((NodeArtifactKey) entry.getKey()).nodeId())
-                          .collect(Collectors.toUnmodifiableSet());
+        return kv.entrySet()
+                 .stream()
+                 .filter(entry -> entry.getKey() instanceof NodeArtifactKey)
+                 .map(entry -> ((NodeArtifactKey) entry.getKey()).nodeId())
+                 .collect(Collectors.toUnmodifiableSet());
     }
 }

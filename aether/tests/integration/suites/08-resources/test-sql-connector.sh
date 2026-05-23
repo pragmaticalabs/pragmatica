@@ -11,7 +11,7 @@ BLUEPRINT="${SQL_BLUEPRINT:-org.pragmatica.aether.test:test-persistence:1.0.0}"
 POOL_BURST="${POOL_BURST:-50}"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
@@ -38,6 +38,12 @@ test_deploy_sql_app() {
 test_put_kv_pair() {
     local payload='{"value":"integration-test-value"}'
     local result
+    # PUT route propagation can lag the GET-based route-probe used in Deploy_SQL_app
+    # readiness — GET-404 (missing key) vs PUT-404 (missing route) look identical to
+    # the probe. Retry up to 60s to absorb the PUT-route post-publish window.
+    wait_for "PUT /api/kv/test-key route live" \
+             "[ \"\$(http_status \"${APP_ENDPOINT}/api/kv/wait-probe\" -X PUT -H \"X-API-Key: ${API_KEY}\" -H \"Content-Type: application/json\" -d '{}' 2>/dev/null)\" != \"404\" ]" \
+             60 || true
     # http_status_with_body so a 5xx surfaces the response body (problem+json detail
     # or stack-trace head) — without it the test logs an opaque "500" and the cloud
     # vs docker root cause distinction (DB pool unreachable vs route-table churn)

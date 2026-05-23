@@ -131,7 +131,7 @@ class ConsensusDrainCoordinatorTest {
             // Allow the async write to settle
             sleepQuietly(200L);
             assertThat(lifecycleWriter.decommissionCount.get()).isEqualTo(1);
-            assertThat(lifecycleAtom.get().state()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+            assertThat(lifecycleAtom.get().state()).isEqualTo(NodeLifecycleState.STOPPED);
         }
     }
 
@@ -150,7 +150,7 @@ class ConsensusDrainCoordinatorTest {
 
             c.markDrainComplete(TARGET);
             sleepQuietly(200L);
-            assertThat(lifecycleAtom.get().state()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+            assertThat(lifecycleAtom.get().state()).isEqualTo(NodeLifecycleState.STOPPED);
             assertThat(lifecycleWriter.drainCount.get()).isEqualTo(1);
             assertThat(lifecycleWriter.decommissionCount.get()).isEqualTo(1);
         }
@@ -204,7 +204,7 @@ class ConsensusDrainCoordinatorTest {
 
         @Override public Promise<Unit> requestDecommission(NodeId target) {
             decommissionCount.incrementAndGet();
-            atom.set(NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED));
+            atom.set(NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED));
             return Promise.unitPromise();
         }
 
@@ -216,7 +216,7 @@ class ConsensusDrainCoordinatorTest {
 
         @Override public Promise<Unit> requestFailedDrain(NodeId target) {
             failedDrainCount.incrementAndGet();
-            atom.set(NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.FAILED_DRAIN));
+            atom.set(NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED));
             return Promise.unitPromise();
         }
     }

@@ -17,7 +17,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public class StatusWebSocketPublisher {
+@SuppressWarnings("JBCT-RET-01")
+public class StatusWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(StatusWebSocketPublisher.class);
 
     private final StatusWebSocketHandler handler;
@@ -47,6 +48,7 @@ import org.slf4j.LoggerFactory;
 
     public void start() {
         if (!running.compareAndSet(false, true)) {return;}
+
         taskRef.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::publish,
                                                                     TimeSpan.timeSpan(intervalMs).millis())));
         log.info("Status WebSocket publisher started ({}ms interval)", intervalMs);
@@ -54,6 +56,7 @@ import org.slf4j.LoggerFactory;
 
     public void stop() {
         if (!running.compareAndSet(true, false)) {return;}
+
         taskRef.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
         log.info("Status WebSocket publisher stopped");
     }

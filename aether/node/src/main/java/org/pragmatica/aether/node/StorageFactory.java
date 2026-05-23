@@ -32,7 +32,6 @@ import org.slf4j.LoggerFactory;
 
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
-
     private static final long DEFAULT_MEMORY_BYTES = 256L * 1024 * 1024;
 
     private StorageFactory() {}
@@ -45,7 +44,7 @@ public final class StorageFactory {
                                                 StorageInstance instance,
                                                 SnapshotManager snapshotManager,
                                                 StorageReadinessGate readinessGate) {
-            return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate);
+            return new StorageSetup(name, instance, snapshotManager, readinessGate);
         }
     }
 
@@ -58,16 +57,32 @@ public final class StorageFactory {
                                                    .onFailure(cause -> log.error("Failed to create storage '{}': {}",
                                                                                  name,
                                                                                  cause.message())));
+        // Every node carries an `artifacts` storage instance — operators expect it without
+        // having to opt-in via `[storage.artifacts]` in aether.toml. If explicit config wasn't
+        // provided, synthesize one using `StorageConfig.storageConfig()` defaults; explicit
+        // config still wins via the loop above. `createOne` reuses the same code path
+        // (`handleDiskTierUnavailable` falls back to memory+DHT when the default disk path
+        // isn't mountable, e.g. inside the aether-node container).
+        if (!result.containsKey(ARTIFACTS_NAME)) {
+            createOne(ARTIFACTS_NAME, StorageConfig.storageConfig(), nodeId, dhtClient).onSuccess(setup -> result.put(ARTIFACTS_NAME,
+                                                                                                                      setup)).onFailure(cause -> log.error("Failed to create default '{}' storage: {}",
+                                                                                                                                                           ARTIFACTS_NAME,
+                                                                                                                                                           cause.message()));
+        }
+
         return Map.copyOf(result);
     }
 
+    private static final String ARTIFACTS_NAME = "artifacts";
+
     static StorageInstance defaultArtifactStorage(Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(DEFAULT_MEMORY_BYTES);
-        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "artifact-blocks")).map(dht -> StorageInstance.storageInstance("artifacts",
-                                                                                                                                            List.of(memoryTier,
-                                                                                                                                                    dht)))
-                            .or(StorageInstance.storageInstance("artifacts",
-                                                                List.of(memoryTier)));
+
+        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "artifact-blocks"))
+                        .map(dht -> StorageInstance.storageInstance("artifacts",
+                                                                    List.of(memoryTier, dht)))
+                        .or(StorageInstance.storageInstance("artifacts",
+                                                            List.of(memoryTier)));
     }
 
     private static Result<StorageSetup> createOne(String name,
@@ -82,10 +97,11 @@ public final class StorageFactory {
                                                         Option<DHTClient> dhtClient) {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
         var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, name + "-blocks"));
+
         return LocalDiskTier.localDiskTier(Path.of(config.diskPath()),
                                            config.diskMaxBytes())
-        .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, dhtTier),
-              disk -> buildTierList(memoryTier, disk, dhtTier));
+                            .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, dhtTier),
+                                  disk -> buildTierList(memoryTier, disk, dhtTier));
     }
 
     private static Result<List<StorageTier>> handleDiskTierUnavailable(String name,
@@ -93,14 +109,15 @@ public final class StorageFactory {
                                                                        MemoryTier memoryTier,
                                                                        Option<DhtStorageTier> dhtTier) {
         log.warn("Disk tier for '{}' unavailable: {}, using memory + DHT fallback", name, cause.message());
-        return Result.success(dhtTier.map(dht -> List.<StorageTier>of(memoryTier, dht)).or(List.of(memoryTier)));
+
+        return Result.success(dhtTier.map(dht -> List.<StorageTier> of(memoryTier, dht)).or(List.of(memoryTier)));
     }
 
     private static Result<List<StorageTier>> buildTierList(MemoryTier memoryTier,
                                                            StorageTier diskTier,
                                                            Option<DhtStorageTier> dhtTier) {
-        return Result.success(dhtTier.map(dht -> List.<StorageTier>of(memoryTier, diskTier, dht))
-                                         .or(List.of(memoryTier, diskTier)));
+        return Result.success(dhtTier.map(dht -> List.<StorageTier> of(memoryTier, diskTier, dht))
+                                     .or(List.of(memoryTier, diskTier)));
     }
 
     private static StorageSetup assembleSetup(String name,
@@ -114,11 +131,13 @@ public final class StorageFactory {
         var readinessGate = StorageReadinessGate.storageReadinessGate();
         restoreAndSignalReady(name, snapshotManager, metadataStore, readinessGate);
         log.info("Storage '{}' created: {} tier(s), snapshot path={}", name, tiers.size(), config.snapshotPath());
+
         return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate);
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {
         var intervalMillis = parseIntervalMillis(config.snapshotMaxInterval());
+
         return SnapshotConfig.snapshotConfig(Path.of(config.snapshotPath()),
                                              config.snapshotMutationThreshold(),
                                              intervalMillis,
@@ -145,7 +164,8 @@ public final class StorageFactory {
     }
 
     private static long parseIntervalMillis(String interval) {
-        return TimeSpan.timeSpan(interval).map(TimeSpan::toMillis)
-                                .or(60_000L);
+        return TimeSpan.timeSpan(interval)
+                       .map(TimeSpan::toMillis)
+                       .or(60_000L);
     }
 }

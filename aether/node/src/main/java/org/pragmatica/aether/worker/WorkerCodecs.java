@@ -4,12 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker;
 
-import org.pragmatica.aether.invoke.InvokeCodecs;
-import org.pragmatica.aether.slice.SliceCodecs;
-import org.pragmatica.aether.slice.blueprint.BlueprintCodecs;
-import org.pragmatica.aether.worker.bootstrap.BootstrapCodecs;
-import org.pragmatica.aether.worker.heartbeat.HeartbeatCodecs;
-import org.pragmatica.aether.worker.mutation.MutationCodecs;
+import org.pragmatica.aether.invoke.InvokeCodecsInvoke;
+import org.pragmatica.aether.slice.SliceCodecsInvoke;
+import org.pragmatica.aether.slice.SliceCodecsNode;
+import org.pragmatica.aether.slice.SliceCodecsSlice;
+import org.pragmatica.aether.slice.SliceCodecsSliceApi;
+import org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice;
+import org.pragmatica.aether.worker.bootstrap.BootstrapCodecsNode;
+import org.pragmatica.aether.worker.heartbeat.HeartbeatCodecsNode;
+import org.pragmatica.aether.worker.mutation.MutationCodecsNode;
 import org.pragmatica.cluster.metrics.MetricsCodecs;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.net.NetCodecs;
@@ -31,8 +34,10 @@ import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
 
-@CodecFor(InetSocketAddress.class) @SuppressWarnings("JBCT-STY-03") public sealed interface WorkerCodecs {
-    record unused() implements WorkerCodecs{}
+@CodecFor(InetSocketAddress.class)
+@SuppressWarnings("JBCT-STY-03")
+public sealed interface WorkerCodecs {
+    record unused() implements WorkerCodecs {}
 
     static SliceCodec workerCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();
@@ -42,19 +47,24 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         all.addAll(TcpCodecs.CODECS);
         all.addAll(org.pragmatica.cluster.state.kvstore.KvstoreCodecs.CODECS);
         all.addAll(MetricsCodecs.CODECS);
-        all.addAll(SliceCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecs.CODECS);
-        all.addAll(BlueprintCodecs.CODECS);
-        all.addAll(InvokeCodecs.CODECS);
-        all.addAll(MutationCodecs.CODECS);
-        all.addAll(BootstrapCodecs.CODECS);
-        all.addAll(HeartbeatCodecs.CODECS);
+        // SliceCodecs registry in org.pragmatica.aether.slice is contributed by four modules; reference each suffixed sub-registry to avoid shade collision.
+        all.addAll(SliceCodecsSlice.CODECS);
+        all.addAll(SliceCodecsSliceApi.CODECS);
+        all.addAll(SliceCodecsNode.CODECS);
+        all.addAll(SliceCodecsInvoke.CODECS);
+        all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice.CODECS);
+        all.addAll(BlueprintCodecsSlice.CODECS);
+        all.addAll(InvokeCodecsInvoke.CODECS);
+        all.addAll(MutationCodecsNode.CODECS);
+        all.addAll(BootstrapCodecsNode.CODECS);
+        all.addAll(HeartbeatCodecsNode.CODECS);
         all.addAll(org.pragmatica.aether.worker.metrics.MetricsCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.worker.network.NetworkCodecs.CODECS);
+        all.addAll(org.pragmatica.aether.worker.network.NetworkCodecsNode.CODECS);
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);
         all.addAll(SwimCodecs.CODECS);
         all.add(inetSocketAddressCodec());
         var requiredTypes = collectRequiredTypes();
+
         return SliceCodec.sliceCodec(parent, all, requiredTypes);
     }
 
@@ -62,6 +72,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         var types = new java.util.HashSet<Class<?>>();
         types.addAll(SwimCodecs.REQUIRED_TYPES);
         types.add(InetSocketAddress.class);
+
         return types;
     }
 

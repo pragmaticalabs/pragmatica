@@ -25,15 +25,15 @@ import org.pragmatica.lang.io.TimeSpan;
 /// - `EmitDomainEvent` — `NODE_JOINING` / `NODE_ON_DUTY` / `NODE_FAILED` / `NODE_DRAINED` /
 ///   `NODE_DRAIN_FAILED` published downstream. Carries a free-form `reason` for audit.
 public sealed interface MembershipEffect {
-    record ScheduleTimer(NodeId peer, TimerKind kind, TimeSpan delay) implements MembershipEffect{}
+    record ScheduleTimer(NodeId peer, TimerKind kind, TimeSpan delay) implements MembershipEffect {}
 
-    record CancelTimer(NodeId peer, TimerKind kind) implements MembershipEffect{}
+    record CancelTimer(NodeId peer, TimerKind kind) implements MembershipEffect {}
 
-    record InvokeDrain(NodeId peer, DrainReason reason) implements MembershipEffect{}
+    record InvokeDrain(NodeId peer, DrainReason reason) implements MembershipEffect {}
 
-    record CancelDrain(NodeId peer) implements MembershipEffect{}
+    record CancelDrain(NodeId peer) implements MembershipEffect {}
 
-    record EmitDomainEvent(NodeId peer, MembershipDomainEvent event, String reason) implements MembershipEffect{}
+    record EmitDomainEvent(NodeId peer, MembershipDomainEvent event, String reason) implements MembershipEffect {}
 
     enum TimerKind {
         JOIN_DEADLINE

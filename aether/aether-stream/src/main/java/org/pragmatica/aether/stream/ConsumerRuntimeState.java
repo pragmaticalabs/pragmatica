@@ -421,11 +421,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return cursor.get();
         }
 
-        void advanceCursor(long offset) {
+        @Contract void advanceCursor(long offset) {
             cursor.set(offset);
         }
 
-        void markCursorInitialized() {
+        @Contract void markCursorInitialized() {
             cursorInitialized.set(true);
         }
 
@@ -433,11 +433,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return cursorInitialized.get();
         }
 
-        void resetRetryCount() {
+        @Contract void resetRetryCount() {
             retryCount.set(0);
         }
 
-        void adjustPollInterval(boolean hasData) {
+        @Contract void adjustPollInterval(boolean hasData) {
             currentPollMs.set(hasData
                               ? MIN_POLL_MS
                               : Math.min(currentPollMs.get() * 2, MAX_POLL_MS));
@@ -447,7 +447,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return retryCount.incrementAndGet();
         }
 
-        void incrementEventsSinceCheckpoint() {
+        @Contract void incrementEventsSinceCheckpoint() {
             eventsSinceCheckpoint.incrementAndGet();
         }
 
@@ -455,7 +455,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= CHECKPOINT_TIME_THRESHOLD_MS;
         }
 
-        void resetCheckpointCounters() {
+        @Contract void resetCheckpointCounters() {
             eventsSinceCheckpoint.set(0);
             lastCheckpointTime.set(System.currentTimeMillis());
         }
@@ -464,7 +464,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return stalled.get();
         }
 
-        void stall() {
+        @Contract void stall() {
             stalled.set(true);
         }
 
@@ -472,11 +472,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return cancelled.get();
         }
 
-        void scheduledFuture(ScheduledFuture<?> future) {
+        @Contract void scheduledFuture(ScheduledFuture<?> future) {
             this.future = future;
         }
 
-        void pushListener(LongConsumer listener) {
+        @Contract void pushListener(LongConsumer listener) {
             this.pushListenerRef = listener;
         }
 
@@ -484,7 +484,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return option(pushListenerRef);
         }
 
-        void touchLastPollTime() {
+        @Contract void touchLastPollTime() {
             lastPollTime.set(System.currentTimeMillis());
         }
 
@@ -492,7 +492,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return lastPollTime.get();
         }
 
-        void cancel() {
+        @Contract void cancel() {
             cancelled.set(true);
             option(future).onPresent(f -> f.cancel(false));
         }

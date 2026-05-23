@@ -15,11 +15,11 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 
 
 public interface NodeDeploymentEvents extends ClusterFsmEvent {
-    record NodeArtifactPutReceived(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) implements NodeDeploymentEvents{}
+    record NodeArtifactPutReceived(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) implements NodeDeploymentEvents {}
 
-    record NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) implements NodeDeploymentEvents{}
+    record NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) implements NodeDeploymentEvents {}
 
-    record NodeRoutesPutReceived(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) implements NodeDeploymentEvents{}
+    record NodeRoutesPutReceived(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) implements NodeDeploymentEvents {}
 
-    record LeavingRequested(DrainReason reason) implements NodeDeploymentEvents{}
+    record LeavingRequested(DrainReason reason) implements NodeDeploymentEvents {}
 }

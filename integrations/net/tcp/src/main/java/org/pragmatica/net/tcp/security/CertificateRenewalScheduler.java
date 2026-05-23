@@ -290,6 +290,43 @@ public final class CertificateRenewalScheduler {
         };
     }
 
+    /// Test-only hook (P-NEW-I, 2026-05-21): reconfigures the scheduler so the active
+    /// certificate appears to expire in `validitySeconds` from now and reschedules the
+    /// renewal timer accordingly (the next Tick fires after 40% of the remaining window).
+    /// Production code does not call this — exposed only for the dev-mode-gated
+    /// `POST /api/certificates/configure-short-validity` endpoint used by
+    /// `Strengthen-cert-rotation-trigger` integration tests.
+    ///
+    /// Behaviour:
+    /// - Updates `currentNotAfter` to `Instant.now() + validitySeconds`.
+    /// - If currently `Healthy`, cancels the in-flight timer and reschedules at the
+    ///   recomputed renewal point (re-enters `Healthy` via Stop+Start would also clear
+    ///   `Renewing`/`RetryBackoff` — out of scope here; a no-op when not `Healthy`).
+    /// - Returns the new `notAfter` instant so the caller can surface it in the response.
+    public Instant configureShortValidity(int validitySeconds) {
+        var newNotAfter = Instant.now().plusSeconds(validitySeconds);
+        ctx.currentNotAfter.set(newNotAfter);
+        if (fsm.current() instanceof Healthy) {
+            // Re-enter Healthy with the new currentNotAfter so the timer reschedules.
+            // Dispatch is single-threaded on the FSM; the Tick→Renewing→Healthy round-trip
+            // would also work but is needlessly invasive when we just need a fresh timer.
+            ctx.cancelScheduledTask();
+            var delay = calculateRenewalDelay(newNotAfter);
+            var scheduleDelay = delay.isNegative() || delay.isZero()
+                    ? TimeSpan.timeSpan(0).millis()
+                    : TimeSpan.timeSpan(delay.toMillis()).millis();
+            var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
+                                                 scheduleDelay);
+            ctx.scheduledTask.set(Option.some(task));
+            log.info("Short-validity reconfiguration: certificate notAfter set to {}, next Tick in {}",
+                      newNotAfter, formatDuration(delay));
+        } else {
+            log.info("Short-validity reconfiguration: certificate notAfter set to {} (scheduler not in Healthy state — timer untouched)",
+                      newNotAfter);
+        }
+        return newNotAfter;
+    }
+
     // --- Shared transition-action / computation helpers ---
 
     private static void applySuccess(Context ctx, CertificateBundle bundle) {

@@ -10,6 +10,8 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.consensus.NodeId;
+
 
 import java.util.List;
 
@@ -21,7 +23,7 @@ class SpokesmanValueTest {
         @Test
         void spokesmanValue_withFields_populatesRecord() {
             var epoch = Epoch.epoch(3L, 10L);
-            var hlc = new HlcTimestamp(50L, "core-1");
+            var hlc = new HlcTimestamp(50L, new NodeId("core-1"));
 
             var v = SpokesmanValue.spokesmanValue(List.of("community-a", "community-b"), epoch, hlc, 2L);
 

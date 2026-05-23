@@ -23,22 +23,28 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CON
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_UPGRADE;
 
 
-@Command(name = "upgrade", description = "Upgrade cluster to a target version") @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"}) class ClusterUpgradeCommand implements Callable<Integer> {
+@Command(name = "upgrade", description = "Upgrade cluster to a target version")
+@SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
+class ClusterUpgradeCommand implements Callable<Integer> {
     private static final Pattern VERSION_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
-
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    @Option(names = "--version", required = true, description = "Target version (e.g., 0.26.0)") private String targetVersion;
+    @Option(names = "--version", required = true, description = "Target version (e.g., 0.26.0)")
+    private String targetVersion;
 
-    @CommandLine.ParentCommand private ClusterCommand parent;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+    @Mixin
+    ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
-    @Override public Integer call() {
-        return clusterTarget.applyOverrides().flatMap(_ -> validateVersion())
-                                           .flatMap(this::fetchCurrentConfig)
-                                           .flatMap(this::initiateUpgrade)
-                                           .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
+    @Override
+    public Integer call() {
+        return clusterTarget.applyOverrides()
+                            .flatMap(_ -> validateVersion())
+                            .flatMap(this::fetchCurrentConfig)
+                            .flatMap(this::initiateUpgrade)
+                            .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
     }
 
     private Result<String> validateVersion() {
@@ -52,8 +58,11 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_UPG
 
     private Result<String> initiateUpgrade(JsonNode config) {
         var currentVersion = config.path("version").asText("unknown");
+
         if (targetVersion.equals(currentVersion)) {return new UpgradeError.AlreadyAtVersion(targetVersion).result();}
+
         var jsonBody = "{\"targetVersion\":\"" + targetVersion + "\"}";
+
         return ClusterHttpClient.post(CLUSTER_UPGRADE, jsonBody);
     }
 
@@ -64,21 +73,26 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_UPG
     private static int onFailure(Cause cause) {
         if (cause instanceof UpgradeError.AlreadyAtVersion alreadyAt) {
             System.out.printf("Already at version %s. No upgrade needed.%n", alreadyAt.version());
+
             return ExitCode.SUCCESS;
         }
+
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 
     sealed interface UpgradeError extends Cause {
         record InvalidVersion(String version) implements UpgradeError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid version format: " + version + " (expected X.Y.Z)";
             }
         }
 
         record AlreadyAtVersion(String version) implements UpgradeError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Already at version " + version;
             }
         }

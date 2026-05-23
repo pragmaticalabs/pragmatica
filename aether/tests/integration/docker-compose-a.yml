@@ -25,6 +25,23 @@ x-node-common: &node-common
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
     AETHER_CLUSTER_SECRET: "aether-integration-test-cluster-secret"
     AETHER_DOCKER_NETWORK: "aether-a-network"
+    # Cluster identity for CTM-provisioned replacement containers — without this,
+    # DockerComputeProvider.clusterOrDefault falls back to "default" and replacements
+    # carry `aether.cluster=default` which doesn't match the compose-fixed nodes'
+    # `aether.cluster=a` label, breaking cross-cluster filter scoping.
+    AETHER_CLUSTER_NAME: "a"
+    # Cluster A claims host port range 5150-5159 for CTM-provisioned containers
+    # (compose-defined nodes own 5151-5155; auto-heal replacements pick from 5156+).
+    # Cluster B uses 5160-5169. Distinct ranges prevent port-bind collisions when
+    # CTM auto-provisions a replacement in one cluster from colliding with the
+    # other's port window. Read by DockerEnvironmentIntegrationFactory.resolvePortBase.
+    AETHER_MGMT_PORT_BASE: "5156"
+    AETHER_APP_PORT_BASE: "8075"
+    # Test cluster: enable dev-mode endpoints (scheduled-tasks/inject, alerts/inject,
+    # traces/inject, dht/inject, certificates/configure-short-validity). Production
+    # clusters keep this unset. Required by suite 08's Last_execution_advances and
+    # other test-only injection paths.
+    AETHER_INSECURE_DEV_MODE: "true"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
     interval: 10s
@@ -59,19 +76,22 @@ services:
       retries: 10
 
   # --- 5-node Aether Cluster A ---
-  # Direct per-node mgmt ports moved to 5151-5155 (was 5150-5154). 5150 is now
-  # owned by the mgmt sidecar gateway (aether-a-mgmt-gateway) so MGMT_ENTRY_POINT
-  # survives any single-core failure. The MGMT_PORT+i convention now resolves
-  # node-i+1 -> 5151+i; lib/cluster.sh + run-tests.sh rebased to 5151.
+  # Direct per-node mgmt ports 5151-5155 (node-1..node-5). Slot 5150 is
+  # intentionally unbound; the test harness reaches the cluster by probing
+  # 5151..5155 for any live core (lib/common.sh _refresh_mgmt_entry_point).
+  # The MGMT_PORT+i convention resolves node-{i+1} → 5151+i.
   aether-a-node-1:
     <<: *node-common
     container_name: aether-a-node-1
     hostname: aether-a-node-1
+    labels:
+      aether.cluster: "a"
+      aether.node-id: "node-1"
     environment:
       <<: *node-env
       NODE_ID: "node-1"
     ports:
-      - "5151:8080"   # Direct mgmt (gateway-bypass)
+      - "5151:8080"   # Direct mgmt
       - "8070:8070"   # App HTTP
       - "9090:8070"   # LB app port
       - "9091:8080"   # LB mgmt port
@@ -83,6 +103,9 @@ services:
     <<: *node-common
     container_name: aether-a-node-2
     hostname: aether-a-node-2
+    labels:
+      aether.cluster: "a"
+      aether.node-id: "node-2"
     environment:
       <<: *node-env
       NODE_ID: "node-2"
@@ -94,6 +117,9 @@ services:
     <<: *node-common
     container_name: aether-a-node-3
     hostname: aether-a-node-3
+    labels:
+      aether.cluster: "a"
+      aether.node-id: "node-3"
     environment:
       <<: *node-env
       NODE_ID: "node-3"
@@ -105,6 +131,9 @@ services:
     <<: *node-common
     container_name: aether-a-node-4
     hostname: aether-a-node-4
+    labels:
+      aether.cluster: "a"
+      aether.node-id: "node-4"
     environment:
       <<: *node-env
       NODE_ID: "node-4"
@@ -116,52 +145,15 @@ services:
     <<: *node-common
     container_name: aether-a-node-5
     hostname: aether-a-node-5
+    labels:
+      aether.cluster: "a"
+      aether.node-id: "node-5"
     environment:
       <<: *node-env
       NODE_ID: "node-5"
     ports:
       - "5155:8080"
       - "8074:8070"
-
-  # --- Management API sidecar gateway ---
-  # nginx reverse proxy that round-robins /api/* and /health/* requests across
-  # the 5 cores via cluster-internal hostnames (aether-a-node-{1..5}:8080).
-  # proxy_next_upstream skips dead cores. Owns host port 5150 so MGMT_ENTRY_POINT
-  # is decoupled from any single core's lifecycle.
-  aether-a-mgmt-gateway:
-    image: nginx:1.27-alpine
-    container_name: aether-a-mgmt-gateway
-    hostname: aether-a-mgmt-gateway
-    networks:
-      - aether-a-network
-    ports:
-      - "5150:8080"   # MGMT_ENTRY_POINT (was node-1 direct)
-    volumes:
-      - ./nginx-mgmt-gateway-a.conf:/etc/nginx/nginx.conf:ro
-    # nginx evaluates `upstream { server foo:port }` at config-load and aborts
-    # with `host not found in upstream` if the hostname has no DNS entry yet.
-    # depends_on with service_started waits for each core's container creation
-    # (which is when Docker registers its embedded DNS record), so nginx's
-    # upstream block resolves cleanly. service_started is enough — service_healthy
-    # would deadlock since cores' healthchecks legitimately take ~60s, exceeding
-    # depends_on's default budget.
-    depends_on:
-      aether-a-node-1: { condition: service_started }
-      aether-a-node-2: { condition: service_started }
-      aether-a-node-3: { condition: service_started }
-      aether-a-node-4: { condition: service_started }
-      aether-a-node-5: { condition: service_started }
-    healthcheck:
-      # 127.0.0.1 (not localhost): busybox wget resolves localhost to [::1] but
-      # nginx `listen 8080` is IPv4-only, so `wget --spider localhost:8080`
-      # always fails with "Connection refused" → container falsely "unhealthy"
-      # even though /gateway/live returns 200 via IPv4.
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/gateway/live"]
-      interval: 5s
-      timeout: 2s
-      retries: 5
-      start_period: 5s
-    restart: "no"
 
 networks:
   aether-a-network:

@@ -24,10 +24,12 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
     AppHttpContext ctx();
 
     record Stopped(AppHttpContext ctx) implements AppHttpState {
-        @Override@Contract public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
+        @Override
+        @Contract
+        public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
             if (event instanceof StartRequested) {
                 tx.transitionTo(ctx.starting());
+
                 return;
             }
             tx.ignore();
@@ -35,9 +37,10 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
     }
 
     record Starting(AppHttpContext ctx) implements AppHttpState {
-        @Override@Contract public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        @Contract
+        public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case H1Ready(HttpServer server) -> tx.transitionTo(new H1Only(ctx, server), ctx::republishStateAfterBind);
                 case H3Ready(HttpServer server) -> tx.transitionTo(new H3Only(ctx, server), ctx::republishStateAfterBind);
                 case StopRequested _, ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
@@ -47,9 +50,10 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
     }
 
     record H1Only(AppHttpContext ctx, HttpServer server) implements AppHttpState {
-        @Override@Contract public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        @Contract
+        public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case H3Ready(HttpServer h3) -> tx.transitionTo(new Dual(ctx, server, h3));
                 case RouteTablePublished(RouteTable routes) -> tx.transitionTo(new RouteReady(ctx,
                                                                                               Option.some(server),
@@ -68,9 +72,10 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
     }
 
     record H3Only(AppHttpContext ctx, HttpServer h3) implements AppHttpState {
-        @Override@Contract public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        @Contract
+        public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case H1Ready(HttpServer server) -> tx.transitionTo(new Dual(ctx, server, h3));
                 case RouteTablePublished(RouteTable routes) -> tx.transitionTo(new RouteReady(ctx,
                                                                                               Option.none(),
@@ -89,9 +94,10 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
     }
 
     record Dual(AppHttpContext ctx, HttpServer server, HttpServer h3) implements AppHttpState {
-        @Override@Contract public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        @Contract
+        public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case RouteTablePublished(RouteTable routes) -> tx.transitionTo(new RouteReady(ctx,
                                                                                               Option.some(server),
                                                                                               Option.some(h3),
@@ -109,9 +115,10 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
     }
 
     record RouteReady(AppHttpContext ctx, Option<HttpServer> server, Option<HttpServer> h3, RouteTable routes) implements AppHttpState {
-        @Override@Contract public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        @Contract
+        public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case RouteTablePublished(RouteTable updated) -> tx.transitionTo(new RouteReady(ctx, server, h3, updated));
                 case H1Ready(HttpServer newServer) -> tx.transitionTo(new RouteReady(ctx,
                                                                                      Option.some(newServer),
@@ -137,9 +144,10 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
                         Option<HttpServer> prevH3,
                         org.pragmatica.net.tcp.security.CertificateBundle newBundle,
                         RouteTable routes) implements AppHttpState {
-        @Override@Contract public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        @Contract
+        public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case CertRotationApplied(var newServer, var newH3, var updated) -> tx.transitionTo(new RouteReady(ctx,
                                                                                                                   newServer,
                                                                                                                   newH3,
@@ -159,9 +167,10 @@ public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEv
     }
 
     record Quiesced(AppHttpContext ctx, Option<HttpServer> server, Option<HttpServer> h3) implements AppHttpState {
-        @Override@Contract public void handle(ClusterFsmEvent event,
-                                              TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
-            switch (event){
+        @Override
+        @Contract
+        public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
+            switch (event) {
                 case ClusterFsmEvent.QuorumEstablished _ -> tx.transitionTo(new RouteReady(ctx,
                                                                                            server,
                                                                                            h3,

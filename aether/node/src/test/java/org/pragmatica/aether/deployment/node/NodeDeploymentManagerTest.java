@@ -397,6 +397,11 @@ class NodeDeploymentManagerTest {
             return List.copyOf(loadedSlices);
         }
 
+        @Override
+        public org.pragmatica.lang.Option<org.pragmatica.config.ConfigurationProvider> sliceComposite(Artifact artifact) {
+            return org.pragmatica.lang.Option.none();
+        }
+
         void markAsLoaded(Artifact artifact) {
             loadedSlices.add(new TestLoadedSlice(artifact, null));
         }

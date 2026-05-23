@@ -27,12 +27,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public class LogLevelRegistry {
+@SuppressWarnings("JBCT-RET-01")
+public class LogLevelRegistry {
     private static final Logger log = LoggerFactory.getLogger(LogLevelRegistry.class);
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
     private final KVStore<AetherKey, AetherValue> kvStore;
-
     private final Map<String, String> registry = new ConcurrentHashMap<>();
 
     private LogLevelRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
@@ -44,12 +44,14 @@ import org.slf4j.LoggerFactory;
                                                     KVStore<AetherKey, AetherValue> kvStore) {
         var registry = new LogLevelRegistry(clusterNode, kvStore);
         registry.loadFromKvStore();
+
         return registry;
     }
 
     public static LogLevelRegistry readOnly(KVStore<AetherKey, AetherValue> kvStore) {
         var registry = new LogLevelRegistry(null, kvStore);
         registry.loadFromKvStore();
+
         return registry;
     }
 
@@ -66,21 +68,25 @@ import org.slf4j.LoggerFactory;
                   value.level());
     }
 
-    @SuppressWarnings("unchecked") public Promise<Unit> setLevel(String loggerName, String level) {
+    @SuppressWarnings("unchecked")
+    public Promise<Unit> setLevel(String loggerName, String level) {
         var key = LogLevelKey.forLogger(loggerName);
         var value = LogLevelValue.logLevelValue(loggerName, level);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-        return clusterNode.<Unit>apply(List.of(command))
+
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> applyAndStore(loggerName, level))
                           .onFailure(cause -> log.error("Failed to persist log level for {}: {}",
                                                         loggerName,
                                                         cause.message()));
     }
 
-    @SuppressWarnings("unchecked") public Promise<Unit> resetLevel(String loggerName) {
+    @SuppressWarnings("unchecked")
+    public Promise<Unit> resetLevel(String loggerName) {
         var key = LogLevelKey.forLogger(loggerName);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
-        return clusterNode.<Unit>apply(List.of(command))
+
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> removeAndReset(loggerName))
                           .onFailure(cause -> log.error("Failed to persist log level removal for {}: {}",
                                                         loggerName,
@@ -91,7 +97,9 @@ import org.slf4j.LoggerFactory;
         return Map.copyOf(registry);
     }
 
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onLogLevelPut(ValuePut<LogLevelKey, LogLevelValue> valuePut) {
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onLogLevelPut(ValuePut<LogLevelKey, LogLevelValue> valuePut) {
         var logLevelKey = valuePut.cause().key();
         var logLevelValue = valuePut.cause().value();
         registry.put(logLevelKey.loggerName(), logLevelValue.level());
@@ -101,7 +109,9 @@ import org.slf4j.LoggerFactory;
                   logLevelValue.level());
     }
 
-    @MessageReceiver@SuppressWarnings("JBCT-RET-01") public void onLogLevelRemove(ValueRemove<LogLevelKey, LogLevelValue> valueRemove) {
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onLogLevelRemove(ValueRemove<LogLevelKey, LogLevelValue> valueRemove) {
         var logLevelKey = valueRemove.cause().key();
         registry.remove(logLevelKey.loggerName());
         resetLogLevel(logLevelKey.loggerName());
@@ -112,6 +122,7 @@ import org.slf4j.LoggerFactory;
         registry.put(loggerName, level);
         applyLevel(loggerName, level);
         log.info("Log level set for {}: {}", loggerName, level);
+
         return Unit.unit();
     }
 
@@ -119,6 +130,7 @@ import org.slf4j.LoggerFactory;
         registry.remove(loggerName);
         resetLogLevel(loggerName);
         log.info("Log level reset for {}", loggerName);
+
         return Unit.unit();
     }
 

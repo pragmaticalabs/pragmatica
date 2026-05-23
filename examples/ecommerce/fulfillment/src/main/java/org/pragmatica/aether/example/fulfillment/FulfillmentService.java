@@ -23,7 +23,8 @@ import java.util.Set;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-@Slice public interface FulfillmentService {
+@Slice
+public interface FulfillmentService {
     record CalculateShippingRequest(List<LineItem> items, Address destination) {
         public static CalculateShippingRequest calculateShippingRequest(List<LineItem> items, Address destination) {
             return new CalculateShippingRequest(List.copyOf(items), destination);
@@ -49,7 +50,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     }
 
     record ShippingQuote(List<ShippingOptionQuote> options, Instant validUntil) {
-        public record ShippingOptionQuote(ShippingOption option, Money cost, Instant estimatedDelivery){}
+        public record ShippingOptionQuote(ShippingOption option, Money cost, Instant estimatedDelivery) {}
 
         public static ShippingQuote quote(List<ShippingOptionQuote> options) {
             return new ShippingQuote(List.copyOf(options),
@@ -109,7 +110,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
         public record TrackingEvent(Instant timestamp,
                                     String location,
                                     String description,
-                                    Shipment.ShipmentStatus status){}
+                                    Shipment.ShipmentStatus status) {}
 
         public static TrackingInfo trackingInfo(Shipment shipment) {
             var events = List.of(new TrackingEvent(shipment.createdAt(),
@@ -146,19 +147,22 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
     sealed interface FulfillmentError extends Cause {
         record ShipmentNotFound(String trackingNumber) implements FulfillmentError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Shipment not found: " + trackingNumber;
             }
         }
 
         record SameDayNotAvailable(String state) implements FulfillmentError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Same-day delivery not available in " + state;
             }
         }
 
         record InvalidDestination(String reason) implements FulfillmentError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Invalid shipping destination: " + reason;
             }
         }
@@ -183,32 +187,39 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
     static FulfillmentService fulfillmentService(@Sql SqlConnector db) {
         record fulfillmentService(SqlConnector db) implements FulfillmentService {
             private static final Set<String> NO_SAME_DAY_STATES = Set.of("AK", "HI", "PR", "VI");
-
             private static final BigDecimal FREE_SHIPPING_THRESHOLD = BigDecimal.valueOf(100);
 
-            @Override public Promise<ShippingQuote> calculateShipping(CalculateShippingRequest request) {
+            @Override
+            public Promise<ShippingQuote> calculateShipping(CalculateShippingRequest request) {
                 var options = calculateAvailableOptions(request.items(), request.destination());
+
                 return Promise.success(ShippingQuote.quote(options));
             }
 
-            @Override public Promise<Shipment> createShipment(CreateShipmentRequest request) {
-                if (isSameDayRestricted(request)) {return new FulfillmentError.SameDayNotAvailable(request.shippingAddress()
-                                                                                                                          .state()).promise();}
+            @Override
+            public Promise<Shipment> createShipment(CreateShipmentRequest request) {
+                if (isSameDayRestricted(request)) {
+                    return new FulfillmentError.SameDayNotAvailable(request.shippingAddress().state()).promise();
+                }
+
                 var shipment = Shipment.shipment(request.orderId(), request.shippingAddress(), request.shippingOption());
+
                 return persistShipment(shipment);
             }
 
-            @Override public Promise<TrackingInfo> trackShipment(TrackShipmentRequest request) {
+            @Override
+            public Promise<TrackingInfo> trackShipment(TrackShipmentRequest request) {
                 return db.queryOptional(SELECT_SHIPMENT_BY_TRACKING,
                                         fulfillmentService::mapShipment,
                                         request.trackingNumber()).flatMap(opt -> opt.toResult(new FulfillmentError.ShipmentNotFound(request.trackingNumber()))
-                                                                                             .async())
+                                                                                    .async())
                                        .map(TrackingInfo::trackingInfo);
             }
 
             private static boolean isSameDayRestricted(CreateShipmentRequest request) {
-                return request.shippingOption() == ShippingOption.SAME_DAY && NO_SAME_DAY_STATES.contains(request.shippingAddress().state()
-                                                                                                                                 .toUpperCase());
+                return request.shippingOption() == ShippingOption.SAME_DAY && NO_SAME_DAY_STATES.contains(request.shippingAddress()
+                                                                                                                 .state()
+                                                                                                                 .toUpperCase());
             }
 
             private Promise<Shipment> persistShipment(Shipment shipment) {
@@ -224,7 +235,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                  shipment.destination().country(),
                                  shipment.status().name(),
                                  shipment.estimatedDelivery())
-                .map(_ -> shipment);
+                         .map(_ -> shipment);
             }
 
             private static Result<Shipment> mapShipment(RowMapper.RowAccessor row) {
@@ -237,7 +248,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                   row.getString("destination_state"),
                                   row.getString("destination_postal"),
                                   row.getString("destination_country"))
-                .flatMap(fulfillmentService::buildShipmentFromRow);
+                             .flatMap(fulfillmentService::buildShipmentFromRow);
             }
 
             private static Result<Shipment> buildShipmentFromRow(String shipmentId,
@@ -251,28 +262,30 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                                  String country) {
                 return Result.all(Address.address(street, city, state, postal, country),
                                   OrderId.orderId(orderId))
-                .map((addr, oid) -> new Shipment(shipmentId,
-                                                 oid,
-                                                 trackingNumber,
-                                                 ShippingOption.valueOf(shippingOption),
-                                                 addr,
-                                                 Shipment.ShipmentStatus.LABEL_CREATED,
-                                                 Instant.now(),
-                                                 Instant.now()));
+                             .map((addr, oid) -> new Shipment(shipmentId,
+                                                              oid,
+                                                              trackingNumber,
+                                                              ShippingOption.valueOf(shippingOption),
+                                                              addr,
+                                                              Shipment.ShipmentStatus.LABEL_CREATED,
+                                                              Instant.now(),
+                                                              Instant.now()));
             }
 
             private List<ShippingQuote.ShippingOptionQuote> calculateAvailableOptions(List<LineItem> items,
                                                                                       Address destination) {
                 var itemValue = calculateItemValue(items);
                 var isFreeShippingEligible = itemValue.compareTo(FREE_SHIPPING_THRESHOLD) >= 0;
-                return Arrays.stream(ShippingOption.values()).filter(option -> isOptionAvailable(option, destination))
-                                    .map(option -> createQuote(option, items, isFreeShippingEligible))
-                                    .toList();
+
+                return Arrays.stream(ShippingOption.values())
+                             .filter(option -> isOptionAvailable(option, destination))
+                             .map(option -> createQuote(option, items, isFreeShippingEligible))
+                             .toList();
             }
 
             private boolean isOptionAvailable(ShippingOption option, Address destination) {
                 return option != ShippingOption.SAME_DAY || !NO_SAME_DAY_STATES.contains(destination.state()
-                                                                                                          .toUpperCase());
+                                                                                                    .toUpperCase());
             }
 
             private ShippingQuote.ShippingOptionQuote createQuote(ShippingOption option,
@@ -280,25 +293,32 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
                                                                   boolean freeShippingEligible) {
                 var cost = calculateShippingCost(option, items, freeShippingEligible);
                 var estimatedDelivery = Instant.now().plus(option.estimatedDelivery().duration());
+
                 return new ShippingQuote.ShippingOptionQuote(option, cost, estimatedDelivery);
             }
 
             private BigDecimal calculateItemValue(List<LineItem> items) {
-                return items.stream().map(item -> BigDecimal.valueOf(item.quantity().value() * 50L))
-                                   .reduce(BigDecimal.ZERO, BigDecimal::add);
+                return items.stream()
+                            .map(item -> BigDecimal.valueOf(item.quantity().value() * 50L))
+                            .reduce(BigDecimal.ZERO, BigDecimal::add);
             }
 
             private Money calculateShippingCost(ShippingOption option,
                                                 List<LineItem> items,
                                                 boolean freeShippingEligible) {
                 if (option == ShippingOption.STANDARD && freeShippingEligible) {return Money.ZERO_USD;}
+
                 var baseCost = option.cost();
-                var totalItems = items.stream().mapToInt(i -> i.quantity().value())
-                                             .sum();
+                var totalItems = items.stream().mapToInt(i -> i.quantity()
+                                                               .value()).sum();
+
                 if (totalItems > 10) {
                     var surchargeAmount = BigDecimal.valueOf(totalItems - 10).multiply(BigDecimal.valueOf(0.5));
-                    return baseCost.add(new Money(surchargeAmount, Money.USD)).or(baseCost);
+
+                    return baseCost.add(new Money(surchargeAmount, Money.USD))
+                                   .or(baseCost);
                 }
+
                 return baseCost;
             }
         }

@@ -9,16 +9,26 @@ source "${SCRIPT_DIR}/../../lib/topology.sh"
 source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 test_initial_state() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # Wait for phase=NORMAL to bypass SWIM cold-boot suppression of NODE_FAILED events.
     wait_for_phase "NORMAL" 180 || log_warn "Cluster phase still COLD_BOOT; chaos kill may produce UnknownObserved (no NODE_FAILED event)"
     wait_for_leader 60
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "5" "Initial: at least 5 nodes (${count})"
 }
 
 test_kill_leader_and_reelect() {
+    # Wait for a leader before capture — `test_initial_state` confirmed one
+    # moments ago, but the cluster B chaos-tail (prior test-joining-window-kill
+    # priming + replacement kill) can momentarily lose the leader. Without this
+    # barrier, a transient empty `cluster_leader` returns 1 under set -e and
+    # aborts the script silently after the STEP header is printed but before
+    # any [PASS]/[FAIL] line — observed 2026-05-22.
+    if ! wait_for_leader 60; then
+        log_fail "Pre-kill: cluster has no leader within 60s (chaos-tail instability)"
+        return 1
+    fi
     local old_leader
     old_leader=$(cluster_leader)
     assert_ne "$old_leader" "" "Leader identified: ${old_leader}"
@@ -48,8 +58,14 @@ test_kill_leader_and_reelect() {
     # Fail-closed: the previous `|| log_warn` demoted a real flake (no leader
     # within 150s) into a passing test by allowing the next assert_ne to read
     # whatever the CLI happened to return.
-    if ! wait_for_leader 150; then
-        log_fail "Post-kill: no new leader observed within 150s"
+    #
+    # Use wait_for_leader_change rather than bare wait_for_leader: after the
+    # kill, surviving nodes' leader projection may briefly still echo the
+    # killed NodeId until the next consensus round publishes a new one. The
+    # bare predicate would return immediately with the stale value and trip
+    # the `new_leader != old_leader` assertion below for the wrong reason.
+    if ! wait_for_leader_change "$old_leader" 150; then
+        log_fail "Post-kill: no new leader (different from ${old_leader}) observed within 150s"
         return 1
     fi
     local new_leader
@@ -62,7 +78,7 @@ test_kill_leader_and_reelect() {
 
 test_cluster_has_quorum() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "4" "Cluster has quorum after leader kill (${count} nodes)"
 }
 
@@ -75,11 +91,11 @@ test_health_with_4_nodes() {
 test_auto_heal() {
     log_info "Waiting for CTM auto-heal to restore cluster to 5 nodes..."
     wait_for_node_count 5 180 || {
-        log_fail "Cluster did not reach 5 nodes after auto-heal (current=$(cluster_node_count))"
+        log_fail "Cluster did not reach 5 nodes after auto-heal (current=$(cluster_member_count))"
         return 1
     }
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Auto-heal restored cluster to exactly 5 nodes"
 }
 
@@ -93,6 +109,13 @@ cleanup() {
     restore_cluster_baseline || \
         log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
 }
+
+# Run cleanup on ANY exit path — including a `return 1` from inside a test
+# function that propagates up through `set -e` and aborts the script. Without
+# this trap, a failed kill / re-election timing assertion left the cluster in
+# a degraded state, which then broke every subsequent test-*.sh in 02-chaos
+# (observed 2026-05-22: 0p/6f cascade originating here).
+trap 'cleanup' EXIT
 
 run_test "Initial 5 nodes" test_initial_state
 
@@ -111,5 +134,6 @@ run_test "Kill leader and re-elect" test_kill_leader_and_reelect
 run_test "Cluster has quorum" test_cluster_has_quorum
 run_test "Health with 4 nodes" test_health_with_4_nodes
 run_test "Auto-heal restores to 5" test_auto_heal
-cleanup
+# cleanup runs via EXIT trap — guarantees baseline restore even if a run_test
+# above triggers `set -e` abort via `return 1` from inside a test function.
 print_summary

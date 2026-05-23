@@ -72,14 +72,13 @@ import static org.pragmatica.lang.Option.option;
     }
 
     static Result<ProvisionSpec> buildProvisionSpec(NodeGroupConfig group) {
-        var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, group.instanceType(), group.role(), toContext(group));
+        var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                               group.instanceType(),
+                                               group.role(),
+                                               toContext(group));
         return spec.map(s -> withZonePlacement(s, group.zone()));
     }
 
-    /// Translate a [NodeGroupConfig] into a [ProvisionContext]. The historical
-    /// `group.tags()` Map carried `aether-cluster`/`aether-source`/`aether-role`
-    /// (Hetzner-spec dashed keys); we pull those into typed slots and stash any
-    /// additional caller-supplied entries under `extraTags` for forward-compat.
     private static ProvisionContext toContext(NodeGroupConfig group) {
         var tags = group.tags();
         var clusterName = option(tags.get("aether-cluster")).or("");

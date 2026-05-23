@@ -59,11 +59,11 @@ public interface ClusterGenerationProjector {
             lastAckPerCommunity = Map.copyOf(lastAckPerCommunity);
             sliceTargets = Map.copyOf(sliceTargets);
             nodesWithArtifacts = nodesWithArtifacts == null
-                                ? Set.of()
-                                : Set.copyOf(nodesWithArtifacts);
+                                 ? Set.of()
+                                 : Set.copyOf(nodesWithArtifacts);
             swimHints = swimHints == null
-                       ? Map.of()
-                       : Map.copyOf(swimHints);
+                        ? Map.of()
+                        : Map.copyOf(swimHints);
         }
 
         public static ProjectionInput projectionInput(long rabiaTerm,
@@ -161,7 +161,8 @@ public interface ClusterGenerationProjector {
 record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector {
     static final ClusterGenerationProjectorRecord INSTANCE = new ClusterGenerationProjectorRecord();
 
-    @Override public ClusterGenerationSnapshot project(ProjectionInput input) {
+    @Override
+    public ClusterGenerationSnapshot project(ProjectionInput input) {
         var epoch = Epoch.epoch(input.rabiaTerm(), input.localCounter());
         var coreMembers = projectCoreMembers(input);
         var nodesWithoutSlices = deriveNodesWithoutSlices(coreMembers.keySet(), input.nodesWithArtifacts());
@@ -171,6 +172,7 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
         var mode = deriveMode(communities);
         var pendingRebalanceCount = countPendingSpokesmanRebalance(communities);
         var cluster = deriveClusterQuiescence(coreMembers, communities, pendingRebalanceCount);
+
         return clusterGenerationSnapshot(epoch,
                                          input.now(),
                                          input.reason(),
@@ -185,24 +187,27 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
     }
 
     private static Set<NodeId> deriveNodesWithoutSlices(Set<NodeId> coreMemberIds, Set<NodeId> nodesWithArtifacts) {
-        return coreMemberIds.stream().filter(nodeId -> !nodesWithArtifacts.contains(nodeId))
-                                   .collect(Collectors.toUnmodifiableSet());
+        return coreMemberIds.stream()
+                            .filter(nodeId -> !nodesWithArtifacts.contains(nodeId))
+                            .collect(Collectors.toUnmodifiableSet());
     }
 
     private static Map<NodeId, CoreMember> projectCoreMembers(ProjectionInput input) {
         var result = new LinkedHashMap<NodeId, CoreMember>();
-        input.lifecycles()
-                        .forEach((nodeId, lifecycle) -> {
-                                     if (lifecycle.state() == NodeLifecycleState.DECOMMISSIONED) {return;}
-                                     result.put(nodeId,
-                                                toCoreMember(nodeId, lifecycle, input));
-                                 });
+        input.lifecycles().forEach((nodeId, lifecycle) -> {
+                                       if (lifecycle.state() == NodeLifecycleState.STOPPED) {
+                                       return;
+                                   }
+                                       result.put(nodeId, toCoreMember(nodeId, lifecycle, input));
+                                   });
+
         return Map.copyOf(result);
     }
 
     private static CoreMember toCoreMember(NodeId nodeId, NodeLifecycleValue lifecycle, ProjectionInput input) {
         var lastSeen = input.lastSeenPerNode().getOrDefault(nodeId, Epoch.ZERO);
         var healthHint = deriveHealthHint(nodeId, lifecycle, input.swimHints());
+
         return CoreMember.coreMember(nodeId,
                                      lifecycle.host(),
                                      lifecycle.port(),
@@ -216,24 +221,26 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
     private static HealthHint deriveHealthHint(NodeId nodeId,
                                                NodeLifecycleValue lifecycle,
                                                Map<NodeId, HealthHint> swimHints) {
-        var lifecycleHint = switch (lifecycle.state()){
-            case DECOMMISSIONED, SHUTTING_DOWN, FAILED_DRAIN -> HealthHint.FAULTY;
+        var lifecycleHint = switch (lifecycle.state()) {
+            case STOPPED -> HealthHint.FAULTY;
             case DRAINING -> HealthHint.SUSPECTED;
             case JOINING, ON_DUTY -> HealthHint.HEALTHY;
         };
         var swimHint = swimHints.get(nodeId);
+
         if (swimHint == null) {return lifecycleHint;}
+
         return worse(lifecycleHint, swimHint);
     }
 
     private static HealthHint worse(HealthHint a, HealthHint b) {
         return rank(a) >= rank(b)
-              ? a
-              : b;
+               ? a
+               : b;
     }
 
     private static int rank(HealthHint h) {
-        return switch (h){
+        return switch (h) {
             case FAULTY -> 2;
             case SUSPECTED -> 1;
             case HEALTHY -> 0;
@@ -241,25 +248,27 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
     }
 
     private static Map<String, NodeId> buildSpokesmanIndex(Map<NodeId, SpokesmanValue> spokesmen) {
-        return spokesmen.entrySet().stream()
-                                 .flatMap(entry -> entry.getValue().communities()
-                                                                 .stream()
-                                                                 .map(c -> Map.entry(c,
-                                                                                     entry.getKey())))
-                                 .collect(Collectors.toMap(Map.Entry::getKey,
-                                                           Map.Entry::getValue,
-                                                           (a, b) -> a));
+        return spokesmen.entrySet()
+                        .stream()
+                        .flatMap(entry -> entry.getValue()
+                                               .communities()
+                                               .stream()
+                                               .map(c -> Map.entry(c,
+                                                                   entry.getKey())))
+                        .collect(Collectors.toMap(Map.Entry::getKey,
+                                                  Map.Entry::getValue,
+                                                  (a, b) -> a));
     }
 
     private static Map<String, CommunitySummary> projectCommunities(ProjectionInput input,
                                                                     Map<String, NodeId> spokesmanIndex) {
         var result = new LinkedHashMap<String, CommunitySummary>();
-        input.governors()
-                       .forEach((communityId, announcement) -> result.put(communityId,
-                                                                          toCommunitySummary(communityId,
-                                                                                             announcement,
-                                                                                             input,
-                                                                                             spokesmanIndex)));
+        input.governors().forEach((communityId, announcement) -> result.put(communityId,
+                                                                            toCommunitySummary(communityId,
+                                                                                               announcement,
+                                                                                               input,
+                                                                                               spokesmanIndex)));
+
         return Map.copyOf(result);
     }
 
@@ -271,9 +280,10 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
         var assignedSpokesman = Option.option(spokesmanIndex.get(communityId));
         var partitionsForCommunity = collectPartitionIdsForCommunity(communityId, input.partitions());
         var healthyMembers = announcement.dissolved()
-                            ? 0
-                            : announcement.memberCount();
+                             ? 0
+                             : announcement.memberCount();
         var quiescence = deriveCommunityQuiescence(announcement, lastAck, 0, 0);
+
         return CommunitySummary.communitySummary(communityId,
                                                  announcement.governorId(),
                                                  announcement.communityTerm(),
@@ -291,10 +301,11 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
 
     private static Set<String> collectPartitionIdsForCommunity(String communityId,
                                                                Map<String, DhtPartitionOwnershipValue> partitions) {
-        return partitions.entrySet().stream()
-                                  .filter(entry -> communityId.equals(entry.getValue().ownerCommunityId()))
-                                  .map(Map.Entry::getKey)
-                                  .collect(Collectors.toUnmodifiableSet());
+        return partitions.entrySet()
+                         .stream()
+                         .filter(entry -> communityId.equals(entry.getValue().ownerCommunityId()))
+                         .map(Map.Entry::getKey)
+                         .collect(Collectors.toUnmodifiableSet());
     }
 
     private static CommunityResult deriveCommunityQuiescence(GovernorAnnouncementValue announcement,
@@ -302,36 +313,43 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                                                              int suspected,
                                                              int faulty) {
         if (announcement.dissolved()) {return new CommunityResult(CommunityQuiescence.DISSOLVING, "community dissolved");}
-        if (suspected > 0 || faulty > 0) {return new CommunityResult(CommunityQuiescence.DEGRADED,
-                                                                     suspected + " suspected, " + faulty + " faulty");}
-        if (lastAckAtCore.compareTo(announcement.communityEpoch()) <0) {return new CommunityResult(CommunityQuiescence.CONVERGING,
-                                                                                                   "governor has not acked epoch " + announcement.communityEpoch());}
+        if (suspected > 0 || faulty > 0) {
+            return new CommunityResult(CommunityQuiescence.DEGRADED, suspected + " suspected, " + faulty + " faulty");
+        }
+        if (lastAckAtCore.compareTo(announcement.communityEpoch()) <0) {
+            return new CommunityResult(CommunityQuiescence.CONVERGING,
+                                       "governor has not acked epoch " + announcement.communityEpoch());
+        }
+
         return new CommunityResult(CommunityQuiescence.QUIESCED, "");
     }
 
     private static Map<String, PartitionOwner> projectPartitions(ProjectionInput input) {
         var result = new LinkedHashMap<String, PartitionOwner>();
-        input.partitions()
-                        .forEach((partitionId, value) -> result.put(partitionId,
-                                                                    PartitionOwner.partitionOwner(partitionId,
-                                                                                                  value.ownerNodeId(),
-                                                                                                  value.ownerCommunityId(),
-                                                                                                  value.ownerEpoch(),
-                                                                                                  value.ownershipTerm())));
+        input.partitions().forEach((partitionId, value) -> result.put(partitionId,
+                                                                      PartitionOwner.partitionOwner(partitionId,
+                                                                                                    value.ownerNodeId(),
+                                                                                                    value.ownerCommunityId(),
+                                                                                                    value.ownerEpoch(),
+                                                                                                    value.ownershipTerm())));
+
         return Map.copyOf(result);
     }
 
     private static ClusterMode deriveMode(Map<String, CommunitySummary> communities) {
-        return communities.keySet().stream()
-                                 .anyMatch(id -> !"core".equals(id))
-              ? ClusterMode.HIERARCHICAL
-              : ClusterMode.CORE_ONLY;
+        return communities.keySet()
+                          .stream()
+                          .anyMatch(id -> !"core".equals(id))
+               ? ClusterMode.HIERARCHICAL
+               : ClusterMode.CORE_ONLY;
     }
 
     private static int countPendingSpokesmanRebalance(Map<String, CommunitySummary> communities) {
-        return (int) communities.values().stream()
-                                       .filter(c -> c.assignedSpokesman().isEmpty())
-                                       .count();
+        return (int) communities.values()
+                                .stream()
+                                .filter(c -> c.assignedSpokesman()
+                                              .isEmpty())
+                                .count();
     }
 
     private static ClusterResult deriveClusterQuiescence(Map<NodeId, CoreMember> coreMembers,
@@ -339,22 +357,27 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
                                                          int pendingRebalanceCount) {
         var memberSnapshot = summarizeMembers(coreMembers);
         var communitySnapshot = summarizeCommunities(communities);
-        if (memberSnapshot.hasFaulty() || memberSnapshot.hasSuspected() || communitySnapshot.hasDegraded()) {return new ClusterResult(ClusterQuiescence.DEGRADED,
-                                                                                                                                      buildDegradedDetail(memberSnapshot,
-                                                                                                                                                          communitySnapshot));}
-        if (communitySnapshot.hasConverging() || pendingRebalanceCount > 0) {return new ClusterResult(ClusterQuiescence.CONVERGING,
-                                                                                                      buildConvergingDetail(communitySnapshot,
-                                                                                                                            pendingRebalanceCount));}
+
+        if (memberSnapshot.hasFaulty() || memberSnapshot.hasSuspected() || communitySnapshot.hasDegraded()) {
+            return new ClusterResult(ClusterQuiescence.DEGRADED, buildDegradedDetail(memberSnapshot, communitySnapshot));
+        }
+        if (communitySnapshot.hasConverging() || pendingRebalanceCount > 0) {
+            return new ClusterResult(ClusterQuiescence.CONVERGING,
+                                     buildConvergingDetail(communitySnapshot, pendingRebalanceCount));
+        }
+
         return new ClusterResult(ClusterQuiescence.QUIESCED, "");
     }
 
     private static MemberSnapshot summarizeMembers(Map<NodeId, CoreMember> coreMembers) {
         var faulty = 0;
         var suspected = 0;
+
         for (var member : coreMembers.values()) {
             if (member.healthHint() == HealthHint.FAULTY) {faulty++;}
             if (member.healthHint() == HealthHint.SUSPECTED) {suspected++;}
         }
+
         return new MemberSnapshot(faulty, suspected);
     }
 
@@ -362,34 +385,42 @@ record ClusterGenerationProjectorRecord() implements ClusterGenerationProjector 
         var degraded = 0;
         var converging = 0;
         var dissolving = 0;
-        for (var community : communities.values()) {switch (community.quiescence()){
-            case DEGRADED -> degraded++;
-            case CONVERGING -> converging++;
-            case DISSOLVING -> dissolving++;
-            case QUIESCED -> {}
-        }}
+
+        for (var community : communities.values()) {
+            switch (community.quiescence()) {
+                case DEGRADED -> degraded++;
+                case CONVERGING -> converging++;
+                case DISSOLVING -> dissolving++;
+                case QUIESCED -> {}
+            }
+        }
+
         return new CommunityStatusSnapshot(degraded, converging, dissolving);
     }
 
     private static String buildDegradedDetail(MemberSnapshot members, CommunityStatusSnapshot communities) {
         var parts = new ArrayList<String>();
+
         if (members.faulty() > 0) {parts.add(members.faulty() + " members FAULTY");}
         if (members.suspected() > 0) {parts.add(members.suspected() + " members SUSPECTED");}
         if (communities.degraded() > 0) {parts.add(communities.degraded() + " communities DEGRADED");}
         if (communities.dissolving() > 0) {parts.add(communities.dissolving() + " communities DISSOLVING");}
+
         return String.join("; ", parts);
     }
 
     private static String buildConvergingDetail(CommunityStatusSnapshot communities, int pendingRebalance) {
         var parts = new ArrayList<String>();
+
         if (communities.converging() > 0) {parts.add(communities.converging() + " communities CONVERGING");}
         if (pendingRebalance > 0) {parts.add(pendingRebalance + " communities awaiting spokesman");}
+
         return String.join("; ", parts);
     }
 
-    private record CommunityResult(CommunityQuiescence state, String detail){}
+    private record CommunityResult(CommunityQuiescence state, String detail) {}
 
-    private record ClusterResult(ClusterQuiescence quiescence, String detail){}
+    private record ClusterResult(ClusterQuiescence quiescence, String detail) {}
 
     private record MemberSnapshot(int faulty, int suspected) {
         boolean hasFaulty() {

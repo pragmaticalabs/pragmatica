@@ -2,7 +2,7 @@ package org.pragmatica.jbct.lint.cst;
 
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.stream.Stream;
 
@@ -13,11 +13,11 @@ public interface CstLintRule {
     /// Get the rule ID (e.g., "JBCT-RET-01").
     String ruleId();
 
-    /// Analyze a CST root node and return any diagnostics.
+    /// Analyze a CST root cursor and return any diagnostics.
     ///
-    /// @param root   the root CST node (CompilationUnit)
+    /// @param root   the root cursor (CompilationUnit)
     /// @param source the original source code
     /// @param ctx    the lint context providing configuration
     /// @return stream of diagnostics found
-    Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx);
+    Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx);
 }

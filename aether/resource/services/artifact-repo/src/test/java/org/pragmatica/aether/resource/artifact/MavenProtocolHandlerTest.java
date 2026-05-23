@@ -65,7 +65,34 @@ class MavenProtocolHandlerTest {
                .await()
                .onFailureRun(Assertions::fail)
                .onSuccess(response -> {
-                   assertThat(response.statusCode()).isEqualTo(201);
+                   assertThat(response.statusCode()).isEqualTo(200);
+                   assertThat(response.contentType()).isEqualTo("application/json");
+                   var body = new String(response.content());
+                   assertThat(body).contains("\"status\":\"uploaded\"");
+                   assertThat(body).contains("\"coords\":\"org.example:test:1.0.0\"");
+                   assertThat(body).contains("\"size\":3");
+                   assertThat(body).contains("\"md5\":\"md5\"");
+                   assertThat(body).contains("\"sha1\":\"sha1\"");
+               });
+    }
+
+    @Test
+    void handlePut_returns_alreadyPresent_for_duplicate_jar() {
+        var store = duplicateStore();
+        var handler = MavenProtocolHandler.mavenProtocolHandler(store);
+
+        handler.handlePut("/repository/org/example/test/1.0.0/test-1.0.0.jar", new byte[]{1, 2, 3})
+               .await()
+               .onFailureRun(Assertions::fail)
+               .onSuccess(response -> {
+                   assertThat(response.statusCode()).isEqualTo(200);
+                   assertThat(response.contentType()).isEqualTo("application/json");
+                   var body = new String(response.content());
+                   assertThat(body).contains("\"status\":\"already-present\"");
+                   assertThat(body).contains("\"coords\":\"org.example:test:1.0.0\"");
+                   assertThat(body).contains("\"size\":42");
+                   assertThat(body).contains("\"md5\":\"existing-md5\"");
+                   assertThat(body).contains("\"sha1\":\"existing-sha1\"");
                });
     }
 
@@ -115,6 +142,58 @@ class MavenProtocolHandlerTest {
             @Override
             public Promise<Boolean> exists(Artifact artifact) {
                 return Promise.success(false);
+            }
+
+            @Override
+            public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+                return Promise.success(Option.none());
+            }
+
+            @Override
+            public Promise<java.util.List<org.pragmatica.aether.artifact.Version>> versions(
+                    org.pragmatica.aether.artifact.GroupId groupId,
+                    org.pragmatica.aether.artifact.ArtifactId artifactId) {
+                return Promise.success(java.util.List.of());
+            }
+
+            @Override
+            public Promise<Unit> delete(Artifact artifact) {
+                return Promise.success(Unit.unit());
+            }
+
+            @Override
+            public Metrics metrics() {
+                return Metrics.empty();
+            }
+        };
+    }
+
+    private ArtifactStore duplicateStore() {
+        return new ArtifactStore() {
+            @Override
+            public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
+                return Promise.success(new DeployResult(artifact, content.length, "fresh-md5", "fresh-sha1"));
+            }
+
+            @Override
+            public Promise<byte[]> resolve(Artifact artifact) {
+                return new ArtifactStoreError.NotFound(artifact).promise();
+            }
+
+            @Override
+            public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
+                return new ArtifactStoreError.NotFound(artifact).promise();
+            }
+
+            @Override
+            public Promise<Boolean> exists(Artifact artifact) {
+                return Promise.success(true);
+            }
+
+            @Override
+            public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+                var meta = new ArtifactMetadata(42L, 1, "existing-md5", "existing-sha1", 0L, java.util.List.of("blk"));
+                return Promise.success(Option.some(meta));
             }
 
             @Override

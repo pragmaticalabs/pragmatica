@@ -3,8 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -20,39 +19,35 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
     // Pattern to detect FQCN like java.util.List or com.example.Foo
     private static final Pattern FQCN_PATTERN = Pattern.compile("\\b([a-z][a-z0-9]*\\.)+[A-Z][a-zA-Z0-9]*\\b");
 
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
+
     @Override
     public String ruleId() {
         return RULE_ID;
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find FQCN in method bodies (not imports or package declaration)
         return findAllMethods(root).stream()
-                      .flatMap(method -> findFqcnInMethod(method, source, ctx));
+                      .flatMap(method -> findFqcnInMethod(method, ctx));
     }
 
-    private Stream<Diagnostic> findFqcnInMethod(CstNode method, String source, LintContext ctx) {
-        var methodText = text(method, source);
+    private Stream<Diagnostic> findFqcnInMethod(Cursor method, LintContext ctx) {
+        var methodText = text(method);
         var matcher = FQCN_PATTERN.matcher(methodText);
         return Stream.iterate(matcher.find(),
                               found -> found,
                               found -> matcher.find())
                      .map(_ -> matcher.group())
-                     .map(fqcn -> createDiagnostic(method, fqcn, source, ctx))
+                     .map(fqcn -> createDiagnostic(method, fqcn, ctx))
                      .limit(1);
     }
 
-    private Diagnostic createDiagnostic(CstNode method, String fqcn, String source, LintContext ctx) {
-        var methodName = childByRule(method, RuleId.Identifier.class).map(id -> text(id, source))
-                                    .or("(unknown)");
+    private Diagnostic createDiagnostic(Cursor method, String fqcn, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -60,5 +55,11 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
                                      startColumn(method),
                                      "Fully qualified name '" + fqcn + "' - use import instead",
                                      "FQCNs reduce readability. Add an import and use the simple name.");
+    }
+
+    @SuppressWarnings("unused")
+    private static String extractMethodName(String memberText) {
+        var matcher = METHOD_NAME_PATTERN.matcher(memberText);
+        return matcher.find() ? matcher.group(1) : "(unknown)";
     }
 }

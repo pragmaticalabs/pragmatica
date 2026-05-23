@@ -7,13 +7,13 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # ClusterGeneration barrier: inherit-from-predecessor churn is committed to a stable
     # generation (no manual drain-reset). Lingering DRAINING lifecycle is fenced by the
     # leader's snapshot quiescence — if the budget is still exhausted it's a real defect.
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 120 || log_warn "pre-test snapshot not quiesced"
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     if [ "$count" -lt 3 ] 2>/dev/null; then
         log_fail "Need at least 3 nodes for disruption budget test, got ${count}"
         return 1
@@ -35,7 +35,7 @@ test_cluster_ready() {
 # every downstream cluster B suite that relies on CTM provisioning replacements
 # after kill_node.
 _reactivate_auto_heal_trap() {
-    enable_auto_heal || log_warn "EXIT trap: enable_auto_heal returned non-zero — operator must manually re-enable via 'aether topology auto-heal enable' or cluster will not self-heal"
+    enable_auto_heal || log_warn "EXIT trap: enable_auto_heal returned non-zero — operator must manually re-enable via 'aether cluster topology auto-heal enable' or cluster will not self-heal"
 }
 trap _reactivate_auto_heal_trap EXIT
 
@@ -46,19 +46,36 @@ test_drain_first_node_allowed() {
     local node1
     node1=$(to_node_id "node-5")
     log_info "Draining first node: ${node1}"
-    local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node1}" -X POST -H "X-API-Key: ${API_KEY}")
+
+    # Diagnostic: surface auto-heal state and current ON_DUTY count so a 503
+    # rejection has a debuggable trail. Without these the only signal is "503"
+    # which doesn't distinguish (a) auto-heal-disabled-but-budget-tripped from
+    # (b) auto-heal-still-active from (c) cluster degraded from a prior suite.
+    local autoheal_state
+    autoheal_state=$(api_get "/api/cluster/topology/auto-heal" 2>/dev/null || echo "<unreachable>")
+    log_info "auto-heal state before first drain: $(printf '%s' "$autoheal_state" | head -c 200)"
+
+    local status body_file
+    body_file=$(mktemp)
+    status=$(curl -sk -o "$body_file" -w "%{http_code}" -m 10 \
+             -X POST -H "X-API-Key: ${API_KEY}" \
+             "${CLUSTER_ENDPOINT}/api/nodes/drain/${node1}")
 
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "First drain accepted (${status})"
-    else
-        log_fail "First drain should be accepted (within budget), got ${status}"
-        return 1
+        rm -f "$body_file"
+        return 0
     fi
-    # Why no await_generation_quiesced here: CTM auto-heal would provision a replacement
-    # during the wait, restoring ON_DUTY count to 5 and defeating the budget test. The
-    # budget is enforced against live ON_DUTY count, so we must drain faster than
-    # CTM's replacement cycle to keep multiple nodes simultaneously unavailable.
+    local body
+    body=$(head -c 500 < "$body_file" | tr '\n' ' ')
+    rm -f "$body_file"
+    # TODO: investigate First_drain 503 — root cause likely either (a) auto-heal
+    # not fully quiesced before drain (race between disable_auto_heal and an
+    # in-flight provisioning), or (b) disruption-budget threshold miscalculated
+    # under transient lifecycle state inherited from a previous suite. Surfaces
+    # as visible failure rather than masking; do not silently downgrade to PASS.
+    log_fail "TODO: investigate First_drain 503 — status=${status} body=${body} autoheal=${autoheal_state:0:200}"
+    return 1
 }
 
 test_drain_second_node_allowed() {
@@ -66,7 +83,7 @@ test_drain_second_node_allowed() {
     node2=$(to_node_id "node-4")
     log_info "Draining second node: ${node2}"
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/node/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/nodes/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
     log_info "Second drain response: ${status}"
     # Race-tolerant: 200 = within budget; 409 = budget rejected because CTM auto-heal
     # transitioned node-5 through DECOMMISSIONED and the replacement is still JOINING,
@@ -91,7 +108,7 @@ test_drain_beyond_budget_rejected() {
     # is non-2xx (note 409 is non-2xx → its body will be surfaced too, which is what
     # we want here).
     local status
-    status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/node/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
+    status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/nodes/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
     log_info "Third drain response: ${status}"
 
     # Auto-heal is disabled (see test_cluster_ready). With two nodes already DRAINING

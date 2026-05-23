@@ -657,14 +657,7 @@
                     <executions>
                         <execution>
                             <goals>
-                                <!--
-                                  `format` goal disabled 2026-05-12 — strips `///` markdown
-                                  javadoc + selected `//` block comments and mangles lambda
-                                  indentation. See docs/contributors/jbct-formatter-disabled.md
-                                  for repro, affected files, and re-enable conditions.
-                                -->
-                                <!-- <goal>format</goal> -->
-                                <goal>lint</goal>
+                                <goal>process</goal>
                             </goals>
                         </execution>
                     </executions>

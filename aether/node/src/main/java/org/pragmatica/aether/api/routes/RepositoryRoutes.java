@@ -34,8 +34,9 @@ public final class RepositoryRoutes implements RouteSource {
         return new RepositoryRoutes(nodeSupplier);
     }
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<ArtifactInfoResponse>route(ManagementRoute.ARTIFACT_INFO)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<ArtifactInfoResponse> route(ManagementRoute.ARTIFACT_INFO)
                                          .withPath(aString(),
                                                    aString(),
                                                    aString())
@@ -46,21 +47,25 @@ public final class RepositoryRoutes implements RouteSource {
     private Promise<ArtifactInfoResponse> handleRepositoryInfo(String groupPath,
                                                                String artifactIdStr,
                                                                String versionStr) {
-        return parseArtifact(groupPath, artifactIdStr, versionStr).async().flatMap(this::fetchArtifactInfo);
+        return parseArtifact(groupPath, artifactIdStr, versionStr).async()
+                            .flatMap(this::fetchArtifactInfo);
     }
 
     private Result<Artifact> parseArtifact(String groupPath, String artifactIdStr, String versionStr) {
         var normalizedGroup = groupPath.replace('/', '.');
+
         return Result.all(GroupId.groupId(normalizedGroup),
                           ArtifactId.artifactId(artifactIdStr),
                           Version.version(versionStr))
-        .map(Artifact::new);
+                     .map(Artifact::new);
     }
 
     private Promise<ArtifactInfoResponse> fetchArtifactInfo(Artifact artifact) {
         var node = nodeSupplier.get();
-        return node.artifactStore().resolveWithMetadata(artifact)
-                                 .map(resolved -> buildResponse(node, artifact, resolved));
+
+        return node.artifactStore()
+                   .resolveWithMetadata(artifact)
+                   .map(resolved -> buildResponse(node, artifact, resolved));
     }
 
     private ArtifactInfoResponse buildResponse(ManageableNode node,
@@ -68,6 +73,7 @@ public final class RepositoryRoutes implements RouteSource {
                                                ArtifactStore.ResolvedArtifact resolved) {
         var meta = resolved.metadata();
         var isDeployed = node.artifactMetricsCollector().isDeployed(artifact);
+
         return new ArtifactInfoResponse(artifact.asString(),
                                         meta.size(),
                                         meta.chunkCount(),

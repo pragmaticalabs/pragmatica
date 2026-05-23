@@ -3,8 +3,8 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
+import org.pragmatica.jbct.parser.RuleKind;
 
 import java.util.stream.Stream;
 
@@ -22,26 +22,21 @@ public class CstOrElseThrowRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find Primary nodes containing orElseThrow
-        return findAll(root, RuleId.Primary.class).stream()
-                      .filter(node -> isOrElseThrow(node, source))
+        return findAll(root, RuleKind.PRIMARY).stream()
+                      .filter(this::isOrElseThrow)
                       .map(node -> createDiagnostic(node, ctx));
     }
 
-    private boolean isOrElseThrow(CstNode node, String source) {
-        var nodeText = text(node, source);
-        return nodeText.contains(".orElseThrow");
+    private boolean isOrElseThrow(Cursor node) {
+        return text(node).contains(".orElseThrow");
     }
 
-    private Diagnostic createDiagnostic(CstNode node, LintContext ctx) {
+    private Diagnostic createDiagnostic(Cursor node, LintContext ctx) {
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

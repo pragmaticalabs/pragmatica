@@ -66,7 +66,31 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      SliceInvokerFacade invokerFacade,
                                                      ResourceProviderFacade resourceFacade) {
+        return resolveWithContext(artifact,
+                                  repository,
+                                  registry,
+                                  sharedLibraryLoader,
+                                  invokerFacade,
+                                  resourceFacade,
+                                  Option.none());
+    }
+
+    /// Variant of `resolveWithContext` that accepts an optional slice-composite builder.
+    ///
+    /// The builder is invoked once the slice classloader is available (in
+    /// `loadSliceClassAndResolveDepsWithContext`) and returns the slice-composite
+    /// (`slice.toml ⊕ nodeComposite`). The result is attached to the `SliceLoadingContext`
+    /// so resource factories can read per-slice configuration before falling back to the
+    /// global `ConfigService.instance()` singleton.
+    static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
+                                                     Repository repository,
+                                                     SliceRegistry registry,
+                                                     SharedLibraryClassLoader sharedLibraryLoader,
+                                                     SliceInvokerFacade invokerFacade,
+                                                     ResourceProviderFacade resourceFacade,
+                                                     Option<org.pragmatica.lang.Functions.Fn1<Option<org.pragmatica.config.ConfigurationProvider>, ClassLoader>> compositeBuilder) {
         var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade, artifact.asString());
+        compositeBuilder.onPresent(loadingContext::setCompositeBuilder);
         return registry.lookup(artifact).map(slice -> Promise.success(new ResolvedSlice(slice, loadingContext)))
                               .or(() -> resolveWithSharedLoaderAndContext(artifact,
                                                                           repository,
@@ -225,7 +249,9 @@ import static org.pragmatica.lang.utils.Causes.cause;
                                                                                   SharedLibraryClassLoader sharedLibraryLoader,
                                                                                   SliceLoadingContext loadingContext,
                                                                                   Set<String> resolutionPath) {
-        return loadClass(manifest.sliceClassName(), sharedResult.sliceClassLoader()).flatMap(sliceClass -> resolveSliceDependenciesWithContext(manifest.artifact(),
+        return loadClass(manifest.sliceClassName(), sharedResult.sliceClassLoader())
+            .onSuccess(_ -> loadingContext.materializeComposite(sharedResult.sliceClassLoader()))
+            .flatMap(sliceClass -> resolveSliceDependenciesWithContext(manifest.artifact(),
                                                                                                                                                sliceClass,
                                                                                                                                                depFile.slices(),
                                                                                                                                                sharedResult.sliceClassLoader(),

@@ -14,7 +14,6 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppB
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Deactivate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactRemoveReceived;
-import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeLifecyclePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
@@ -33,7 +32,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
@@ -41,7 +39,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
@@ -78,20 +75,57 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public interface ClusterDeploymentManager extends DelegatedComponent {
-    @Contract@MessageReceiver void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
-    @Contract@MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
-    @Contract@MessageReceiver void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
-    @Contract@MessageReceiver void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove);
-    @Contract@MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
-    @Contract@MessageReceiver void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
-    @Contract@MessageReceiver void onMembershipDecision(MembershipDecision decision);
-    @Contract@MessageReceiver void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
-    @Contract@MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
-    @Contract@MessageReceiver void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
-    @Contract@MessageReceiver void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove);
-    @Contract@MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-    @Contract@MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-    @Contract@MessageReceiver void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
+    @Contract
+    @MessageReceiver
+    void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
+
+    @Contract
+    @MessageReceiver
+    void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
+
+    @Contract
+    @MessageReceiver
+    void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
+
+    @Contract
+    @MessageReceiver
+    void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove);
+
+    @Contract
+    @MessageReceiver
+    void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
+
+    @Contract
+    @MessageReceiver
+    void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
+
+    @Contract
+    @MessageReceiver
+    void onMembershipDecision(MembershipDecision decision);
+
+    @Contract
+    @MessageReceiver
+    void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
+
+    @Contract
+    @MessageReceiver
+    void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
+
+    @Contract
+    @MessageReceiver
+    void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove);
+
+    @Contract
+    @MessageReceiver
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+
+    @Contract
+    @MessageReceiver
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+
+    @Contract
+    @MessageReceiver
+    void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
 
     record ReconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) implements Message.Local {
         public static ReconciliationAdjustment reconciliationAdjustment(Artifact artifact,
@@ -106,8 +140,9 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
         ALL_OR_NOTHING;
         public static DeploymentAtomicity parse(String value) {
             if (value == null || value.isBlank()) {return ALL_OR_NOTHING;}
-            return switch (value.trim().toLowerCase()
-                                     .replace("-", "_")){
+            return switch (value.trim()
+                                .toLowerCase()
+                                .replace("-", "_")) {
                 case "best_effort" -> BEST_EFFORT;
                 default -> ALL_OR_NOTHING;
             };
@@ -272,6 +307,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                                                                                                            healthSignalSink,
                                                                                                                                            snapshotSupplier);
         var _fsm = Fsm.fsm("cluster-deployment", self.id(), initialStateFactory);
+
         return ctxHolder.get();
     }
 
@@ -303,6 +339,7 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
                                                coreMax,
                                                reconcileInterval);
         ctxHolder.set(ctx);
+
         return ctx.dormant();
     }
 
@@ -319,79 +356,107 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             return ctx;
         }
 
-        @Override public Promise<Unit> activate() {
+        @Override
+        public Promise<Unit> activate() {
             log.info("Activating cluster deployment manager on node {}", ctx.self());
             ctx.dispatch(new Activate());
+
             return Promise.unitPromise();
         }
 
-        @Override public Promise<Unit> deactivate() {
+        @Override
+        public Promise<Unit> deactivate() {
             log.info("Deactivating cluster deployment manager on node {}", ctx.self());
             ctx.dispatch(new Deactivate());
+
             return Promise.unitPromise();
         }
 
-        @Override public TaskGroup taskGroup() {
+        @Override
+        public TaskGroup taskGroup() {
             return TaskGroup.DEPLOYMENT;
         }
 
-        @Override public boolean isActive() {
+        @Override
+        public boolean isActive() {
             return ctx.isActive();
         }
 
-        @Contract@Override public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
+        @Contract
+        @Override
+        public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
             ctx.dispatch(new AppBlueprintPutReceived(valuePut));
         }
 
-        @Contract@Override public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+        @Contract
+        @Override
+        public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
             ctx.dispatch(new SliceTargetPutReceived(valuePut));
         }
 
-        @Contract@Override public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
+        @Contract
+        @Override
+        public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
             ctx.dispatch(new VersionRoutingPutReceived(valuePut));
         }
 
-        @Contract@Override public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
+        @Contract
+        @Override
+        public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
             ctx.dispatch(new AppBlueprintRemoveReceived(valueRemove));
         }
 
-        @Contract@Override public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+        @Contract
+        @Override
+        public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
             ctx.dispatch(new SliceTargetRemoveReceived(valueRemove));
         }
 
-        @Contract@Override public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
+        @Contract
+        @Override
+        public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
             ctx.dispatch(new VersionRoutingRemoveReceived(valueRemove));
         }
 
-        @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
-            ctx.dispatch(new NodeLifecyclePutReceived(valuePut));
-        }
-
-        @Contract@Override public void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
+        @Contract
+        @Override
+        public void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
             ctx.dispatch(new ActivationDirectivePutReceived(valuePut));
         }
 
-        @Contract@Override public void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
+        @Contract
+        @Override
+        public void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
             ctx.dispatch(new ActivationDirectiveRemoveReceived(valueRemove));
         }
 
-        @Contract@Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        @Contract
+        @Override
+        public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
             ctx.dispatch(new NodeArtifactPutReceived(valuePut));
         }
 
-        @Contract@Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        @Contract
+        @Override
+        public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             ctx.dispatch(new NodeArtifactRemoveReceived(valueRemove));
         }
 
-        @Contract@Override public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
+        @Contract
+        @Override
+        public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
             ctx.dispatch(new SchemaVersionPutReceived(valuePut));
         }
 
-        @Contract@Override public void onMembershipDecision(MembershipDecision decision) {
+        @Contract
+        @Override
+        public void onMembershipDecision(MembershipDecision decision) {
             ctx.dispatch(new MembershipDecisionReceived(decision));
         }
 
-        @Contract@Override public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
+        @Contract
+        @Override
+        public void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown) {
             ctx.dispatch(new SelfShutdownReceived(selfShutdown));
         }
     }

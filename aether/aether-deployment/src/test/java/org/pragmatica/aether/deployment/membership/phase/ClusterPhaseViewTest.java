@@ -117,9 +117,9 @@ class ClusterPhaseViewTest {
             var snapshot = lifecycleSnapshot()
                 .with(PEER_A, NodeLifecycleState.ON_DUTY, T_BASE)
                 .with(PEER_B, NodeLifecycleState.ON_DUTY, T_BASE)
-                .with(PEER_C, NodeLifecycleState.DECOMMISSIONED, T_BASE + 1_000L)
-                .with(PEER_D, NodeLifecycleState.DECOMMISSIONED, T_BASE + 1_000L)
-                .with(PEER_E, NodeLifecycleState.DECOMMISSIONED, T_BASE + 1_000L);
+                .with(PEER_C, NodeLifecycleState.STOPPED, T_BASE + 1_000L)
+                .with(PEER_D, NodeLifecycleState.STOPPED, T_BASE + 1_000L)
+                .with(PEER_E, NodeLifecycleState.STOPPED, T_BASE + 1_000L);
             var view = view(5,
                             snapshot,
                             () -> Option.some(ClusterPhase.NORMAL),

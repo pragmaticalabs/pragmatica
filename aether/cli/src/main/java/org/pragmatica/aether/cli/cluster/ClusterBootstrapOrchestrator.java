@@ -29,13 +29,12 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrchestrator.unused {
-    record unused() implements ClusterBootstrapOrchestrator{}
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrchestrator.unused {
+    record unused() implements ClusterBootstrapOrchestrator {}
 
     int API_KEY_BYTES = 32;
-
     int POLL_INTERVAL_MS = 5000;
-
     long DEFAULT_TIMEOUT_MS = 300_000;
 
     AtomicReference<Function<BootstrapState, Result<Unit>>> CLEANUP_HOOK = new AtomicReference<>(BootstrapCleanup::cleanup);
@@ -44,7 +43,8 @@ import static org.pragmatica.lang.Result.success;
         return CLEANUP_HOOK.get();
     }
 
-    @Contract static void setCleanupHook(Function<BootstrapState, Result<Unit>> hook) {
+    @Contract
+    static void setCleanupHook(Function<BootstrapState, Result<Unit>> hook) {
         CLEANUP_HOOK.set(hook);
     }
 
@@ -78,13 +78,15 @@ import static org.pragmatica.lang.Result.success;
                                              boolean keepOnFailure,
                                              String rawTomlContent) {
         configureClusterHttpClient(config);
+
         if (resume) {return resumeBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);}
+
         return freshBootstrap(config, fullCheck, sshPublicKeys, keepOnFailure, rawTomlContent);
     }
 
-    @Contract private static void configureClusterHttpClient(ClusterBootstrapConfig config) {
-        if (config.operations().tls()
-                             .autoGenerate()) {ClusterHttpClient.enableTlsSkipVerify();}
+    @Contract
+    private static void configureClusterHttpClient(ClusterBootstrapConfig config) {
+        if (config.operations().tls().autoGenerate()) {ClusterHttpClient.enableTlsSkipVerify();}
     }
 
     private static Result<BootstrapResult> freshBootstrap(ClusterBootstrapConfig config,
@@ -92,14 +94,15 @@ import static org.pragmatica.lang.Result.success;
                                                           List<SshPublicKey> sshPublicKeys,
                                                           boolean keepOnFailure,
                                                           String rawTomlContent) {
-        return BootstrapPhaseValidate.execute(config, fullCheck).map(ctx -> ctx.withSshPublicKeys(sshPublicKeys))
-                                             .map(ctx -> ctx.withRawTomlContent(rawTomlContent))
-                                             .flatMap(ClusterBootstrapOrchestrator::runPhaseChain)
-                                             .fold(cause -> Result.<BootstrapResult>failure(decorateAfterCleanup(config.cluster()
-                                                                                                                               .name(),
-                                                                                                                 cause,
-                                                                                                                 keepOnFailure)),
-                                                   Result::success);
+        return BootstrapPhaseValidate.execute(config, fullCheck)
+                                     .map(ctx -> ctx.withSshPublicKeys(sshPublicKeys))
+                                     .map(ctx -> ctx.withRawTomlContent(rawTomlContent))
+                                     .flatMap(ClusterBootstrapOrchestrator::runPhaseChain)
+                                     .fold(cause -> Result.<BootstrapResult> failure(decorateAfterCleanup(config.cluster()
+                                                                                                                .name(),
+                                                                                                          cause,
+                                                                                                          keepOnFailure)),
+                                           Result::success);
     }
 
     private static Result<BootstrapResult> resumeBootstrap(ClusterBootstrapConfig config,
@@ -108,23 +111,26 @@ import static org.pragmatica.lang.Result.success;
                                                            boolean keepOnFailure,
                                                            String rawTomlContent) {
         var clusterName = config.cluster().name();
-        return BootstrapStatePersistence.load(clusterName).toResult(new BootstrapError.ProvisionFailed(clusterName,
-                                                                                                       "No bootstrap state found for resume"))
-                                             .flatMap(state -> validateResumeState(state, config))
-                                             .flatMap(state -> resumeFromState(config,
-                                                                               state,
-                                                                               sshPublicKeys,
-                                                                               rawTomlContent))
-                                             .fold(cause -> Result.<BootstrapResult>failure(decorateAfterCleanup(clusterName,
-                                                                                                                 cause,
-                                                                                                                 keepOnFailure)),
-                                                   Result::success);
+
+        return BootstrapStatePersistence.load(clusterName)
+                                        .toResult(new BootstrapError.ProvisionFailed(clusterName,
+                                                                                     "No bootstrap state found for resume"))
+                                        .flatMap(state -> validateResumeState(state, config))
+                                        .flatMap(state -> resumeFromState(config, state, sshPublicKeys, rawTomlContent))
+                                        .fold(cause -> Result.<BootstrapResult> failure(decorateAfterCleanup(clusterName,
+                                                                                                             cause,
+                                                                                                             keepOnFailure)),
+                                              Result::success);
     }
 
     private static Result<BootstrapState> validateResumeState(BootstrapState state, ClusterBootstrapConfig config) {
         var currentHash = computeConfigHash(config);
-        if (!currentHash.equals(state.configHash())) {return new BootstrapError.ProvisionFailed(state.clusterName(),
-                                                                                                "Config has changed since last bootstrap (hash mismatch). Use fresh bootstrap or restore the original config.").result();}
+
+        if (!currentHash.equals(state.configHash())) {
+            return new BootstrapError.ProvisionFailed(state.clusterName(),
+                                                      "Config has changed since last bootstrap (hash mismatch). Use fresh bootstrap or restore the original config.").result();
+        }
+
         return success(state);
     }
 
@@ -134,17 +140,13 @@ import static org.pragmatica.lang.Result.success;
                                                            String rawTomlContent) {
         System.out.println("Resuming bootstrap for cluster '" + state.clusterName() + "' from persisted state");
         var resumedSecret = state.clusterSecret().isEmpty()
-                           ? generateClusterSecret()
-                           : state.clusterSecret();
+                            ? generateClusterSecret()
+                            : state.clusterSecret();
         var resumedState = state.clusterSecret().isEmpty()
-                          ? state.withClusterSecret(resumedSecret)
-                          : state;
-        var ctx = BootstrapContext.bootstrapContext(config,
-                                                    resumedState,
-                                                    List.of(),
-                                                    List.of()).withSshPublicKeys(sshPublicKeys)
-                                                   .withClusterSecret(resumedSecret)
-                                                   .withRawTomlContent(rawTomlContent);
+                           ? state.withClusterSecret(resumedSecret)
+                           : state;
+        var ctx = BootstrapContext.bootstrapContext(config, resumedState, List.of(), List.of()).withSshPublicKeys(sshPublicKeys).withClusterSecret(resumedSecret).withRawTomlContent(rawTomlContent);
+
         return runPhaseChain(ctx);
     }
 
@@ -165,9 +167,9 @@ import static org.pragmatica.lang.Result.success;
     private static Result<BootstrapContext> executePhase(BootstrapContext ctx,
                                                          BootstrapPhase phase,
                                                          Function<BootstrapContext, Result<BootstrapContext>> phaseFunc) {
-        if (ctx.state().phases()
-                     .get(phase) == PhaseStatus.COMPLETED) {
+        if (ctx.state().phases().get(phase) == PhaseStatus.COMPLETED) {
             logPhase(phase, "Skipping (already completed)");
+
             return success(ctx);
         }
         return markAndExecutePhase(ctx, phase, phaseFunc);
@@ -178,17 +180,21 @@ import static org.pragmatica.lang.Result.success;
                                                                 Function<BootstrapContext, Result<BootstrapContext>> phaseFunc) {
         var inProgress = ctx.withState(ctx.state().withPhaseStatus(phase, PhaseStatus.IN_PROGRESS));
         BootstrapStatePersistence.save(inProgress.state());
-        return phaseFunc.apply(inProgress).map(result -> markPhaseCompleted(result, phase))
-                              .onFailure(cause -> markPhaseFailed(inProgress, phase));
+
+        return phaseFunc.apply(inProgress)
+                        .map(result -> markPhaseCompleted(result, phase))
+                        .onFailure(cause -> markPhaseFailed(inProgress, phase));
     }
 
     private static BootstrapContext markPhaseCompleted(BootstrapContext result, BootstrapPhase phase) {
         var completed = result.withState(result.state().withPhaseStatus(phase, PhaseStatus.COMPLETED));
         BootstrapStatePersistence.save(completed.state());
+
         return completed;
     }
 
-    @Contract private static void markPhaseFailed(BootstrapContext ctx, BootstrapPhase phase) {
+    @Contract
+    private static void markPhaseFailed(BootstrapContext ctx, BootstrapPhase phase) {
         var failed = ctx.withState(ctx.state().withPhaseStatus(phase, PhaseStatus.FAILED));
         BootstrapStatePersistence.save(failed.state());
     }
@@ -196,6 +202,7 @@ import static org.pragmatica.lang.Result.success;
     static Cause decorateAfterCleanup(String clusterName, Cause cause, boolean keepOnFailure) {
         if (keepOnFailure) {
             warnKeepOnFailure(clusterName, cause);
+
             return cause;
         }
         return cleanupOnFailure(clusterName).fold(cleanupCause -> wrapWithOrphans(cause, cleanupCause), _ -> cause);
@@ -206,18 +213,19 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static Result<Unit> cleanupOnFailure(String clusterName) {
-        return BootstrapStatePersistence.load(clusterName).filter(state -> !state.createdResources().isEmpty())
-                                             .map(state -> cleanupHook().apply(state))
-                                             .or(Result.unitResult());
+        return BootstrapStatePersistence.load(clusterName)
+                                        .filter(state -> !state.createdResources()
+                                                               .isEmpty())
+                                        .map(state -> cleanupHook().apply(state))
+                                        .or(Result.unitResult());
     }
 
-    @Contract private static void warnKeepOnFailure(String clusterName, Cause cause) {
+    @Contract
+    private static void warnKeepOnFailure(String clusterName, Cause cause) {
         var state = BootstrapStatePersistence.load(clusterName);
         var resources = state.map(BootstrapState::createdResources).or(List.of());
-        var vmCount = resources.stream().filter(r -> r instanceof CreatedResource.ProvisionedVm)
-                                      .count();
-        var keyCount = resources.stream().filter(r -> r instanceof CreatedResource.SshKeyResource)
-                                       .count();
+        var vmCount = resources.stream().filter(r -> r instanceof CreatedResource.ProvisionedVm).count();
+        var keyCount = resources.stream().filter(r -> r instanceof CreatedResource.SshKeyResource).count();
         var failedPhase = state.map(ClusterBootstrapOrchestrator::resolveFailedPhase).or("UNKNOWN");
         System.err.printf("[--keep-on-failure] Bootstrap of cluster '%s' failed at phase %s (%s).%n",
                           clusterName,
@@ -227,47 +235,60 @@ import static org.pragmatica.lang.Result.success;
                           vmCount,
                           keyCount,
                           BootstrapStatePersistence.statePath(clusterName));
-        System.err.println("[--keep-on-failure] To inspect: ssh aether@<vm-ip> (or root@). " + "To clean up later: aether cluster destroy --cluster " + clusterName + " --yes.");
+        System.err.println("[--keep-on-failure] To inspect: ssh aether@<vm-ip> (or root@). "
+                          + "To clean up later: aether cluster destroy --cluster " + clusterName
+                          + " --yes.");
     }
 
     private static String resolveFailedPhase(BootstrapState state) {
-        return state.phases().entrySet()
-                           .stream()
-                           .filter(e -> e.getValue() == PhaseStatus.FAILED || e.getValue() == PhaseStatus.IN_PROGRESS)
-                           .map(e -> e.getKey().name())
-                           .findFirst()
-                           .orElse("UNKNOWN");
+        return state.phases()
+                    .entrySet()
+                    .stream()
+                    .filter(e -> e.getValue() == PhaseStatus.FAILED || e.getValue() == PhaseStatus.IN_PROGRESS)
+                    .map(e -> e.getKey()
+                               .name())
+                    .findFirst()
+                    .orElse("UNKNOWN");
     }
 
-    @SuppressWarnings("JBCT-EX-01") static String computeConfigHash(ClusterBootstrapConfig config) {
+    @SuppressWarnings("JBCT-EX-01")
+    static String computeConfigHash(ClusterBootstrapConfig config) {
         return Result.lift(() -> sha256(config.toString())).or(Integer.toHexString(config.hashCode()));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static String sha256(String input) throws Exception {
+    @SuppressWarnings("JBCT-EX-01")
+    private static String sha256(String input) throws Exception {
         var digest = MessageDigest.getInstance("SHA-256");
         var hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+
         return HexFormat.of().formatHex(hash);
     }
 
     static String generateApiKey() {
         var bytes = new byte[API_KEY_BYTES];
         new SecureRandom().nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding()
-                                   .encodeToString(bytes);
+
+        return Base64.getUrlEncoder()
+                     .withoutPadding()
+                     .encodeToString(bytes);
     }
 
     static String generateClusterSecret() {
         var bytes = new byte[API_KEY_BYTES];
         new SecureRandom().nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding()
-                                   .encodeToString(bytes);
+
+        return Base64.getUrlEncoder()
+                     .withoutPadding()
+                     .encodeToString(bytes);
     }
 
     static String deriveApiKeyEnvName(String clusterName) {
-        return "AETHER_" + clusterName.toUpperCase().replace('-', '_') + "_API_KEY";
+        return "AETHER_" + clusterName.toUpperCase()
+                                      .replace('-', '_') + "_API_KEY";
     }
 
-    @Contract static void logPhase(BootstrapPhase phase, String message) {
+    @Contract
+    static void logPhase(BootstrapPhase phase, String message) {
         System.out.printf("[Phase %d/%d: %s] %s%n",
                           phase.ordinal() + 1,
                           BootstrapPhase.values().length,
@@ -275,7 +296,8 @@ import static org.pragmatica.lang.Result.success;
                           message);
     }
 
-    @Contract static void logPhase(BootstrapPhase phase, String format, Object arg) {
+    @Contract
+    static void logPhase(BootstrapPhase phase, String format, Object arg) {
         logPhase(phase, String.format(format, arg));
     }
 
@@ -291,7 +313,9 @@ import static org.pragmatica.lang.Result.success;
         return ClusterHttpClient.getDirect(url);
     }
 
-    @SuppressWarnings("JBCT-EX-01") @Contract static void sleepQuietly(long millis) {
+    @SuppressWarnings("JBCT-EX-01")
+    @Contract
+    static void sleepQuietly(long millis) {
         try {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
@@ -303,13 +327,12 @@ import static org.pragmatica.lang.Result.success;
         if (duration.endsWith("s")) {return parseNumericPrefix(duration) * 1000;}
         if (duration.endsWith("m")) {return parseNumericPrefix(duration) * 60_000;}
         if (duration.endsWith("h")) {return parseNumericPrefix(duration) * 3_600_000;}
+
         return DEFAULT_TIMEOUT_MS;
     }
 
     private static long parseNumericPrefix(String duration) {
-        return Result.lift(() -> Long.parseLong(duration.substring(0,
-                                                                   duration.length() - 1)))
-        .or(DEFAULT_TIMEOUT_MS / 1000);
+        return Result.lift(() -> Long.parseLong(duration.substring(0, duration.length() - 1))).or(DEFAULT_TIMEOUT_MS / 1000);
     }
 
     record BootstrapResult(String clusterName,
@@ -413,6 +436,7 @@ import static org.pragmatica.lang.Result.success;
         BootstrapContext withSshKeyIds(String provider, List<Long> ids) {
             var merged = new HashMap<String, List<Long>>(sshKeyIdsByProvider);
             merged.put(provider, List.copyOf(ids));
+
             return new BootstrapContext(config,
                                         state,
                                         nodes,
@@ -455,37 +479,46 @@ import static org.pragmatica.lang.Result.success;
 
     sealed interface BootstrapError extends Cause {
         record ProvisionFailed(String sourceName, String detail) implements BootstrapError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Provisioning failed for source '" + sourceName + "': " + detail;
             }
         }
 
         record AddressCollectionFailed(String sourceName, String detail) implements BootstrapError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Address collection failed for source '" + sourceName + "': " + detail;
             }
         }
 
         record DeploymentFailed(String nodeId, String detail) implements BootstrapError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Runtime deployment failed for node '" + nodeId + "': " + detail;
             }
         }
 
         record QuorumNotEstablished(int healthy, int required) implements BootstrapError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return "Quorum not established: " + healthy + "/" + required + " nodes healthy";
             }
         }
 
         record FormationWriteFailed(String operation, int attempts, long elapsedMs, String lastError) implements BootstrapError {
-            @Override public String message() {
-                return "Cluster formation write failed: " + operation + " (after " + attempts + " attempts over " + (elapsedMs / 1000) + "s) — " + lastError;
+            @Override
+            public String message() {
+                return "Cluster formation write failed: " + operation
+                     + " (after " + attempts
+                     + " attempts over " + (elapsedMs / 1000)
+                     + "s) — " + lastError;
             }
         }
 
         record BootstrapFailedWithOrphans(Cause originalCause, String cleanupDetail) implements BootstrapError {
-            @Override public String message() {
+            @Override
+            public String message() {
                 return originalCause.message() + " — cleanup failed, orphan resources may remain: " + cleanupDetail;
             }
         }

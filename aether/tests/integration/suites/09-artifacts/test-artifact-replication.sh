@@ -24,10 +24,10 @@ cleanup_temp() {
 trap cleanup_temp EXIT
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "2" "At least 2 nodes available for replication test"
 }
 
@@ -37,15 +37,20 @@ test_identify_second_node() {
         return 0
     fi
 
-    # Try to discover a second node from the node list
+    # Try to discover a second node from the node list.
+    # NOTE: `/api/nodes/status` (via `cluster_node_list`) only emits id/isLeader/lifecycleState —
+    # no address/host fields. The grep below will yield no matches; under `set -euo pipefail`
+    # the rc=1 from grep would trip the script. `|| true` preserves the legacy intent of
+    # falling back to CLUSTER_ENDPOINT (round-robin mgmt-gateway) when no other endpoint is
+    # discoverable — DHT replication is still exercised because the gateway dispatches the
+    # resolve to a different upstream node than the push hit.
     local nodes
     nodes=$(cluster_node_list)
     local second_host
-    # Extract addresses from node list, find one different from TARGET_HOST
     second_host=""
     for field in address host; do
         local candidates
-        candidates=$(echo "$nodes" | grep -o "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/")
+        candidates=$(echo "$nodes" | grep -o "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/" || true)
         while IFS= read -r addr; do
             if [ -n "$addr" ] && [ "$addr" != "${TARGET_HOST}" ]; then
                 second_host="$addr"

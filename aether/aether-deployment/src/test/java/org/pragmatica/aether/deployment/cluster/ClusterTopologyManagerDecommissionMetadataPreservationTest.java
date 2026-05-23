@@ -173,7 +173,7 @@ class ClusterTopologyManagerDecommissionMetadataPreservationTest {
         var decommissioned = store.decommissionedAtoms();
         assertThat(decommissioned).as("defensive fallback path must still emit a DECOMMISSIONED atom").isNotEmpty();
         for (var atom : decommissioned) {
-            assertThat(atom.state()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+            assertThat(atom.state()).isEqualTo(NodeLifecycleState.STOPPED);
             assertThat(atom.observedCoreEpoch()).isEqualTo(Epoch.ZERO);
             assertThat(atom.provisioningSource()).isEqualTo(ProvisioningSource.UNKNOWN);
             // Defensive path sources host/port from the topology observer's NodeInfo —
@@ -267,7 +267,7 @@ class ClusterTopologyManagerDecommissionMetadataPreservationTest {
                 } else if (put.key() instanceof NodeLifecycleKey lifecycleKey
                            && put.value() instanceof NodeLifecycleValue value) {
                     lifecycle.put(lifecycleKey.nodeId(), value);
-                    if (value.state() == NodeLifecycleState.DECOMMISSIONED) {decommissioned.add(value);}
+                    if (value.state() == NodeLifecycleState.STOPPED) {decommissioned.add(value);}
                 }
             }
             return Promise.success(List.of());

@@ -41,8 +41,10 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
+import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
@@ -111,6 +113,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// These should be combined with other entries when building the final router.
     List<Entry<?>> routeEntries();
 
+    /// Phase 2 PR-B (cluster-convergence-reconciler) — leader-side `SyncHoldRegistry`
+    /// tracking peers currently consuming a KV-sync snapshot. Phase 4's `LifecycleReconciler`
+    /// consults this via `Supplier<Set<NodeId>>` (`registry::activeHolds`) to skip
+    /// force-decommission for busy syncing nodes. Default returns an empty registry for
+    /// legacy nodes constructed without convergence-reconciler wiring.
+    default SyncHoldRegistry syncHoldRegistry() {
+        return SyncHoldRegistry.syncHoldRegistry();
+    }
+
     /// Creates a RabiaNode with full QUIC transport configuration.
     /// Requires explicit TLS config — QUIC has no plaintext mode.
     ///
@@ -174,7 +185,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               Predicate<NodeId> isDecommissioned) {
         return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
                           metrics, useConsensusLeaderElection, persistence, tlsConfig,
-                          rabiaTermSupplier, isDecommissioned, Option::none);
+                          rabiaTermSupplier, isDecommissioned, Option::none,
+                          GenerationSnapshotSource.noop(), TopologyObserver.ZERO_HLC_SUPPLIER);
     }
 
     /// Full-arity overload accepting a `currentLeaderFromKvSupplier` — pull-side complement
@@ -182,6 +194,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// (Aether's `AetherNode`) plumbs `() -> kvStore.get(LeaderKey.INSTANCE).map(LeaderValue::leader)`
     /// so the leader-election FSM can adopt the cluster-committed leader on entry to
     /// `Electing` / `ReElecting`, even when the rejoining node missed the notification path.
+    ///
+    /// Also accepts a `snapshotSource` and `hlcSupplier` that are forwarded to
+    /// [`TopologyObserver`] so `MembershipDecision` emissions carry real HLC timestamps
+    /// and are backed by the KV-Store generation snapshot rather than the legacy defaults.
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
                                                               StateMachine<C> stateMachine,
@@ -193,9 +209,44 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               TlsConfig tlsConfig,
                                                               Supplier<Long> rabiaTermSupplier,
                                                               Predicate<NodeId> isDecommissioned,
-                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              GenerationSnapshotSource snapshotSource,
+                                                              Supplier<HlcTimestamp> hlcSupplier) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
+                          metrics, useConsensusLeaderElection, persistence, tlsConfig,
+                          rabiaTermSupplier, isDecommissioned, currentLeaderFromKvSupplier,
+                          snapshotSource, hlcSupplier,
+                          SyncHoldRegistry.syncHoldRegistry(),
+                          SyncHoldConfig.defaults(),
+                          () -> {});
+    }
+
+    /// Phase 2 PR-B overload accepting:
+    /// - `syncHoldRegistry` — leader-side tracker of peers currently consuming a KV-sync
+    ///   snapshot (Phase 4 reconciler consults `registry.activeHolds()`).
+    /// - `syncHoldConfig` — configures the hold-duration formula `clamp(bytes/bps, min, max)`.
+    /// - `onSyncResponseReceived` — invoked on the JOINING node when a `KVSyncResponse` lands;
+    ///   typically wired to `() -> readinessTracker.markReady(self)`. Default in the legacy
+    ///   overload is a no-op so embeddings that pre-date the convergence-reconciler keep working.
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence,
+                                                              TlsConfig tlsConfig,
+                                                              Supplier<Long> rabiaTermSupplier,
+                                                              Predicate<NodeId> isDecommissioned,
+                                                              Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                              GenerationSnapshotSource snapshotSource,
+                                                              Supplier<HlcTimestamp> hlcSupplier,
+                                                              SyncHoldRegistry syncHoldRegistry,
+                                                              SyncHoldConfig syncHoldConfig,
+                                                              Runnable onSyncResponseReceived) {
         return Result.all(
-            TopologyObserver.topologyObserver(config.topology(), delegateRouter, isDecommissioned),
+            TopologyObserver.topologyObserver(config.topology(), delegateRouter, snapshotSource, isDecommissioned, hlcSupplier),
             QuicTlsProvider.serverContext(tlsConfig),
             QuicTlsProvider.clientContext(tlsConfig)
         ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(config,
@@ -210,7 +261,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                        useConsensusLeaderElection,
                                                                        persistence,
                                                                        rabiaTermSupplier,
-                                                                       currentLeaderFromKvSupplier));
+                                                                       currentLeaderFromKvSupplier,
+                                                                       syncHoldRegistry,
+                                                                       syncHoldConfig,
+                                                                       onSyncResponseReceived));
     }
 
     @SuppressWarnings("unchecked")
@@ -226,7 +280,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                  boolean useConsensusLeaderElection,
                                                                  RabiaPersistence<C> persistence,
                                                                  Supplier<Long> rabiaTermSupplier,
-                                                                 Supplier<Option<NodeId>> currentLeaderFromKvSupplier) {
+                                                                 Supplier<Option<NodeId>> currentLeaderFromKvSupplier,
+                                                                 SyncHoldRegistry syncHoldRegistry,
+                                                                 SyncHoldConfig syncHoldConfig,
+                                                                 Runnable onSyncResponseReceived) {
         var network = new QuicClusterNetwork(topologyManager,
                                              serializer,
                                              deserializer,
@@ -279,8 +336,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                    route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
                                                    route(Hello.class, _ -> {}),
                                                    route(KVSyncRequest.class,
-                                                         request -> handleKVSyncRequest(stateMachine, delegateRouter, config, request)),
-                                                   route(KVSyncResponse.class, _ -> {}));
+                                                         request -> handleKVSyncRequest(stateMachine, delegateRouter, config, request,
+                                                                                         syncHoldRegistry, syncHoldConfig)),
+                                                   route(KVSyncResponse.class,
+                                                         _ -> onSyncResponseReceived.run()));
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
                                                 .route(route(ConnectedNodesList.class, topologyManager::reconcile),
                                                        route(ConnectNode.class, network::connect),
@@ -333,7 +392,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                             TopologyManager topologyManager,
                                             RabiaEngine<C> consensus,
                                             LeaderManager leaderManager,
-                                            List<Entry<?>> routeEntries) implements RabiaNode<C> {
+                                            List<Entry<?>> routeEntries,
+                                            SyncHoldRegistry syncHoldRegistry) implements RabiaNode<C> {
             @Override
             public NodeId self() {
                 return config().topology()
@@ -386,7 +446,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                topologyManager,
                                consensus,
                                leaderManager,
-                               List.copyOf(allEntries));
+                               List.copyOf(allEntries),
+                               syncHoldRegistry);
     }
 
     /// Builds an ImmutableRouter from route entries and wires it to a DelegateRouter.
@@ -436,14 +497,51 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
              .add((Consumer) tuple.last());
     }
 
+    /// Leader-side KV-sync request handler. On arrival, computes a deadline-based hold via
+    /// `SyncHoldConfig.holdMs(snapshotBytes)` and registers `request.sender()` in
+    /// `syncHoldRegistry`. The Phase 4 reconciler (`activeHolds()` consumer) treats the peer
+    /// as "actively syncing — do not force-decommission" while the deadline has not elapsed.
+    ///
+    /// Spec §5.4: the hold is cleared by either (a) deadline expiry (handled by
+    /// `SyncHoldRegistry.activeHolds()` self-pruning) or (b) explicit `readyCandidate` arrival
+    /// (wired in Phase 4 via `SyncHoldRegistry.clear`). The `makeSnapshot()` onFailure path
+    /// also clears the hold so a failed snapshot doesn't leave a stale entry.
     private static <C extends Command> void handleKVSyncRequest(StateMachine<C> stateMachine,
                                                                       DelegateRouter delegateRouter,
                                                                       NodeConfig config,
-                                                                      KVSyncRequest request) {
+                                                                      KVSyncRequest request,
+                                                                      SyncHoldRegistry syncHoldRegistry,
+                                                                      SyncHoldConfig syncHoldConfig) {
+        // Register hold BEFORE makeSnapshot — on large states snapshot construction itself can
+        // take seconds, and the reconciler should treat the peer as protected throughout.
+        // Initial deadline uses syncHoldConfig.minHold(); refined once we know snapshot size.
+        var preliminaryDeadline = System.currentTimeMillis() + syncHoldConfig.minHold().millis();
+        syncHoldRegistry.register(request.sender(), preliminaryDeadline);
         stateMachine.makeSnapshot()
-                    .onSuccess(snapshot -> delegateRouter.route(
-                        new Send(request.sender(), new KVSyncResponse(config.topology().self(), snapshot))))
-                    .onFailure(cause -> log.error("Failed to create KV snapshot: {}", cause));
+                    .onSuccess(snapshot -> dispatchSnapshot(delegateRouter, config, request, snapshot,
+                                                            syncHoldRegistry, syncHoldConfig))
+                    .onFailure(cause -> clearHoldOnFailure(request, syncHoldRegistry, cause));
+    }
+
+    private static void dispatchSnapshot(DelegateRouter delegateRouter,
+                                          NodeConfig config,
+                                          KVSyncRequest request,
+                                          byte[] snapshot,
+                                          SyncHoldRegistry syncHoldRegistry,
+                                          SyncHoldConfig syncHoldConfig) {
+        // Refine hold deadline now that we know snapshot bytes. The peer needs at least
+        // bytes/expectedSyncBps milliseconds (clamped) to ingest — extend the hold to cover.
+        var refinedDeadline = System.currentTimeMillis() + syncHoldConfig.holdMs(snapshot.length);
+        syncHoldRegistry.register(request.sender(), refinedDeadline);
+        delegateRouter.route(new Send(request.sender(),
+                                      new KVSyncResponse(config.topology().self(), snapshot)));
+    }
+
+    private static void clearHoldOnFailure(KVSyncRequest request,
+                                            SyncHoldRegistry syncHoldRegistry,
+                                            org.pragmatica.lang.Cause cause) {
+        syncHoldRegistry.clear(request.sender());
+        log.error("Failed to create KV snapshot: {}", cause);
     }
 
     /// Default timeout for leader proposals. Must outlast QUIC reconcile (5s) so a

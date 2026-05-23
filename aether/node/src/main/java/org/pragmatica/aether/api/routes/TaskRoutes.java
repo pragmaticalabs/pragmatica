@@ -42,19 +42,20 @@ public final class TaskRoutes implements RouteSource {
         return new TaskRoutes(nodeSupplier);
     }
 
-    record TaskAssignmentInfo(String group, String assignedTo, String assignedAt, String status, String failureReason){}
+    record TaskAssignmentInfo(String group, String assignedTo, String assignedAt, String status, String failureReason) {}
 
-    record TaskAssignmentsResponse(List<TaskAssignmentInfo> assignments){}
+    record TaskAssignmentsResponse(List<TaskAssignmentInfo> assignments) {}
 
-    record ReassignRequest(String targetNode){}
+    record ReassignRequest(String targetNode) {}
 
-    record ReassignResponse(String status){}
+    record ReassignResponse(String status) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<TaskAssignmentsResponse>route(ManagementRoute.CLUSTER_TASKS_LIST)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<TaskAssignmentsResponse> route(ManagementRoute.CLUSTER_TASKS_LIST)
                                          .to(_ -> Promise.success(listAssignments()))
                                          .asJson(),
-                         ManagementRoutes.<ReassignResponse>route(ManagementRoute.CLUSTER_TASK_REASSIGN)
+                         ManagementRoutes.<ReassignResponse> route(ManagementRoute.CLUSTER_TASK_REASSIGN)
                                          .withPath(aString())
                                          .withBody(ReassignRequest.class)
                                          .to(this::reassignTask)
@@ -63,10 +64,10 @@ public final class TaskRoutes implements RouteSource {
 
     private TaskAssignmentsResponse listAssignments() {
         var infos = new ArrayList<TaskAssignmentInfo>();
-        nodeSupplier.get().kvStore()
-                        .forEach(AetherKey.TaskAssignmentKey.class,
-                                 TaskAssignmentValue.class,
-                                 (key, value) -> infos.add(toAssignmentInfo(key, value)));
+        nodeSupplier.get().kvStore().forEach(AetherKey.TaskAssignmentKey.class,
+                                             TaskAssignmentValue.class,
+                                             (key, value) -> infos.add(toAssignmentInfo(key, value)));
+
         return new TaskAssignmentsResponse(List.copyOf(infos));
     }
 
@@ -79,20 +80,23 @@ public final class TaskRoutes implements RouteSource {
     }
 
     private Promise<ReassignResponse> reassignTask(String group, ReassignRequest request) {
-        return parseTaskGroup(group).async().flatMap(taskGroup -> reassignToNode(taskGroup, request.targetNode()));
+        return parseTaskGroup(group).async()
+                             .flatMap(taskGroup -> reassignToNode(taskGroup,
+                                                                  request.targetNode()));
     }
 
     private Promise<ReassignResponse> reassignToNode(TaskGroup taskGroup, String targetNodeId) {
-        return NodeId.nodeId(targetNodeId).async()
-                            .flatMap(nodeId -> coordinator().reassign(taskGroup, nodeId))
-                            .map(_ -> new ReassignResponse("reassigned"))
-                            .mapError(TaskRoutes::mapReassignFailure);
+        return NodeId.nodeId(targetNodeId)
+                     .async()
+                     .flatMap(nodeId -> coordinator().reassign(taskGroup, nodeId))
+                     .map(_ -> new ReassignResponse("reassigned"))
+                     .mapError(TaskRoutes::mapReassignFailure);
     }
 
     private static Cause mapReassignFailure(Cause cause) {
         return cause == CoordinatorError.NOT_LEADER
-              ? HttpStatus.CONFLICT.with(cause)
-              : cause;
+               ? HttpStatus.CONFLICT.with(cause)
+               : cause;
     }
 
     private static Result<TaskGroup> parseTaskGroup(String group) {
@@ -100,6 +104,7 @@ public final class TaskRoutes implements RouteSource {
     }
 
     private TaskAssignmentCoordinator coordinator() {
-        return nodeSupplier.get().taskAssignmentCoordinator();
+        return nodeSupplier.get()
+                           .taskAssignmentCoordinator();
     }
 }

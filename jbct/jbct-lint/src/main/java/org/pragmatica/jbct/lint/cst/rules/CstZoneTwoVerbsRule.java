@@ -3,11 +3,11 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.lang.Option;
 
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -22,6 +22,8 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 ///               manage, configure, initialize, execute, prepare, complete
 public class CstZoneTwoVerbsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-01";
+
+    private static final Pattern INTERFACE_NAME_PATTERN = Pattern.compile("\\binterface\\s+(\\w+)");
 
     // Zone 2 orchestration-level verbs
     private static final Set<String> ZONE_2_VERBS = Set.of("validate",
@@ -76,22 +78,18 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
     }
 
     @Override
-    public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd,
-                                                                                            RuleId.QualifiedName.class))
-                                   .map(qn -> text(qn, source))
-                                   .or("");
-        if (!ctx.shouldLint(packageName)) {
+    public Stream<Diagnostic> analyze(Cursor root, String source, LintContext ctx) {
+        if (!ctx.shouldLint(packageName(root))) {
             return Stream.empty();
         }
         // Find functional interfaces that look like step interfaces
         return findAllInterfaces(root).stream()
-                      .filter(iface -> isStepInterface(iface, source))
-                      .flatMap(iface -> checkInterfaceName(iface, source, ctx));
+                      .filter(this::isStepInterface)
+                      .flatMap(iface -> checkInterfaceName(iface, ctx));
     }
 
-    private boolean isStepInterface(CstNode iface, String source) {
-        var ifaceText = text(iface, source);
+    private boolean isStepInterface(Cursor iface) {
+        var ifaceText = text(iface);
         // Check if it's a functional interface (single method)
         var methodCount = findAllMethods(iface).size();
         if (methodCount != 1) {
@@ -103,9 +101,8 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
         ifaceText.contains("Option<");
     }
 
-    private Stream<Diagnostic> checkInterfaceName(CstNode iface, String source, LintContext ctx) {
-        var interfaceName = childByRule(iface, RuleId.Identifier.class).map(id -> text(id, source))
-                                       .or("");
+    private Stream<Diagnostic> checkInterfaceName(Cursor iface, LintContext ctx) {
+        var interfaceName = extractInterfaceName(text(iface));
         if (interfaceName.isEmpty()) {
             return Stream.empty();
         }
@@ -117,6 +114,11 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
                                                         suggestZone2Verb(verb.toLowerCase()),
                                                         ctx))
                           .stream();
+    }
+
+    private static String extractInterfaceName(String ifaceText) {
+        var matcher = INTERFACE_NAME_PATTERN.matcher(ifaceText);
+        return matcher.find() ? matcher.group(1) : "";
     }
 
     private Option<String> extractVerb(String interfaceName) {
@@ -147,7 +149,7 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
         };
     }
 
-    private Diagnostic createDiagnostic(CstNode node,
+    private Diagnostic createDiagnostic(Cursor node,
                                         String interfaceName,
                                         String verb,
                                         String suggestedVerb,

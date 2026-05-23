@@ -19,35 +19,48 @@ import picocli.CommandLine.Option;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_AWAIT_QUIESCED;
 
 
-@Command(name = "await-quiesced", description = "Wait until cluster reaches the given epoch and quiesces") @SuppressWarnings("JBCT-RET-01") class ClusterAwaitQuiescedCommand implements Callable<Integer> {
-    @CommandLine.ParentCommand private ClusterCommand parent;
+@Command(name = "await-quiesced", description = "Wait until cluster reaches the given epoch and quiesces")
+@SuppressWarnings("JBCT-RET-01")
+class ClusterAwaitQuiescedCommand implements Callable<Integer> {
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
-    @Mixin ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+    @Mixin
+    ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
 
-    @Option(names = "--epoch", description = "Required epoch in T:C form (e.g. 7:142)", required = true) private String epoch;
+    @Option(names = "--epoch", description = "Required epoch in T:C form (e.g. 7:142)", required = true)
+    private String epoch;
 
-    @Option(names = "--timeout", description = "Timeout (default 30s, max 120s)", defaultValue = "30s") private String timeout;
+    @Option(names = "--timeout", description = "Timeout (default 30s, max 120s)", defaultValue = "30s")
+    private String timeout;
 
-    @Override public Integer call() {
+    @Override
+    public Integer call() {
         var query = "epoch=" + epoch + "&timeout=" + timeout;
-        return clusterTarget.applyOverrides().flatMap(_ -> ClusterHttpClient.post(CLUSTER_AWAIT_QUIESCED,
-                                                                                  List.of(),
-                                                                                  query,
-                                                                                  "{}"))
-                                           .fold(ClusterAwaitQuiescedCommand::onFailure, this::onSuccess);
+
+        return clusterTarget.applyOverrides()
+                            .flatMap(_ -> ClusterHttpClient.post(CLUSTER_AWAIT_QUIESCED,
+                                                                 List.of(),
+                                                                 query,
+                                                                 "{}"))
+                            .fold(ClusterAwaitQuiescedCommand::onFailure, this::onSuccess);
     }
 
     private int onSuccess(String json) {
         if (parent.outputOptions().format() == OutputFormat.JSON) {
             System.out.println(json);
+
             return ExitCode.SUCCESS;
         }
+
         System.out.println("Quiesced at " + epoch + " (response: " + json + ")");
+
         return ExitCode.SUCCESS;
     }
 
     private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
+
         return ExitCode.ERROR;
     }
 }

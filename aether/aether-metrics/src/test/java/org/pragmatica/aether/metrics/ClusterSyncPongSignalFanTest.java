@@ -133,6 +133,70 @@ class ClusterSyncPongSignalFanTest {
         }
     }
 
+    @Nested
+    class ReadyCandidateFanOut {
+        @Test
+        void fan_whenLeaderAndCandidatePresent_invokesReadyCandidateSink() {
+            var leaderManager = new TestLeaderManager(true);
+            var recorded = new java.util.ArrayList<java.util.Map.Entry<NodeId, NodeId>>();
+            ClusterSyncPongSignalFan.ReadyCandidateSink sink =
+                (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager, sink);
+
+            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "JOINING",
+                                            List.of(), List.of(), List.of(), Option.some(PEER_A));
+
+            fan.fan(pong);
+
+            assertThat(recorded).containsExactly(java.util.Map.entry(OBSERVER, PEER_A));
+        }
+
+        @Test
+        void fan_whenLeaderAndCandidateAbsent_doesNotInvokeReadyCandidateSink() {
+            var leaderManager = new TestLeaderManager(true);
+            var recorded = new java.util.ArrayList<java.util.Map.Entry<NodeId, NodeId>>();
+            ClusterSyncPongSignalFan.ReadyCandidateSink sink =
+                (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager, sink);
+
+            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "ON_DUTY",
+                                            List.of(), List.of(), List.of(), Option.none());
+
+            fan.fan(pong);
+
+            assertThat(recorded).isEmpty();
+        }
+
+        @Test
+        void fan_whenNotLeaderAndCandidatePresent_doesNotInvokeReadyCandidateSink() {
+            var leaderManager = new TestLeaderManager(false);
+            var recorded = new java.util.ArrayList<java.util.Map.Entry<NodeId, NodeId>>();
+            ClusterSyncPongSignalFan.ReadyCandidateSink sink =
+                (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager, sink);
+
+            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "JOINING",
+                                            List.of(), List.of(), List.of(), Option.some(PEER_A));
+
+            fan.fan(pong);
+
+            assertThat(recorded).isEmpty();
+        }
+
+        @Test
+        void fan_legacyFactoryWithoutSink_doesNotThrowOnCandidatePresent() {
+            // Backward-compat: factory(sink, leaderManager) without ReadyCandidateSink defaults
+            // to NOOP. A candidate-present pong must not NPE or raise — it is silently dropped.
+            var leaderManager = new TestLeaderManager(true);
+            var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(recordingSink, leaderManager);
+
+            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "JOINING",
+                                            List.of(), List.of(), List.of(), Option.some(PEER_A));
+
+            fan.fan(pong); // must not throw
+        }
+    }
+
     /// Controllable LeaderManager stub for SSOT testing.
     static final class TestLeaderManager implements LeaderManager {
         private volatile boolean leader;

@@ -38,11 +38,16 @@ export QUIESCED_TIMINGS_FILE="$TIMINGS_FILE"
 # Cluster A: non-destructive (parallel)
 COMPOSE_A="${SCRIPT_DIR}/docker-compose-a.yml"
 CLUSTER_A_NAME="test-a"
-# 5150 is owned by aether-a-mgmt-gateway (nginx sidecar) which round-robins /api
-# requests across all 5 cores and skips dead upstreams via proxy_next_upstream.
-# MGMT_ENTRY_POINT therefore survives any single-core failure; tests can target
-# this endpoint without pinning to a specific node's lifecycle.
-CLUSTER_A_MGMT="http://${TARGET_HOST:-localhost}:5150"
+# Direct entry point: node-1's host-mapped mgmt port. `_resolve_live_endpoint`
+# (lib/common.sh) handles failover by health-probing MGMT_PORT..MGMT_PORT+N-1
+# and updating the pin to the first live node — structurally equivalent to a
+# round-robin LB with failover, but at the test client. No separate gateway
+# container needed (the old nginx sidecar was removed: it caused 09-artifacts
+# 1MB push 504s via `proxy_request_buffering on` + `proxy_next_upstream` retry
+# loop re-sending the body, plus DNS-at-config-load fragility and two configs
+# to maintain). aether-node's MGMT API enforces auth + leader-forwarding at the
+# handler layer, so the gateway was a redundant proxy.
+CLUSTER_A_MGMT="http://${TARGET_HOST:-localhost}:5151"
 # Direct (LB-less) app-HTTP fallback — node-1's host-mapped app port (see docker-compose-a.yml)
 CLUSTER_A_APP_DIRECT="http://${TARGET_HOST:-localhost}:8070"
 CLUSTER_A_LB_APP=""
@@ -51,11 +56,13 @@ CLUSTER_A_LB_MGMT=""
 # Cluster B: destructive (sequential)
 COMPOSE_B="${SCRIPT_DIR}/docker-compose-b.yml"
 CLUSTER_B_NAME="test-b"
-# 5160 is owned by aether-b-mgmt-gateway (nginx sidecar). The gateway is what
-# decouples MGMT_ENTRY_POINT from any single core's lifecycle on cluster B's
-# `restart: "no"` policy -- destructive tests can now kill ANY core, including
-# node-1 or the current leader, without stranding the harness on a dead port.
-CLUSTER_B_MGMT="http://${TARGET_HOST:-localhost}:5160"
+# Direct entry point: node-1's host-mapped mgmt port. Same rationale as
+# CLUSTER_A_MGMT above. `_resolve_live_endpoint` failover preserves destructive-
+# test resilience: if node-1 (the pinned endpoint) is killed, the resolver
+# rotates through 5161..5165 and updates the pin to the first live node. With
+# cluster B's `restart: "no"` policy the killed container stays dead, so the
+# updated pin remains stable for the remainder of the suite.
+CLUSTER_B_MGMT="http://${TARGET_HOST:-localhost}:5161"
 # Direct (LB-less) app-HTTP fallback — node-1's host-mapped app port (see docker-compose-b.yml)
 CLUSTER_B_APP_DIRECT="http://${TARGET_HOST:-localhost}:8080"
 CLUSTER_B_LB_APP=""
@@ -207,8 +214,8 @@ deploy_blueprints() {
     for bp in "${unique_bps[@]}"; do
         local coords="org.pragmatica.aether.test:${bp}:1.0.0"
         log_info "Pushing blueprint: ${coords} to ${cluster_endpoint}"
-        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" artifact push "$coords" 2>/dev/null || true
-        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" blueprint deploy "$coords" 2>&1 || \
+        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" artifacts push "$coords" 2>/dev/null || true
+        aether -c "${cluster_endpoint#http://}" --api-key "${API_KEY}" blueprints deploy "$coords" 2>&1 || \
             log_warn "blueprint deploy ${coords} did not return success (continuing)"
     done
 }
@@ -270,17 +277,19 @@ run_suite() {
         lb_app="${CLUSTER_A_LB_APP:-$CLUSTER_A_APP_DIRECT}"
         lb_mgmt="${CLUSTER_A_LB_MGMT:-$CLUSTER_A_MGMT}"
         cluster_id="a"
-        # Direct per-node mgmt ports = 5151..5155 (node-1..node-5); 5150 is the
-        # mgmt sidecar gateway. MGMT_PORT+i convention now resolves node-{i+1}.
+        # Direct per-node mgmt ports = 5151..5155 (node-1..node-5).
+        # MGMT_PORT+i convention resolves node-{i+1} → 5151+i. Cluster reach
+        # via lib/common.sh _refresh_mgmt_entry_point probing this range.
         node_base="5151"
     else
         cluster_endpoint="$CLUSTER_B_MGMT"
         lb_app="${CLUSTER_B_LB_APP:-$CLUSTER_B_APP_DIRECT}"
         lb_mgmt="${CLUSTER_B_LB_MGMT:-$CLUSTER_B_MGMT}"
         cluster_id="b"
-        # Direct per-node mgmt ports = 5161..5165 (node-1..node-5); 5160 is the
-        # mgmt sidecar gateway. Killing ANY core is now safe -- gateway routes
-        # via proxy_next_upstream to a surviving upstream.
+        # Direct per-node mgmt ports = 5161..5165 (node-1..node-5).
+        # Killing node-1 leaves 5161 dead; the harness rotates MGMT_ENTRY_POINT
+        # to a surviving core via lib/common.sh _refresh_mgmt_entry_point
+        # (invoked from wait_for_cluster_ready and api_get/api_post).
         node_base="5161"
     fi
 
@@ -416,11 +425,11 @@ run_cluster_b_suites() {
         # failure — chaos tests can leave residual CTM-provisioned replacements whose
         # snapshots haven't propagated, and skipping subsequent destructive suites just
         # turns one failure into five. Each suite is responsible for its own preconditions
-        # via the wait_for_cluster / wait_for_leader helpers in run_test().
+        # via the wait_for_cluster_ready / wait_for_leader helpers in run_test().
         local quiesce_start
         quiesce_start=$(date +%s)
         # 60s base × TIMEOUT_SCALE: 60s docker / 180s cloud. Best-effort barrier;
-        # continue-on-fail because each suite's own `wait_for_cluster` re-establishes
+        # continue-on-fail because each suite's own `wait_for_cluster_ready` re-establishes
         # preconditions if churn lingers.
         await_generation_quiesced "$CLUSTER_B_MGMT" "current" 60 || \
             log_warn "Cluster B did not quiesce within 60s after suite ${suite} — continuing"
@@ -467,6 +476,26 @@ rebuild_remote_node_image() {
 deploy_docker() {
     local host="${TARGET_HOST:-localhost}"
 
+    # Localhost twin of `cleanup_cluster_zombies` (lib/cluster.sh). Same semantics,
+    # direct `docker` invocation since remote_exec always SSHs.
+    _local_cleanup_zombies() {
+        local cid="$1"
+        local allowlist="aether-${cid}-node-1|aether-${cid}-node-2|aether-${cid}-node-3|aether-${cid}-node-4|aether-${cid}-node-5|aether-${cid}-mgmt-gateway|forge-postgres"
+        local names
+        names=$(docker ps -a --filter "label=aether.cluster=${cid}" --format '{{.Names}}' 2>/dev/null | grep -Ev "^(${allowlist})$" || true)
+        if [ -z "$names" ]; then
+            log_info "cleanup_cluster_zombies(${cid}): no zombies"
+            return 0
+        fi
+        local z
+        while IFS= read -r z; do
+            [ -z "$z" ] && continue
+            log_info "cleanup_cluster_zombies(${cid}): removing zombie ${z}"
+            docker rm -f "$z" >/dev/null 2>&1 || log_warn "cleanup_cluster_zombies(${cid}): docker rm -f ${z} failed"
+        done <<< "$names"
+        return 0
+    }
+
     if [ "$host" != "localhost" ] && [ "$SKIP_IMAGE_PUSH" = false ]; then
         rebuild_remote_node_image "$host"
     elif [ "$host" != "localhost" ]; then
@@ -482,28 +511,34 @@ deploy_docker() {
     # `aether-core-node-*` containers from prior runs that compose doesn't manage.
     if [ "$host" = "localhost" ]; then
         docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
+        # CTM-provisioned containers now carry cluster scope: aether-<cluster>-<pool>-node-...
+        # Sweep both legacy (aether-core-node-) and current (aether-default-core-node-) plus
+        # any aether-a-core-node-* / aether-test-cluster-core-node-* shapes from test runs.
         docker rm -f $(docker ps -aq --filter "name=aether-core-node-") 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-default-core-node-") 2>/dev/null || true
+        docker rm -f $(docker ps -aq --filter "name=aether-a-core-node-") 2>/dev/null || true
+        # Label-scoped zombie sweep (catches any CTM container missed by the name-prefix
+        # filters above, e.g. shapes introduced by future provider/pool naming changes).
+        _local_cleanup_zombies "a"
         docker volume rm -f aether_pgdata 2>/dev/null || true
         docker compose -f "$COMPOSE_A" up -d 2>&1 | tail -5
     else
-        # D.1 nginx mgmt-gateway sidecar: clean any stale directory docker may have
-        # created at the mount path on a prior failed compose-up (when the conf
-        # file was missing, docker silently mkdir'd a placeholder). scp will then
-        # fail with "dest open ... Permission denied" because the path is a dir.
-        remote_exec "rm -rf ~/nginx-mgmt-gateway-a.conf ~/nginx-mgmt-gateway-b.conf 2>/dev/null || true"
         remote_scp "$COMPOSE_A" "~/docker-compose-a.yml"
-        remote_scp "${SCRIPT_DIR}/nginx-mgmt-gateway-a.conf" "~/nginx-mgmt-gateway-a.conf"
-        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true; docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
+        remote_exec "cd ~ && docker compose -f docker-compose-a.yml down -v 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null || true; docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true; docker volume rm -f aether_pgdata 2>/dev/null || true"
+        cleanup_cluster_zombies "a"
+        remote_exec "cd ~ && docker compose -f docker-compose-a.yml up -d 2>&1 | tail -5"
     fi
 
     log_step "Deploying Cluster B (destructive)"
     if [ "$host" = "localhost" ]; then
         docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
+        _local_cleanup_zombies "b"
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
-        remote_scp "${SCRIPT_DIR}/nginx-mgmt-gateway-b.conf" "~/nginx-mgmt-gateway-b.conf"
-        remote_exec "cd ~ && docker compose -f docker-compose-b.yml down -v 2>/dev/null || true; docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
+        remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-core-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true"
+        cleanup_cluster_zombies "b"
+        remote_exec "cd ~ && docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
     fi
 }
 
@@ -520,14 +555,16 @@ teardown() {
         docker|remote)
             local host="${TARGET_HOST:-localhost}"
             if [ "$host" = "localhost" ]; then
+                # CTM containers first — they hold the network; compose down would stall otherwise
+                docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
                 docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
                 docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
             else
+                # Same order on remote: sweep CTM containers before compose down
+                remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-core-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-a-core-node-) 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-a.yml down -v 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-b.yml down -v 2>/dev/null || true"
             fi
-            # Clean up orphaned CTM containers
-            docker rm -f $(docker ps -aq --filter "name=aether-core") 2>/dev/null || true
             ;;
         cloud)
             # `aether cluster destroy` has no --cluster flag (only operates on the active cluster).
@@ -628,6 +665,11 @@ print_results() {
 # ===========================================================================
 log_info "Integration test runner -- env=${ENV_TYPE}"
 START_TIME=$(date +%s)
+
+# --- Step 0: Lint integration test infra (always; cheap; protects against
+#     test-side regressions even when --skip-build is used) ---
+log_step "Lint integration tests"
+"${SCRIPT_DIR}/lint-tests.sh"
 
 # --- Step 1: Build ---
 if [ "$SKIP_BUILD" = false ] && [ -x "${REPO_ROOT}/build.sh" ]; then
@@ -777,19 +819,16 @@ detect_capabilities "$ENV_TYPE"
 # A_SUITES / B_SUITES already computed above (before Step 2) so per-cluster
 # bootstrap can be skipped when only one side's suites are selected.
 
-# --- Step 6.5: Drop ghost CTM-provisioned containers from previous runs ---
-# Bash dynamic-scoping bug + Wave 3 changes have historically allowed CTM
-# to auto-provision phantom replacement containers (named aether-core-node-N-XXX)
-# that flap-loop in the topology, starve QUIC backpressure, and stall consensus.
-# A clean run must start with the docker-compose-defined nodes ONLY.
-if [ "$SKIP_DEPLOY" = false ] && [ "$ENV_TYPE" != "cloud" ]; then
-    log_step "Cleaning up ghost CTM-provisioned containers"
-    if [ "$ENV_TYPE" = "docker" ]; then
-        docker rm -f $(docker ps -aq --filter "name=aether-core-node-") 2>/dev/null || true
-    else
-        remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-core-node-) 2>/dev/null || true" 2>&1 | tail -1 || true
-    fi
-fi
+# Step 6.5 (post-bring-up "Cleaning up ghost CTM-provisioned containers") was
+# REMOVED 2026-05-19c. It was over-eager: when CTM legitimately provisions
+# a replacement during cluster bring-up (e.g., a transient compose-node
+# registration race), this step would `docker rm -f` it, leaving a stale
+# ON_DUTY NodeLifecycleKey in KV with no live container. The label-scoped
+# `cleanup_cluster_zombies` invoked from `deploy_docker` BEFORE `up -d`
+# (lib/cluster.sh) is the correct replacement: it scopes to stale containers
+# from prior runs (label `aether.cluster=<id>` with non-allowlisted name)
+# and runs before the new compose stack starts, so it never kills a
+# legitimate runtime CTM container.
 
 # --- Step 7: Deploy blueprints ---
 BLUEPRINT_START=$(date +%s)

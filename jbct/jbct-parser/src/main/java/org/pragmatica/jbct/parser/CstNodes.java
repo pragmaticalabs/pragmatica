@@ -1,7 +1,5 @@
 package org.pragmatica.jbct.parser;
 
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
@@ -10,49 +8,47 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
-/// Utility methods for working with CST nodes.
+/// Navigation utilities for the v6-based CST. Takes `Cursor` arguments and `RuleKind`
+/// constants in place of the legacy `CstNode` / `Class<? extends RuleId>` API.
 public final class CstNodes {
     private CstNodes() {}
 
-    /// Get children of a node (empty list for terminals/tokens).
-    public static List<CstNode> children(CstNode node) {
+    // ===== Children + text =====
+
+    /// Direct children of the node. Empty for `Leaf` and `ErrorNode`.
+    public static List<Cursor> children(Cursor node) {
         return switch (node) {
-            case CstNode.NonTerminal nt -> nt.children();
-            case CstNode.Terminal t -> List.of();
-            case CstNode.Token tok -> List.of();
-            case CstNode.Error err -> List.of();
+            case Cursor.Branch b -> b.children().toList();
+            case Cursor.Leaf _, Cursor.ErrorNode _ -> List.of();
         };
     }
 
-    /// Get the text content of a node.
-    public static String text(CstNode node, String source) {
-        return node.span()
-                   .extract(source);
+    /// Text content of the node — the source slice covered by its span.
+    public static String text(Cursor node) {
+        return node.cst().input().substring(node.spanStart(), node.spanEnd());
     }
 
-    /// Check if node matches a rule type.
-    public static boolean isRule(CstNode node, Class<? extends RuleId> ruleClass) {
-        return ruleClass.isInstance(node.rule());
+    // ===== Rule predicates =====
+
+    public static boolean isRule(Cursor node, RuleKind kind) {
+        return node.kindIs(kind);
     }
 
-    /// Find all descendants matching a rule type.
-    public static List<CstNode> findAll(CstNode root, Class<? extends RuleId> ruleClass) {
-        return findAll(root, node -> isRule(node, ruleClass));
+    // ===== Search (DFS) =====
+
+    public static List<Cursor> findAll(Cursor root, RuleKind kind) {
+        return findAll(root, n -> n.kindIs(kind));
     }
 
-    /// Find all descendants matching a predicate.
-    public static List<CstNode> findAll(CstNode root, Predicate<CstNode> predicate) {
-        return stream(root).filter(predicate)
-                     .toList();
+    public static List<Cursor> findAll(Cursor root, Predicate<Cursor> predicate) {
+        return stream(root).filter(predicate).toList();
     }
 
-    /// Find first descendant matching a rule type.
-    public static Option<CstNode> findFirst(CstNode root, Class<? extends RuleId> ruleClass) {
-        return findFirst(root, node -> isRule(node, ruleClass));
+    public static Option<Cursor> findFirst(Cursor root, RuleKind kind) {
+        return findFirst(root, n -> n.kindIs(kind));
     }
 
-    /// Find first descendant matching a predicate.
-    public static Option<CstNode> findFirst(CstNode root, Predicate<CstNode> predicate) {
+    public static Option<Cursor> findFirst(Cursor root, Predicate<Cursor> predicate) {
         if (predicate.test(root)) {
             return Option.some(root);
         }
@@ -65,33 +61,33 @@ public final class CstNodes {
         return Option.none();
     }
 
-    /// Find ancestor matching a rule type.
-    public static Option<CstNode> findAncestor(CstNode root, CstNode target, Class<? extends RuleId> ruleClass) {
-        return findAncestorPath(root, target).flatMap(path -> findAncestorInPath(path, ruleClass));
+    /// Find the nearest ancestor of `target` (relative to `root`) whose kind matches.
+    public static Option<Cursor> findAncestor(Cursor root, Cursor target, RuleKind kind) {
+        return findAncestorPath(root, target).flatMap(path -> findAncestorInPath(path, kind));
     }
 
-    private static Option<CstNode> findAncestorInPath(List<CstNode> path, Class<? extends RuleId> ruleClass) {
+    private static Option<Cursor> findAncestorInPath(List<Cursor> path, RuleKind kind) {
         for (int i = path.size() - 2; i >= 0; i--) {
-            if (isRule(path.get(i), ruleClass)) {
+            if (path.get(i).kindIs(kind)) {
                 return Option.some(path.get(i));
             }
         }
         return Option.none();
     }
 
-    /// Get path from root to target node.
-    public static Option<List<CstNode>> findAncestorPath(CstNode root, CstNode target) {
-        var path = new ArrayList<CstNode>();
+    /// Path from `root` to `target` (inclusive). Returns `none` if `target` isn't a
+    /// descendant. Equality uses cursor span (which is unique within one CstArray).
+    public static Option<List<Cursor>> findAncestorPath(Cursor root, Cursor target) {
+        var path = new ArrayList<Cursor>();
         if (findPath(root, target, path)) {
             return Option.some(path);
         }
         return Option.none();
     }
 
-    private static boolean findPath(CstNode current, CstNode target, List<CstNode> path) {
+    private static boolean findPath(Cursor current, Cursor target, List<Cursor> path) {
         path.add(current);
-        if (current == target || current.span()
-                                        .equals(target.span())) {
+        if (current.idx() == target.idx() && current.cst() == target.cst()) {
             return true;
         }
         for (var child : children(current)) {
@@ -103,23 +99,23 @@ public final class CstNodes {
         return false;
     }
 
-    /// Walk the tree depth-first, calling visitor for each node.
-    public static void walk(CstNode root, Consumer<CstNode> visitor) {
+    // ===== Traversal =====
+
+    public static void walk(Cursor root, Consumer<Cursor> visitor) {
         visitor.accept(root);
         for (var child : children(root)) {
             walk(child, visitor);
         }
     }
 
-    /// Stream all nodes in the tree depth-first.
-    public static Stream<CstNode> stream(CstNode root) {
+    public static Stream<Cursor> stream(Cursor root) {
         return Stream.concat(Stream.of(root),
-                             children(root).stream()
-                                     .flatMap(CstNodes::stream));
+                             children(root).stream().flatMap(CstNodes::stream));
     }
 
-    /// Get child by index.
-    public static Option<CstNode> child(CstNode node, int index) {
+    // ===== Children by index/rule =====
+
+    public static Option<Cursor> child(Cursor node, int index) {
         var kids = children(node);
         if (index >= 0 && index < kids.size()) {
             return Option.some(kids.get(index));
@@ -127,201 +123,203 @@ public final class CstNodes {
         return Option.none();
     }
 
-    /// Get first child matching a rule type.
-    public static Option<CstNode> childByRule(CstNode node, Class<? extends RuleId> ruleClass) {
+    public static Option<Cursor> childByRule(Cursor node, RuleKind kind) {
         for (var child : children(node)) {
-            if (isRule(child, ruleClass)) {
+            if (child.kindIs(kind)) {
                 return Option.some(child);
             }
         }
         return Option.none();
     }
 
-    /// Get all direct children matching a rule type.
-    public static List<CstNode> childrenByRule(CstNode node, Class<? extends RuleId> ruleClass) {
-        var results = new ArrayList<CstNode>();
+    public static List<Cursor> childrenByRule(Cursor node, RuleKind kind) {
+        var results = new ArrayList<Cursor>();
         for (var child : children(node)) {
-            if (isRule(child, ruleClass)) {
+            if (child.kindIs(kind)) {
                 results.add(child);
             }
         }
         return results;
     }
 
-    /// Check if node contains a descendant matching rule type.
-    public static boolean contains(CstNode root, Class<? extends RuleId> ruleClass) {
-        return findFirst(root, ruleClass).isPresent();
+    public static boolean contains(Cursor root, RuleKind kind) {
+        return findFirst(root, kind).isPresent();
     }
 
-    /// Check if node is a terminal with specific text.
-    public static boolean isLiteral(CstNode node, String text) {
+    public static boolean hasChildOfRule(Cursor node, RuleKind kind) {
+        for (var child : children(node)) {
+            if (child.kindIs(kind)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static int count(Cursor root, RuleKind kind) {
+        return findAll(root, kind).size();
+    }
+
+    // ===== Terminals =====
+
+    /// True iff the node is a Leaf whose source text exactly equals `text`.
+    public static boolean isLiteral(Cursor node, String text) {
+        return node instanceof Cursor.Leaf leaf
+            && text.equals(leaf.text().toString());
+    }
+
+    /// Returns the leaf's text, or `none` for non-leaf nodes.
+    public static Option<String> terminalText(Cursor node) {
         return switch (node) {
-            case CstNode.Terminal t -> text.equals(t.text());
-            case CstNode.Token tok -> text.equals(tok.text());
-            case CstNode.NonTerminal nt -> false;
-            case CstNode.Error err -> false;
+            case Cursor.Leaf leaf -> Option.some(leaf.text().toString());
+            case Cursor.Branch _, Cursor.ErrorNode _ -> Option.none();
         };
     }
 
-    /// Get terminal/token text if node is terminal.
-    public static Option<String> terminalText(CstNode node) {
-        return switch (node) {
-            case CstNode.Terminal t -> Option.some(t.text());
-            case CstNode.Token tok -> Option.some(tok.text());
-            case CstNode.NonTerminal nt -> Option.none();
-            case CstNode.Error err -> Option.none();
-        };
+    // ===== Spans =====
+
+    public static int startLine(Cursor node) {
+        return node.startLine();
     }
 
-    /// Count descendants matching a rule type.
-    public static int count(CstNode root, Class<? extends RuleId> ruleClass) {
-        return findAll(root, ruleClass).size();
+    public static int startColumn(Cursor node) {
+        return node.startColumn();
     }
 
-    /// Get start line of a node.
-    public static int startLine(CstNode node) {
-        return node.span()
-                   .start()
-                   .line();
+    // ===== Package =====
+
+    /// Extract the package name from a CompilationUnit root, or `""` if no `package` decl.
+    public static String packageName(Cursor root) {
+        return findFirst(root, RuleKind.PACKAGE_DECL)
+            .flatMap(pd -> findFirst(pd, RuleKind.QUALIFIED_NAME))
+            .map(CstNodes::text)
+            .or("");
     }
 
-    /// Get start column of a node.
-    public static int startColumn(CstNode node) {
-        return node.span()
-                   .start()
-                   .column();
-    }
+    // ===== Member-shape detection =====
 
-    /// Extract package name from a compilation unit root node.
-    public static String packageName(CstNode root, String source) {
-        return findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                        .map(qn -> text(qn, source))
-                        .or("");
-    }
-
-    // --- Ordered-choice wrappers (java-peglib 0.2.1+) ---
-    // TypeKind wraps ClassDecl/InterfaceDecl/EnumDecl/RecordDecl/AnnotationDecl
-    // Member wraps ConstructorDecl/TypeKind/MethodDecl/FieldDecl
-
-    /// Check if node has a direct child matching a rule type.
-    public static boolean hasChildOfRule(CstNode node, Class<? extends RuleId> ruleClass) {
-        return children(node).stream()
-                             .anyMatch(child -> isRule(child, ruleClass));
-    }
-
-    /// Check if a Member node represents a method declaration.
-    /// Methods have: [TypeParams?] Type Identifier '(' ...
-    public static boolean isMethodMember(CstNode node) {
-        if (!isRule(node, RuleId.Member.class)) {
+    /// True for a `Member` node that represents a method declaration. Under v6, the
+    /// Member node wraps a single `MethodDecl` child (or `ConstructorDecl`, `FieldDecl`,
+    /// `TypeKind`). A method member is one whose first child is `MethodDecl`.
+    public static boolean isMethodMember(Cursor node) {
+        if (!node.kindIs(RuleKind.MEMBER)) {
             return false;
         }
-
-        var kids = children(node);
-
-        return kids.size() >= 4
-               && hasChildOfRule(node, RuleId.Type.class)
-               && hasChildOfRule(node, RuleId.Identifier.class)
-               && kids.stream().anyMatch(k -> isLiteral(k, "("));
+        return hasChildOfRule(node, RuleKind.METHOD_DECL);
     }
 
-    /// Find all method-like Member nodes.
-    public static List<CstNode> findAllMethods(CstNode root) {
-        return findAll(root, RuleId.Member.class).stream()
-                      .filter(CstNodes::isMethodMember)
-                      .toList();
+    public static List<Cursor> findAllMethods(Cursor root) {
+        return findAll(root, RuleKind.MEMBER).stream()
+            .filter(CstNodes::isMethodMember)
+            .toList();
     }
 
-    /// Find first method-like Member node.
-    public static Option<CstNode> findFirstMethod(CstNode root) {
-        return findFirst(root, node -> isRule(node, RuleId.Member.class) && isMethodMember(node));
+    /// Return the `Type` (return-type) node for a method member. Walks
+    /// MEMBER → METHOD_DECL → TYPE.
+    public static Option<Cursor> methodReturnType(Cursor methodMember) {
+        return childByRule(methodMember, RuleKind.METHOD_DECL)
+            .flatMap(md -> childByRule(md, RuleKind.TYPE));
     }
 
-    /// Check if node contains a method Member descendant.
-    public static boolean containsMethod(CstNode root) {
+    /// Return the `Params` node for a method member, if any.
+    /// Walks MEMBER → METHOD_DECL → PARAMS.
+    public static Option<Cursor> methodParams(Cursor methodMember) {
+        return childByRule(methodMember, RuleKind.METHOD_DECL)
+            .flatMap(md -> childByRule(md, RuleKind.PARAMS));
+    }
+
+    /// Return the `Block` body of a method member, if any.
+    /// Walks MEMBER → METHOD_DECL → BLOCK.
+    public static Option<Cursor> methodBody(Cursor methodMember) {
+        return childByRule(methodMember, RuleKind.METHOD_DECL)
+            .flatMap(md -> childByRule(md, RuleKind.BLOCK));
+    }
+
+    /// Return the `Throws` clause of a method member, if any.
+    /// Walks MEMBER → METHOD_DECL → THROWS.
+    public static Option<Cursor> methodThrows(Cursor methodMember) {
+        return childByRule(methodMember, RuleKind.METHOD_DECL)
+            .flatMap(md -> childByRule(md, RuleKind.THROWS));
+    }
+
+    public static Option<Cursor> findFirstMethod(Cursor root) {
+        return findFirst(root, node -> node.kindIs(RuleKind.MEMBER) && isMethodMember(node));
+    }
+
+    public static boolean containsMethod(Cursor root) {
         return findFirstMethod(root).isPresent();
     }
 
-    /// Count method Member descendants.
-    public static int countMethods(CstNode root) {
+    public static int countMethods(Cursor root) {
         return findAllMethods(root).size();
     }
 
-    /// Find all class TypeKind nodes (containing ClassKW).
-    public static List<CstNode> findAllClasses(CstNode root) {
-        return findAll(root, RuleId.TypeKind.class).stream()
-                      .filter(tk -> hasChildOfRule(tk, RuleId.ClassKW.class))
-                      .toList();
+    // ===== Class / interface / record / enum =====
+
+    /// All class TypeKind nodes. Distinguishes ClassDecl from InterfaceDecl/EnumDecl/etc. via
+    /// the TypeKind's first child kind (ClassDecl in this case).
+    public static List<Cursor> findAllClasses(Cursor root) {
+        return findAll(root, RuleKind.TYPE_KIND).stream()
+            .filter(tk -> hasChildOfRule(tk, RuleKind.CLASS_DECL))
+            .toList();
     }
 
-    /// Find first class TypeKind node.
-    public static Option<CstNode> findFirstClass(CstNode root) {
-        return findFirst(root, node -> isRule(node, RuleId.TypeKind.class) && hasChildOfRule(node, RuleId.ClassKW.class));
+    public static Option<Cursor> findFirstClass(Cursor root) {
+        return findFirst(root, n -> n.kindIs(RuleKind.TYPE_KIND) && hasChildOfRule(n, RuleKind.CLASS_DECL));
     }
 
-    /// Check if node contains a class TypeKind descendant.
-    public static boolean containsClass(CstNode root) {
+    public static boolean containsClass(Cursor root) {
         return findFirstClass(root).isPresent();
     }
 
-    /// Find all interface TypeKind nodes (containing InterfaceKW).
-    public static List<CstNode> findAllInterfaces(CstNode root) {
-        return findAll(root, RuleId.TypeKind.class).stream()
-                      .filter(tk -> hasChildOfRule(tk, RuleId.InterfaceKW.class))
-                      .toList();
+    public static List<Cursor> findAllInterfaces(Cursor root) {
+        return findAll(root, RuleKind.TYPE_KIND).stream()
+            .filter(tk -> hasChildOfRule(tk, RuleKind.INTERFACE_DECL))
+            .toList();
     }
 
-    /// Find first interface TypeKind node.
-    public static Option<CstNode> findFirstInterface(CstNode root) {
-        return findFirst(root, node -> isRule(node, RuleId.TypeKind.class) && hasChildOfRule(node, RuleId.InterfaceKW.class));
+    public static Option<Cursor> findFirstInterface(Cursor root) {
+        return findFirst(root, n -> n.kindIs(RuleKind.TYPE_KIND) && hasChildOfRule(n, RuleKind.INTERFACE_DECL));
     }
 
-    /// Check if node contains an interface TypeKind descendant.
-    public static boolean containsInterface(CstNode root) {
+    public static boolean containsInterface(Cursor root) {
         return findFirstInterface(root).isPresent();
     }
 
-    /// Find all record TypeKind nodes (containing RecordKW).
-    public static List<CstNode> findAllRecords(CstNode root) {
-        return findAll(root, RuleId.TypeKind.class).stream()
-                      .filter(tk -> hasChildOfRule(tk, RuleId.RecordKW.class))
-                      .toList();
+    public static List<Cursor> findAllRecords(Cursor root) {
+        return findAll(root, RuleKind.TYPE_KIND).stream()
+            .filter(tk -> hasChildOfRule(tk, RuleKind.RECORD_DECL))
+            .toList();
     }
 
-    /// Find first record TypeKind node.
-    public static Option<CstNode> findFirstRecord(CstNode root) {
-        return findFirst(root, node -> isRule(node, RuleId.TypeKind.class) && hasChildOfRule(node, RuleId.RecordKW.class));
+    public static Option<Cursor> findFirstRecord(Cursor root) {
+        return findFirst(root, n -> n.kindIs(RuleKind.TYPE_KIND) && hasChildOfRule(n, RuleKind.RECORD_DECL));
     }
 
-    /// Find all enum TypeKind nodes (containing EnumKW).
-    public static List<CstNode> findAllEnums(CstNode root) {
-        return findAll(root, RuleId.TypeKind.class).stream()
-                      .filter(tk -> hasChildOfRule(tk, RuleId.EnumKW.class))
-                      .toList();
+    public static List<Cursor> findAllEnums(Cursor root) {
+        return findAll(root, RuleKind.TYPE_KIND).stream()
+            .filter(tk -> hasChildOfRule(tk, RuleKind.ENUM_DECL))
+            .toList();
     }
 
-    // --- BlockStmt wraps Stmt (ordered choice: LocalVar / LocalTypeDecl / Stmt) ---
+    // ===== Statements / lambdas =====
 
-    /// Find all statement-like BlockStmt nodes (Stmt alternatives are now wrapped in BlockStmt).
-    public static List<CstNode> findAllStatements(CstNode root) {
-        return findAll(root, RuleId.BlockStmt.class);
+    public static List<Cursor> findAllStatements(Cursor root) {
+        return findAll(root, RuleKind.BLOCK_STMT);
     }
 
-    // --- Primary wraps Lambda (ordered choice) ---
-
-    /// Check if a Primary node represents a lambda expression.
-    /// Lambdas have a LambdaParams child.
-    public static boolean isLambdaPrimary(CstNode node) {
-        if (!isRule(node, RuleId.Primary.class)) {
+    /// True for a `Primary` node that represents a lambda expression. Under v6 the lambda
+    /// shape is `Primary > Lambda > [LambdaParams, (Block | Expr)]`, so we check whether
+    /// the Primary has a `Lambda` child (or, defensively, a `LambdaParams` direct child).
+    public static boolean isLambdaPrimary(Cursor node) {
+        if (!node.kindIs(RuleKind.PRIMARY)) {
             return false;
         }
-
-        return hasChildOfRule(node, RuleId.LambdaParams.class);
+        return hasChildOfRule(node, RuleKind.LAMBDA) || hasChildOfRule(node, RuleKind.LAMBDA_PARAMS);
     }
 
-    /// Find all lambda-like Primary nodes.
-    public static List<CstNode> findAllLambdas(CstNode root) {
-        return findAll(root, RuleId.Primary.class).stream()
-                      .filter(CstNodes::isLambdaPrimary)
-                      .toList();
+    /// Returns LAMBDA nodes (not Primary wrappers) so that direct-child lookups on lambda
+    /// internals (`LAMBDA_PARAMS`, `BLOCK`/`EXPR` body) work.
+    public static List<Cursor> findAllLambdas(Cursor root) {
+        return findAll(root, RuleKind.LAMBDA);
     }
 }

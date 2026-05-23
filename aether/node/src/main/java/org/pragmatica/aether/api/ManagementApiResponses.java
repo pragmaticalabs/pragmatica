@@ -11,11 +11,11 @@ import java.util.Map;
 
 
 public sealed interface ManagementApiResponses {
-    record unused() implements ManagementApiResponses{}
+    record unused() implements ManagementApiResponses {}
 
-    record SuccessResponse(String status){}
+    record SuccessResponse(String status) {}
 
-    record ErrorResponse(String error){}
+    record ErrorResponse(String error) {}
 
     record StatusResponse(long uptimeSeconds,
                           ClusterInfo cluster,
@@ -23,22 +23,23 @@ public sealed interface ManagementApiResponses {
                           MetricsSummary metrics,
                           String nodeId,
                           String status,
+                          String runtimeState,
                           String lifecycleState,
                           String clusterPhase,
                           boolean isLeader,
                           String leader,
                           String buildTimestamp,
-                          String buildVersion){}
+                          String buildVersion) {}
 
-    record ClusterInfo(int nodeCount, String leaderId, boolean quorate, List<NodeInfo> nodes){}
+    record ClusterInfo(int nodeCount, String leaderId, boolean quorate, List<NodeInfo> nodes) {}
 
-    record NodeInfo(String id, boolean isLeader, String lifecycleState){}
+    record NodeInfo(String id, boolean isLeader, String kvState, String derivedStatus) {}
 
-    record MetricsSummary(double requestsPerSecond, double successRate, double avgLatencyMs){}
+    record MetricsSummary(double requestsPerSecond, double successRate, double avgLatencyMs) {}
 
-    record NodesResponse(List<EnrichedNodeInfo> nodes){}
+    record NodesResponse(List<EnrichedNodeInfo> nodes) {}
 
-    record EnrichedNodeInfo(String nodeId, String role, boolean isLeader){}
+    record EnrichedNodeInfo(String nodeId, String role, boolean isLeader) {}
 
     record HealthResponse(String status,
                           boolean ready,
@@ -47,82 +48,81 @@ public sealed interface ManagementApiResponses {
                           int connectedPeers,
                           int metricsNodeCount,
                           int sliceCount,
-                          String buildTimestamp){}
+                          String buildTimestamp) {}
 
-    record LivenessResponse(String status, String nodeId, String state, boolean ready){}
+    record LivenessResponse(String status, String nodeId, String state, boolean ready) {}
+
+    record WhoamiResponse(String principal, String authorizationRole, List<String> roles, boolean authenticated) {}
 
     record ReadinessResponse(String status,
                              String nodeId,
                              String state,
                              boolean ready,
-                             List<ComponentHealth> components){}
+                             List<ComponentHealth> components) {}
 
-    record ComponentHealth(String name, String status, String detail){}
+    record ComponentHealth(String name, String status, String detail) {}
 
-    record CertificateStatusResponse(String expiresAt,
+    /// Wire shape for `GET /api/certificates`. `tlsEnabled` reflects the node's runtime
+    /// TLS posture (the app HTTP server is bound with TLS when `AetherNodeConfig.tls()`
+    /// is present). The remaining four fields describe the active cert when a
+    /// `CertificateRenewalScheduler` is wired; with TLS off they are placeholders
+    /// (`"N/A"` / `0` / `"NOT_CONFIGURED"`) so integration tooling can rely on
+    /// `tlsEnabled` alone as the authoritative active-TLS signal.
+    /// See `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2.
+    record CertificateStatusResponse(boolean tlsEnabled,
+                                     String expiresAt,
                                      long secondsUntilExpiry,
                                      String lastRenewalAt,
-                                     String renewalStatus){}
+                                     String renewalStatus) {}
 
-    record SlicesResponse(List<String> slices){}
+    record SlicesResponse(List<String> slices) {}
 
-    record ClusterSlicesResponse(List<ClusterSliceInfo> slices){}
+    record ClusterSlicesResponse(List<ClusterSliceInfo> slices) {}
 
     record ClusterSliceInfo(String artifact,
                             int targetInstances,
                             int minInstances,
                             String version,
-                            List<ClusterSliceInstance> instances){}
+                            List<ClusterSliceInstance> instances) {}
 
-    record ClusterSliceInstance(String nodeId, String state, String failureReason){}
+    record ClusterSliceInstance(String nodeId, String state, String failureReason) {}
 
-    record SlicesStatusResponse(List<SliceStatus> slices){}
+    record SlicesStatusResponse(List<SliceStatus> slices) {}
 
-    record SliceStatus(String artifact, String state, List<SliceInstanceInfo> instances){}
+    record SliceStatus(String artifact, String state, List<SliceInstanceInfo> instances) {}
 
-    record SliceInstanceInfo(String nodeId, String state, String health){}
+    record SliceInstanceInfo(String nodeId, String state, String health) {}
 
-    record RoutesResponse(List<RouteInfo> routes){}
+    record RoutesResponse(List<RouteInfo> routes) {}
 
-    record RouteInfo(String method, String path, List<String> nodes, String security){}
+    record RouteInfo(String method, String path, List<String> nodes, String security) {}
 
-    record ScaleResponse(String status, String artifact, int instances){}
+    record ScaleResponse(String status, String artifact, int instances) {}
 
-    record BlueprintResponse(String status, String blueprint, int slices){}
+    record BlueprintResponse(String status, String blueprint, int slices) {}
 
-    record BlueprintListResponse(List<BlueprintSummary> blueprints){}
+    record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
 
-    record BlueprintSummary(String id, int sliceCount){}
+    record BlueprintSummary(String id, int sliceCount) {}
 
-    record BlueprintDetailResponse(String id, List<BlueprintSliceInfo> slices, List<String> dependencies){}
+    record BlueprintDetailResponse(String id, List<BlueprintSliceInfo> slices, List<String> dependencies) {}
 
-    record BlueprintSliceInfo(String artifact, int instances, boolean isDependency, List<String> dependencies){}
+    record BlueprintSliceInfo(String artifact, int instances, boolean isDependency, List<String> dependencies) {}
 
-    record BlueprintStatusResponse(String id, String overallStatus, List<BlueprintSliceStatus> slices){}
+    record BlueprintStatusResponse(String id, String overallStatus, List<BlueprintSliceStatus> slices) {}
 
-    record BlueprintSliceStatus(String artifact, int targetInstances, int activeInstances, String status){}
+    record BlueprintSliceStatus(String artifact, int targetInstances, int activeInstances, String status) {}
 
-    record BlueprintDeleteResponse(String status, String id){}
+    record BlueprintDeleteResponse(String status, String id) {}
 
-    /// Spec §15.1.2: structured failure transport. `errors` is the canonical shape used by
-    /// `/api/blueprint/validate` and `/api/blueprint/deploy` — each entry is a `field` (offending
-    /// TOML section or coord), a stable `rule` tag, and a human-readable `message`. `warnings`
-    /// follows the same shape and is non-blocking. `legacyErrors` preserves the prior flat
-    /// `List<String>` body for clients that haven't migrated yet (deprecated; will be removed
-    /// after RC1).
     record BlueprintValidationResponse(boolean valid,
                                        String id,
                                        int sliceCount,
-                                       List<ValidationFailureInfo> errors,
-                                       List<ValidationWarningInfo> warnings,
-                                       List<String> legacyErrors){}
-
-    record ValidationFailureInfo(String field, String rule, String message){}
-
-    record ValidationWarningInfo(String field, String rule, String message){}
+                                       List<String> errors,
+                                       List<String> warnings) {}
 
     record MetricsFullResponse(Map<String, Map<String, Double>> load,
-                               Map<String, List<DeploymentMetrics>> deployments){}
+                               Map<String, List<DeploymentMetrics>> deployments) {}
 
     record DeploymentMetrics(String nodeId,
                              String status,
@@ -130,7 +130,7 @@ public sealed interface ManagementApiResponses {
                              long netDeploymentMs,
                              Map<String, Long> transitions,
                              long startTime,
-                             long activeTime){}
+                             long activeTime) {}
 
     record ComprehensiveMetricsResponse(long minuteTimestamp,
                                         double avgCpuUsage,
@@ -144,7 +144,7 @@ public sealed interface ManagementApiResponses {
                                         double latencyP99,
                                         double errorRate,
                                         long eventCount,
-                                        long sampleCount){}
+                                        long sampleCount) {}
 
     record DerivedMetricsResponse(double requestRate,
                                   double errorRate,
@@ -159,20 +159,62 @@ public sealed interface ManagementApiResponses {
                                   double errorTrend,
                                   double healthScore,
                                   boolean stressed,
-                                  boolean hasCapacity){}
+                                  boolean hasCapacity) {}
 
-    record NodeMetricsResponse(List<NodeMetric> metrics){}
+    record NodeMetricsResponse(List<NodeMetric> metrics) {}
 
-    record NodeMetric(String nodeId, double cpuUsage, long heapUsedMb, long heapMaxMb){}
+    record NodeMetric(String nodeId, double cpuUsage, long heapUsedMb, long heapMaxMb) {}
 
     record ArtifactMetricsResponse(int artifactCount,
                                    int chunkCount,
                                    long memoryBytes,
                                    String memoryMB,
                                    int deployedCount,
-                                   List<String> deployedArtifacts){}
+                                   List<String> deployedArtifacts) {}
 
-    record InvocationMetricsResponse(List<InvocationSnapshot> snapshots){}
+    /// Wire shape for `GET /api/metrics/timeouts` (P-NEW-A, 2026-05-21).
+    /// Maps each `TimeoutSubsystem` (14 entries mirroring `TimeoutsConfig`'s
+    /// nested records) to its cumulative timeout-fired count for the life of
+    /// the node process. Counters are LongAdder-backed and never reset.
+    /// Subsystems with zero fires are still emitted (presence guarantee
+    /// simplifies integration-test assertions on shape).
+    /// See `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-A
+    /// and TC-07-G3-timeouts-config.
+    record TimeoutMetricsResponse(Map<String, SubsystemTimeoutCount> subsystems) {}
+
+    record SubsystemTimeoutCount(long firedCount) {}
+
+    /// Request shape for `POST /api/metrics/backfill` (P-NEW-D, 2026-05-21;
+    /// dev-mode-only). Seeds synthetic historical-metric samples into the
+    /// local node's `ClusterSyncCollector` ring buffer so TC-11-H1
+    /// (historical-metrics range queries: 5m/15m/1h/2h) can assert
+    /// deterministically without waiting hours for the sliding window to
+    /// accumulate organically. Fields:
+    /// - `metric` — metric key written into each synthetic snapshot's map
+    ///   (e.g. `cpu.usage`); MUST be non-blank.
+    /// - `startTimeMs` / `endTimeMs` — inclusive epoch-millis window;
+    ///   `startTimeMs < endTimeMs` required.
+    /// - `intervalMs` — spacing between successive samples; MUST be > 0.
+    /// - `valueFn` — synthetic-value generator: one of
+    ///   `"constant:<double>"` (e.g. `constant:42.5`), `"linear"` (0..1
+    ///   ramp across the window), `"sine"` (0.5+0.5·sin(2π·t/window)).
+    ///   Unknown values fall back to constant 0.0.
+    /// Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
+    /// `/api/scheduled-tasks/inject` and `/api/alerts/inject`.
+    record BackfillMetricsRequest(String metric,
+                                  long startTimeMs,
+                                  long endTimeMs,
+                                  long intervalMs,
+                                  String valueFn) {}
+
+    /// Response shape for `POST /api/metrics/backfill`. `samplesWritten` is
+    /// the number of synthetic snapshots appended to the ring buffer for the
+    /// local node; `nodeId` identifies which node received the backfill (the
+    /// route is `LOCAL`, so this is always the entry-point node). Tests can
+    /// assert `samplesWritten == floor((endTimeMs - startTimeMs) / intervalMs) + 1`.
+    record BackfillMetricsResponse(String nodeId, String metric, long samplesWritten, long startTimeMs, long endTimeMs) {}
+
+    record InvocationMetricsResponse(List<InvocationSnapshot> snapshots) {}
 
     record InvocationSnapshot(String artifact,
                               String method,
@@ -183,9 +225,9 @@ public sealed interface ManagementApiResponses {
                               long p50DurationNs,
                               long p95DurationNs,
                               double avgDurationMs,
-                              int slowInvocations){}
+                              int slowInvocations) {}
 
-    record SlowInvocationsResponse(List<SlowInvocation> slowInvocations){}
+    record SlowInvocationsResponse(List<SlowInvocation> slowInvocations) {}
 
     record SlowInvocation(String artifact,
                           String method,
@@ -193,40 +235,98 @@ public sealed interface ManagementApiResponses {
                           double durationMs,
                           long timestampNs,
                           boolean success,
-                          Option<String> error){}
+                          Option<String> error) {}
 
     sealed interface StrategyResponse {
-        record Fixed(String type, long thresholdMs) implements StrategyResponse{}
+        record Fixed(String type, long thresholdMs) implements StrategyResponse {}
 
-        record Adaptive(String type, long minMs, long maxMs, double multiplier) implements StrategyResponse{}
+        record Adaptive(String type, long minMs, long maxMs, double multiplier) implements StrategyResponse {}
 
-        record PerMethod(String type, long defaultMs) implements StrategyResponse{}
+        record PerMethod(String type, long defaultMs) implements StrategyResponse {}
 
-        record Composite(String type) implements StrategyResponse{}
+        record Composite(String type) implements StrategyResponse {}
     }
 
-    record ThresholdSetResponse(String status, String metric, double warning, double critical){}
+    record ThresholdSetResponse(String status, String metric, double warning, double critical) {}
 
-    record ThresholdRemovedResponse(String status, String metric){}
+    record ThresholdRemovedResponse(String status, String metric) {}
 
-    record AlertsClearedResponse(String status){}
+    record AlertsClearedResponse(String status) {}
 
-    record AlertsResponse(Object active, Object history){}
+    record AlertsResponse(List<AlertManager.AlertView> active, List<AlertManager.AlertHistoryView> history) {}
 
-    record AlertInjectResponse(String alertId, String name, String severity, String message, long timestamp){}
+    record AlertInjectResponse(String alertId, String name, String severity, String message, long timestamp) {}
 
     record TraceInjectResponse(String traceId,
                                String requestId,
                                String operation,
                                long durationMs,
                                int depth,
-                               String timestamp){}
+                               String timestamp) {}
 
-    record LogLevelSetResponse(String status, String logger, String level){}
+    /// Request shape for `POST /api/scheduled-tasks/inject` (dev-mode only).
+    /// Identifies the task to fire by the same `(configSection, artifact, method)` triple
+    /// used by `/api/scheduled-tasks/state/...` and `/api/scheduled-tasks/pause/...`.
+    /// See `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2 item 16.
+    record ScheduledTaskInjectRequest(String section, String artifact, String method) {}
 
-    record LogLevelResetResponse(String status, String logger){}
+    /// Response shape for `POST /api/scheduled-tasks/inject`. Surfaces the prior and
+    /// freshly-stamped `lastExecutionAt` values so integration tests can assert strict
+    /// monotonic advancement without relying on the warn-then-pass demotion the route
+    /// was designed to replace. `previousExecutionMs == 0` when the task had no prior
+    /// state entry; `currentExecutionMs` is always `> previousExecutionMs` on success.
+    record ScheduledTaskInjectResponse(String section,
+                                       String artifact,
+                                       String method,
+                                       long previousExecutionMs,
+                                       long currentExecutionMs) {}
 
-    record ControllerStatusResponse(boolean enabled, long evaluationIntervalMs, Object config){}
+    /// Wire shape for `GET /api/scheduled-tasks/executions-by-node` (P-NEW-H, 2026-05-21).
+    /// Surfaces per-node execution attribution for a scheduled task identified by the
+    /// `(section, artifact, method)` triple. Each entry pairs a `nodeId` with the number
+    /// of executions attributed to it and the millisecond epoch of the most recent
+    /// execution. Tests for SINGLE-mode tasks assert exactly one entry has a non-zero
+    /// `count`; ALL-mode tests assert every cluster member appears with `count > 0`.
+    ///
+    /// Sourced from `ScheduledTaskStateRegistry` — RC1 tracks task state globally rather
+    /// than per-node, so the current implementation reports the task's `registeredBy`
+    /// node as the sole executor. A follow-up issue tracks adding per-node execution
+    /// counters to the KV state so this endpoint can produce true per-node breakdowns.
+    /// See `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-H.
+    record ScheduledTaskExecutionsByNodeResponse(String section,
+                                                  String artifact,
+                                                  String method,
+                                                  List<ScheduledTaskNodeExecution> executions) {}
+
+    record ScheduledTaskNodeExecution(String nodeId, int count, long lastExecutionMs) {}
+
+    /// Request shape for `POST /api/certificates/configure-short-validity` (P-NEW-I,
+    /// 2026-05-21; dev-mode-only). Configures the `CertificateRenewalScheduler` to
+    /// behave as though the active certificate has only `validitySeconds` of remaining
+    /// validity, causing the next renewal Tick to fire promptly (40% of remaining =
+    /// 24s for `validitySeconds=60`). Enables `Strengthen-cert-rotation-trigger`
+    /// to observe an automatic rotation without waiting hours.
+    ///
+    /// Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
+    /// `/api/alerts/inject`, `/api/scheduled-tasks/inject`, `/api/dht/inject`,
+    /// `/api/metrics/backfill`. Local-only route (no leader forwarding) — tests POST
+    /// directly to the node whose scheduler they wish to mutate.
+    record CertConfigureShortValidityRequest(int validitySeconds) {}
+
+    /// Response shape for `POST /api/certificates/configure-short-validity`.
+    /// `newExpiresAt` is the ISO-8601 expiry timestamp the scheduler now sees;
+    /// `secondsUntilExpiry` is the post-configuration delta. The scheduler advances
+    /// to its `Renewing` state on the next Tick (40% of `validitySeconds` later).
+    record CertConfigureShortValidityResponse(String status,
+                                               int validitySeconds,
+                                               String newExpiresAt,
+                                               long secondsUntilExpiry) {}
+
+    record LogLevelSetResponse(String status, String logger, String level) {}
+
+    record LogLevelResetResponse(String status, String logger) {}
+
+    record ControllerStatusResponse(boolean enabled, long evaluationIntervalMs, Object config) {}
 
     record TtmStatusResponse(boolean enabled,
                              boolean active,
@@ -236,15 +336,15 @@ public sealed interface ManagementApiResponses {
                              long evaluationIntervalMs,
                              double confidenceThreshold,
                              boolean hasForecast,
-                             Option<TtmForecast> lastForecast){}
+                             Option<TtmForecast> lastForecast) {}
 
-    record TtmForecast(long timestamp, double confidence, String recommendation){}
+    record TtmForecast(long timestamp, double confidence, String recommendation) {}
 
-    record ControllerConfigUpdatedResponse(String status, Object config){}
+    record ControllerConfigUpdatedResponse(String status, Object config) {}
 
-    record EvaluationTriggeredResponse(String status){}
+    record EvaluationTriggeredResponse(String status) {}
 
-    record RollingUpdatesResponse(List<RollingUpdateInfo> updates){}
+    record RollingUpdatesResponse(List<RollingUpdateInfo> updates) {}
 
     record RollingUpdateInfo(String updateId,
                              String artifactBase,
@@ -254,18 +354,18 @@ public sealed interface ManagementApiResponses {
                              String routing,
                              int newInstances,
                              long createdAt,
-                             long updatedAt){}
+                             long updatedAt) {}
 
     record RollingUpdateHealthResponse(String updateId,
                                        VersionHealth oldVersion,
                                        VersionHealth newVersion,
-                                       long collectedAt){}
+                                       long collectedAt) {}
 
-    record VersionHealth(String version, long requestCount, double errorRate, double avgLatencyMs){}
+    record VersionHealth(String version, long requestCount, double errorRate, double avgLatencyMs) {}
 
-    record RollingUpdateErrorResponse(String error, String updateId){}
+    record RollingUpdateErrorResponse(String error, String updateId) {}
 
-    record CanaryListResponse(List<CanaryInfo> canaries){}
+    record CanaryListResponse(List<CanaryInfo> canaries) {}
 
     record CanaryInfo(String canaryId,
                       String artifactBase,
@@ -277,17 +377,17 @@ public sealed interface ManagementApiResponses {
                       int totalStages,
                       int newInstances,
                       long createdAt,
-                      long updatedAt){}
+                      long updatedAt) {}
 
     record CanaryHealthResponse(String canaryId,
                                 String verdict,
                                 CanaryVersionHealth baseline,
                                 CanaryVersionHealth canary,
-                                long collectedAt){}
+                                long collectedAt) {}
 
-    record CanaryVersionHealth(String version, long requestCount, double errorRate, long p99LatencyMs){}
+    record CanaryVersionHealth(String version, long requestCount, double errorRate, long p99LatencyMs) {}
 
-    record BlueGreenListResponse(List<BlueGreenInfo> deployments){}
+    record BlueGreenListResponse(List<BlueGreenInfo> deployments) {}
 
     record BlueGreenInfo(String deploymentId,
                          String artifactBase,
@@ -299,9 +399,9 @@ public sealed interface ManagementApiResponses {
                          int blueInstances,
                          int greenInstances,
                          long createdAt,
-                         long updatedAt){}
+                         long updatedAt) {}
 
-    record AbTestListResponse(List<AbTestInfo> tests){}
+    record AbTestListResponse(List<AbTestInfo> tests) {}
 
     record AbTestInfo(String testId,
                       String artifactBase,
@@ -309,25 +409,35 @@ public sealed interface ManagementApiResponses {
                       String state,
                       int variantCount,
                       long createdAt,
-                      long updatedAt){}
+                      long updatedAt) {}
 
-    record AbTestMetricsResponse(String testId, Map<String, AbTestVariantMetrics> variants, long collectedAt){}
+    record AbTestMetricsResponse(String testId, Map<String, AbTestVariantMetrics> variants, long collectedAt) {}
 
     record AbTestVariantMetrics(String variant,
                                 String version,
                                 long requestCount,
                                 double errorRate,
-                                long avgLatencyMs){}
+                                long avgLatencyMs) {}
 
-    record ConfigSetResponse(String status, String key, String value){}
+    record ConfigSetResponse(String status, String key, String value) {}
 
-    record ConfigRemovedResponse(String status, String key){}
+    record ConfigRemovedResponse(String status, String key) {}
 
-    record TopologyResponse(List<TopologyNodeInfo> nodes, List<TopologyEdgeInfo> edges){}
+    record TopologyResponse(List<TopologyNodeInfo> nodes, List<TopologyEdgeInfo> edges) {}
 
-    record TopologyNodeInfo(String id, String type, String label, String sliceArtifact){}
+    /// Wire shape for `GET /api/slices/{id}/config` (Batch 4 of the hierarchical-config
+    /// refactor, 2026-05-21). Returns the effective configuration view for a loaded slice,
+    /// with per-key attribution of which layer of the slice-composite
+    /// (`slice.toml ⊕ KV-overlay ⊕ node.toml`) produced the resolved value. `source` is
+    /// one of `"KV"`, `"node.toml"`, `"slice.toml"` (see [LayeredConfigProvider#sourceOf]).
+    /// `entries` is sorted alphabetically by `key` for deterministic output.
+    record SliceConfigResponse(String sliceId, List<SliceConfigEntry> entries) {}
 
-    record TopologyEdgeInfo(String from, String to, String style, String topicConfig){}
+    record SliceConfigEntry(String key, String value, String source) {}
+
+    record TopologyNodeInfo(String id, String type, String label, String sliceArtifact) {}
+
+    record TopologyEdgeInfo(String from, String to, String style, String topicConfig) {}
 
     record ClusterTopologyStatusResponse(int coreCount,
                                          int coreMax,
@@ -338,9 +448,9 @@ public sealed interface ManagementApiResponses {
                                          int connectedPeerCount,
                                          List<TopologyNodeDetail> nodeDetails,
                                          Option<String> epoch,
-                                         String mode){}
+                                         String mode) {}
 
-    record TopologyNodeDetail(String nodeId, String role, String health, String hostname, String zone, String address){}
+    record TopologyNodeDetail(String nodeId, String role, String health, String hostname, String zone, String address) {}
 
     record ClusterGenerationResponse(Option<EpochInfo> epoch,
                                      long rabiaTerm,
@@ -349,11 +459,11 @@ public sealed interface ManagementApiResponses {
                                      String quiescenceDetail,
                                      ClusterGenerationCore core,
                                      List<ClusterGenerationCommunity> communities,
-                                     List<ClusterGenerationPartition> partitions){}
+                                     List<ClusterGenerationPartition> partitions) {}
 
-    record EpochInfo(long rabiaTerm, long localCounter){}
+    record EpochInfo(long rabiaTerm, long localCounter) {}
 
-    record ClusterGenerationCore(int desiredSize, List<ClusterGenerationMember> members){}
+    record ClusterGenerationCore(int desiredSize, List<ClusterGenerationMember> members) {}
 
     record ClusterGenerationMember(String nodeId,
                                    String host,
@@ -361,7 +471,7 @@ public sealed interface ManagementApiResponses {
                                    String lifecycle,
                                    String healthHint,
                                    EpochInfo joinedEpoch,
-                                   EpochInfo lastSeenEpoch){}
+                                   EpochInfo lastSeenEpoch) {}
 
     record ClusterGenerationCommunity(String communityId,
                                       String governorNodeId,
@@ -372,29 +482,29 @@ public sealed interface ManagementApiResponses {
                                       List<String> partitions,
                                       EpochInfo lastAckAtCore,
                                       String quiescence,
-                                      String quiescenceDetail){}
+                                      String quiescenceDetail) {}
 
-    record ClusterGenerationHealth(int healthy, int suspected, int faulty){}
+    record ClusterGenerationHealth(int healthy, int suspected, int faulty) {}
 
     record ClusterGenerationPartition(String partitionId,
                                       String ownerNodeId,
                                       String ownerCommunityId,
                                       EpochInfo ownerEpoch,
-                                      long ownershipTerm){}
+                                      long ownershipTerm) {}
 
-    record AwaitQuiescedResponse(String epoch, String quiescence, long waitedMs){}
+    record AwaitQuiescedResponse(String epoch, String quiescence, long waitedMs) {}
 
-    record GovernorsResponse(List<GovernorInfo> governors){}
+    record GovernorsResponse(List<GovernorInfo> governors) {}
 
-    record GovernorInfo(String governorId, String community, int memberCount, List<String> members){}
+    record GovernorInfo(String governorId, String community, int memberCount, List<String> members) {}
 
-    record CircuitBreakerStatusResponse(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped){}
+    record CircuitBreakerStatusResponse(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
 
-    record CircuitBreakerResetResponse(String status, int priorFailureCount){}
+    record CircuitBreakerResetResponse(String status, int priorFailureCount) {}
 
-    record AutoHealStatusResponse(boolean enabled){}
+    record AutoHealStatusResponse(boolean enabled) {}
 
-    record AutoHealToggleResponse(boolean enabled, boolean previousState){}
+    record AutoHealToggleResponse(boolean enabled, boolean previousState) {}
 
     record ClusterConfigResponse(String tomlContent,
                                  String clusterName,
@@ -404,9 +514,9 @@ public sealed interface ManagementApiResponses {
                                  int coreMax,
                                  String deploymentType,
                                  long configVersion,
-                                 long updatedAt){}
+                                 long updatedAt) {}
 
-    record LoadBalancerStatusInfo(String type, String nodeId, String appEndpoint, String mgmtEndpoint){}
+    record LoadBalancerStatusInfo(String type, String nodeId, String appEndpoint, String mgmtEndpoint) {}
 
     record ClusterStatusResponse(String clusterName,
                                  String desiredVersion,
@@ -421,28 +531,33 @@ public sealed interface ManagementApiResponses {
                                  long certificateDaysRemaining,
                                  long configVersion,
                                  long uptimeSeconds,
-                                 Option<LoadBalancerStatusInfo> loadBalancer){}
+                                 Option<LoadBalancerStatusInfo> loadBalancer) {}
 
-    record ClusterStatusNodeInfo(String nodeId, String role, String lifecycleState, String version, boolean isLeader){}
+    record ClusterStatusNodeInfo(String nodeId,
+                                 String role,
+                                 String kvState,
+                                 String derivedStatus,
+                                 String version,
+                                 boolean isLeader) {}
 
-    record ApplyConfigRequest(String tomlContent, long expectedVersion){}
+    record ApplyConfigRequest(String tomlContent, long expectedVersion) {}
 
-    record ApplyConfigResponse(long configVersion, String clusterName, int coreCount, long updatedAt){}
+    record ApplyConfigResponse(long configVersion, String clusterName, int coreCount, long updatedAt) {}
 
     record DryRunResponse(String clusterName,
                           long fromVersion,
                           long toVersion,
                           List<String> plannedChanges,
                           int changeCount,
-                          int rejectedCount){}
+                          int rejectedCount) {}
 
-    record ScaleRequest(int coreCount, long expectedVersion){}
+    record ScaleRequest(int coreCount, long expectedVersion) {}
 
-    record ScaleClusterResponse(boolean success, int previousCount, int newCount, long configVersion){}
+    record ScaleClusterResponse(boolean success, int previousCount, int newCount, long configVersion) {}
 
-    record UpgradeRequest(String targetVersion){}
+    record UpgradeRequest(String targetVersion) {}
 
-    record UpgradeResponse(String status, String from, String to){}
+    record UpgradeResponse(String status, String from, String to) {}
 
     record ArtifactInfoResponse(String artifact,
                                 long size,
@@ -450,5 +565,91 @@ public sealed interface ManagementApiResponses {
                                 String md5,
                                 String sha1,
                                 long deployedAt,
-                                boolean isDeployed){}
+                                boolean isDeployed) {}
+
+    /// Wire shape for the idempotent artifact PUT response (`PUT /repository/...`).
+    /// `status` is `"uploaded"` on a fresh upload, `"already-present"` when the
+    /// artifact was already in the store (200 OK in both cases). `coords` is the
+    /// canonical `group:artifact:version` triple; `size`/`md5`/`sha1` reflect the
+    /// persisted artifact (recomputed on upload, read from KV metadata on duplicate).
+    /// The record lives here for documentation/test purposes; the actual JSON is
+    /// rendered inline in `MavenProtocolHandlerImpl.renderPushJson` to avoid a
+    /// Jackson dependency at the artifact-repo layer.
+    record ArtifactPushResponse(String status, String coords, long size, String md5, String sha1) {}
+
+    /// Wire shape for `POST /api/dht/inject` (P-NEW-B, RC1, 2026-05-21; dev-mode-only).
+    /// Writes a value into the local DHT storage tier with an operator-supplied HLC
+    /// timestamp, bypassing the regular `DHTClient.put` path that always advances the
+    /// node's clock to `now()`. Enables TC-10-G2 (DHT versioned writes) to set up
+    /// deterministic version-conflict scenarios without racing the live clock.
+    ///
+    /// Fields:
+    /// - `key` — DHT key (UTF-8); MUST be non-blank.
+    /// - `value` — DHT value (UTF-8 string; serialized to bytes on the server).
+    /// - `hlc.physical` — physical-microseconds component of the explicit timestamp.
+    /// - `hlc.logical` — logical-counter component of the explicit timestamp.
+    ///
+    /// Gated by `AETHER_INSECURE_DEV_MODE=true` — same gate pattern as
+    /// `/api/alerts/inject`, `/api/scheduled-tasks/inject`, `/api/metrics/backfill`.
+    /// Local-only route (no leader forwarding) — tests POST directly to the node
+    /// they wish to mutate. See `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-B.
+    record DhtInjectRequest(String key, String value, HlcShape hlc) {}
+
+    /// Compact wire form for an `HlcTimestamp` (physical micros + logical counter),
+    /// shared by `DhtInjectRequest` (input) and `DhtInjectResponse` (output).
+    record HlcShape(long physical, int logical) {}
+
+    /// Response for `POST /api/dht/inject`. `committedHlc` is the HLC actually
+    /// recorded for the write — may be advanced relative to the request when the
+    /// node's local clock had already moved past the supplied timestamp (HLC merge
+    /// rule). `written` is `true` when the storage layer accepted the value as the
+    /// newest version, `false` when a stale-version write was suppressed.
+    record DhtInjectResponse(String key, HlcShape committedHlc, boolean written) {}
+
+    /// Wire shape for `GET /api/dht/replication-map` (P-NEW-F, RC1, 2026-05-21).
+    /// Surfaces the current DHT replication topology — which keys are replicated to
+    /// which nodes under the active replication factor. Operator-facing (no dev-mode
+    /// gate). Optional query parameters: `limit` (max entries, default 100), `prefix`
+    /// (UTF-8 key prefix filter).
+    record DhtReplicationMapResponse(int replicationFactor,
+                                     int totalKeys,
+                                     int returned,
+                                     List<DhtReplicationEntry> entries) {}
+
+    /// Per-key replication mapping. `nodes` is the ordered list of node IDs
+    /// responsible for the key under the active replication factor — index 0 is
+    /// the primary; subsequent entries are replicas walking the consistent-hash
+    /// ring clockwise.
+    record DhtReplicationEntry(String key, List<String> nodes) {}
+
+    /// Request shape for `POST /api/nodes/promote/{id}` (P-NEW-E, 2026-05-21).
+    /// Promotes a single node from its current role to `targetRole`, by writing a
+    /// fresh `ActivationDirectiveValue` under `ActivationDirectiveKey(nodeId)`
+    /// via consensus. The downstream `ClusterDeploymentManager` consumes the
+    /// `ActivationDirectivePutReceived` event and drives the role-aware node
+    /// machinery (`ForwardingClusterNode` / `SwitchableClusterNode`) to align
+    /// runtime behavior to the new role.
+    ///
+    /// Accepted `targetRole` values: `"CORE"` (case-insensitive `"core"`),
+    /// `"WORKER"` (case-insensitive `"worker"`). Any other value yields a
+    /// 400-style validation failure. The CORE → WORKER and WORKER → CORE
+    /// transitions are both supported.
+    ///
+    /// Route target is `LEADER` — the leader is the consensus writer; the
+    /// management plane forwards the request automatically when posted to a
+    /// follower. See `aether/docs/internal/production-readiness-followup-2026-05-21.md`
+    /// P-NEW-E.
+    record PromoteNodeRequest(String targetRole) {}
+
+    /// Response shape for `POST /api/nodes/promote/{id}`. `previousRole` reflects
+    /// the role observed in the KV-Store ActivationDirective at the start of the
+    /// request (`"CORE"` when no directive existed — every joining node defaults
+    /// to CORE until an operator promotes it). `newRole` is the role just
+    /// written. `nodeId` is the target node. `success=true` is returned only
+    /// once the consensus write succeeds.
+    record PromoteNodeResponse(boolean success,
+                                String nodeId,
+                                String previousRole,
+                                String newRole,
+                                String message) {}
 }

@@ -13,6 +13,6 @@ public final class ManagementRoutes {
     private ManagementRoutes() {}
 
     public static <R> ParameterBuilder<R> route(ManagementRoute mr) {
-        return Route.<R>method(mr.method(), mr.prefix(), mr.name());
+        return Route.<R> method(mr.method(), mr.prefix(), mr.name());
     }
 }

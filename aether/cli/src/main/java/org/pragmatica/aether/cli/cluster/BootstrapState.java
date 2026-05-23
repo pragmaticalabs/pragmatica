@@ -13,15 +13,16 @@ import java.util.List;
 import java.util.Map;
 
 
-@SuppressWarnings("JBCT-SEQ-01") public record BootstrapState(String clusterName,
-                                                              String configHash,
-                                                              String startedAt,
-                                                              Map<BootstrapPhase, PhaseStatus> phases,
-                                                              List<CreatedResource> createdResources,
-                                                              List<String> provisionedNodeIds,
-                                                              List<String> collectedAddresses,
-                                                              String clusterSecret,
-                                                              Map<String, SourceCleanupHandle> sources) {
+@SuppressWarnings("JBCT-SEQ-01")
+public record BootstrapState(String clusterName,
+                             String configHash,
+                             String startedAt,
+                             Map<BootstrapPhase, PhaseStatus> phases,
+                             List<CreatedResource> createdResources,
+                             List<String> provisionedNodeIds,
+                             List<String> collectedAddresses,
+                             String clusterSecret,
+                             Map<String, SourceCleanupHandle> sources) {
     public BootstrapState {
         phases = Map.copyOf(phases);
         createdResources = List.copyOf(createdResources);
@@ -30,15 +31,16 @@ import java.util.Map;
         sources = Map.copyOf(sources);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static BootstrapState bootstrapState(String clusterName,
-                                                                                String configHash,
-                                                                                String startedAt,
-                                                                                Map<BootstrapPhase, PhaseStatus> phases,
-                                                                                List<CreatedResource> createdResources,
-                                                                                List<String> provisionedNodeIds,
-                                                                                List<String> collectedAddresses,
-                                                                                String clusterSecret,
-                                                                                Map<String, SourceCleanupHandle> sources) {
+    @SuppressWarnings("JBCT-VO-02")
+    public static BootstrapState bootstrapState(String clusterName,
+                                                String configHash,
+                                                String startedAt,
+                                                Map<BootstrapPhase, PhaseStatus> phases,
+                                                List<CreatedResource> createdResources,
+                                                List<String> provisionedNodeIds,
+                                                List<String> collectedAddresses,
+                                                String clusterSecret,
+                                                Map<String, SourceCleanupHandle> sources) {
         return new BootstrapState(clusterName,
                                   configHash,
                                   startedAt,
@@ -50,14 +52,15 @@ import java.util.Map;
                                   sources);
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static BootstrapState bootstrapState(String clusterName,
-                                                                                String configHash,
-                                                                                String startedAt,
-                                                                                Map<BootstrapPhase, PhaseStatus> phases,
-                                                                                List<CreatedResource> createdResources,
-                                                                                List<String> provisionedNodeIds,
-                                                                                List<String> collectedAddresses,
-                                                                                String clusterSecret) {
+    @SuppressWarnings("JBCT-VO-02")
+    public static BootstrapState bootstrapState(String clusterName,
+                                                String configHash,
+                                                String startedAt,
+                                                Map<BootstrapPhase, PhaseStatus> phases,
+                                                List<CreatedResource> createdResources,
+                                                List<String> provisionedNodeIds,
+                                                List<String> collectedAddresses,
+                                                String clusterSecret) {
         return bootstrapState(clusterName,
                               configHash,
                               startedAt,
@@ -69,13 +72,14 @@ import java.util.Map;
                               Map.of());
     }
 
-    @SuppressWarnings("JBCT-VO-02") public static BootstrapState bootstrapState(String clusterName,
-                                                                                String configHash,
-                                                                                String startedAt,
-                                                                                Map<BootstrapPhase, PhaseStatus> phases,
-                                                                                List<CreatedResource> createdResources,
-                                                                                List<String> provisionedNodeIds,
-                                                                                List<String> collectedAddresses) {
+    @SuppressWarnings("JBCT-VO-02")
+    public static BootstrapState bootstrapState(String clusterName,
+                                                String configHash,
+                                                String startedAt,
+                                                Map<BootstrapPhase, PhaseStatus> phases,
+                                                List<CreatedResource> createdResources,
+                                                List<String> provisionedNodeIds,
+                                                List<String> collectedAddresses) {
         return bootstrapState(clusterName,
                               configHash,
                               startedAt,
@@ -89,13 +93,16 @@ import java.util.Map;
 
     public static BootstrapState initialState(String clusterName, String configHash, String startedAt) {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+
         for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.PENDING);}
+
         return bootstrapState(clusterName, configHash, startedAt, phases, List.of(), List.of(), List.of(), "", Map.of());
     }
 
     public BootstrapState withPhaseStatus(BootstrapPhase phase, PhaseStatus status) {
         var updated = new EnumMap<>(phases);
         updated.put(phase, status);
+
         return bootstrapState(clusterName,
                               configHash,
                               startedAt,
@@ -110,6 +117,7 @@ import java.util.Map;
     public BootstrapState withResource(CreatedResource resource) {
         var updated = new ArrayList<>(createdResources);
         updated.add(resource);
+
         return bootstrapState(clusterName,
                               configHash,
                               startedAt,
@@ -172,6 +180,7 @@ import java.util.Map;
     public BootstrapState withSource(String sourceName, SourceCleanupHandle handle) {
         var merged = new HashMap<String, SourceCleanupHandle>(sources);
         merged.put(sourceName, handle);
+
         return withSources(merged);
     }
 

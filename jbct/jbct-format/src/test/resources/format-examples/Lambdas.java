@@ -10,11 +10,8 @@ import java.util.function.Predicate;
 
 public class Lambdas {
     Function<String, String> inlineLambda = s -> s.trim();
-
     Function<String, Integer> parenLambda = (s) -> s.length();
-
     java.util.function.BiFunction<String, Integer, String> biLambda = (s, n) -> s.repeat(n);
-
     Function<String, String> methodRef = String::trim;
 
     Consumer<String> blockSingle = s -> {
@@ -28,7 +25,8 @@ public class Lambdas {
     };
 
     Result<String> lambdaInCall(Result<String> input) {
-        return input.map(s -> s.trim().toUpperCase());
+        return input.map(s -> s.trim()
+                               .toUpperCase());
     }
 
     Result<String> blockLambdaInCall(Result<String> input) {
@@ -43,25 +41,30 @@ public class Lambdas {
     Function<String, Function<Integer, String>> nestedLambda = s -> n -> s.repeat(n);
 
     List<String> streamWithLambda(List<String> items) {
-        return items.stream().filter(s -> !s.isEmpty())
-                           .map(s -> s.trim())
-                           .toList();
+        return items.stream()
+                    .filter(s -> !s.isEmpty())
+                    .map(s -> s.trim())
+                    .toList();
     }
 
     List<String> streamWithComplexLambda(List<String> items) {
-        return items.stream().filter(s -> {
-                               var trimmed = s.trim();
-                               return ! trimmed.isEmpty() && trimmed.length() > 3;
-                           })
-                           .map(s -> {
-                               var upper = s.toUpperCase();
-                               return "[" + upper + "]";
-                           })
-                           .toList();
+        return items.stream()
+                    .filter(s -> {
+                                // code is shifted by one tab from 's'
+                                var trimmed = s.trim();
+                                return ! trimmed.isEmpty() && trimmed.length() > 3;
+                            })  // aligned to the 's'
+                    .map(s -> {
+                             // code is shifted by one tab from 's'
+                             var upper = s.toUpperCase();
+                             return "[" + upper + "]";
+                         })
+                    .toList();
     }
 
     Result<String> lambdaAmongArgs(Result<String> input) {
-        return input.fold(cause -> "error: " + cause.message(), value -> value.toUpperCase());
+        return input.fold(cause -> "error: " + cause.message(),
+                          value -> value.toUpperCase());
     }
 
     Result<String> blockLambdasAsArgs(Result<String> input) {
@@ -91,9 +94,7 @@ public class Lambdas {
     };
 
     java.util.function.Supplier<String> supplierLambda = () -> "default";
-
     java.util.Comparator<String> comparatorLambda = (a, b) -> a.length() - b.length();
-
     String defaultValue = "";
 
     void log(String s) {}

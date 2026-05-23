@@ -16,13 +16,15 @@ import java.util.stream.Collectors;
 import static org.pragmatica.aether.worker.group.WorkerGroupId.workerGroupId;
 
 
-@SuppressWarnings("JBCT-UTIL-02") public sealed interface GroupAssignment {
-    record unused() implements GroupAssignment{}
+@SuppressWarnings("JBCT-UTIL-02")
+public sealed interface GroupAssignment {
+    record unused() implements GroupAssignment {}
 
     static Map<WorkerGroupId, List<NodeId>> computeGroups(List<NodeId> allMembers, String groupName, int maxGroupSize) {
         var result = new TreeMap<WorkerGroupId, List<NodeId>>(Comparator.comparing(WorkerGroupId::communityId));
         var zoneGroups = groupByZone(allMembers);
         zoneGroups.forEach((zone, members) -> assignZoneGroups(result, members, groupName, zone, maxGroupSize));
+
         return result;
     }
 
@@ -33,6 +35,7 @@ import static org.pragmatica.aether.worker.group.WorkerGroupId.workerGroupId;
                                          int maxGroupSize) {
         if (members.size() <= maxGroupSize) {
             result.put(workerGroupId(groupName, zone), members);
+
             return;
         }
         splitIntoSubgroups(result, members, groupName, zone, maxGroupSize);
@@ -45,6 +48,7 @@ import static org.pragmatica.aether.worker.group.WorkerGroupId.workerGroupId;
                                            int maxGroupSize) {
         var subgroupCount = (members.size() + maxGroupSize - 1) / maxGroupSize;
         var subgroups = new ArrayList<List<NodeId>>(subgroupCount);
+
         for (var i = 0;i <subgroupCount;i++) {subgroups.add(new ArrayList<>());}
         for (var i = 0;i <members.size();i++) {subgroups.get(i % subgroupCount).add(members.get(i));}
         for (var i = 0;i <subgroupCount;i++) {result.put(workerGroupId(groupName + "-" + i, zone), subgroups.get(i));}
@@ -53,15 +57,17 @@ import static org.pragmatica.aether.worker.group.WorkerGroupId.workerGroupId;
     private static String extractZone(NodeId nodeId) {
         var id = nodeId.id();
         var lastDash = id.lastIndexOf('-');
+
         return lastDash <0
-              ? "local"
-              : id.substring(0, lastDash);
+               ? "local"
+               : id.substring(0, lastDash);
     }
 
     private static Map<String, List<NodeId>> groupByZone(List<NodeId> members) {
-        return members.stream().sorted()
-                             .collect(Collectors.groupingBy(GroupAssignment::extractZone,
-                                                            TreeMap::new,
-                                                            Collectors.toList()));
+        return members.stream()
+                      .sorted()
+                      .collect(Collectors.groupingBy(GroupAssignment::extractZone,
+                                                     TreeMap::new,
+                                                     Collectors.toList()));
     }
 }

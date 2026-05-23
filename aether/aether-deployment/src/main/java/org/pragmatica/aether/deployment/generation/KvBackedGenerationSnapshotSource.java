@@ -19,13 +19,17 @@ public record KvBackedGenerationSnapshotSource(KVStore<AetherKey, AetherValue> k
         return new KvBackedGenerationSnapshotSource(kvStore);
     }
 
-    @Override public Option<MembershipView> currentMembershipView() {
+    @Override
+    public Option<MembershipView> currentMembershipView() {
         return readSnapshot().map(v -> SnapshotMembershipView.from(v.snapshot()));
     }
 
-    @Override public long observedRabiaTerm() {
-        return readSnapshot().map(v -> v.snapshot().epoch()
-                                                 .rabiaTerm()).or(0L);
+    @Override
+    public long observedRabiaTerm() {
+        return readSnapshot().map(v -> v.snapshot()
+                                        .epoch()
+                                        .rabiaTerm())
+                           .or(0L);
     }
 
     private Option<GenerationSnapshotValue> readSnapshot() {

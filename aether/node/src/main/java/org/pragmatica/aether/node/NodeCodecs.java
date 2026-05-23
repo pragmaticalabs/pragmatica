@@ -29,8 +29,9 @@ import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
 
-@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class}) public sealed interface NodeCodecs {
-    record unused() implements NodeCodecs{}
+@CodecFor({InetSocketAddress.class, MethodName.class, TimeSpan.class, URI.class, UUID.class, OffsetDateTime.class, Email.class, Url.class, NonBlankString.class, Uuid.class, IsoDateTime.class})
+public sealed interface NodeCodecs {
+    record unused() implements NodeCodecs {}
 
     static SliceCodec nodeCodecs(SliceCodec parent) {
         var all = new ArrayList<TypeCodec<?>>();
@@ -41,14 +42,18 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         all.addAll(org.pragmatica.cluster.state.kvstore.KvstoreCodecs.CODECS);
         all.addAll(org.pragmatica.cluster.metrics.MetricsCodecs.CODECS);
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.artifact.ArtifactCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.SliceCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.invoke.InvokeCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.http.forward.ForwardCodecs.CODECS);
-        all.addAll(org.pragmatica.aether.dht.DhtCodecs.CODECS);
+        all.addAll(org.pragmatica.aether.artifact.ArtifactCodecsSlice.CODECS);
+        // SliceCodecs registry in org.pragmatica.aether.slice is contributed by four modules; reference each suffixed sub-registry to avoid shade collision.
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsSliceApi.CODECS);
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsNode.CODECS);
+        all.addAll(org.pragmatica.aether.slice.SliceCodecsInvoke.CODECS);
+        all.addAll(org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
+        all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);
+        all.addAll(org.pragmatica.aether.http.forward.ForwardCodecsInvoke.CODECS);
+        all.addAll(org.pragmatica.aether.dht.DhtCodecsInvoke.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
         all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);
@@ -61,6 +66,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         all.add(uuidCodec());
         all.add(isoDateTimeCodec());
         var requiredTypes = collectRequiredTypes();
+
         return SliceCodec.sliceCodec(parent, all, requiredTypes);
     }
 
@@ -75,6 +81,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
         types.add(NonBlankString.class);
         types.add(Uuid.class);
         types.add(IsoDateTime.class);
+
         return types;
     }
 

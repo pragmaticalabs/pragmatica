@@ -57,6 +57,7 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.createVm(buildCreateRequest(List.of(), defaultTags())).map(AzureComputeProvider::toInstanceInfo)
+                              .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
                               .mapError(AzureComputeProvider::toProvisionError);
     }
 
@@ -64,7 +65,20 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         var zones = extractZones(spec.placement());
         var tags = tagsFor(spec.context());
         return client.createVm(buildCreateRequest(zones, tags)).map(AzureComputeProvider::toInstanceInfo)
+                              .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
                               .mapError(AzureComputeProvider::toProvisionError);
+    }
+
+    /// Rollback acknowledgment for Azure provisions. `createVm` is atomic — failure
+    /// returns no resource, success returns a `VirtualMachine` whose tags were bundled
+    /// into the create request. There is no separate post-create step that can leave
+    /// an orphan in this provider's current surface. If a future code path adds a
+    /// tagging or networking second step, plumb a real `deleteVm` rollback through
+    /// this hook; for now surface a WARN so operators can correlate failures with any
+    /// orphan that DOES appear.
+    private static void logProvisionFailureRollbackGap(Cause cause) {
+        log.warn("Azure provision failed ({}); no VM-side rollback issued because createVm is atomic — relying on caller to retry or sweep",
+                 cause.message());
     }
 
     @Override public Promise<Unit> terminate(InstanceId instanceId) {
@@ -115,18 +129,22 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return Map.of("aether-managed", "true");
     }
 
-    /// Translate a [ProvisionContext] into Azure VM tags. Well-known `aether-*`
-    /// slots are emitted alongside the managed marker; caller-supplied
-    /// [ProvisionContext#extraTags] are folded in last (extras win on collision).
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
         var tags = new java.util.HashMap<String, String>();
         tags.put("aether-managed", "true");
-        if (!ctx.clusterName().isEmpty()) {tags.put("aether-cluster", ctx.clusterName());}
+        var clusterName = resolveClusterName(ctx);
+        if (!clusterName.isEmpty()) {tags.put("aether-cluster", clusterName);}
         if (!ctx.role().isEmpty()) {tags.put("aether-role", ctx.role());}
         if (!ctx.sourceName().isEmpty()) {tags.put("aether-source", ctx.sourceName());}
         ctx.nodeId().onPresent(value -> tags.put("aether-node-id", value));
         tags.putAll(ctx.extraTags());
         return Map.copyOf(tags);
+    }
+
+    private static String resolveClusterName(ProvisionContext ctx) {
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        return fromEnv != null && !fromEnv.isEmpty() ? fromEnv : "";
     }
 
     private static List<String> extractZones(Option<PlacementHint> placement) {

@@ -18,19 +18,12 @@ import java.util.List;
 
 public sealed interface ClusterConfigGenerator {
     String CONFIG_VERSION = "1.0.0";
-
     String SOURCE_NAME = "primary";
-
     String IMAGE_PREFIX = "ghcr.io/pragmaticalabs/aether-node:";
-
     String DEFAULT_JAVA_OPTS = "-XX:+UseZGC -XX:+ZGenerational -Xms512m -Xmx2g";
-
     int DOCKER_CLUSTER_PORT = 6000;
-
     int DOCKER_SWIM_PORT = 6100;
-
     int DOCKER_MGMT_PORT = 8080;
-
     int DOCKER_APP_HTTP_PORT = 8070;
 
     static String generate(ClusterConfigAnswers answers) {
@@ -46,6 +39,7 @@ public sealed interface ClusterConfigGenerator {
         appendTls(sb, answers);
         appendPorts(sb, answers);
         appendAdvancedTemplates(sb);
+
         return sb.toString();
     }
 
@@ -92,11 +86,13 @@ public sealed interface ClusterConfigGenerator {
         appendKv(sb,
                  "type",
                  answers.target().value());
-        switch (answers.target()){
+
+        switch (answers.target()) {
             case CLOUD -> answers.cloud().onPresent(cloud -> appendCloudFields(sb, cloud));
             case SSH -> answers.ssh().onPresent(ssh -> appendSshFields(sb, ssh));
             case DOCKER, FORGE -> {}
         }
+
         appendBlank(sb);
     }
 
@@ -126,6 +122,7 @@ public sealed interface ClusterConfigGenerator {
                      String.valueOf(answers.topology().core()));
         answers.cloud().onPresent(cloud -> appendKv(sb, "instance_type", cloud.instanceType()));
         appendBlank(sb);
+
         if (answers.topology().worker() > 0) {
             appendSection(sb, "source." + SOURCE_NAME + ".worker");
             appendKvBare(sb,
@@ -149,7 +146,7 @@ public sealed interface ClusterConfigGenerator {
     }
 
     private static String renderPassword(PasswordSource password) {
-        return switch (password){
+        return switch (password) {
             case PasswordSource.FromEnv fromEnv -> "${env:" + fromEnv.envVar() + "}";
             case PasswordSource.Plaintext plaintext -> plaintext.value();
         };
@@ -157,7 +154,9 @@ public sealed interface ClusterConfigGenerator {
 
     private static void appendFirewall(StringBuilder sb, ClusterConfigAnswers answers) {
         if (skipFirewall(answers)) {return;}
+
         var rules = effectiveFirewallRules(answers);
+
         if (rules.isEmpty()) {return;}
         for (var rule : rules) {
             appendArrayOfTablesHeader(sb, "source." + SOURCE_NAME + ".firewall.allow_ingress");
@@ -173,14 +172,18 @@ public sealed interface ClusterConfigGenerator {
 
     private static boolean skipFirewall(ClusterConfigAnswers answers) {
         var target = answers.target();
+
         if (target == SourceType.DOCKER || target == SourceType.FORGE) {return true;}
+
         return answers.firewallPreset() == FirewallPreset.OPEN;
     }
 
     private static List<FirewallRule> effectiveFirewallRules(ClusterConfigAnswers answers) {
         if (answers.firewallPreset() == FirewallPreset.CUSTOM) {return answers.customFirewallRules();}
+
         var adminCidr = answers.adminCidr().or(FirewallPresets.ANY_CIDR);
         var internalCidr = answers.internalCidr().or(FirewallPresets.DEFAULT_INTERNAL_CIDR);
+
         return FirewallPresets.rulesFor(answers.firewallPreset(), adminCidr, internalCidr);
     }
 
@@ -197,7 +200,7 @@ public sealed interface ClusterConfigGenerator {
     }
 
     private static String runtimeTypeFor(SourceType target) {
-        return switch (target){
+        return switch (target) {
             case DOCKER -> "docker";
             case FORGE -> "ember";
             case CLOUD, SSH -> "container";
@@ -207,14 +210,18 @@ public sealed interface ClusterConfigGenerator {
     private static void appendTls(StringBuilder sb, ClusterConfigAnswers answers) {
         if (answers.target() == SourceType.DOCKER || answers.target() == SourceType.FORGE || answers.tls() instanceof TlsAnswers.Skipped) {
             appendCommentedTlsTemplate(sb);
+
             return;
         }
+
         appendSection(sb, "operations.tls");
-        switch (answers.tls()){
+
+        switch (answers.tls()) {
             case TlsAnswers.AutoGenerate _ -> appendKvBare(sb, "auto_generate", "true");
             case TlsAnswers.Manual manual -> appendManualTls(sb, manual);
             case TlsAnswers.Skipped _ -> {}
         }
+
         appendSecret(sb, answers.secret());
         appendBlank(sb);
     }
@@ -234,7 +241,7 @@ public sealed interface ClusterConfigGenerator {
     }
 
     private static void appendSecret(StringBuilder sb, SecretAnswers secret) {
-        switch (secret){
+        switch (secret) {
             case SecretAnswers.AutoGenerate _ -> {}
             case SecretAnswers.FromEnv fromEnv -> appendKv(sb, "cluster_secret", "${env:" + fromEnv.envVar() + "}");
             case SecretAnswers.Skipped _ -> {}
@@ -244,18 +251,26 @@ public sealed interface ClusterConfigGenerator {
     private static void appendPorts(StringBuilder sb, ClusterConfigAnswers answers) {
         appendSection(sb, "operations.ports");
         var docker = answers.target() == SourceType.DOCKER;
-        appendKvBare(sb, "cluster", String.valueOf(docker
-                                                   ? DOCKER_CLUSTER_PORT
-                                                   : FirewallPresets.CLUSTER_PORT));
-        appendKvBare(sb, "management", String.valueOf(docker
-                                                      ? DOCKER_MGMT_PORT
-                                                      : FirewallPresets.MGMT_PORT));
-        appendKvBare(sb, "app_http", String.valueOf(docker
-                                                    ? DOCKER_APP_HTTP_PORT
-                                                    : FirewallPresets.APP_HTTP_PORT));
-        appendKvBare(sb, "swim", String.valueOf(docker
-                                                ? DOCKER_SWIM_PORT
-                                                : FirewallPresets.SWIM_PORT));
+        appendKvBare(sb,
+                     "cluster",
+                     String.valueOf(docker
+                                    ? DOCKER_CLUSTER_PORT
+                                    : FirewallPresets.CLUSTER_PORT));
+        appendKvBare(sb,
+                     "management",
+                     String.valueOf(docker
+                                    ? DOCKER_MGMT_PORT
+                                    : FirewallPresets.MGMT_PORT));
+        appendKvBare(sb,
+                     "app_http",
+                     String.valueOf(docker
+                                    ? DOCKER_APP_HTTP_PORT
+                                    : FirewallPresets.APP_HTTP_PORT));
+        appendKvBare(sb,
+                     "swim",
+                     String.valueOf(docker
+                                    ? DOCKER_SWIM_PORT
+                                    : FirewallPresets.SWIM_PORT));
         appendBlank(sb);
     }
 
@@ -289,39 +304,34 @@ public sealed interface ClusterConfigGenerator {
     private static void appendComment(StringBuilder sb, String comment) {
         if (comment.isEmpty()) {
             sb.append("#\n");
+
             return;
         }
-        sb.append("# ").append(comment)
-                 .append('\n');
+        sb.append("# ").append(comment).append('\n');
     }
 
     private static void appendSection(StringBuilder sb, String name) {
-        sb.append('[').append(name)
-                 .append("]\n");
+        sb.append('[').append(name).append("]\n");
     }
 
     private static void appendArrayOfTablesHeader(StringBuilder sb, String name) {
-        sb.append("[[").append(name)
-                 .append("]]\n");
+        sb.append("[[").append(name).append("]]\n");
     }
 
     private static void appendKv(StringBuilder sb, String key, String value) {
-        sb.append(key).append(" = \"")
-                 .append(escapeString(value))
-                 .append("\"\n");
+        sb.append(key).append(" = \"").append(escapeString(value)).append("\"\n");
     }
 
     private static void appendKvBare(StringBuilder sb, String key, String rawValue) {
-        sb.append(key).append(" = ")
-                 .append(rawValue)
-                 .append('\n');
+        sb.append(key).append(" = ").append(rawValue).append('\n');
     }
 
     private static String escapeString(String value) {
         var sb = new StringBuilder(value.length() + 4);
+
         for (int i = 0;i <value.length();i++) {
             var ch = value.charAt(i);
-            switch (ch){
+            switch (ch) {
                 case '\\' -> sb.append("\\\\");
                 case '"' -> sb.append("\\\"");
                 case '\n' -> sb.append("\\n");
@@ -330,18 +340,21 @@ public sealed interface ClusterConfigGenerator {
                 default -> sb.append(ch);
             }
         }
+
         return sb.toString();
     }
 
     private static String renderStringList(List<String> values) {
         var sb = new StringBuilder("[");
+
         for (int i = 0;i <values.size();i++) {
             if (i > 0) {sb.append(", ");}
-            sb.append('"').append(escapeString(values.get(i)))
-                     .append('"');
+            sb.append('"').append(escapeString(values.get(i))).append('"');
         }
-        return sb.append(']').toString();
+
+        return sb.append(']')
+                 .toString();
     }
 
-    record unused() implements ClusterConfigGenerator{}
+    record unused() implements ClusterConfigGenerator {}
 }

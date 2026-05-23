@@ -24,17 +24,14 @@ class MatchedRouteTest {
     void matchedRoute_withSingleValue_storesByName() {
         var matched = MatchedRoute.matchedRoute(ManagementRoute.DEPLOY_STATUS, List.of("dep-42"));
         assertThat(matched.params()).hasSize(1);
-        assertThat(matched.param("deploymentId").or((String) null)).isEqualTo("dep-42");
+        assertThat(matched.param("id").or((String) null)).isEqualTo("dep-42");
     }
 
     @Test
     void matchedRoute_withMultipleValues_preservesOrder() {
-        // Spec event-stream-namespaces §12 STREAMS_METADATA — params: namespace, stream, version
-        var matched = MatchedRoute.matchedRoute(ManagementRoute.STREAMS_METADATA,
-                                                List.of("com.example.app", "orders", "1.0.0"));
-        assertThat(matched.param("namespace").or((String) null)).isEqualTo("com.example.app");
-        assertThat(matched.param("stream").or((String) null)).isEqualTo("orders");
-        assertThat(matched.param("version").or((String) null)).isEqualTo("1.0.0");
+        var matched = MatchedRoute.matchedRoute(ManagementRoute.STREAM_READ, List.of("orders", "5"));
+        assertThat(matched.param("name").or((String) null)).isEqualTo("orders");
+        assertThat(matched.param("partition").or((String) null)).isEqualTo("5");
     }
 
     @Test
@@ -45,8 +42,7 @@ class MatchedRouteTest {
 
     @Test
     void matchedRoute_paramsAreImmutable() {
-        var matched = MatchedRoute.matchedRoute(ManagementRoute.STREAMS_METADATA,
-                                                List.of("com.example", "orders", "1.0.0"));
+        var matched = MatchedRoute.matchedRoute(ManagementRoute.STREAM_READ, List.of("a", "b"));
         org.junit.jupiter.api.Assertions.assertThrows(UnsupportedOperationException.class,
                                                       () -> matched.params().put("x", "y"));
     }

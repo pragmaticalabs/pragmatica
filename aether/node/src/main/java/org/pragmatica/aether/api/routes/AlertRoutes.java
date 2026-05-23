@@ -5,6 +5,9 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.AlertManager;
+import org.pragmatica.aether.api.AlertManager.AlertHistoryView;
+import org.pragmatica.aether.api.AlertManager.AlertView;
+import org.pragmatica.aether.api.AlertManager.ThresholdView;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertsClearedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertsResponse;
@@ -18,6 +21,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
+import java.util.List;
 import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
@@ -34,28 +38,24 @@ public final class AlertRoutes implements RouteSource {
         return new AlertRoutes(alertManager);
     }
 
-    record ThresholdRequest(String metric, Double warning, Double critical){}
+    record ThresholdRequest(String metric, Double warning, Double critical) {}
 
-    record InjectRequest(String name, String severity, String message, String metric, Double value){}
+    record InjectRequest(String name, String severity, String message, String metric, Double value) {}
 
-    @Override public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<Object>route(ManagementRoute.THRESHOLDS_LIST)
-                                         .toJson(alertManager::thresholdsAsJson),
-                         ManagementRoutes.<AlertsResponse>route(ManagementRoute.ALERTS)
-                                         .toJson(this::buildAlertsResponse),
-                         ManagementRoutes.<Object>route(ManagementRoute.ALERTS_ACTIVE)
-                                         .toJson(alertManager::activeAlertsAsJson),
-                         ManagementRoutes.<Object>route(ManagementRoute.ALERTS_HISTORY)
-                                         .toJson(alertManager::alertHistoryAsJson),
-                         ManagementRoutes.<ThresholdSetResponse>route(ManagementRoute.THRESHOLD_SET)
+    @Override
+    public Stream<Route<?>> routes() {
+        return Stream.of(ManagementRoutes.<List<ThresholdView>> route(ManagementRoute.THRESHOLDS_LIST).toJson(alertManager::thresholdsAsList),
+                         ManagementRoutes.<AlertsResponse> route(ManagementRoute.ALERTS).toJson(this::buildAlertsResponse),
+                         ManagementRoutes.<List<AlertView>> route(ManagementRoute.ALERTS_ACTIVE).toJson(alertManager::activeAlertsAsList),
+                         ManagementRoutes.<List<AlertHistoryView>> route(ManagementRoute.ALERTS_HISTORY).toJson(alertManager::alertHistoryAsList),
+                         ManagementRoutes.<ThresholdSetResponse> route(ManagementRoute.THRESHOLD_SET)
                                          .withBody(ThresholdRequest.class)
                                          .toJson(this::handleSetThreshold),
-                         ManagementRoutes.<AlertsClearedResponse>route(ManagementRoute.ALERTS_CLEAR)
-                                         .toJson(this::handleClearAlerts),
-                         ManagementRoutes.<AlertInjectResponse>route(ManagementRoute.ALERTS_INJECT)
+                         ManagementRoutes.<AlertsClearedResponse> route(ManagementRoute.ALERTS_CLEAR).toJson(this::handleClearAlerts),
+                         ManagementRoutes.<AlertInjectResponse> route(ManagementRoute.ALERTS_INJECT)
                                          .withBody(InjectRequest.class)
                                          .toJson(this::handleInjectAlert),
-                         ManagementRoutes.<ThresholdRemovedResponse>route(ManagementRoute.THRESHOLD_DELETE)
+                         ManagementRoutes.<ThresholdRemovedResponse> route(ManagementRoute.THRESHOLD_DELETE)
                                          .withPath(aString())
                                          .to(this::handleDeleteThreshold)
                                          .asJson());
@@ -74,30 +74,33 @@ public final class AlertRoutes implements RouteSource {
                                        .flatMap(valid -> alertManager.setThreshold(valid.metric(),
                                                                                    valid.warning(),
                                                                                    valid.critical())
-        .map(_ -> new ThresholdSetResponse("threshold_set",
-                                           valid.metric(),
-                                           valid.warning(),
-                                           valid.critical())));
+                                                                     .map(_ -> new ThresholdSetResponse("threshold_set",
+                                                                                                        valid.metric(),
+                                                                                                        valid.warning(),
+                                                                                                        valid.critical())));
     }
 
     private Result<ThresholdRequest> validateThresholdRequest(ThresholdRequest req) {
         if (req.metric() == null || req.metric().isEmpty()) {return AlertError.MISSING_FIELDS.result();}
         if (req.warning() == null || req.critical() == null) {return AlertError.MISSING_FIELDS.result();}
+
         return Result.success(req);
     }
 
     private AlertsClearedResponse handleClearAlerts() {
         alertManager.clearAlerts();
+
         return new AlertsClearedResponse("alerts_cleared");
     }
 
     private Promise<ThresholdRemovedResponse> handleDeleteThreshold(String metric) {
         if (metric.isEmpty()) {return AlertError.METRIC_REQUIRED.promise();}
-        return alertManager.removeThreshold(metric).map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
+        return alertManager.removeThreshold(metric)
+                           .map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
     }
 
     private AlertsResponse buildAlertsResponse() {
-        return new AlertsResponse(alertManager.activeAlertsAsJson(), alertManager.alertHistoryAsJson());
+        return new AlertsResponse(alertManager.activeAlertsAsList(), alertManager.alertHistoryAsList());
     }
 
     private enum AlertError implements Cause {
@@ -107,7 +110,8 @@ public final class AlertRoutes implements RouteSource {
         AlertError(String message) {
             this.message = message;
         }
-        @Override public String message() {
+        @Override
+        public String message() {
             return message;
         }
     }

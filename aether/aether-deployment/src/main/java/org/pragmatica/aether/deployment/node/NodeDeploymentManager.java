@@ -25,7 +25,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -36,6 +35,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -71,124 +71,174 @@ public interface NodeDeploymentManager {
         }
     }
 
-    @Contract@MessageReceiver void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
-    @Contract@MessageReceiver void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
-    @Contract@MessageReceiver void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
-    @Contract@MessageReceiver void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
-    @Contract@MessageReceiver void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
-    @Contract@MessageReceiver void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
-    @Contract void setShutdownCallback(Runnable callback);
-    @Contract void setSelfReadySignal(Runnable signal);
-    boolean isActive();
+    @Contract
+    @MessageReceiver
+    void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
 
+    @Contract
+    @MessageReceiver
+    void onMembershipDecision(MembershipDecision decision);
+
+    @Contract
+    @MessageReceiver
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+
+    @Contract
+    @MessageReceiver
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+
+    @Contract
+    @MessageReceiver
+    void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
+
+    @Contract
+    @MessageReceiver
+    void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+
+    @Contract
+    void setShutdownCallback(Runnable callback);
+
+    @Contract
+    void setSelfReadySignal(Runnable signal);
+
+    boolean isActive();
     ConfigFacade NO_OP_CONFIG = new NoOpDeploymentConfigFacade();
 
     record NoOpDeploymentConfigFacade() implements ConfigFacade {
         private static final Cause NO_CONFIG = Causes.cause("Config service not available");
 
-        @Override public Result<String> requireString(String section, String key) {
+        @Override
+        public Result<String> requireString(String section, String key) {
             return NO_CONFIG.result();
         }
 
-        @Override public Result<Integer> requireInt(String section, String key) {
+        @Override
+        public Result<Integer> requireInt(String section, String key) {
             return NO_CONFIG.result();
         }
 
-        @Override public Result<Long> requireLong(String section, String key) {
+        @Override
+        public Result<Long> requireLong(String section, String key) {
             return NO_CONFIG.result();
         }
 
-        @Override public Result<Double> requireDouble(String section, String key) {
+        @Override
+        public Result<Double> requireDouble(String section, String key) {
             return NO_CONFIG.result();
         }
 
-        @Override public Result<Boolean> requireBoolean(String section, String key) {
+        @Override
+        public Result<Boolean> requireBoolean(String section, String key) {
             return NO_CONFIG.result();
         }
 
-        @Override public Result<List<String>> requireStringList(String section, String key) {
+        @Override
+        public Result<List<String>> requireStringList(String section, String key) {
             return NO_CONFIG.result();
         }
 
-        @Override public Option<String> getString(String section, String key) {
+        @Override
+        public Option<String> getString(String section, String key) {
             return Option.none();
         }
 
-        @Override public Option<Integer> getInt(String section, String key) {
+        @Override
+        public Option<Integer> getInt(String section, String key) {
             return Option.none();
         }
 
-        @Override public Option<Long> getLong(String section, String key) {
+        @Override
+        public Option<Long> getLong(String section, String key) {
             return Option.none();
         }
 
-        @Override public Option<Double> getDouble(String section, String key) {
+        @Override
+        public Option<Double> getDouble(String section, String key) {
             return Option.none();
         }
 
-        @Override public Option<Boolean> getBoolean(String section, String key) {
+        @Override
+        public Option<Boolean> getBoolean(String section, String key) {
             return Option.none();
         }
     }
 
-    @SuppressWarnings("JBCT-UTIL-02") static ConfigFacade configServiceToFacade(ConfigService svc) {
+    @SuppressWarnings("JBCT-UTIL-02")
+    static ConfigFacade configServiceToFacade(ConfigService svc) {
         return new ConfigServiceConfigFacade(svc);
     }
 
     record ConfigServiceConfigFacade(ConfigService delegate) implements ConfigFacade {
         private static final Cause MISSING_KEY = Causes.cause("Required config key not found");
 
-        @Override public Result<String> requireString(String section, String key) {
-            return delegate.getString(section + "." + key).toResult(MISSING_KEY);
+        @Override
+        public Result<String> requireString(String section, String key) {
+            return delegate.getString(section + "." + key)
+                           .toResult(MISSING_KEY);
         }
 
-        @Override public Result<Integer> requireInt(String section, String key) {
-            return delegate.getInt(section + "." + key).toResult(MISSING_KEY);
+        @Override
+        public Result<Integer> requireInt(String section, String key) {
+            return delegate.getInt(section + "." + key)
+                           .toResult(MISSING_KEY);
         }
 
-        @Override public Result<Long> requireLong(String section, String key) {
-            return delegate.getString(section + "." + key).map(Long::parseLong)
-                                     .toResult(MISSING_KEY);
+        @Override
+        public Result<Long> requireLong(String section, String key) {
+            return delegate.getString(section + "." + key)
+                           .map(Long::parseLong)
+                           .toResult(MISSING_KEY);
         }
 
-        @Override public Result<Double> requireDouble(String section, String key) {
-            return delegate.getString(section + "." + key).map(Double::parseDouble)
-                                     .toResult(MISSING_KEY);
+        @Override
+        public Result<Double> requireDouble(String section, String key) {
+            return delegate.getString(section + "." + key)
+                           .map(Double::parseDouble)
+                           .toResult(MISSING_KEY);
         }
 
-        @Override public Result<Boolean> requireBoolean(String section, String key) {
-            return delegate.getBoolean(section + "." + key).toResult(MISSING_KEY);
+        @Override
+        public Result<Boolean> requireBoolean(String section, String key) {
+            return delegate.getBoolean(section + "." + key)
+                           .toResult(MISSING_KEY);
         }
 
         private static final Cause STRING_LIST_NOT_SUPPORTED = Causes.cause("String list config not supported via legacy ConfigService adapter");
 
-        @Override public Result<List<String>> requireStringList(String section, String key) {
+        @Override
+        public Result<List<String>> requireStringList(String section, String key) {
             return STRING_LIST_NOT_SUPPORTED.result();
         }
 
-        @Override public Option<String> getString(String section, String key) {
+        @Override
+        public Option<String> getString(String section, String key) {
             return delegate.getString(section + "." + key);
         }
 
-        @Override public Option<Integer> getInt(String section, String key) {
+        @Override
+        public Option<Integer> getInt(String section, String key) {
             return delegate.getInt(section + "." + key);
         }
 
-        @Override public Option<Long> getLong(String section, String key) {
-            return delegate.getString(section + "." + key).map(Long::parseLong);
+        @Override
+        public Option<Long> getLong(String section, String key) {
+            return delegate.getString(section + "." + key)
+                           .map(Long::parseLong);
         }
 
-        @Override public Option<Double> getDouble(String section, String key) {
-            return delegate.getString(section + "." + key).map(Double::parseDouble);
+        @Override
+        public Option<Double> getDouble(String section, String key) {
+            return delegate.getString(section + "." + key)
+                           .map(Double::parseDouble);
         }
 
-        @Override public Option<Boolean> getBoolean(String section, String key) {
+        @Override
+        public Option<Boolean> getBoolean(String section, String key) {
             return delegate.getBoolean(section + "." + key);
         }
     }
 
     TimeSpan DEFAULT_ACTIVATION_CHAIN_TIMEOUT = TimeSpan.timeSpan(120_000).millis();
-
     TimeSpan DEFAULT_TRANSITION_RETRY_DELAY = TimeSpan.timeSpan(2000).millis();
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
@@ -325,7 +375,8 @@ public interface NodeDeploymentManager {
                                      sliceInvokerFacade,
                                      activationChainTimeout,
                                      transitionRetryDelay,
-                                     () -> snapshotSupplier.get().map(ClusterGenerationSnapshot::epoch));
+                                     () -> snapshotSupplier.get()
+                                                           .map(ClusterGenerationSnapshot::epoch));
     }
 
     private static NodeDeploymentContext buildContext(NodeId self,
@@ -360,6 +411,7 @@ public interface NodeDeploymentManager {
                                                                                                                                      transitionRetryDelay,
                                                                                                                                      currentEpochSupplier);
         var _fsm = Fsm.fsm("node-deployment", self.id(), initialStateFactory);
+
         return ctxHolder.get();
     }
 
@@ -395,6 +447,7 @@ public interface NodeDeploymentManager {
                                             transitionRetryDelay,
                                             currentEpochSupplier);
         ctxHolder.set(ctx);
+
         return ctx.dormant();
     }
 
@@ -402,7 +455,6 @@ public interface NodeDeploymentManager {
         private static final Logger log = LoggerFactory.getLogger(DeploymentManagerAdapter.class);
 
         private final NodeDeploymentContext ctx;
-
         private final AtomicReference<Option<Runnable>> selfReadySignal = new AtomicReference<>(Option.none());
 
         DeploymentManagerAdapter(NodeDeploymentContext ctx) {
@@ -410,33 +462,42 @@ public interface NodeDeploymentManager {
             ctx.setActiveOnEntryCallback(this::onActiveEntry);
         }
 
-        @Contract@Override public void setSelfReadySignal(Runnable signal) {
+        @Contract
+        @Override
+        public void setSelfReadySignal(Runnable signal) {
             selfReadySignal.set(Option.some(signal));
         }
 
-        @Contract private void onActiveEntry() {
+        @Contract
+        private void onActiveEntry() {
             var signal = selfReadySignal.get();
+
             if (signal.isEmpty()) {
                 log.warn("Node {} active-entry without self-ready signal — node-lifecycle hook must be wired",
                          ctx.self().id());
                 return;
             }
+
             log.info("Node {} signalling self-ready to node-lifecycle hook",
                      ctx.self().id());
             signal.unwrap().run();
         }
 
-        @Contract@Override public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
+        @Contract
+        @Override
+        public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
             if (!quorumStateNotification.advanceSequence(ctx.quorumSequence())) {
                 log.info("Node {} ignoring stale QuorumStateNotification: {}",
                          ctx.self().id(),
                          quorumStateNotification);
                 return;
             }
+
             log.info("Node {} received QuorumStateNotification: {}",
                      ctx.self().id(),
                      quorumStateNotification);
-            switch (quorumStateNotification.state()){
+
+            switch (quorumStateNotification.state()) {
                 case ESTABLISHED -> dispatchQuorumEstablished();
                 case DISAPPEARED -> ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
@@ -446,33 +507,45 @@ public interface NodeDeploymentManager {
             ctx.dispatch(new ClusterFsmEvent.QuorumEstablished());
         }
 
-        @Contract@Override public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+        @Contract
+        @Override
+        public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
             ctx.dispatch(new NodeArtifactPutReceived(valuePut));
         }
 
-        @Contract@Override public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+        @Contract
+        @Override
+        public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
             ctx.dispatch(new NodeArtifactRemoveReceived(valueRemove));
         }
 
-        @Contract@Override public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+        @Contract
+        @Override
+        public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
             ctx.dispatch(new NodeRoutesPutReceived(valuePut));
         }
 
-        @Override public boolean isActive() {
+        @Override
+        public boolean isActive() {
             return ctx.isActive();
         }
 
-        @Contract@Override public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
-            var key = valuePut.cause().key();
-            var value = valuePut.cause().value();
-            if (key.nodeId().equals(ctx.self()) && value.state() == NodeLifecycleState.SHUTTING_DOWN) {
-                log.warn("Node {} received SHUTTING_DOWN lifecycle state — initiating shutdown",
+        /// RC1 Step 2: replaces the retired `onNodeLifecyclePut`. The self-shutdown
+        /// trigger fires when `TopologyObserver` projects a SHUTTING_DOWN lifecycle
+        /// transition for this node — see `MembershipDecision.NodeShuttingDown`.
+        @Contract
+        @Override
+        public void onMembershipDecision(MembershipDecision decision) {
+            if (decision instanceof MembershipDecision.NodeShuttingDown nodeShuttingDown && nodeShuttingDown.nodeId().equals(ctx.self())) {
+                log.warn("Node {} received SHUTTING_DOWN lifecycle decision — initiating shutdown",
                          ctx.self().id());
                 ctx.shutdownCallback().onPresent(Runnable::run);
             }
         }
 
-        @Contract@Override public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
+        @Contract
+        @Override
+        public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
             var key = valueRemove.cause().key();
             if (key.nodeId().equals(ctx.self()) && isActive()) {
                 log.warn("Node {} lifecycle key removed unexpectedly — re-emitting self-ready (node-lifecycle hook re-runs; FSM owns ON_DUTY rewrites post-E.7)",
@@ -481,7 +554,9 @@ public interface NodeDeploymentManager {
             }
         }
 
-        @Contract@Override public void setShutdownCallback(Runnable callback) {
+        @Contract
+        @Override
+        public void setShutdownCallback(Runnable callback) {
             ctx.setShutdownCallback(callback);
         }
     }

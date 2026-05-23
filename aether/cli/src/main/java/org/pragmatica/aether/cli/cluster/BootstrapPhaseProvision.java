@@ -33,124 +33,136 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) sealed interface BootstrapPhaseProvision {
-    record unused() implements BootstrapPhaseProvision{}
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+sealed interface BootstrapPhaseProvision {
+    record unused() implements BootstrapPhaseProvision {}
 
     static Result<BootstrapContext> execute(BootstrapContext ctx) {
         ClusterBootstrapOrchestrator.logPhase(PROVISION,
                                               "Provisioning infrastructure for %d source(s)",
-                                              ctx.config().sources()
-                                                        .size());
+                                              ctx.config().sources().size());
         var allNodes = new ArrayList<ProvisionedNode>();
-        var clusterName = ctx.config().cluster()
-                                    .name();
-        var mgmtPort = ctx.config().operations()
-                                 .ports()
-                                 .management();
-        for (var entry : ctx.config().sources()
-                                   .entrySet()) {
+        var clusterName = ctx.config().cluster().name();
+        var mgmtPort = ctx.config().operations().ports().management();
+
+        for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = entry.getKey();
             var source = entry.getValue();
             var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName);
+
             if (result.isFailure()) {return result.map(_ -> ctx);}
+
             var _ = result.onSuccess(allNodes::addAll);
         }
+
         var updatedState = buildUpdatedState(ctx, allNodes);
+
         return success(ctx.withNodes(List.copyOf(allNodes)).withState(updatedState));
     }
 
     private static BootstrapState buildUpdatedState(BootstrapContext ctx, List<ProvisionedNode> allNodes) {
-        var state = ctx.state().withProvisionedNodeIds(allNodes.stream().map(ProvisionedNode::nodeId)
-                                                                      .toList());
+        var state = ctx.state().withProvisionedNodeIds(allNodes.stream().map(ProvisionedNode::nodeId).toList());
         var rawToml = ctx.rawTomlContent();
-        for (var entry : ctx.config().sources()
-                                   .entrySet()) {
+
+        for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = entry.getKey();
             var source = entry.getValue();
             var providerName = resolveProviderName(source);
-            for (var node : allNodes) {if (node.nodeId().startsWith(sourceName + "-")) {state = state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
-                                                                                                                                                               node.serverId(),
-                                                                                                                                                               sourceName,
-                                                                                                                                                               extractRole(node.nodeId(),
-                                                                                                                                                                           sourceName)));}}
+
+            for (var node : allNodes) {
+                if (node.nodeId().startsWith(sourceName + "-")) {
+                    state = state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
+                                                                                           node.serverId(),
+                                                                                           sourceName,
+                                                                                           extractRole(node.nodeId(),
+                                                                                                       sourceName)));
+                }
+            }
+
             state = stampSourceHandle(state, rawToml, sourceName, source, providerName);
         }
+
         return state;
     }
 
     static BootstrapState stampSourceHandle(BootstrapState state,
-                                             String rawToml,
-                                             String sourceName,
-                                             SourceProfile source,
-                                             String providerName) {
+                                            String rawToml,
+                                            String sourceName,
+                                            SourceProfile source,
+                                            String providerName) {
         if (source.type() != SourceType.CLOUD) {return state;}
+
         var envVars = extractEnvVarNames(rawToml, sourceName);
         var handle = SourceCleanupHandle.sourceCleanupHandle(providerName, source.region(), envVars);
+
         return state.withSource(sourceName, handle);
     }
 
-    /// Re-parse raw TOML to recover the `${env:NAME}` env-var name the operator wrote
-    /// for the named source's `credentials` field. By the time we have a `SourceProfile`
-    /// the `ConfigReferenceResolver.resolveAll` step has already substituted the value;
-    /// the raw name is otherwise lost. The recovered name is recorded under each
-    /// credential-key alias the per-provider factory may consume (`api_token`,
-    /// `access_key`, `credentials_file`) — mirroring `ProviderResolver.buildCloudConfig`.
-    @SuppressWarnings("JBCT-PAT-01") static Map<String, String> extractEnvVarNames(String rawToml,
-                                                                                    String sourceName) {
+    @SuppressWarnings("JBCT-PAT-01")
+    static Map<String, String> extractEnvVarNames(String rawToml, String sourceName) {
         if (rawToml == null || rawToml.isEmpty()) {return Map.of();}
+
         var stanza = extractStanza(rawToml, sourceName);
+
         if (stanza.isEmpty()) {return Map.of();}
+
         var envName = matchCredentialEnvName(stanza);
+
         if (envName == null) {return Map.of();}
+
         var result = new LinkedHashMap<String, String>();
+
         for (var alias : CREDENTIAL_FIELD_KEYS) {result.put(alias, envName);}
+
         return Map.copyOf(result);
     }
 
     private static String matchCredentialEnvName(String stanza) {
         var pattern = Pattern.compile("(?m)^\\s*credentials\\s*=\\s*\"\\$\\{env:([A-Z_][A-Z0-9_]*)\\}\"");
         var matcher = pattern.matcher(stanza);
+
         return matcher.find()
-              ? matcher.group(1)
-              : null;
+               ? matcher.group(1)
+               : null;
     }
 
     private static String extractStanza(String rawToml, String sourceName) {
         var header = "[sources." + sourceName + "]";
         var headerIndex = rawToml.indexOf(header);
+
         if (headerIndex <0) {return "";}
+
         var after = rawToml.indexOf("\n[", headerIndex + header.length());
+
         return after <0
-              ? rawToml.substring(headerIndex)
-              : rawToml.substring(headerIndex, after);
+               ? rawToml.substring(headerIndex)
+               : rawToml.substring(headerIndex, after);
     }
 
-    /// Credential-key aliases for cloud sources. Mirrors the schema accepted by
-    /// `ProviderResolver.buildCloudConfig`: a single TOML `credentials` value is
-    /// echoed under three logical keys so any per-provider factory can read whichever
-    /// it expects (Hetzner: `api_token`; AWS: `access_key`; GCP/Azure file paths:
-    /// `credentials_file`).
     List<String> CREDENTIAL_FIELD_KEYS = List.of("api_token", "access_key", "credentials_file");
 
     static String resolveProviderName(SourceProfile source) {
-        return source.provider().map(CloudProviderName::value)
-                              .or(source.type().value());
+        return source.provider()
+                     .map(CloudProviderName::value)
+                     .or(source.type().value());
     }
 
     private static String extractRole(String nodeId, String sourceName) {
         var suffix = nodeId.substring(sourceName.length() + 1);
         var dashIndex = suffix.lastIndexOf('-');
+
         return dashIndex > 0
-              ? suffix.substring(0, dashIndex)
-              : suffix;
+               ? suffix.substring(0, dashIndex)
+               : suffix;
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
-                                                                                                  String sourceName,
-                                                                                                  SourceProfile source,
-                                                                                                  int managementPort,
-                                                                                                  String clusterName) {
-        return switch (source.type()){
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
+                                                                 String sourceName,
+                                                                 SourceProfile source,
+                                                                 int managementPort,
+                                                                 String clusterName) {
+        return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
             case DOCKER -> provisionDockerSource(sourceName, source, clusterName);
             case SSH -> provisionSshSource(sourceName, source);
@@ -158,126 +170,145 @@ import static org.pragmatica.lang.Result.success;
         };
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionCloudSource(BootstrapContext ctx,
-                                                                                                       String sourceName,
-                                                                                                       SourceProfile source,
-                                                                                                       String clusterName) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<List<ProvisionedNode>> provisionCloudSource(BootstrapContext ctx,
+                                                                      String sourceName,
+                                                                      SourceProfile source,
+                                                                      String clusterName) {
         var providerName = resolveProviderName(source);
         var sshKeyIds = ctx.sshKeyIdsFor(providerName);
-        return ProviderResolver.resolveCloudCompute(source, sshKeyIds, "")
-                                                   .flatMap(compute -> provisionCloudWithCompute(compute,
-                                                                                                 ctx,
-                                                                                                 sourceName,
-                                                                                                 source,
-                                                                                                 clusterName));
+
+        return ProviderResolver.resolveCloudCompute(source, sshKeyIds, "").flatMap(compute -> provisionCloudWithCompute(compute,
+                                                                                                                        ctx,
+                                                                                                                        sourceName,
+                                                                                                                        source,
+                                                                                                                        clusterName));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionDockerSource(String sourceName,
-                                                                                                        SourceProfile source,
-                                                                                                        String clusterName) {
-        return ProviderResolver.resolveDockerCompute()
-                                                    .flatMap(compute -> provisionWithCompute(compute,
-                                                                                             sourceName,
-                                                                                             source,
-                                                                                             clusterName));
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<List<ProvisionedNode>> provisionDockerSource(String sourceName,
+                                                                       SourceProfile source,
+                                                                       String clusterName) {
+        return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionWithCompute(compute,
+                                                                                               sourceName,
+                                                                                               source,
+                                                                                               clusterName));
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
-                                                                                                                       String sourceName,
-                                                                                                                       SourceProfile source,
-                                                                                                                       String clusterName) {
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+                                                                      String sourceName,
+                                                                      SourceProfile source,
+                                                                      String clusterName) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
+
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
-            var result = roleTable.flatMap(rt -> rt.count())
-                                          .map(count -> provisionRoleGroup(compute,
-                                                                           sourceName,
-                                                                           role,
-                                                                           count,
-                                                                           source,
-                                                                           clusterName));
+            var result = roleTable.flatMap(rt -> rt.count()).map(count -> provisionRoleGroup(compute,
+                                                                                             sourceName,
+                                                                                             role,
+                                                                                             count,
+                                                                                             source,
+                                                                                             clusterName));
+
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();
+
                 if (provisionResult.isFailure()) {return provisionResult;}
+
                 var _ = provisionResult.onSuccess(allNodes::addAll);
             }
         }
+
         return success(List.copyOf(allNodes));
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) private static Result<List<ProvisionedNode>> provisionCloudWithCompute(ComputeProvider compute,
-                                                                                                                            BootstrapContext ctx,
-                                                                                                                            String sourceName,
-                                                                                                                            SourceProfile source,
-                                                                                                                            String clusterName) {
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    private static Result<List<ProvisionedNode>> provisionCloudWithCompute(ComputeProvider compute,
+                                                                           BootstrapContext ctx,
+                                                                           String sourceName,
+                                                                           SourceProfile source,
+                                                                           String clusterName) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
         var nodeIndex = 0;
+
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
             var count = roleTable.flatMap(rt -> rt.count()).or(0);
+
             if (count == 0) {continue;}
+
             var result = provisionCloudRoleGroup(compute, ctx, sourceName, role, count, source, clusterName, nodeIndex);
+
             if (result.isFailure()) {return result;}
+
             var _ = result.onSuccess(allNodes::addAll);
             nodeIndex += count;
         }
+
         return success(List.copyOf(allNodes));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
-                                                                                                    String sourceName,
-                                                                                                    NodeRole role,
-                                                                                                    int count,
-                                                                                                    SourceProfile source,
-                                                                                                    String clusterName) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
+                                                                    String sourceName,
+                                                                    NodeRole role,
+                                                                    int count,
+                                                                    SourceProfile source,
+                                                                    String clusterName) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         var instanceType = source.roles().containsKey(role)
-                          ? source.roles().get(role)
-                                        .instanceType()
-                                        .or("default")
-                          : "default";
+                           ? source.roles().get(role).instanceType().or("default")
+                           : "default";
         var zone = source.zone().or("default");
         var labels = Map.of("aether-cluster", clusterName, "aether-source", sourceName, "aether-role", role.value());
         var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, labels);
+
         return CloudProviderSupport.provisionVia(compute, group).await();
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<List<ProvisionedNode>> provisionCloudRoleGroup(ComputeProvider compute,
-                                                                                                         BootstrapContext ctx,
-                                                                                                         String sourceName,
-                                                                                                         NodeRole role,
-                                                                                                         int count,
-                                                                                                         SourceProfile source,
-                                                                                                         String clusterName,
-                                                                                                         int nodeIndexBase) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<List<ProvisionedNode>> provisionCloudRoleGroup(ComputeProvider compute,
+                                                                         BootstrapContext ctx,
+                                                                         String sourceName,
+                                                                         NodeRole role,
+                                                                         int count,
+                                                                         SourceProfile source,
+                                                                         String clusterName,
+                                                                         int nodeIndexBase) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         var nodes = new ArrayList<ProvisionedNode>();
+
         for (int i = 0;i <count;i++) {
             var nodeId = sourceName + "-" + role.value() + "-" + i;
             var globalIndex = nodeIndexBase + i;
             var specResult = buildCloudProvisionSpec(ctx, sourceName, source, role, nodeId, globalIndex, clusterName);
-            if (specResult.isFailure()) {return specResult.map(_ -> List.<ProvisionedNode>of());}
+
+            if (specResult.isFailure()) {return specResult.map(_ -> List.<ProvisionedNode> of());}
+
             var provisionResult = CloudProviderSupport.provisionOne(compute, nodeId, specResult.unwrap()).await();
-            if (provisionResult.isFailure()) {return provisionResult.map(_ -> List.<ProvisionedNode>of());}
+
+            if (provisionResult.isFailure()) {return provisionResult.map(_ -> List.<ProvisionedNode> of());}
+
             var _ = provisionResult.onSuccess(nodes::add);
         }
+
         return success(List.copyOf(nodes));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Result<ProvisionSpec> buildCloudProvisionSpec(BootstrapContext ctx,
-                                                                                                 String sourceName,
-                                                                                                 SourceProfile source,
-                                                                                                 NodeRole role,
-                                                                                                 String nodeId,
-                                                                                                 int nodeIndex,
-                                                                                                 String clusterName) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<ProvisionSpec> buildCloudProvisionSpec(BootstrapContext ctx,
+                                                                 String sourceName,
+                                                                 SourceProfile source,
+                                                                 NodeRole role,
+                                                                 String nodeId,
+                                                                 int nodeIndex,
+                                                                 String clusterName) {
         var instanceType = source.roles().containsKey(role)
-                          ? source.roles().get(role)
-                                        .instanceType()
-                                        .or("default")
-                          : "default";
+                           ? source.roles().get(role).instanceType().or("default")
+                           : "default";
         var zone = source.zone().or("default");
         var context = ProvisionContext.provisionContext(clusterName,
                                                         role.value(),
@@ -287,6 +318,7 @@ import static org.pragmatica.lang.Result.success;
                                                         ProvisionContext.DEFAULT_CORE_MAX,
                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
                                                         Map.of());
+
         return NodeConfigBuilder.compose(ctx,
                                          source,
                                          nodeIndex,
@@ -302,7 +334,7 @@ import static org.pragmatica.lang.Result.success;
                                                                                          instanceType,
                                                                                          role.value(),
                                                                                          context).map(spec -> applyZone(spec,
-                                                                                                                       zone))
+                                                                                                                        zone))
                                                                                         .map(spec -> spec.withUserData(userData)));
     }
 
@@ -327,45 +359,48 @@ import static org.pragmatica.lang.Result.success;
 
     private static ProvisionSpec applyZone(ProvisionSpec spec, String zone) {
         return zone.isEmpty() || "default".equals(zone)
-              ? spec
-              : spec.withPlacement(PlacementHint.zoneHint(zone));
+               ? spec
+               : spec.withPlacement(PlacementHint.zoneHint(zone));
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionSshSource(String sourceName,
-                                                                                                     SourceProfile source) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<List<ProvisionedNode>> provisionSshSource(String sourceName, SourceProfile source) {
         var nodes = new ArrayList<ProvisionedNode>();
+
         for (var entry : source.roles().entrySet()) {
             var role = entry.getKey();
-            entry.getValue().hosts()
-                          .onPresent(hosts -> addSshNodes(nodes, sourceName, role, hosts));
+            entry.getValue().hosts().onPresent(hosts -> addSshNodes(nodes, sourceName, role, hosts));
         }
+
         logProvisionRole(sourceName,
                          source.type(),
                          NodeRole.CORE,
                          Option.some(nodes.size()));
+
         return success(List.copyOf(nodes));
     }
 
-    @Contract private static void addSshNodes(List<ProvisionedNode> nodes,
-                                              String sourceName,
-                                              NodeRole role,
-                                              List<String> hosts) {
+    @Contract
+    private static void addSshNodes(List<ProvisionedNode> nodes, String sourceName, NodeRole role, List<String> hosts) {
         for (int i = 0;i <hosts.size();i++) {
             var nodeId = sourceName + "-" + role.value() + "-" + i;
             nodes.add(ProvisionedNode.provisionedNode(nodeId, "ssh", hosts.get(i)));
         }
     }
 
-    @SuppressWarnings("JBCT-PAT-01") private static Result<List<ProvisionedNode>> provisionForgeSource(String sourceName,
-                                                                                                       SourceProfile source,
-                                                                                                       int managementPort) {
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Result<List<ProvisionedNode>> provisionForgeSource(String sourceName,
+                                                                      SourceProfile source,
+                                                                      int managementPort) {
         System.out.println("  Forge source: nodes are virtual (in-process via EmberCluster)");
         System.out.println("  Start the forge binary separately: aether forge --config <forge.toml>");
         var nodes = new ArrayList<ProvisionedNode>();
         var counter = 0;
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
+
         for (var role : roleOrder) {
             var count = option(source.roles().get(role)).flatMap(rt -> rt.count()).or(0);
+
             for (int i = 0;i <count;i++) {
                 var nodeId = sourceName + "-" + role.value() + "-" + i;
                 var nodePort = managementPort + counter;
@@ -374,13 +409,12 @@ import static org.pragmatica.lang.Result.success;
             }
             if (count > 0) {logProvisionRole(sourceName, source.type(), role, Option.some(count));}
         }
+
         return success(List.copyOf(nodes));
     }
 
-    @Contract private static void logProvisionRole(String sourceName,
-                                                   SourceType type,
-                                                   NodeRole role,
-                                                   Option<Integer> count) {
+    @Contract
+    private static void logProvisionRole(String sourceName, SourceType type, NodeRole role, Option<Integer> count) {
         count.onPresent(c -> System.out.printf("  [%s/%s] %s: provisioning %d node(s)%n",
                                                sourceName,
                                                type.value(),
