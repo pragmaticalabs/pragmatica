@@ -76,19 +76,22 @@ class MembershipViewTest {
             assertThat(view.onDutyPeers()).isEmpty();
         }
 
-        @Test void healthySwimWithDecommissioned_emitsDecommissioned() {
+        @Test void healthySwimWithStopped_emitsStopped() {
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
-                                 Map.of(NODE_1, NodeLifecycleState.DECOMMISSIONED));
+                                 Map.of(NODE_1, NodeLifecycleState.STOPPED));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.DECOMMISSIONED);
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.STOPPED);
             assertThat(view.onDutyPeers()).isEmpty();
         }
 
-        @Test void healthySwimWithFailedDrain_emitsFailedDrain() {
+        @Test void healthySwimWithStoppedDrainFailed_emitsStopped() {
+            // Post-Step-I: FAILED_DRAIN lifecycle is now STOPPED with stopReason=DRAIN_FAILED.
+            // MemberStatus collapses to STOPPED — the StopReason sidecar lives on the lifecycle
+            // value and is not exposed via the MemberStatus enum.
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
-                                 Map.of(NODE_1, NodeLifecycleState.FAILED_DRAIN));
+                                 Map.of(NODE_1, NodeLifecycleState.STOPPED));
 
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.FAILED_DRAIN);
+            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.STOPPED);
         }
 
         @Test void healthySwimWithJoining_emitsJoining() {
@@ -96,13 +99,6 @@ class MembershipViewTest {
                                  Map.of(NODE_1, NodeLifecycleState.JOINING));
 
             assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.JOINING);
-        }
-
-        @Test void shuttingDownLegacyAlias_emitsDraining() {
-            var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
-                                 Map.of(NODE_1, NodeLifecycleState.SHUTTING_DOWN));
-
-            assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.DRAINING);
         }
     }
 
@@ -151,7 +147,7 @@ class MembershipViewTest {
             //   node-2: alive in SWIM, KV DRAINING → DRAINING
             //   node-3: faulty in SWIM, KV ON_DUTY (legacy stale) → ON_DUTY (no cluster-canonical
             //          UNREACHABLE quorum; KV is authoritative until snapshot votes negative)
-            //   node-4: faulty in SWIM, KV DECOMMISSIONED → DECOMMISSIONED
+            //   node-4: faulty in SWIM, KV STOPPED → STOPPED
             //   (replacement): alive in SWIM, no KV → ON_DUTY
             var swim = new LinkedHashMap<NodeId, SwimHealth>();
             swim.put(NODE_1, SwimHealth.HEALTHY);
@@ -192,12 +188,12 @@ class MembershipViewTest {
             assertThat(entry.unwrap().lifecycle().isPresent()).isFalse();
         }
 
-        @Test void decommissionedPeer_returnsKvBackedView() {
+        @Test void stoppedPeer_returnsKvBackedView() {
             var view = viewFrom(Map.of(NODE_1, SwimHealth.HEALTHY),
-                                 Map.of(NODE_1, NodeLifecycleState.DECOMMISSIONED));
+                                 Map.of(NODE_1, NodeLifecycleState.STOPPED));
 
             var entry = view.get(NODE_1).unwrap();
-            assertThat(entry.status()).isEqualTo(MemberStatus.DECOMMISSIONED);
+            assertThat(entry.status()).isEqualTo(MemberStatus.STOPPED);
             assertThat(entry.lifecycle().isPresent()).isTrue();
         }
     }

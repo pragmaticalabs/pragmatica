@@ -8,10 +8,8 @@ import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeResponse;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDecommission;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDrain;
-import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDrain;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -21,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.HttpError;
@@ -121,9 +120,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     ///
     /// Optional `state` filter (single state or `+`-separated union, e.g. `state=ON_DUTY` or
     /// `state=JOINING+ON_DUTY`) is parsed via the shared `RouteFilters.parseStateFilter` helper
-    /// and applied as a membership predicate against the externalised state name (post
-    /// SHUTTING_DOWN→DRAINING collapse — operators filter on what they see, not the
-    /// internal state). Empty filter set (e.g. `state=+` alone) matches no entry.
+    /// and applied as a membership predicate against the externalised state name (Step-I
+    /// collapse — `STOPPED` is the single terminal name; operators filter on what they see, not
+    /// the StopReason discriminator which is carried on a separate JSON field). Empty filter
+    /// set (e.g. `state=+` alone) matches no entry.
     private List<LifecycleEntry> getAllLifecycleStates(Option<String> stateFilter) {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
@@ -156,14 +156,14 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                                                value.updatedAt()));
     }
 
-    /// Collapse `SHUTTING_DOWN` to `DRAINING` for external viewers. Internal FSM/`NodeDeploymentManager`
-    /// still distinguish them (the former triggers self-shutdown), but operators see them as the same
-    /// "node is going away" state. See `cluster-membership-fsm-spec.md` §R6 — the FSM no longer emits
-    /// `SHUTTING_DOWN`, only the `NODE_SHUTDOWN` API action writes it transiently before halt.
+    /// External-viewer state name. Pre-Step-I this collapsed `SHUTTING_DOWN` → `DRAINING`
+    /// for operator-facing endpoints; post-Step-I the slice-layer enum no longer carries
+    /// `SHUTTING_DOWN` (the H/I collapse unified `SHUTTING_DOWN`/`DECOMMISSIONED`/`FAILED_DRAIN`
+    /// → `STOPPED` with a `StopReason` sidecar) so this is now a passthrough. Kept as a hook
+    /// in case future external-projection rules (e.g. mapping `STOPPED+GRACEFUL` to a distinct
+    /// public name) need to land here.
     private static String externalStateName(NodeLifecycleState state) {
-        return state == NodeLifecycleState.SHUTTING_DOWN
-               ? NodeLifecycleState.DRAINING.name()
-               : state.name();
+        return state.name();
     }
 
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
@@ -187,12 +187,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
                      .flatMap(this::runDrainProtocol);
     }
 
-    /// Drain protocol per RC1 spec §D.5 (post-E.8):
-    ///   1. enqueue `OperatorDrain` into `MembershipFsm` — the FSM writes DRAINING via
-    ///      consensus and fires `InvokeDrain` so the coordinator's drain protocol runs.
+    /// Drain protocol per RC1 spec §D.5 (post-E.8) + convergence-reconciler Phase 1:
+    ///   1. write DRAINING via `LifecycleWriter.applyCommand(ForceDrain)` and invoke
+    ///      `DrainCoordinator.prepareDrain(...)` so the drain protocol runs.
     ///   2. awaitDrainAck → wait for inflight=0 + lifecycle convergence within budget
-    ///   3a. on success → markDrainComplete (writes DECOMMISSIONED) → 200
-    ///   3b. on timeout → requestFailedDrain (writes FAILED_DRAIN) → 503
+    ///   3a. on success → markDrainComplete (writes STOPPED + GRACEFUL) → 200
+    ///   3b. on timeout → requestFailedDrain (writes STOPPED + DRAIN_FAILED) → 503
     private Promise<TransitionResult> runDrainProtocol(NodeId nodeId) {
         var coordinator = nodeSupplier.get().drainCoordinator();
 
@@ -204,19 +204,28 @@ public final class NodeLifecycleRoutes implements RouteSource {
                             .recover(cause -> handleDrainFailure(nodeId, cause));
     }
 
-    /// Step 1 of drain: write DRAINING via consensus through `MembershipFsm` (spec §9 E.4).
-    /// The FSM emits `InvokeDrain` so the coordinator's drain protocol runs.
+    /// Step 1 of drain: write DRAINING via `LifecycleWriter.applyCommand(ForceDrain)` (spec §6
+    /// — convergence-reconciler Phase 1 Kind-2 migration). The writer publishes the
+    /// `audit.lifecycle.commands` event pair and propagates the `DrainReason` sidecar onto the
+    /// resulting `NodeLifecycleValue`. After the KV write resolves, the route directly invokes
+    /// `DrainCoordinator.prepareDrain(...)` to start the drain protocol — the legacy
+    /// `MembershipFsm` `InvokeDrain` effect path is no longer involved for operator-initiated
+    /// drains.
     ///
-    /// RC1 Step 4: stamp the event with the node's canonical `HlcClock` so the resulting
+    /// RC1 Step 4: stamp the command with the node's canonical `HlcClock` so the resulting
     /// `NodeLifecycleValue.transitionedAt` is causally ordered against every other HLC-
     /// stamped action on this node.
     private Promise<Unit> initiateDrain(NodeId nodeId) {
         var node = nodeSupplier.get();
-        node.membershipFsm().enqueueOperatorEvent(new OperatorDrain(nodeId,
-                                                                    DrainReason.OPERATOR_DRAIN,
-                                                                    node.hlcClock().now()));
-
-        return Promise.unitPromise();
+        var at = node.hlcClock().now();
+        var command = new ForceDrain(nodeId,
+                                     DrainReason.OPERATOR_DRAIN,
+                                     Causes.cause("Operator drain: " + nodeId.id()),
+                                     at);
+        return node.lifecycleWriter()
+                   .applyCommand(command)
+                   .flatMap(_ -> node.drainCoordinator()
+                                     .prepareDrain(nodeId, DrainReason.OPERATOR_DRAIN));
     }
 
     private TimeSpan drainTimeout() {
@@ -228,9 +237,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
         coordinator.markDrainComplete(nodeId);
         var result = new TransitionResult(true,
                                           nodeId.id(),
-                                          NodeLifecycleState.DECOMMISSIONED.name(),
-                                          "Drain protocol complete; node is DECOMMISSIONED");
-        auditAndEmitLifecycleTransition(result, NodeLifecycleState.DECOMMISSIONED);
+                                          NodeLifecycleState.STOPPED.name(),
+                                          "Drain protocol complete; node is STOPPED (GRACEFUL)");
+        auditAndEmitLifecycleTransition(result, NodeLifecycleState.STOPPED);
 
         return Promise.success(result);
     }
@@ -239,9 +248,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
         recordFailedDrainAtom(nodeId);
         var result = new TransitionResult(false,
                                           nodeId.id(),
-                                          NodeLifecycleState.FAILED_DRAIN.name(),
+                                          NodeLifecycleState.STOPPED.name(),
                                           "Drain budget exceeded: " + cause.message());
-        auditAndEmitLifecycleTransition(result, NodeLifecycleState.FAILED_DRAIN);
+        auditAndEmitLifecycleTransition(result, NodeLifecycleState.STOPPED);
 
         return result;
     }
@@ -249,7 +258,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     @SuppressWarnings("JBCT-RET-01")
     private void recordFailedDrainAtom(NodeId nodeId) {
         nodeSupplier.get().lifecycleWriter().requestFailedDrain(nodeId).onFailure(writerCause -> AuditLog.nodeLifecycleTransition(nodeId.id(),
-                                                                                                                                  NodeLifecycleState.FAILED_DRAIN.name(),
+                                                                                                                                  NodeLifecycleState.STOPPED.name(),
                                                                                                                                   false,
                                                                                                                                   writerCause.message()));
     }
@@ -301,11 +310,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> guardActivateState(String nodeIdStr, NodeLifecycleValue current) {
-        if (current.state() != NodeLifecycleState.DRAINING && current.state() != NodeLifecycleState.DECOMMISSIONED) {
+        if (current.state() != NodeLifecycleState.DRAINING && current.state() != NodeLifecycleState.STOPPED) {
             return HttpError.httpError(HttpStatus.CONFLICT,
                                        Causes.cause("Cannot activate node " + nodeIdStr
                                                    + " from " + current.state()
-                                                   + " (must be DRAINING or DECOMMISSIONED)"))
+                                                   + " (must be DRAINING or STOPPED)"))
                             .promise();
         }
         return NodeId.nodeId(nodeIdStr)
@@ -442,26 +451,27 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
-    /// Decommission entry point. Routes through `MembershipFsm` with `OperatorDecommission(force=true)`
-    /// (spec §9 E.4). The `force` flag is `true` because the `/api/node/shutdown` route bypasses
-    /// the drain protocol — this matches direct-DECOMMISSIONED-write semantics.
+    /// Decommission entry point. Routes through `LifecycleWriter.applyCommand(ForceDecommission)`
+    /// (spec §6 — convergence-reconciler Phase 1 Kind-2 migration). The `StopReason.FORCED`
+    /// sidecar reflects that the `/api/node/shutdown` route bypasses the drain protocol and
+    /// writes STOPPED directly.
     ///
-    /// RC1 Step 4: stamp the event with the node's canonical `HlcClock`.
+    /// RC1 Step 4: stamp the command with the node's canonical `HlcClock`.
     private Promise<Unit> initiateDecommission(NodeId nodeId) {
         var node = nodeSupplier.get();
-        node.membershipFsm().enqueueOperatorEvent(new OperatorDecommission(nodeId,
-                                                                           true,
-                                                                           node.hlcClock().now()));
-
-        return Promise.unitPromise();
+        var command = new ForceDecommission(nodeId,
+                                            StopReason.FORCED,
+                                            Causes.cause("Operator decommission: " + nodeId.id()),
+                                            node.hlcClock().now());
+        return node.lifecycleWriter().applyCommand(command);
     }
 
     private TransitionResult shutdownSuccessResult(String nodeIdStr) {
         var result = new TransitionResult(true,
                                           nodeIdStr,
-                                          NodeLifecycleState.DECOMMISSIONED.name(),
-                                          "Transition to " + NodeLifecycleState.DECOMMISSIONED + " initiated");
-        auditAndEmitLifecycleTransition(result, NodeLifecycleState.DECOMMISSIONED);
+                                          NodeLifecycleState.STOPPED.name(),
+                                          "Transition to " + NodeLifecycleState.STOPPED + " initiated");
+        auditAndEmitLifecycleTransition(result, NodeLifecycleState.STOPPED);
 
         return result;
     }

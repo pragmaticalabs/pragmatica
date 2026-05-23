@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.drain;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
+import org.pragmatica.lang.Contract;
 
 import java.util.Map;
 
@@ -22,6 +23,7 @@ import java.util.Map;
 /// implementation but does not interrupt the drain sequence.
 @FunctionalInterface
 public interface SelfDrainEventPublisher {
+    @Contract
     void publish(ClusterEventValue.EventType type,
                  ClusterEventValue.Severity severity,
                  String message,

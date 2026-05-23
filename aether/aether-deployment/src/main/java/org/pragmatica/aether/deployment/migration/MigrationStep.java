@@ -28,19 +28,22 @@ public sealed interface MigrationStep {
     }
 
     record ProvisionTarget(String targetProvider, String targetZone, int index) implements MigrationStep {
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Provision node " + index + " in " + targetProvider + "/" + targetZone;
         }
     }
 
     record WaitForSync(int index) implements MigrationStep {
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Wait for node " + index + " to synchronize";
         }
     }
 
     record DrainSource(String nodeId) implements MigrationStep {
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Drain source node " + nodeId;
         }
     }
@@ -50,13 +53,15 @@ public sealed interface MigrationStep {
             targetAddresses = java.util.List.copyOf(targetAddresses);
         }
 
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Update DNS " + hostname + " -> " + targetAddresses;
         }
     }
 
     record TerminateSource(String nodeId) implements MigrationStep {
-        @Override public String description() {
+        @Override
+        public String description() {
             return "Terminate source node " + nodeId;
         }
     }

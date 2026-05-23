@@ -61,9 +61,8 @@ import org.slf4j.LoggerFactory;
 public interface ReachabilityAggregator {
     /// Fold one remote observer's contribution into the aggregator state. Called
     /// by the leader-gated pong-receive listener.
-    @Contract void ingest(NodeId observer,
-                          List<PeerConnectivityObservation> connectivity,
-                          List<PeerHealthObservation> health);
+    @Contract
+    void ingest(NodeId observer, List<PeerConnectivityObservation> connectivity, List<PeerHealthObservation> health);
 
     /// Build the current cluster-canonical reachability snapshot. Folds the
     /// leader's self-view from the configured suppliers at build time. Returns
@@ -73,12 +72,14 @@ public interface ReachabilityAggregator {
 
     /// Drop all accumulated state. Called on leader-loss; the next leader rebuilds
     /// from incoming observations.
-    @Contract void reset();
+    @Contract
+    void reset();
 
     /// Seed from the most-recent cached snapshot received from the prior leader.
     /// Called on leader-gained to shorten warmup: cached states become one-observer
     /// entries (self) until real observations from pongs refine them.
-    @Contract void seedFromCache(AggregatedReachabilitySnapshot cached);
+    @Contract
+    void seedFromCache(AggregatedReachabilitySnapshot cached);
 
     /// Topology-observation refactor Step 3: register a listener invoked synchronously
     /// from the snapshot-builder thread after each successful `snapshot()` build (i.e.
@@ -90,7 +91,8 @@ public interface ReachabilityAggregator {
     /// interrupt subsequent listeners — the exception is logged and other listeners
     /// still receive the snapshot. The aggregator itself never propagates listener
     /// failures.
-    @Contract void addSnapshotListener(Consumer<AggregatedReachabilitySnapshot> listener);
+    @Contract
+    void addSnapshotListener(Consumer<AggregatedReachabilitySnapshot> listener);
 
     /// Topology-observation refactor Step 4: leader's own QUIC layer fires a transition
     /// observation directly into the aggregator, bypassing the 5-second self-fold tick
@@ -105,14 +107,15 @@ public interface ReachabilityAggregator {
     /// Safe to call regardless of role — the aggregator is leader-side-only by design,
     /// so a misrouted call simply mutates state that the next `reset()` (on leader loss)
     /// will discard.
-    @Contract void ingestSelfTransition(NodeId peer, ReachabilityKind kind, long producedAtMs);
+    @Contract
+    void ingestSelfTransition(NodeId peer, ReachabilityKind kind, long producedAtMs);
 
     static ReachabilityAggregator reachabilityAggregator(NodeId self,
-                                                          IntSupplier onDutyCountSupplier,
-                                                          Supplier<Set<NodeId>> selfConnectedSupplier,
-                                                          Supplier<Set<NodeId>> topologySupplier,
-                                                          LongSupplier clockMs,
-                                                          long ttlMs) {
+                                                         IntSupplier onDutyCountSupplier,
+                                                         Supplier<Set<NodeId>> selfConnectedSupplier,
+                                                         Supplier<Set<NodeId>> topologySupplier,
+                                                         LongSupplier clockMs,
+                                                         long ttlMs) {
         return new ReachabilityAggregatorRecord(self,
                                                 onDutyCountSupplier,
                                                 selfConnectedSupplier,
@@ -133,51 +136,68 @@ record ReachabilityAggregatorRecord(NodeId self,
                                     long ttlMs,
                                     Map<NodeId, Map<NodeId, ObservationEntry>> byTarget,
                                     List<Consumer<AggregatedReachabilitySnapshot>> snapshotListeners) implements ReachabilityAggregator {
-
     private static final Logger log = LoggerFactory.getLogger(ReachabilityAggregatorRecord.class);
 
     record ObservationEntry(ReachabilityKind kind, long observedAtMs) {}
 
-    @Contract @Override public void ingest(NodeId observer,
-                                            List<PeerConnectivityObservation> connectivity,
-                                            List<PeerHealthObservation> health) {
+    @Contract
+    @Override
+    public void ingest(NodeId observer,
+                       List<PeerConnectivityObservation> connectivity,
+                       List<PeerHealthObservation> health) {
         connectivity.forEach(obs -> recordObservation(observer, obs.peerId(), translate(obs.state()), obs.producedAtMs()));
         health.forEach(obs -> recordObservation(observer, obs.peerId(), translate(obs.hint()), obs.producedAtMs()));
     }
 
-    @Contract @Override public void reset() {
+    @Contract
+    @Override
+    public void reset() {
         byTarget.clear();
     }
 
-    @Contract @Override public void seedFromCache(AggregatedReachabilitySnapshot cached) {
+    @Contract
+    @Override
+    public void seedFromCache(AggregatedReachabilitySnapshot cached) {
         var now = clockMs.getAsLong();
         cached.states().forEach((target, state) -> {
-            var bySource = byTarget.computeIfAbsent(target, _ -> new HashMap<>());
-            bySource.put(self, new ObservationEntry(state.kind(), Math.min(state.lastObservedAtMs(), now)));
-        });
+                                    var bySource = byTarget.computeIfAbsent(target, _ -> new HashMap<>());
+                                    bySource.put(self,
+                                                 new ObservationEntry(state.kind(),
+                                                                      Math.min(state.lastObservedAtMs(), now)));
+                                });
     }
 
-    @Contract @Override public void addSnapshotListener(Consumer<AggregatedReachabilitySnapshot> listener) {
+    @Contract
+    @Override
+    public void addSnapshotListener(Consumer<AggregatedReachabilitySnapshot> listener) {
         snapshotListeners.add(listener);
     }
 
-    @Contract @Override public void ingestSelfTransition(NodeId peer, ReachabilityKind kind, long producedAtMs) {
+    @Contract
+    @Override
+    public void ingestSelfTransition(NodeId peer, ReachabilityKind kind, long producedAtMs) {
         recordObservation(self, peer, kind, producedAtMs);
     }
 
-    @Override public Option<AggregatedReachabilitySnapshot> snapshot() {
+    @Override
+    public Option<AggregatedReachabilitySnapshot> snapshot() {
         var now = clockMs.getAsLong();
         foldSelfObservations(now);
         var quorumThreshold = quorumThreshold(onDutyCountSupplier.getAsInt());
         var states = new LinkedHashMap<NodeId, ReachabilityState>();
         byTarget.forEach((target, observers) -> {
-            var live = liveObservers(observers, now);
-            if (live.isEmpty()) {return;}
-            states.put(target, derive(target, live, quorumThreshold));
-        });
+                             var live = liveObservers(observers, now);
+                             if (live.isEmpty()) {
+                             return;
+                         }
+                             states.put(target, derive(target, live, quorumThreshold));
+                         });
+
         if (states.isEmpty()) {return Option.none();}
+
         var snapshot = new AggregatedReachabilitySnapshot(now, states);
         dispatchSnapshotToListeners(snapshot);
+
         return Option.some(snapshot);
     }
 
@@ -188,7 +208,7 @@ record ReachabilityAggregatorRecord(NodeId self,
     }
 
     private void invokeListenerIsolated(Consumer<AggregatedReachabilitySnapshot> listener,
-                                         AggregatedReachabilitySnapshot snapshot) {
+                                        AggregatedReachabilitySnapshot snapshot) {
         try {
             listener.accept(snapshot);
         } catch (RuntimeException ex) {
@@ -200,17 +220,23 @@ record ReachabilityAggregatorRecord(NodeId self,
     private void foldSelfObservations(long nowMs) {
         var connected = selfConnectedSupplier.get();
         var topology = topologySupplier.get();
+
         for (var peer : topology) {
             if (peer.equals(self)) {continue;}
-            var kind = connected.contains(peer) ? ReachabilityKind.REACHABLE : ReachabilityKind.UNREACHABLE;
+
+            var kind = connected.contains(peer)
+                       ? ReachabilityKind.REACHABLE
+                       : ReachabilityKind.UNREACHABLE;
             recordObservation(self, peer, kind, nowMs);
         }
     }
 
     private void recordObservation(NodeId observer, NodeId target, ReachabilityKind kind, long producedAtMs) {
         if (target.equals(observer)) {return;}
+
         var bySource = byTarget.computeIfAbsent(target, _ -> new HashMap<>());
         var existing = bySource.get(observer);
+
         if (existing == null || producedAtMs >= existing.observedAtMs()) {
             bySource.put(observer, new ObservationEntry(kind, producedAtMs));
         }
@@ -219,8 +245,11 @@ record ReachabilityAggregatorRecord(NodeId self,
     private Map<NodeId, ObservationEntry> liveObservers(Map<NodeId, ObservationEntry> observers, long nowMs) {
         var alive = new HashMap<NodeId, ObservationEntry>();
         observers.forEach((observer, entry) -> {
-            if (nowMs - entry.observedAtMs() <= ttlMs) {alive.put(observer, entry);}
-        });
+                              if (nowMs - entry.observedAtMs() <= ttlMs) {
+                              alive.put(observer, entry);
+                          }
+                          });
+
         return alive;
     }
 
@@ -228,9 +257,9 @@ record ReachabilityAggregatorRecord(NodeId self,
         var reachable = 0;
         var unreachable = 0;
         var latestObservedAtMs = 0L;
+
         for (var entry : live.values()) {
-            if (entry.kind() == ReachabilityKind.REACHABLE) {reachable++;}
-            else if (entry.kind() == ReachabilityKind.UNREACHABLE) {unreachable++;}
+            if (entry.kind() == ReachabilityKind.REACHABLE) {reachable++;} else if (entry.kind() == ReachabilityKind.UNREACHABLE) {unreachable++;}
             if (entry.observedAtMs() > latestObservedAtMs) {latestObservedAtMs = entry.observedAtMs();}
         }
         // Symmetric quorum: BOTH REACHABLE and UNREACHABLE require ⌈N/2⌉+1 observers.
@@ -256,6 +285,7 @@ record ReachabilityAggregatorRecord(NodeId self,
         // membership-architecture-spec.md §16 S05/S06.
         ReachabilityKind kind;
         int observerCount;
+
         if (reachable >= quorumThreshold && unreachable == 0) {
             kind = ReachabilityKind.REACHABLE;
             observerCount = reachable;
@@ -266,6 +296,7 @@ record ReachabilityAggregatorRecord(NodeId self,
             kind = ReachabilityKind.UNKNOWN;
             observerCount = live.size();
         }
+
         return new ReachabilityState(target, kind, observerCount, latestObservedAtMs);
     }
 
@@ -275,14 +306,14 @@ record ReachabilityAggregatorRecord(NodeId self,
     }
 
     private static ReachabilityKind translate(ConnectivityState state) {
-        return switch (state){
+        return switch (state) {
             case CONNECTED -> ReachabilityKind.REACHABLE;
             case DISCONNECTED, STALE -> ReachabilityKind.UNREACHABLE;
         };
     }
 
     private static ReachabilityKind translate(HealthHintWire hint) {
-        return switch (hint){
+        return switch (hint) {
             case HEALTHY -> ReachabilityKind.REACHABLE;
             case SUSPECTED, FAULTY -> ReachabilityKind.UNREACHABLE;
         };

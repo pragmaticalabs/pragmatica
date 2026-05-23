@@ -11,6 +11,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSource;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -39,19 +40,19 @@ final class LegacyLifecycleWriterFixture {
                                   LongSupplier clock) {
         return new LifecycleWriter() {
             @Override public Promise<Unit> requestDrain(NodeId target) {
-                return write(target, NodeLifecycleState.DRAINING, commandApplier, lifecycleReader, clock);
+                return write(target, NodeLifecycleState.DRAINING, Option.none(), commandApplier, lifecycleReader, clock);
             }
 
             @Override public Promise<Unit> requestDecommission(NodeId target) {
-                return write(target, NodeLifecycleState.DECOMMISSIONED, commandApplier, lifecycleReader, clock);
+                return write(target, NodeLifecycleState.STOPPED, Option.some(StopReason.FORCED), commandApplier, lifecycleReader, clock);
             }
 
             @Override public Promise<Unit> requestActivate(NodeId target) {
-                return write(target, NodeLifecycleState.ON_DUTY, commandApplier, lifecycleReader, clock);
+                return write(target, NodeLifecycleState.ON_DUTY, Option.none(), commandApplier, lifecycleReader, clock);
             }
 
             @Override public Promise<Unit> requestFailedDrain(NodeId target) {
-                return write(target, NodeLifecycleState.FAILED_DRAIN, commandApplier, lifecycleReader, clock);
+                return write(target, NodeLifecycleState.STOPPED, Option.some(StopReason.DRAIN_FAILED), commandApplier, lifecycleReader, clock);
             }
         };
     }
@@ -59,6 +60,13 @@ final class LegacyLifecycleWriterFixture {
     private static NodeLifecycleValue valueFor(NodeLifecycleState state,
                                                 Option<NodeLifecycleValue> prior,
                                                 long nowMs) {
+        var base = priorOrDefault(state, prior, nowMs);
+        return base;
+    }
+
+    private static NodeLifecycleValue priorOrDefault(NodeLifecycleState state,
+                                                      Option<NodeLifecycleValue> prior,
+                                                      long nowMs) {
         if (prior.isEmpty()) {
             return state == NodeLifecycleState.DRAINING
                    ? NodeLifecycleValue.nodeLifecycleValue(state, "", 0, Epoch.ZERO)
@@ -77,10 +85,12 @@ final class LegacyLifecycleWriterFixture {
     @SuppressWarnings("unchecked")
     private static Promise<Unit> write(NodeId nodeId,
                                        NodeLifecycleState state,
+                                       Option<StopReason> stopReason,
                                        Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                        Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
                                        LongSupplier clock) {
-        var value = valueFor(state, lifecycleReader.apply(nodeId), clock.getAsLong());
+        var value = valueFor(state, lifecycleReader.apply(nodeId), clock.getAsLong())
+                            .withStopReason(stopReason);
         var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(
                 NodeLifecycleKey.nodeLifecycleKey(nodeId), value);
         return commandApplier.apply(List.of(command)).mapToUnit();

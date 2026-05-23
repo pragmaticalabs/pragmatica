@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityState;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
@@ -26,11 +27,11 @@ import java.util.function.Supplier;
 /// **H-series structural refactor: SWIM is the single source of truth for "alive".**
 ///
 /// Replaces the leader-driven `(UNTRACKED, SwimHealthy) → ON_DUTY` / `(ON_DUTY, SwimFaulty)
-/// → DECOMMISSIONED` write pathway (`MembershipFsm`) with a derived view that combines:
+/// → STOPPED` write pathway (`MembershipFsm`) with a derived view that combines:
 ///
 /// 1. The local SWIM `HealthSnapshot` — authoritative for "is this peer currently reachable?"
 /// 2. The consensus-replicated `NodeLifecycleKey` KV — operator-declared overrides
-///    (`JOINING`, `DRAINING`, `DECOMMISSIONED`, `FAILED_DRAIN`) only.
+///    (`JOINING`, `DRAINING`, `STOPPED`) only.
 ///
 /// **Why this design.** The pre-H model maintained four parallel stores of membership truth
 /// (SWIM alive set, Rabia consensus group, NodeLifecycleKey ON_DUTY entries, MembershipFsm
@@ -41,14 +42,14 @@ import java.util.function.Supplier;
 ///
 /// **Rule set (per-peer, in order):**
 ///
-/// - **JOINING / DRAINING / DECOMMISSIONED / FAILED_DRAIN in KV** → emit that state. Operator
+/// - **JOINING / DRAINING / STOPPED in KV** → emit that state. Operator
 ///   intent overrides SWIM observation. A peer that SWIM still reports HEALTHY but KV says
-///   DECOMMISSIONED is excluded from "operationally available" sets — operator wants it gone.
+///   STOPPED is excluded from "operationally available" sets — operator wants it gone.
 /// - **HEALTHY in SWIM, no KV entry (or KV says `ON_DUTY` from legacy writes)** → emit
 ///   `ON_DUTY`. This is the new bootstrap path: SWIM admission alone is sufficient. No
 ///   explicit `(UNTRACKED, SwimHealthy) → ON_DUTY` write is required.
 /// - **FAULTY or UNKNOWN in SWIM with no KV entry** → peer is absent from the view. No need
-///   to write `DECOMMISSIONED` to KV — the view simply stops including the peer.
+///   to write `STOPPED` to KV — the view simply stops including the peer.
 /// - **HEALTHY in SWIM with KV `JOINING`** → still `JOINING` (operator/slot-provisioning
 ///   intermediate state — KV wins until JOINING is cleared by a downstream actor).
 ///
@@ -100,7 +101,8 @@ public interface MembershipView {
     /// absent peers. Useful as a drop-in for callers that previously read
     /// `MembershipFsm.snapshot().get(peer)`.
     default MemberStatus statusOf(NodeId peer) {
-        return get(peer).map(MemberView::status).or(MemberStatus.UNTRACKED);
+        return get(peer).map(MemberView::status)
+                  .or(MemberStatus.UNTRACKED);
     }
 
     /// All peers currently effective as `ON_DUTY`. Convenience for the common
@@ -108,6 +110,7 @@ public interface MembershipView {
     default List<NodeId> onDutyPeers() {
         var list = new ArrayList<NodeId>();
         snapshot().forEach((peer, view) -> appendIfOnDuty(list, peer, view));
+
         return List.copyOf(list);
     }
 
@@ -123,15 +126,16 @@ public interface MembershipView {
     record MemberView(NodeId peer, MemberStatus status, SwimHealth swimHealth, Option<NodeLifecycleValue> lifecycle) {}
 
     /// Effective lifecycle states the H-series view recognises. Mirrors `NodeLifecycleState`
-    /// for the 5 KV-replicated values; adds `UNTRACKED` (peer absent everywhere — legacy
-    /// view callers expect this as the "default zero" state).
+    /// (post-step-I collapse) for the 4 KV-replicated values; adds `UNTRACKED` (peer absent
+    /// everywhere — legacy view callers expect this as the "default zero" state). Pre-step-I
+    /// `DECOMMISSIONED` / `FAILED_DRAIN` callers see `STOPPED` — the discriminator survives on
+    /// `NodeLifecycleValue.stopReason()` (FORCED / GRACEFUL / DRAIN_FAILED).
     enum MemberStatus {
         UNTRACKED,
         JOINING,
         ON_DUTY,
         DRAINING,
-        DECOMMISSIONED,
-        FAILED_DRAIN
+        STOPPED
     }
 
     /// **Strict factory — RC1 Step 5 default for every external reader.**
@@ -140,7 +144,7 @@ public interface MembershipView {
     /// `inQuorum` supplier reports `false` the view forces every derived `ON_DUTY` to
     /// `UNTRACKED`: a minority-side node MUST NOT advertise on-duty peers that the majority
     /// has likely re-routed work past. Operator-declared override states (JOINING /
-    /// DRAINING / DECOMMISSIONED / FAILED_DRAIN) survive — those reflect consensus-replicated
+    /// DRAINING / STOPPED) survive — those reflect consensus-replicated
     /// operator intent that remains true regardless of the local node's quorum status.
     ///
     /// `inQuorum` MUST be backed by the same `AtomicBoolean` that `TopologyObserver` mutates
@@ -193,6 +197,7 @@ public interface MembershipView {
 
     @FunctionalInterface
     interface LifecycleKvReader {
+        @Contract
         void forEachLifecycle(BiConsumer<NodeLifecycleKey, NodeLifecycleValue> consumer);
     }
 
@@ -219,9 +224,13 @@ public interface MembershipView {
             var lifecycleByPeer = collectLifecycleEntries();
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var view = new HashMap<NodeId, MemberView>();
-            lifecycleByPeer.forEach((peer, lifecycle) -> view.put(peer, deriveFromKv(peer, lifecycle, swim, quorate, snapshot)));
+            lifecycleByPeer.forEach((peer, lifecycle) -> view.put(peer,
+                                                                  deriveFromKv(peer, lifecycle, swim, quorate, snapshot)));
             swim.peerHealth().forEach((peer, swimState) -> view.computeIfAbsent(peer,
-                                                                                 _ -> deriveFromSwimOnly(peer, swimState, quorate)));
+                                                                                _ -> deriveFromSwimOnly(peer,
+                                                                                                        swimState,
+                                                                                                        quorate)));
+
             return Map.copyOf(view);
         }
 
@@ -232,6 +241,7 @@ public interface MembershipView {
             var lifecycle = readLifecycleFor(peer);
             var swim = swimHealth.get().or(HealthSnapshot.healthSnapshot(Map.of()));
             var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
+
             return lifecycle.map(value -> deriveFromKv(peer, value, swim, quorate, snapshot))
                             .orElse(() -> swimOnlyEntry(peer, swimState, quorate));
         }
@@ -240,23 +250,29 @@ public interface MembershipView {
             if (swimState != SwimHealth.HEALTHY) {
                 return Option.none();
             }
-            var status = quorate ? MemberStatus.ON_DUTY : MemberStatus.UNTRACKED;
+
+            var status = quorate
+                         ? MemberStatus.ON_DUTY
+                         : MemberStatus.UNTRACKED;
             return Option.some(new MemberView(peer, status, swimState, Option.none()));
         }
 
         private Option<NodeLifecycleValue> readLifecycleFor(NodeId peer) {
             var holder = new NodeLifecycleValue[1];
             lifecycleKv.forEachLifecycle((key, value) -> {
-                if (key.nodeId().equals(peer)) {
+                if (key.nodeId()
+                       .equals(peer)) {
                     holder[0] = value;
                 }
             });
+
             return Option.option(holder[0]);
         }
 
         private Map<NodeId, NodeLifecycleValue> collectLifecycleEntries() {
             var map = new HashMap<NodeId, NodeLifecycleValue>();
             lifecycleKv.forEachLifecycle((key, value) -> map.put(key.nodeId(), value));
+
             return map;
         }
 
@@ -267,6 +283,7 @@ public interface MembershipView {
                                                Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
             var swimState = swim.healthOf(peer).or(SwimHealth.UNKNOWN);
             var status = mapKvState(peer, lifecycle.state(), swimState, quorate, reachabilitySnapshot);
+
             return new MemberView(peer, status, swimState, Option.some(lifecycle));
         }
 
@@ -284,9 +301,8 @@ public interface MembershipView {
                                                Option<AggregatedReachabilitySnapshot> reachabilitySnapshot) {
             return switch (kvState) {
                 case JOINING -> MemberStatus.JOINING;
-                case DRAINING, SHUTTING_DOWN -> MemberStatus.DRAINING;
-                case DECOMMISSIONED -> MemberStatus.DECOMMISSIONED;
-                case FAILED_DRAIN -> MemberStatus.FAILED_DRAIN;
+                case DRAINING -> MemberStatus.DRAINING;
+                case STOPPED -> MemberStatus.STOPPED;
                 case ON_DUTY -> resolveOnDutyStatus(peer, swimState, quorate, reachabilitySnapshot);
             };
         }
@@ -332,8 +348,8 @@ public interface MembershipView {
             if (swimState == SwimHealth.HEALTHY) {
                 return MemberStatus.ON_DUTY;
             }
-            return reachabilitySnapshot.fold(() -> MemberStatus.ON_DUTY,
-                                              snap -> kindFromSnapshot(snap, peer));
+
+            return reachabilitySnapshot.fold(() -> MemberStatus.ON_DUTY, snap -> kindFromSnapshot(snap, peer));
         }
 
         /// Explicit projection of a per-peer `ReachabilityKind` into `MemberStatus` for the
@@ -343,9 +359,11 @@ public interface MembershipView {
         /// [#resolveOnDutyStatus] for the spec-contract rationale.
         private static MemberStatus kindFromSnapshot(AggregatedReachabilitySnapshot snap, NodeId peer) {
             var entry = snap.states().get(peer);
+
             if (entry == null) {
                 return MemberStatus.ON_DUTY;
             }
+
             return projectKind(entry);
         }
 

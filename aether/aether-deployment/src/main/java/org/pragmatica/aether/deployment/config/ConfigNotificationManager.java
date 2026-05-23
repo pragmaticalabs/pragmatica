@@ -22,11 +22,13 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Result.unitResult;
 
 
-@SuppressWarnings({"JBCT-UTIL-02", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-SEQ-01"}) public sealed interface ConfigNotificationManager {
+@SuppressWarnings({"JBCT-UTIL-02", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-SEQ-01"})
+public sealed interface ConfigNotificationManager {
     Result<Unit> register(Artifact artifact,
                           Object sliceInstance,
                           ClassLoader sliceClassLoader,
                           String factoryClassName);
+
     Result<Unit> notifyChange(String section, ConfigFacade config);
     Result<Unit> notifyInitial(Artifact artifact, List<String> sections, ConfigFacade config);
     Result<Unit> unregister(Artifact artifact);
@@ -36,15 +38,13 @@ import static org.pragmatica.lang.Result.unitResult;
         return new DefaultConfigNotificationManager();
     }
 
-    record SliceRegistration(Artifact artifact, Object sliceInstance, Method notifyMethod){}
+    record SliceRegistration(Artifact artifact, Object sliceInstance, Method notifyMethod) {}
 
     final class DefaultConfigNotificationManager implements ConfigNotificationManager {
         private static final Logger log = LoggerFactory.getLogger(ConfigNotificationManager.class);
-
         private static final String NOTIFY_METHOD_NAME = "notifyConfigUpdate";
 
         private final ConcurrentHashMap<Artifact, SliceRegistration> registrations = new ConcurrentHashMap<>();
-
         private final ConcurrentHashMap<String, Object> lastParsedConfig = new ConcurrentHashMap<>();
 
         private final ExecutorService executor = Executors.newSingleThreadExecutor(DefaultConfigNotificationManager::createDaemonThread);
@@ -52,40 +52,52 @@ import static org.pragmatica.lang.Result.unitResult;
         private static Thread createDaemonThread(Runnable r) {
             var thread = new Thread(r, "config-notification");
             thread.setDaemon(true);
+
             return thread;
         }
 
-        @Override public Result<Unit> register(Artifact artifact,
-                                               Object sliceInstance,
-                                               ClassLoader sliceClassLoader,
-                                               String factoryClassName) {
+        @Override
+        public Result<Unit> register(Artifact artifact,
+                                     Object sliceInstance,
+                                     ClassLoader sliceClassLoader,
+                                     String factoryClassName) {
             findNotifyMethod(sliceClassLoader, factoryClassName).onPresent(method -> registerSlice(artifact,
                                                                                                    sliceInstance,
                                                                                                    method));
             return unitResult();
         }
 
-        @Override public Result<Unit> notifyChange(String section, ConfigFacade config) {
+        @Override
+        public Result<Unit> notifyChange(String section, ConfigFacade config) {
             executor.execute(() -> dispatchNotification(section, config));
+
             return unitResult();
         }
 
-        @Override public Result<Unit> notifyInitial(Artifact artifact, List<String> sections, ConfigFacade config) {
+        @Override
+        public Result<Unit> notifyInitial(Artifact artifact, List<String> sections, ConfigFacade config) {
             var registration = registrations.get(artifact);
+
             if (registration == null) {return unitResult();}
+
             executor.execute(() -> dispatchInitialNotification(registration, sections, config));
+
             return unitResult();
         }
 
-        @Override public Result<Unit> unregister(Artifact artifact) {
+        @Override
+        public Result<Unit> unregister(Artifact artifact) {
             registrations.remove(artifact);
             var prefix = artifact.asString() + ":";
             lastParsedConfig.keySet().removeIf(key -> key.startsWith(prefix));
+
             return unitResult();
         }
 
-        @Override public Result<Unit> shutdown() {
+        @Override
+        public Result<Unit> shutdown() {
             executor.shutdown();
+
             return unitResult();
         }
 
@@ -96,13 +108,14 @@ import static org.pragmatica.lang.Result.unitResult;
 
         private Option<Method> findNotifyMethod(ClassLoader classLoader, String factoryClassName) {
             return Result.lift(() -> classLoader.loadClass(factoryClassName)
-                                                          .getMethod(NOTIFY_METHOD_NAME,
-                                                                     Object.class,
-                                                                     String.class,
-                                                                     ConfigFacade.class)).onFailure(cause -> log.trace("No config update method on factory {}: {}",
-                                                                                                                       factoryClassName,
-                                                                                                                       cause.message()))
-                              .option();
+                                                .getMethod(NOTIFY_METHOD_NAME,
+                                                           Object.class,
+                                                           String.class,
+                                                           ConfigFacade.class))
+                         .onFailure(cause -> log.trace("No config update method on factory {}: {}",
+                                                       factoryClassName,
+                                                       cause.message()))
+                         .option();
         }
 
         private void dispatchNotification(String section, ConfigFacade config) {

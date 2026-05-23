@@ -17,8 +17,12 @@ import java.util.concurrent.ConcurrentHashMap;
 
 
 public interface RoutingEpochAckTracker {
-    @Contract void registerExpectation(SliceNodeKey sliceKey, Epoch epoch, Set<NodeId> targetNodes);
-    @Contract void clear(SliceNodeKey sliceKey);
+    @Contract
+    void registerExpectation(SliceNodeKey sliceKey, Epoch epoch, Set<NodeId> targetNodes);
+
+    @Contract
+    void clear(SliceNodeKey sliceKey);
+
     Option<SliceNodeKey> observeAck(SliceNodeKey sliceKey, NodeId ackingNode, Epoch ackedEpoch);
 
     static RoutingEpochAckTracker routingEpochAckTracker() {
@@ -27,34 +31,45 @@ public interface RoutingEpochAckTracker {
 }
 
 record RoutingEpochAckTrackerRecord(Map<SliceNodeKey, Expectation> pending) implements RoutingEpochAckTracker {
-    @Contract@Override public void registerExpectation(SliceNodeKey sliceKey, Epoch epoch, Set<NodeId> targetNodes) {
+    @Contract
+    @Override
+    public void registerExpectation(SliceNodeKey sliceKey, Epoch epoch, Set<NodeId> targetNodes) {
         pending.put(sliceKey,
                     new Expectation(epoch, Set.copyOf(targetNodes), ConcurrentHashMap.newKeySet()));
     }
 
-    @Contract@Override public void clear(SliceNodeKey sliceKey) {
+    @Contract
+    @Override
+    public void clear(SliceNodeKey sliceKey) {
         pending.remove(sliceKey);
     }
 
-    @Override public Option<SliceNodeKey> observeAck(SliceNodeKey sliceKey, NodeId ackingNode, Epoch ackedEpoch) {
+    @Override
+    public Option<SliceNodeKey> observeAck(SliceNodeKey sliceKey, NodeId ackingNode, Epoch ackedEpoch) {
         var expectation = pending.get(sliceKey);
+
         if (expectation == null) {return Option.none();}
         if (!expectation.targets().contains(ackingNode)) {return Option.none();}
         if (!ackedEpoch.isAtLeast(expectation.epoch())) {return Option.none();}
+
         expectation.acks().add(ackingNode);
+
         if (!hasThreshold(expectation)) {return Option.none();}
+
         return consumeIfReady(sliceKey, expectation);
     }
 
     private static boolean hasThreshold(Expectation expectation) {
-        return expectation.acks().containsAll(expectation.targets());
+        return expectation.acks()
+                          .containsAll(expectation.targets());
     }
 
     private Option<SliceNodeKey> consumeIfReady(SliceNodeKey sliceKey, Expectation expectation) {
         var removed = pending.remove(sliceKey, expectation);
+
         return removed
-              ? Option.some(sliceKey)
-              : Option.none();
+               ? Option.some(sliceKey)
+               : Option.none();
     }
 
     record Expectation(Epoch epoch, Set<NodeId> targets, Set<NodeId> acks) {
@@ -69,6 +84,7 @@ record RoutingEpochAckTrackerRecord(Map<SliceNodeKey, Expectation> pending) impl
         public Set<NodeId> missingAcks() {
             var missing = new HashSet<>(targets);
             missing.removeAll(acks);
+
             return Set.copyOf(missing);
         }
     }

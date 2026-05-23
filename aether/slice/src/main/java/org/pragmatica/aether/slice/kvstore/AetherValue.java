@@ -588,19 +588,24 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
+    /// Collapsed 4-value lifecycle (cluster-convergence-reconciler-spec §5.1, I-step). The pre-RC1
+    /// 6-value alphabet (`DECOMMISSIONED` / `SHUTTING_DOWN` / `FAILED_DRAIN`) is unified into the
+    /// single terminal `STOPPED`; the previously-distinct semantics survive via the [StopReason]
+    /// sidecar on `NodeLifecycleValue.stopReason`:
+    /// - `STOPPED + FORCED`        ← old `DECOMMISSIONED`
+    /// - `STOPPED + GRACEFUL`      ← old `SHUTTING_DOWN`
+    /// - `STOPPED + DRAIN_FAILED`  ← old `FAILED_DRAIN`
     @Codec enum NodeLifecycleState {
         JOINING,
         ON_DUTY,
         DRAINING,
-        DECOMMISSIONED,
-        SHUTTING_DOWN,
-        FAILED_DRAIN
+        STOPPED
     }
 
     /// Three-phase model (D.3, 2026-05-11):
     /// - `COLD_BOOT` — cluster never had quorum. SWIM suppresses `FaultyObserved` for
     ///   never-healthy peers (preserves the cold-boot-during-formation invariant).
-    ///   MembershipFsm structural bootstrap-safety suppresses DECOMMISSIONED/SHUTTING_DOWN/DRAINING writes.
+    ///   MembershipFsm structural bootstrap-safety suppresses STOPPED/DRAINING writes.
     ///   CTM auto-heal is suspended. Transition out: first time the cluster reaches a
     ///   quorum of ON_DUTY peers AND a leader is elected, sustained for `stableWindowMs`.
     /// - `NORMAL` — full failure semantics. No suppression anywhere.
@@ -637,6 +642,17 @@ import static org.pragmatica.lang.Option.none;
         UNKNOWN
     }
 
+    /// Reason a node entered the terminal `STOPPED` state. Sidecar to the collapsed
+    /// `NodeLifecycleState` enum (cluster-convergence-reconciler-spec §5.1, D2.2). Present
+    /// only when `state == STOPPED`; `Option.none()` otherwise. Read by observers that
+    /// previously distinguished `DECOMMISSIONED` / `SHUTTING_DOWN` / `FAILED_DRAIN` and by
+    /// the reconciler audit stream.
+    @Codec enum StopReason {
+        GRACEFUL,
+        FORCED,
+        DRAIN_FAILED
+    }
+
     /// Replicated lifecycle truth for a peer.
     ///
     /// ### Versioning
@@ -653,20 +669,26 @@ import static org.pragmatica.lang.Option.none;
                               Epoch observedCoreEpoch,
                               HlcTimestamp transitionedAt,
                               ProvisioningSource provisioningSource,
+                              Option<StopReason> stopReason,
                               byte version) implements AetherValue {
         /// Current schema version stamped onto every newly-constructed value.
         /// Bump on any structural change to the record payload.
-        public static final byte CURRENT_VERSION = 1;
+        /// Version 3 (cluster-convergence-reconciler PR-A): `NodeLifecycleState` collapsed
+        /// from 6 values to 4 (`JOINING / ON_DUTY / DRAINING / STOPPED`); the prior
+        /// `DECOMMISSIONED` / `SHUTTING_DOWN` / `FAILED_DRAIN` ordinals are now invalid on
+        /// the wire.
+        public static final byte CURRENT_VERSION = 3;
 
         public NodeLifecycleValue {
             if (host == null) {host = "";}
             if (observedCoreEpoch == null) {observedCoreEpoch = Epoch.ZERO;}
             if (transitionedAt == null) {transitionedAt = HlcTimestamp.ZERO;}
             if (provisioningSource == null) {provisioningSource = ProvisioningSource.UNKNOWN;}
+            if (stopReason == null) {stopReason = none();}
         }
 
-        /// Backward-compatible constructor — preserves existing 7-arg call sites while
-        /// stamping `version = CURRENT_VERSION`.
+        /// Backward-compatible 7-arg constructor — preserves pre-stopReason call sites while
+        /// stamping `version = CURRENT_VERSION` and `stopReason = none()`.
         public NodeLifecycleValue(NodeLifecycleState state,
                                   long updatedAt,
                                   String host,
@@ -674,7 +696,20 @@ import static org.pragmatica.lang.Option.none;
                                   Epoch observedCoreEpoch,
                                   HlcTimestamp transitionedAt,
                                   ProvisioningSource provisioningSource) {
-            this(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, provisioningSource, CURRENT_VERSION);
+            this(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, provisioningSource, none(), CURRENT_VERSION);
+        }
+
+        /// Backward-compatible 8-arg constructor — preserves pre-stopReason call sites that
+        /// passed an explicit `version`. Defaults `stopReason = none()`.
+        public NodeLifecycleValue(NodeLifecycleState state,
+                                  long updatedAt,
+                                  String host,
+                                  int port,
+                                  Epoch observedCoreEpoch,
+                                  HlcTimestamp transitionedAt,
+                                  ProvisioningSource provisioningSource,
+                                  byte version) {
+            this(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, provisioningSource, none(), version);
         }
 
         @Deprecated(since = "rc1-wave3", forRemoval = false) public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
@@ -786,11 +821,49 @@ import static org.pragmatica.lang.Option.none;
                                           observedCoreEpoch,
                                           nextTransitionedAt,
                                           provisioningSource,
+                                          stopReason,
                                           version);
         }
 
         public NodeLifecycleValue withProvisioningSource(ProvisioningSource newSource) {
-            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, newSource, version);
+            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, newSource, stopReason, version);
+        }
+
+        /// Set or clear the `stopReason` sidecar. The reconciler / `LifecycleWriter`
+        /// command-handler calls this when transitioning to `STOPPED` to record `GRACEFUL` /
+        /// `FORCED` / `DRAIN_FAILED`. Reset to `none()` when leaving `STOPPED` (currently
+        /// only possible via re-join after slot reuse).
+        public NodeLifecycleValue withStopReason(Option<StopReason> newStopReason) {
+            return new NodeLifecycleValue(state, updatedAt, host, port, observedCoreEpoch, transitionedAt, provisioningSource, newStopReason, version);
+        }
+    }
+
+    /// Phase 1 step J — replicated mirror of the in-process `JOIN_DEADLINE` scheduler
+    /// entry. `deadlineMs` is wall-clock millis (epoch) when the join deadline fires;
+    /// `setAt` is the HLC stamp of the originating JOINING-entry transition (provides
+    /// causal ordering across leader takeover for observers reconstructing the deadline).
+    /// Pure observability atom — see [AetherKey.JoinDeadlineKey] for trigger semantics.
+    record JoinDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
+        public JoinDeadlineValue {
+            if (setAt == null) {setAt = HlcTimestamp.ZERO;}
+        }
+
+        public static JoinDeadlineValue joinDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
+            return new JoinDeadlineValue(deadlineMs, setAt);
+        }
+    }
+
+    /// Phase 1 step J — replicated mirror of the in-process `DRAIN_DEADLINE` scheduler
+    /// entry. `deadlineMs` is wall-clock millis (epoch) when the drain hard-deadline
+    /// fires; `setAt` is the HLC stamp of the DRAINING-entry transition. Pure
+    /// observability atom — see [AetherKey.DrainDeadlineKey] for trigger semantics.
+    record DrainDeadlineValue(long deadlineMs, HlcTimestamp setAt) implements AetherValue {
+        public DrainDeadlineValue {
+            if (setAt == null) {setAt = HlcTimestamp.ZERO;}
+        }
+
+        public static DrainDeadlineValue drainDeadlineValue(long deadlineMs, HlcTimestamp setAt) {
+            return new DrainDeadlineValue(deadlineMs, setAt);
         }
     }
 

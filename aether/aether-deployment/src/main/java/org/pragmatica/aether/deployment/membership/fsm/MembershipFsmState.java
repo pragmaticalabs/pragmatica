@@ -5,11 +5,16 @@
 package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
 
-/// Per-peer membership state in the cluster-membership FSM (spec §3, 7 states).
+/// Per-peer membership state in the cluster-membership FSM (spec §3; cluster-convergence-
+/// reconciler-spec §5.1, step H collapses the prior 7-state alphabet to 6 by unifying the
+/// `Decommissioned` and `FailedDrain` terminal records into the single [Stopped] record carrying
+/// a [StopReason] sidecar — the same collapse applied at the KV-layer `NodeLifecycleState` enum
+/// (step I).
 ///
 /// State is fully reconstructible from KV (invariant I1): each variant maps cleanly to
 /// the combination of `NodeLifecycleKey[peer]` presence/value plus the `ProvisioningSlotKey`
@@ -18,23 +23,24 @@ import org.pragmatica.lang.Option;
 public sealed interface MembershipFsmState {
     NodeId peer();
 
-    record Untracked(NodeId peer) implements MembershipFsmState{}
+    record Untracked(NodeId peer) implements MembershipFsmState {}
 
-    record Provisioning(NodeId peer, String slotId) implements MembershipFsmState{}
+    record Provisioning(NodeId peer, String slotId) implements MembershipFsmState {}
 
-    record Joining(NodeId peer, long joinedAtMs, Option<String> slotId) implements MembershipFsmState{}
+    record Joining(NodeId peer, long joinedAtMs, Option<String> slotId) implements MembershipFsmState {}
 
-    record OnDuty(NodeId peer, long updatedAtMs) implements MembershipFsmState{}
+    record OnDuty(NodeId peer, long updatedAtMs) implements MembershipFsmState {}
 
-    record Draining(NodeId peer, long drainStartedAtMs, DrainReason reason) implements MembershipFsmState{}
+    record Draining(NodeId peer, long drainStartedAtMs, DrainReason reason) implements MembershipFsmState {}
 
-    /// `swimDriven` distinguishes SWIM-detected failure (`SwimFaulty`/`SwimDeparted`) from
-    /// operator/drain-driven decommission. Only `swimDriven=true` triggers the SWIM-Healthy
-    /// revival refractory in `ClusterMembershipReducer.decommissionedSwimHealthy` — operator-
-    /// initiated decommissions remain eligible for fast-restart revival within the TTL.
-    record Decommissioned(NodeId peer, long decommissionedAtMs, boolean swimDriven) implements MembershipFsmState{}
-
-    record FailedDrain(NodeId peer, long failedAtMs) implements MembershipFsmState{}
+    /// Terminal state. `reason` is the [StopReason] sidecar carried from the originating
+    /// `LifecycleCommand` (or synthesised from the originating event — SWIM-driven failure
+    /// maps to `FORCED`, drain-success to `GRACEFUL`, drain-timeout to `DRAIN_FAILED`).
+    /// `swimDriven` is kept as a separate observability flag — it distinguishes SWIM-detected
+    /// failure (`SwimFaulty`/`SwimDeparted`) from operator/drain-driven decommission, which was
+    /// previously consumed by the H.4 refractory gate (removed) but remains informational on
+    /// the reducer surface and in tests.
+    record Stopped(NodeId peer, long stoppedAtMs, StopReason reason, boolean swimDriven) implements MembershipFsmState {}
 
     static Untracked untracked(NodeId peer) {
         return new Untracked(peer);
@@ -56,15 +62,14 @@ public sealed interface MembershipFsmState {
         return new Draining(peer, drainStartedAtMs, reason);
     }
 
-    static Decommissioned decommissioned(NodeId peer, long decommissionedAtMs) {
-        return new Decommissioned(peer, decommissionedAtMs, false);
+    static Stopped stopped(NodeId peer, long stoppedAtMs, StopReason reason, boolean swimDriven) {
+        return new Stopped(peer, stoppedAtMs, reason, swimDriven);
     }
 
-    static Decommissioned decommissioned(NodeId peer, long decommissionedAtMs, boolean swimDriven) {
-        return new Decommissioned(peer, decommissionedAtMs, swimDriven);
-    }
-
-    static FailedDrain failedDrain(NodeId peer, long failedAtMs) {
-        return new FailedDrain(peer, failedAtMs);
+    /// Convenience factory for tests / replay paths that synthesise a `Stopped` state without
+    /// known `swimDriven` provenance — defaults to `false` (operator/drain-driven) and the
+    /// supplied `StopReason`.
+    static Stopped stopped(NodeId peer, long stoppedAtMs, StopReason reason) {
+        return new Stopped(peer, stoppedAtMs, reason, false);
     }
 }

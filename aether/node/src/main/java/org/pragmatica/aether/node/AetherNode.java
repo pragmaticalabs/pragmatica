@@ -108,6 +108,11 @@ import org.pragmatica.aether.storage.DelegatedStorageAdapter;
 import org.pragmatica.aether.storage.DhtStorageTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.aether.deployment.audit.AuditLifecycleStreams;
+import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
+import org.pragmatica.aether.slice.StreamPublisher;
+import org.pragmatica.aether.stream.DefaultStreamPublisher;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
@@ -360,7 +365,7 @@ public interface AetherNode extends ManageableNode {
         Predicate<NodeId> isDecommissioned = nodeId -> kvStore.get(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId))
                                                               .filter(v -> v instanceof AetherValue.NodeLifecycleValue)
                                                               .map(v -> (AetherValue.NodeLifecycleValue) v)
-                                                              .map(v -> v.state() == AetherValue.NodeLifecycleState.DECOMMISSIONED)
+                                                              .map(v -> v.state() == AetherValue.NodeLifecycleState.STOPPED)
                                                               .or(false);
         Supplier<Option<NodeId>> currentLeaderFromKvSupplier = () -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                       LeaderValue.class)
@@ -1010,7 +1015,7 @@ public interface AetherNode extends ManageableNode {
             kvStore.forEach(AetherKey.NodeLifecycleKey.class,
                             AetherValue.NodeLifecycleValue.class,
                             (key, value) -> {
-                                if (value.state() != AetherValue.NodeLifecycleState.DECOMMISSIONED) {
+                                if (value.state() != AetherValue.NodeLifecycleState.STOPPED) {
                                 peers.add(key.nodeId());
                             }
                             });
@@ -1209,7 +1214,16 @@ public interface AetherNode extends ManageableNode {
         // Direct lifecycle writes for transitions not owned by the FSM operator-event path
         // (requestActivate, requestFailedDrain) and for CTM-initiated drain/decommission
         // (which the FSM does not yet own — those still bypass FSM-driven InvokeDrain).
-        var ctmLifecycleWriter = LifecycleWriter.directLifecycleWriter(lifecycleReader::apply, clusterCommandApplier);
+        // The real `audit.lifecycle.commands` StreamPublisher is constructed after
+        // `streamPartitionManager` is built (see below). Until that happens publishes are
+        // dropped — the deployment module is not a slice, so we cannot route through the
+        // slice-DI `resources.toml` -> `StreamPublisherFactory` path; instead the node-boot
+        // code owns provisioning + binding directly. The AtomicReference indirection lets
+        // `LifecycleWriter` capture a stable publisher view before the manager exists.
+        var auditLifecycleCommandPublisherRef = new AtomicReference<StreamPublisher<CommandLifecycleEvent>>(_ -> Promise.unitPromise());
+        StreamPublisher<CommandLifecycleEvent> auditLifecycleCommandPublisher = event -> Option.option(auditLifecycleCommandPublisherRef.get())
+                                                                                                .fold(Promise::<Unit>unitPromise, p -> p.publish(event));
+        var ctmLifecycleWriter = LifecycleWriter.directLifecycleWriter(lifecycleReader::apply, clusterCommandApplier, auditLifecycleCommandPublisher);
         org.pragmatica.lang.Functions.Fn1<Promise<Integer>, NodeId> inFlightProbe = targetNodeId -> targetNodeId.equals(config.self()
                                                                                                                               .id())
                                                                                                     ? Promise.success(inFlightTrackerForDrain.count())
@@ -1758,6 +1772,14 @@ public interface AetherNode extends ManageableNode {
                                                                                                                 streamPartitionManager::onStreamConfigPut).onRemove(AetherKey.StreamConfigKey.class,
                                                                                                                                                                     streamPartitionManager::onStreamConfigRemove).build();
         allEntries.addAll(streamConfigKvRouter.asRouteEntries());
+        // Provision the `audit.lifecycle.commands` topic + bind the real publisher behind
+        // the AtomicReference set up earlier (see `auditLifecycleCommandPublisherRef`). The
+        // deployment module is not a slice, so we cannot reuse the slice-DI
+        // `resources.toml` -> `StreamPublisherFactory.provision(...)` path; the node owns
+        // provisioning directly. `createStream` is idempotent across the cluster: the
+        // leader's KV `Put` for `StreamConfigKey` replicates via Rabia and the
+        // `streamConfigKvRouter` wired above hydrates the entry on every follower.
+        provisionAuditLifecycleCommandPublisher(streamPartitionManager, serializer, auditLifecycleCommandPublisherRef);
         var streamSegmentIndex = new SegmentIndex();
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
         var streamStorage = createStreamStorage(dhtClientOption);
@@ -2087,6 +2109,36 @@ public interface AetherNode extends ManageableNode {
 
         selfDrainCoordinator.onQuorumDisappeared();
         selfDrainCoordinator.onRabiaPaused();
+    }
+
+    /// Provision the `audit.lifecycle.commands` topic on the local `StreamPartitionManager`
+    /// and bind a `DefaultStreamPublisher` into the supplied `AtomicReference`. `createStream`
+    /// returns `STREAM_ALREADY_EXISTS` on the non-leader nodes once the leader's
+    /// `StreamConfigKey` write has replicated; that outcome is benign — the partition entry
+    /// is hydrated by the `streamConfigKvRouter` already wired above, so the publisher can
+    /// append locally either way.
+    @Contract
+    private static void provisionAuditLifecycleCommandPublisher(StreamPartitionManager streamPartitionManager,
+                                                                Serializer serializer,
+                                                                AtomicReference<StreamPublisher<CommandLifecycleEvent>> ref) {
+        streamPartitionManager.createStream(AuditLifecycleStreams.AUDIT_LIFECYCLE_COMMANDS)
+                              .onFailure(cause -> logAuditStreamProvisionOutcome(cause));
+        var publisher = DefaultStreamPublisher.<CommandLifecycleEvent>streamPublisher(streamPartitionManager,
+                                                                                       serializer,
+                                                                                       AuditLifecycleStreams.TOPIC_AUDIT_LIFECYCLE_COMMANDS,
+                                                                                       AuditLifecycleStreams.AUDIT_PARTITIONS,
+                                                                                       Option.none());
+        ref.set(publisher);
+    }
+
+    /// `STREAM_ALREADY_EXISTS` is benign on followers (leader's KV write replicated first);
+    /// other causes (e.g. `STREAM_MEMORY_EXCEEDED`) leave the publisher unable to append and
+    /// must surface in logs so audit-drop is observable.
+    @Contract
+    private static void logAuditStreamProvisionOutcome(Cause cause) {
+        if (cause == StreamError.General.STREAM_ALREADY_EXISTS) {return;}
+        LOG.warn("Audit lifecycle stream provisioning failed: {} — CommandLifecycleEvent publishes will be dropped",
+                 cause.message());
     }
 
     @SuppressWarnings("unchecked")

@@ -65,7 +65,8 @@ public record ClusterPhaseView(int expectedClusterSize,
     /// H.2b (spec §H): read membership through `MembershipView` instead of a raw KV
     /// snapshot. The reader is a `Supplier<MembershipView>` rather than a snapshot lambda
     /// so each `compute()` call sees the live view (SWIM ∪ KV at that instant).
-    @FunctionalInterface public interface MembershipViewReader {
+    @FunctionalInterface
+    public interface MembershipViewReader {
         MembershipView view();
     }
 
@@ -74,7 +75,9 @@ public record ClusterPhaseView(int expectedClusterSize,
     /// the supplied snapshot map (no live SWIM input — SWIM-derived ON_DUTY peers will
     /// not appear, matching the pre-H.2b behaviour exactly). New callers should pass a
     /// real `MembershipViewReader` instead.
-    @Deprecated @FunctionalInterface public interface LifecycleSnapshotReader {
+    @Deprecated
+    @FunctionalInterface
+    public interface LifecycleSnapshotReader {
         Map<NodeId, NodeLifecycleValue> snapshot();
     }
 
@@ -116,14 +119,15 @@ public record ClusterPhaseView(int expectedClusterSize,
         var snapshot = lifecycleReader.snapshot();
         var swim = new java.util.HashMap<NodeId, org.pragmatica.swim.SwimHealth>();
         snapshot.forEach((peer, value) -> {
-            if (value.state() == org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.ON_DUTY) {
-                swim.put(peer, org.pragmatica.swim.SwimHealth.HEALTHY);
-            }
-        });
+                             if (value.state() == org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.ON_DUTY) {
+                             swim.put(peer, org.pragmatica.swim.SwimHealth.HEALTHY);
+                         }
+                         });
         var swimSnapshot = org.pragmatica.swim.HealthSnapshot.healthSnapshot(swim);
+
         return MembershipView.membershipView(() -> Option.some(swimSnapshot),
-                                              consumer -> snapshot.forEach((peer, value) -> consumer.accept(org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey.nodeLifecycleKey(peer),
-                                                                                                              value)));
+                                             consumer -> snapshot.forEach((peer, value) -> consumer.accept(org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey.nodeLifecycleKey(peer),
+                                                                                                           value)));
     }
 
     public ClusterPhase compute(long nowMs) {
@@ -132,12 +136,14 @@ public record ClusterPhaseView(int expectedClusterSize,
         var quorum = quorumThreshold();
         var haveLeader = haveLeaderReader.getAsBoolean();
         var everReachedNormal = priorEverReachedNormal();
+
         return computePhase(stats, quorum, haveLeader, everReachedNormal, nowMs);
     }
 
     private boolean priorEverReachedNormal() {
-        return priorPhaseReader.get().map(ClusterPhaseView::isPostColdBoot)
-                                     .or(false);
+        return priorPhaseReader.get()
+                               .map(ClusterPhaseView::isPostColdBoot)
+                               .or(false);
     }
 
     private static boolean isPostColdBoot(ClusterPhase phase) {
@@ -156,17 +162,17 @@ public record ClusterPhaseView(int expectedClusterSize,
     }
 
     private ClusterPhase coldBootBranch(OnDutyStats stats, int quorum, boolean haveLeader, long nowMs) {
-        if (stats.onDutyCount() < quorum || !haveLeader) {return ClusterPhase.COLD_BOOT;}
+        if (stats.onDutyCount() <quorum || !haveLeader) {return ClusterPhase.COLD_BOOT;}
         return stableWindowSatisfied(stats, nowMs, stableWindow)
-              ? ClusterPhase.NORMAL
-              : ClusterPhase.COLD_BOOT;
+               ? ClusterPhase.NORMAL
+               : ClusterPhase.COLD_BOOT;
     }
 
     private ClusterPhase recoveringBranch(OnDutyStats stats, int quorum, boolean haveLeader, long nowMs) {
-        if (stats.onDutyCount() < quorum || !haveLeader) {return ClusterPhase.RECOVERING;}
+        if (stats.onDutyCount() <quorum || !haveLeader) {return ClusterPhase.RECOVERING;}
         return stableWindowSatisfied(stats, nowMs, recoveryStableWindow)
-              ? ClusterPhase.NORMAL
-              : ClusterPhase.RECOVERING;
+               ? ClusterPhase.NORMAL
+               : ClusterPhase.RECOVERING;
     }
 
     /// Spec §7.3: stability window is "the duration after which a satisfied promotion
@@ -185,8 +191,9 @@ public record ClusterPhaseView(int expectedClusterSize,
     /// the cluster in `COLD_BOOT/RECOVERING` indefinitely once the FSM stops emitting
     /// ON_DUTY writes.
     private static boolean stableWindowSatisfied(OnDutyStats stats, long nowMs, TimeSpan window) {
-        return stats.oldestOnDutyAt().map(oldest -> nowMs - oldest >= window.millis())
-                                     .or(stats.onDutyCount() > 0);
+        return stats.oldestOnDutyAt()
+                    .map(oldest -> nowMs - oldest >= window.millis())
+                    .or(stats.onDutyCount() > 0);
     }
 
     private int quorumThreshold() {
@@ -198,20 +205,25 @@ public record ClusterPhaseView(int expectedClusterSize,
             var count = 0;
             var oldest = Long.MAX_VALUE;
             var anyKvBacked = false;
+
             for (var member : view.values()) {
                 if (member.status() != MemberStatus.ON_DUTY) {continue;}
+
                 count += 1;
                 var lifecycleOpt = member.lifecycle();
+
                 if (lifecycleOpt.isPresent()) {
                     anyKvBacked = true;
                     var updatedAt = lifecycleOpt.unwrap().updatedAt();
-                    if (updatedAt < oldest) {oldest = updatedAt;}
+
+                    if (updatedAt <oldest) {oldest = updatedAt;}
                 }
             }
+
             return new OnDutyStats(count,
                                    anyKvBacked
-                                  ? some(oldest)
-                                  : none());
+                                   ? some(oldest)
+                                   : none());
         }
     }
 }

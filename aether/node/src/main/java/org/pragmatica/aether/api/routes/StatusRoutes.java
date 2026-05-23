@@ -167,8 +167,9 @@ public final class StatusRoutes implements RouteSource {
         node.nodeLifecycle().currentState().name(),
 
         // lifecycleState — cluster-level FSM intent from KV-Store
-        // (NodeLifecycleState: JOINING/ON_DUTY/DRAINING/DECOMMISSIONED/FAILED_DRAIN).
-        // SHUTTING_DOWN is normalized to DRAINING per state-authority spec.
+        // (NodeLifecycleState: JOINING/ON_DUTY/DRAINING/STOPPED).
+        // Post-Step-I (2026-05-22): the prior `DECOMMISSIONED`/`SHUTTING_DOWN`/`FAILED_DRAIN`
+        // arms collapsed into a single `STOPPED` with a `StopReason` sidecar discriminator.
         // Empty string when no KV entry exists yet (cold-start transient window).
         // Mirrors `cluster.nodes[selfId].kvState` for top-level ergonomic access.
         kvStateMap.getOrDefault(selfId, ""),
@@ -194,7 +195,7 @@ public final class StatusRoutes implements RouteSource {
         // ROUTE-LAYER DOWNGRADE (intentional, belt-and-suspenders on top of MembershipView): if KV says
         // ON_DUTY but a quorum of observers reports UNREACHABLE in the latest aggregated snapshot, we show
         // UNKNOWN here so operator dashboards stop trusting a peer the cluster has consensus-lost. The FSM
-        // hasn't yet written a transition (DRAINING/DECOMMISSIONED), so kvState above still reflects
+        // hasn't yet written a transition (DRAINING/STOPPED), so kvState above still reflects
         // ON_DUTY — the divergence is intentional and the two fields disambiguate.
         var transportLag = status == MembershipView.MemberStatus.ON_DUTY && !nodeId.equals(selfId) && reachabilitySnapshot.fold(() -> false,
                                                                                                                                 s -> !s.isReachable(nodeId));
@@ -210,12 +211,12 @@ public final class StatusRoutes implements RouteSource {
         return new NodeInfo(nodeId.id(), isLeader, kvState, derivedStatus);
     }
 
-    /// Collapse `SHUTTING_DOWN` to `DRAINING` for external viewers. Mirrors the normalization in
-    /// `NodeLifecycleRoutes.externalStateName`. See `aether/docs/specs/state-authority.md`.
+    /// External-viewer state name. Pre-Step-I this collapsed `SHUTTING_DOWN` → `DRAINING`;
+    /// post-Step-I the slice-layer enum no longer carries `SHUTTING_DOWN` (the H/I collapse
+    /// unified `SHUTTING_DOWN`/`DECOMMISSIONED`/`FAILED_DRAIN` → `STOPPED` with a `StopReason`
+    /// sidecar) so this is now a passthrough. See `aether/docs/specs/state-authority.md`.
     private static String externalStateName(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState state) {
-        return state == org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.SHUTTING_DOWN
-               ? org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.DRAINING.name()
-               : state.name();
+        return state.name();
     }
 
     /// E.6 (spec §7.2): route through `ManageableNode.clusterPhaseSupplier()` so the

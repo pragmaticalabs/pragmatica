@@ -6,6 +6,7 @@ package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -78,12 +79,14 @@ public final class InvocationTraceStore {
     }
 
     /// Bind the replicated event-log publisher. Idempotent; replaces any prior binding.
+    @Contract
     public void bindEventLogPublisher(EventLogPublisher publisher) {
         this.eventLogPublisher = Option.option(publisher);
     }
 
     /// Bind the cross-node injected-trace reader. Supplier returns the latest view of the
     /// replicated log filtered/projected by the caller to `TRACE_INJECTED` events only.
+    @Contract
     public void bindClusterEventsSource(Supplier<List<ClusterTraceEvent>> source) {
         this.clusterEventsSource = Option.option(source);
     }

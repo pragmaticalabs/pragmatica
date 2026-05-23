@@ -12,7 +12,7 @@ import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.LifecycleSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.SlotSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.TimerScheduler;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Stopped;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.OnDuty;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -151,12 +151,12 @@ class MembershipFsmTransportSnapshotTest {
             // → DECOMMISSIONED write; UNKNOWN → suppressed (no event reaches the reducer).
             // Net: exactly 1 consensus write (for PEER_C).
             assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_C, NodeLifecycleState.DECOMMISSIONED);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_C, NodeLifecycleState.STOPPED);
             // PEER_A and PEER_B stay ON_DUTY (nop), PEER_C transitions to DECOMMISSIONED,
             // PEER_D never reaches reducer.
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
             assertThat(fsm.get(PEER_B).unwrap()).isInstanceOf(OnDuty.class);
-            assertThat(fsm.get(PEER_C).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_C).unwrap()).isInstanceOf(Stopped.class);
             assertThat(fsm.get(PEER_D).isPresent()).isFalse();
         }
     }
@@ -171,7 +171,7 @@ class MembershipFsmTransportSnapshotTest {
             fsm.onTransportSnapshot(snapshot);
             assertThat(commandApplier.calls).hasSize(1);
             var stateAfterFirst = fsm.get(PEER_A).unwrap();
-            assertThat(stateAfterFirst).isInstanceOf(Decommissioned.class);
+            assertThat(stateAfterFirst).isInstanceOf(Stopped.class);
 
             // Second invocation: peer is now DECOMMISSIONED in FSM state, so the reducer cell
             // (DECOMMISSIONED, TransportUnreachable) → nop fires and produces NO additional
@@ -212,8 +212,8 @@ class MembershipFsmTransportSnapshotTest {
             fsm.onTransportSnapshot(snapshot);
 
             assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.STOPPED);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
         }
     }
 

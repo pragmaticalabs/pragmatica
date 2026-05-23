@@ -662,13 +662,13 @@ public interface TopologyObserver extends TopologyManager {
 
             /// Lifecycle-projection walker (RC1 Step 2). Diffs the previous snapshot's
             /// lifecycle map against the current and routes one `MembershipDecision`
-            /// variant per terminal-state transition. Only the four terminal states the
+            /// variant per terminal-state transition. Only the three terminal states the
             /// downstream subscribers care about are emitted:
             ///
-            ///   JOINING        -> `NodeJoining`
-            ///   DRAINING       -> `NodeDraining`
-            ///   FAILED_DRAIN   -> `NodeFailedDrain`
-            ///   DECOMMISSIONED -> `NodeDecommissioned`
+            ///   JOINING  -> `NodeJoining`
+            ///   DRAINING -> `NodeDraining`
+            ///   STOPPED  -> `NodeDecommissioned` (collapsed from former `FAILED_DRAIN` /
+            ///               `DECOMMISSIONED` / `SHUTTING_DOWN` arms per Step H/I).
             ///
             /// `ON_DUTY` is intentionally not emitted here — the `NodeJoined` core-member-
             /// delta path already covers the steady-state "node admitted" signal. Repeating
@@ -706,17 +706,19 @@ public interface TopologyObserver extends TopologyManager {
                         log.debug("Lifecycle delta: NodeDraining {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
                         router.route(MembershipDecision.nodeDraining(nodeId, topology, logIndex, stampedAt));
                     }
-                    case FAILED_DRAIN -> {
-                        log.debug("Lifecycle delta: NodeFailedDrain {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
-                        router.route(MembershipDecision.nodeFailedDrain(nodeId, topology, logIndex, stampedAt));
-                    }
-                    case DECOMMISSIONED -> {
+                    case STOPPED -> {
+                        // Step H/I collapse (2026-05-22): the prior 3-arm distinction
+                        // (FAILED_DRAIN / DECOMMISSIONED / SHUTTING_DOWN) is unified into
+                        // STOPPED at the slice + consensus enum layer. All three routed via
+                        // `MembershipDecision.nodeDecommissioned` (the established cleanup
+                        // variant). Consumers that need the StopReason discriminator
+                        // (FORCED / GRACEFUL / DRAIN_FAILED) read it from the slice-side
+                        // `NodeLifecycleValue.stopReason()` sidecar — the consensus-layer
+                        // `MembershipDecision` variants `NodeFailedDrain` / `NodeShuttingDown`
+                        // remain in the sealed hierarchy for backward compatibility but are
+                        // no longer emitted by this slice-driven path.
                         log.debug("Lifecycle delta: NodeDecommissioned {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
                         router.route(MembershipDecision.nodeDecommissioned(nodeId, topology, logIndex, stampedAt));
-                    }
-                    case SHUTTING_DOWN -> {
-                        log.debug("Lifecycle delta: NodeShuttingDown {} (logIndex={}, stampedAt={})", nodeId, logIndex, stampedAt);
-                        router.route(MembershipDecision.nodeShuttingDown(nodeId, topology, logIndex, stampedAt));
                     }
                     case ON_DUTY -> {
                         // Covered by the core-membership delta NodeJoined path.

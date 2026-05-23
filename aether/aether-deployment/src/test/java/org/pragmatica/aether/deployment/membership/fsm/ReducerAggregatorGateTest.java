@@ -14,7 +14,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.SlotSnapsho
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.TimerScheduler;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportUnreachable;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Stopped;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.OnDuty;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityKind;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityState;
@@ -85,11 +86,11 @@ class ReducerAggregatorGateTest {
 
             var outcome = reducer().apply(state, new SwimFaulty(PEER, 1L, T1), gate);
 
-            assertThat(outcome.newState()).isInstanceOf(Decommissioned.class);
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, ms(T1), true));
+            assertThat(outcome.newState()).isInstanceOf(Stopped.class);
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.stopped(PEER, ms(T1), StopReason.FORCED, true));
             assertThat(outcome.writes()).hasSize(1);
             assertThat(outcome.writes().get(0)).isInstanceOf(Put.class);
-            assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.DECOMMISSIONED);
+            assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.STOPPED);
         }
 
         @Test void gateBlocks_swimFaultyIsNop_zeroWrites() {
@@ -114,11 +115,11 @@ class ReducerAggregatorGateTest {
 
             var outcome = reducer().apply(state, new TransportUnreachable(PEER, T1), gate);
 
-            assertThat(outcome.newState()).isInstanceOf(Decommissioned.class);
+            assertThat(outcome.newState()).isInstanceOf(Stopped.class);
             // swimDriven=false because transport-failure is NOT a SWIM reason.
-            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.decommissioned(PEER, ms(T1), false));
+            assertThat(outcome.newState()).isEqualTo(MembershipFsmState.stopped(PEER, ms(T1), StopReason.FORCED, false));
             assertThat(outcome.writes()).hasSize(1);
-            assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.DECOMMISSIONED);
+            assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.STOPPED);
         }
 
         @Test void gateBlocks_transportUnreachableIsNop_zeroWrites() {
@@ -145,10 +146,12 @@ class ReducerAggregatorGateTest {
 
             var outcome = reducer().apply(state, new TransportUnreachable(PEER, T1), gate);
 
-            assertThat(outcome.newState()).isInstanceOf(Decommissioned.class);
-            assertThat(outcome.writes()).hasSize(2);  // lifecycle put + slot remove
-            assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.DECOMMISSIONED);
+            assertThat(outcome.newState()).isInstanceOf(Stopped.class);
+            // Phase 1 step J co-write: lifecycle put + join-deadline remove + slot remove (3).
+            assertThat(outcome.writes()).hasSize(3);
+            assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.STOPPED);
             assertThat(outcome.writes().get(1)).isInstanceOf(KVCommand.Remove.class);
+            assertThat(outcome.writes().get(2)).isInstanceOf(KVCommand.Remove.class);
         }
     }
 
@@ -181,8 +184,8 @@ class ReducerAggregatorGateTest {
             fsm.onSwimObservation(new org.pragmatica.swim.SwimObservation.FaultyObserved(PEER, 1L));
 
             assertThat(commandApplier.calls).hasSize(1);
-            assertLifecyclePut(commandApplier.calls.get(0).get(0), NodeLifecycleState.DECOMMISSIONED);
-            assertThat(fsm.get(PEER).unwrap()).isInstanceOf(Decommissioned.class);
+            assertLifecyclePut(commandApplier.calls.get(0).get(0), NodeLifecycleState.STOPPED);
+            assertThat(fsm.get(PEER).unwrap()).isInstanceOf(Stopped.class);
         }
 
         @Test void quorumSnapshotReachable_swimFaultyOnOnDuty_isNop() {

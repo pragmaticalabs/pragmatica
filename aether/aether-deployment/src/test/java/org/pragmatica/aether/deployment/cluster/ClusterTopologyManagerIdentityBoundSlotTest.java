@@ -192,7 +192,7 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
                 .isTrue();
         assertThat(tombstone.unwrap().state())
                 .as("expired-slot owner authoritatively DECOMMISSIONED")
-                .isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+                .isEqualTo(NodeLifecycleState.STOPPED);
         assertThat(lifecycleManager.terminateCount.get())
                 .as("cloud-side instance reap requested (best-effort)")
                 .isGreaterThan(terminateBefore);
@@ -221,7 +221,7 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
         // Tombstone is now in place.
         assertThat(clusterStore.lifecycle(assignedId).unwrap().state())
                 .as("tombstone exists before simulated late arrival")
-                .isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+                .isEqualTo(NodeLifecycleState.STOPPED);
         // Simulate the late-arriving node showing up as ON_DUTY in a snapshot. The FSM
         // single-writer rule applies in production; here we assert that the lifecycle gate
         // (DECOMMISSIONED tombstone) survives — i.e., the late-arriving node does not get
@@ -242,7 +242,7 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
                                                                          assignedId)));
         assertThat(clusterStore.lifecycle(assignedId).unwrap().state())
                 .as("tombstone survives late arrival — CTM never overwrites DECOMMISSIONED")
-                .isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+                .isEqualTo(NodeLifecycleState.STOPPED);
     }
 
     /// Step 4 of the structural fix: each provisioning dispatch must produce a globally unique

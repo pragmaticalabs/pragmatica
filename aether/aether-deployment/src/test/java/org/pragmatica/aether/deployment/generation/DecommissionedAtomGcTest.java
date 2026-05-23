@@ -98,7 +98,7 @@ class DecommissionedAtomGcTest {
     }
 
     private void seedDecommissioned(NodeId nodeId, long updatedAtMs) {
-        seedAtom(nodeId, NodeLifecycleState.DECOMMISSIONED, updatedAtMs);
+        seedAtom(nodeId, NodeLifecycleState.STOPPED, updatedAtMs);
     }
 
     private void seedAtom(NodeId nodeId, NodeLifecycleState state, long updatedAtMs) {

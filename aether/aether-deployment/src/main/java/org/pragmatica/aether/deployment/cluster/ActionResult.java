@@ -9,11 +9,11 @@ import org.pragmatica.consensus.NodeId;
 
 
 public sealed interface ActionResult {
-    record NodeStarted(InstanceInfo instance) implements ActionResult{}
+    record NodeStarted(InstanceInfo instance) implements ActionResult {}
 
-    record NodeStopped(NodeId nodeId) implements ActionResult{}
+    record NodeStopped(NodeId nodeId) implements ActionResult {}
 
-    record NodeRestarted(NodeId nodeId) implements ActionResult{}
+    record NodeRestarted(NodeId nodeId) implements ActionResult {}
 
-    record SlicesMigrated(NodeId source, int sliceCount) implements ActionResult{}
+    record SlicesMigrated(NodeId source, int sliceCount) implements ActionResult {}
 }

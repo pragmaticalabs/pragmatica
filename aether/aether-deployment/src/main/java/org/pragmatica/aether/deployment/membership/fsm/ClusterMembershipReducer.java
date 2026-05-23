@@ -5,6 +5,11 @@
 package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDrain;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RequestReJoin;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelDrain;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelTimer;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.EmitDomainEvent;
@@ -14,26 +19,28 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.Schedule
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.TimerKind;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.DrainOutcome;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.JoinDeadlineExpired;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDecommission;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDrain;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SlotClaimed;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimDeparted;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimHealthy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportReachable;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportUnreachable;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Draining;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.FailedDrain;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Joining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.OnDuty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Provisioning;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Stopped;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Untracked;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DrainDeadlineKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.JoinDeadlineKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DrainDeadlineValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.JoinDeadlineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
@@ -44,7 +51,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-/// Pure per-peer cluster-membership reducer (spec §5, 7 states × 10 events = 70 cells).
+/// Pure per-peer cluster-membership reducer (spec §5, 6 states × 8 events = 48 cells, plus
+/// the `LifecycleCommand` branch dispatched via `applyCommand`).
+///
+/// Step H collapse (2026-05-22): the prior 7-state alphabet (Untracked / Provisioning /
+/// Joining / OnDuty / Draining / Decommissioned / FailedDrain) collapsed to 6 by unifying
+/// the two terminal records into a single `Stopped` carrying a `StopReason` sidecar (FORCED /
+/// GRACEFUL / DRAIN_FAILED). The KV-layer `NodeLifecycleState` enum (step I) collapsed
+/// `DECOMMISSIONED`/`SHUTTING_DOWN`/`FAILED_DRAIN` → `STOPPED` over the same period, so the
+/// reducer's `MembershipFsmState.Stopped` and `NodeLifecycleState.STOPPED` are isomorphic.
 ///
 /// `apply(state, event)` is a total function: every cell is explicit. `err`-marked cells
 /// (unreachable by construction) throw `IllegalStateException` to surface bugs rather than
@@ -80,204 +95,278 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         return new ClusterMembershipReducer(config);
     }
 
+    /// Input-dispatching entry point. `MembershipFsmInput` is the sealed root over the
+    /// observed-fact branch (`MembershipFsmEvent`) and the operator-intent branch
+    /// (`LifecycleCommand`). Events flow through the per-state event matrix; commands flow
+    /// through `applyCommand` which dispatches per-command-type then per-state.
+    ///
+    /// Adopters that drive the reducer with raw events MAY continue using the existing
+    /// `apply(state, event, gate)` overload; new call sites should prefer this overload to
+    /// route either branch uniformly.
+    public Outcome apply(MembershipFsmState state, MembershipFsmInput input, ReachabilityGate gate) {
+        return switch (input) {
+            case MembershipFsmEvent event -> apply(state, event, gate);
+            case LifecycleCommand command -> applyCommand(state, command);
+        };
+    }
+
     /// Topology-observation refactor Step 4 — `gate` is consulted only by the two ON_DUTY
     /// decommission cells (`SwimFaulty` and `TransportUnreachable`). All other cells ignore
     /// `gate` and behave identically to the pre-Step-4 reducer. Callers that do not need
     /// aggregator-quorum gating may pass `ReachabilityGate.ALWAYS_CONFIRMED`.
     public Outcome apply(MembershipFsmState state, MembershipFsmEvent event, ReachabilityGate gate) {
-        return switch (state){
+        return switch (state) {
             case Untracked s -> applyUntracked(s, event);
             case Provisioning s -> applyProvisioning(s, event);
             case Joining s -> applyJoining(s, event);
             case OnDuty s -> applyOnDuty(s, event, gate);
             case Draining s -> applyDraining(s, event);
-            case Decommissioned s -> applyDecommissioned(s, event);
-            case FailedDrain s -> applyFailedDrain(s, event);
+            case Stopped s -> applyStopped(s, event);
         };
     }
 
     private Outcome applyUntracked(Untracked state, MembershipFsmEvent event) {
-        return switch (event){
-            // H.3 partial revert (2026-05-13): restored `(UNTRACKED, SwimHealthy) → ON_DUTY`
-            // write so downstream consumers reading `NodeLifecycleKey` directly continue to
-            // function. `MembershipView` remains the canonical reader (returns the same
-            // answer either via KV or via SWIM-only derivation). The chaos-revival storm fix
-            // (H.3 + H.4) is preserved by the eliminated `(DECOMMISSIONED, SwimHealthy)`
-            // revival cell — that's what produced the bug, not this UNTRACKED→ON_DUTY path.
+        return switch (event) {
             case SwimHealthy e -> untrackedDirectToOnDuty(state.peer(), e.at());
             case SwimFaulty _ -> Outcome.nop(state);
             case SwimDeparted _ -> Outcome.nop(state);
             case SlotClaimed e -> enterJoining(state.peer(),
                                                Option.some(e.slotId()),
                                                e.at());
-            case OperatorDrain _ -> Outcome.nop(state);
-            case OperatorDecommission e -> untrackedOperatorDecommission(state, e);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
-            // Topology-observation refactor Step 2: transport events have no effect on an
-            // untracked peer (we have no lifecycle state to advance/withdraw).
             case TransportReachable _ -> Outcome.nop(state);
             case TransportUnreachable _ -> Outcome.nop(state);
         };
     }
 
     private Outcome applyProvisioning(Provisioning state, MembershipFsmEvent event) {
-        return switch (event){
-            // S16 (defensive): SWIM may observe a peer's transient state during the brief
-            // pre-SlotClaimed window — treat as nop rather than crashing the FSM. The
-            // slot lifecycle (SlotClaimed / JoinDeadlineExpired) is authoritative for
-            // advancing out of Provisioning; SWIM observations are noise here.
+        return switch (event) {
             case SwimHealthy _ -> Outcome.nop(state);
             case SwimFaulty _ -> Outcome.nop(state);
             case SwimDeparted _ -> Outcome.nop(state);
             case SlotClaimed e -> enterJoining(state.peer(),
                                                Option.some(e.slotId()),
                                                e.at());
-            case OperatorDrain _ -> illegal(state, event);
-            case OperatorDecommission _ -> illegal(state, event);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
-            // Topology-observation refactor Step 2: provisioning is a leader-side bookkeeping
-            // phase before any peer has actually started — transport observations of the
-            // not-yet-online slot are noise; the slot lifecycle (SlotClaimed / timeout) owns it.
             case TransportReachable _ -> Outcome.nop(state);
             case TransportUnreachable _ -> Outcome.nop(state);
         };
     }
 
     private Outcome applyJoining(Joining state, MembershipFsmEvent event) {
-        return switch (event){
-            // H.3 partial revert (2026-05-13): JOINING transitions retained. SWIM-departed
-            // during JOINING writes DECOMMISSIONED + clears slot (operator-aware path —
-            // CTM accounting depends on this).
+        return switch (event) {
             case SwimHealthy e -> joiningToOnDuty(state, e.at());
             case SwimFaulty _ -> Outcome.nop(state);
-            case SwimDeparted e -> joiningToDecommissioned(state, e.at(), REASON_SWIM_DEPARTED);
+            case SwimDeparted e -> joiningToStopped(state, e.at(), REASON_SWIM_DEPARTED, StopReason.FORCED);
             case SlotClaimed _ -> Outcome.nop(state);
-            case OperatorDrain e -> enterDraining(state.peer(), e.reason(), e.at());
-            case OperatorDecommission e -> joiningOperatorDecommission(state, e);
             case DrainOutcome _ -> illegal(state, event);
-            case JoinDeadlineExpired e -> joiningToDecommissioned(state, e.at(), REASON_JOIN_TIMEOUT);
-            // Topology-observation refactor Step 2: a transport-reachable observation during
-            // JOINING is confirmation only — the SwimHealthy cell drives the promotion.
+            case JoinDeadlineExpired e -> joiningToStopped(state, e.at(), REASON_JOIN_TIMEOUT, StopReason.FORCED);
             case TransportReachable _ -> Outcome.nop(state);
-            // S01 (JOINING-window kill): transport disconnect is the fast detection path;
-            // SWIM may take 10-15s to converge. Reuse `joiningToDecommissioned` so the
-            // slot is cleared atomically with the lifecycle write.
-            case TransportUnreachable e -> joiningToDecommissioned(state, e.at(), REASON_TRANSPORT_FAILURE);
+            case TransportUnreachable e -> joiningToStopped(state, e.at(), REASON_TRANSPORT_FAILURE, StopReason.FORCED);
         };
     }
 
     private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event, ReachabilityGate gate) {
-        return switch (event){
+        return switch (event) {
             case SwimHealthy _ -> Outcome.nop(state);
-            // H.3 partial revert (2026-05-13): restored `(OnDuty, SwimFaulty) → DECOMMISSIONED`
-            // write so the legacy `ClusterDeploymentManager` / slice-deployment / dashboard
-            // consumers reading KV directly continue to see the failed peer drop out. The
-            // chaos revival storm cure stays — it lives in `(DECOMMISSIONED, SwimHealthy)`
-            // being nop (no revival), not in suppressing the initial decommission write.
-            //
-            // Step 4 (spec §16 S04/S13/S17): aggregator-quorum gate. A SWIM-faulty observation
-            // on an ON_DUTY peer is NOT sufficient to decommission unless the cluster-wide
-            // ReachabilityAggregator also reports UNREACHABLE with quorum. Cold-start fallback
-            // (no snapshot yet) returns `true` to preserve pre-Step-4 behavior.
             case SwimFaulty e -> gate.isConfirmedUnreachable(state.peer())
-                                 ? onDutyToDecommissioned(state, e.at(), REASON_SWIM_FAULTY)
+                                 ? onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED)
                                  : Outcome.nop(state);
-            case SwimDeparted e -> onDutyToDecommissioned(state, e.at(), REASON_SWIM_DEPARTED);
+            case SwimDeparted e -> onDutyToStopped(state, e.at(), REASON_SWIM_DEPARTED, StopReason.FORCED);
             case SlotClaimed _ -> illegal(state, event);
-            case OperatorDrain e -> enterDraining(state.peer(), e.reason(), e.at());
-            case OperatorDecommission e -> onDutyOperatorDecommission(state, e);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
-            // Topology-observation refactor Step 2: TransportReachable on an ON_DUTY peer
-            // re-confirms the existing state — no write needed (mirrors SwimHealthy nop).
             case TransportReachable _ -> Outcome.nop(state);
-            // S02 / S14: transport disconnect on an ON_DUTY peer is the fast path to
-            // DECOMMISSIONED (~1s vs SWIM ~10-15s).
-            //
-            // Step 4 (spec §16 S05/S17): aggregator-quorum gate. A single transport-unreachable
-            // observation is NOT sufficient — confirmed by quorum or it's a partition seen by
-            // a single observer (S05) and must be suppressed. Cold-start fallback returns
-            // `true` (but transport events don't fire without a snapshot in practice).
             case TransportUnreachable e -> gate.isConfirmedUnreachable(state.peer())
-                                           ? onDutyToDecommissioned(state, e.at(), REASON_TRANSPORT_FAILURE)
+                                           ? onDutyToStopped(state, e.at(), REASON_TRANSPORT_FAILURE, StopReason.FORCED)
                                            : Outcome.nop(state);
         };
     }
 
-    /// `@SuppressWarnings("JBCT-SEQ-01")`: the sealed-event switch has 10 arms after the
-    /// topology-observation refactor (Step 2). The JBCT-SEQ-01 method-chain heuristic flags
-    /// switches with many arms; here the count is dictated by the sealed-interface
-    /// exhaustiveness contract (10 events × 7 states). Cannot be reduced without sacrificing
-    /// per-cell explicitness.
+    /// `@SuppressWarnings("JBCT-SEQ-01")`: the sealed-event switch has 8 arms after the
+    /// convergence-reconciler Phase 1 migration (OperatorDrain/OperatorDecommission moved to
+    /// `LifecycleCommand`) plus the topology-observation refactor (Step 2). The JBCT-SEQ-01
+    /// method-chain heuristic flags switches with many arms; here the count is dictated by
+    /// the sealed-interface exhaustiveness contract (8 events × 6 states post-Step-H). Cannot
+    /// be reduced without sacrificing per-cell explicitness.
     @SuppressWarnings("JBCT-SEQ-01")
     private Outcome applyDraining(Draining state, MembershipFsmEvent event) {
-        return switch (event){
+        return switch (event) {
             case SwimHealthy _ -> Outcome.nop(state);
             case SwimFaulty _ -> Outcome.nop(state);
             case SwimDeparted e -> drainingHardDeparted(state, e.at());
             case SlotClaimed _ -> illegal(state, event);
-            case OperatorDrain _ -> Outcome.nop(state);
-            case OperatorDecommission e -> drainingOperatorDecommission(state, e);
             case DrainOutcome e -> drainingDrainOutcome(state, e);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
-            // Topology-observation refactor Step 2: Draining is operator-owned and runs to
-            // a terminal `DrainOutcome` (success → DECOMMISSIONED, failure → FAILED_DRAIN)
-            // or hard-departs on `SwimDeparted`. Transport observations during drain are
-            // ignored — the DrainCoordinator owns the timeline.
             case TransportReachable _ -> Outcome.nop(state);
             case TransportUnreachable _ -> Outcome.nop(state);
         };
     }
 
-    private Outcome applyDecommissioned(Decommissioned state, MembershipFsmEvent event) {
-        return switch (event){
-            // H.3 (spec §H): `(DECOMMISSIONED, SwimHealthy)` revival path is removed entirely.
-            // Pre-H model carried this cell with refractory + tombstone defences to dampen
-            // the revival storm — all obsolete now that SWIM is authoritative for "alive".
-            // If a `DECOMMISSIONED` peer's container restarts and SWIM admits it again, the
-            // operator must explicitly clear the KV entry (or wait for `DecommissionedAtomGc`
-            // to age it out) before the peer rejoins as ON_DUTY through the view.
+    /// `@SuppressWarnings("JBCT-SEQ-01")`: see `applyDraining` rationale — 8-arm exhaustive
+    /// switch is required by the sealed `MembershipFsmEvent` contract.
+    ///
+    /// Step H collapse (2026-05-22): unified former `applyDecommissioned` and `applyFailedDrain`
+    /// into a single Stopped-state handler. The single behavioural difference between the two
+    /// originals — `(FailedDrain, SwimDeparted) → Decommissioned` clears the FAILED_DRAIN
+    /// terminal — is preserved by gating the `SwimDeparted` arm on `state.reason() == DRAIN_FAILED`,
+    /// which re-writes the lifecycle entry with `StopReason.FORCED` so consumers can distinguish
+    /// "drain failed and never came back" from "drain failed, then SWIM-departed".
+    @SuppressWarnings("JBCT-SEQ-01")
+    private Outcome applyStopped(Stopped state, MembershipFsmEvent event) {
+        return switch (event) {
             case SwimHealthy _ -> Outcome.nop(state);
             case SwimFaulty _ -> Outcome.nop(state);
-            case SwimDeparted _ -> Outcome.nop(state);
+            case SwimDeparted e -> state.reason() == StopReason.DRAIN_FAILED
+                                   ? stoppedDrainFailedDeparted(state, e.at())
+                                   : Outcome.nop(state);
             case SlotClaimed _ -> illegal(state, event);
-            case OperatorDrain _ -> Outcome.nop(state);
-            case OperatorDecommission _ -> Outcome.nop(state);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
-            // Topology-observation refactor Step 2: DECOMMISSIONED is terminal. Both
-            // transport-reachable and transport-unreachable are nop to preserve the chaos-
-            // revival defense (mirror of `SwimHealthy → nop` here). A peer's container that
-            // briefly accepts QUIC again must NOT revive its lifecycle entry.
             case TransportReachable _ -> Outcome.nop(state);
             case TransportUnreachable _ -> Outcome.nop(state);
         };
     }
 
     // H.4 (spec §H): `decommissionedSwimHealthy` revival path removed entirely. `MembershipView`
-    // is now authoritative for "alive"; a `DECOMMISSIONED` KV entry is an operator-declared
+    // is now authoritative for "alive"; a `STOPPED` KV entry is an operator-declared
     // override that does not get auto-revived by SWIM gossip.
+    /// Command-branch dispatch. Each `LifecycleCommand` variant has a dedicated handler that
+    /// switches on the current state and routes through the existing state-transition helpers
+    /// where possible. Illegal command-on-state combinations are treated as no-ops (mirrors
+    /// the "no-op + audit" decision in spec §6) rather than throwing — commands originate
+    /// from external systems (operator, reconciler, drain coordinator) where a stale view
+    /// of state is normal, and a leader-side throw would crash the FSM thread.
+    private Outcome applyCommand(MembershipFsmState state, LifecycleCommand command) {
+        return switch (command) {
+            case ForceDecommission cmd -> applyForceDecommission(state, cmd);
+            case ForceOnDuty cmd -> applyForceOnDuty(state, cmd);
+            case RecordJoining cmd -> applyRecordJoining(state, cmd);
+            case RequestReJoin cmd -> applyRequestReJoin(state, cmd);
+            case ForceDrain cmd -> applyForceDrain(state, cmd);
+        };
+    }
 
-    /// `@SuppressWarnings("JBCT-SEQ-01")`: see `applyDraining` rationale — 10-arm exhaustive
-    /// switch is required by the sealed `MembershipFsmEvent` contract.
-    @SuppressWarnings("JBCT-SEQ-01")
-    private Outcome applyFailedDrain(FailedDrain state, MembershipFsmEvent event) {
-        return switch (event){
-            case SwimHealthy _ -> Outcome.nop(state);
-            case SwimFaulty _ -> Outcome.nop(state);
-            case SwimDeparted e -> failedDrainToDecommissioned(state, e.at(), REASON_SWIM_DEPARTED);
-            case SlotClaimed _ -> illegal(state, event);
-            case OperatorDrain _ -> Outcome.nop(state);
-            case OperatorDecommission e -> failedDrainToDecommissioned(state, e.at(), REASON_OPERATOR_OVERRIDE);
-            case DrainOutcome _ -> illegal(state, event);
-            case JoinDeadlineExpired _ -> Outcome.nop(state);
-            // Topology-observation refactor Step 2: FAILED_DRAIN is operator-owned cleanup —
-            // only `OperatorDecommission` or `SwimDeparted` move it forward. Transport
-            // observations are ignored.
-            case TransportReachable _ -> Outcome.nop(state);
-            case TransportUnreachable _ -> Outcome.nop(state);
+    /// `ForceDecommission` — terminal transition to STOPPED carrying a `StopReason`
+    /// sidecar (GRACEFUL / FORCED / DRAIN_FAILED). Sources per spec §6: CTM scale-down
+    /// (FORCED), drain coordinator on success (GRACEFUL), drain coordinator/HTTP route on
+    /// timeout (DRAIN_FAILED), reconciler `JoiningTimeout` / `OnDutyFaulty` / `DrainTimeout`
+    /// rules, operator API. Idempotent on already-Stopped except when the prior
+    /// `StopReason` is `DRAIN_FAILED` and the incoming reason differs: the marker is
+    /// cleared by rewriting the lifecycle entry with the new `StopReason` (spec step H
+    /// preserved transition — former `FailedDrain → ForceDecommission` arms).
+    private Outcome applyForceDecommission(MembershipFsmState state, ForceDecommission cmd) {
+        var reasonText = stopReasonText(cmd.reason());
+
+        return switch (state) {
+            case Untracked s -> untrackedToStopped(s, cmd.at(), reasonText, cmd.reason());
+            case Provisioning s -> provisioningToStopped(s, cmd.at(), reasonText, cmd.reason());
+            case Joining s -> joiningToStopped(s, cmd.at(), reasonText, cmd.reason());
+            case OnDuty s -> onDutyToStopped(s, cmd.at(), reasonText, cmd.reason());
+            case Draining s -> drainingToStopped(s, cmd.at(), reasonText, cmd.reason());
+            case Stopped s -> stoppedToStopped(s, cmd.at(), reasonText, cmd.reason());
+        };
+    }
+
+    /// `Stopped(DRAIN_FAILED) → Stopped(FORCED | GRACEFUL)` clears the drain-failed
+    /// marker via an explicit operator override (spec §6, step H preserved transition).
+    /// All other `Stopped → Stopped` combinations are idempotent no-ops: the prior
+    /// `StopReason` is already terminal and ForceDecommission re-issued with the same
+    /// or a non-clearing reason MUST NOT produce a new write (spec idempotence rule).
+    private Outcome stoppedToStopped(Stopped state, HlcTimestamp at, String reason, StopReason stopReason) {
+        if (state.reason() != StopReason.DRAIN_FAILED || stopReason == StopReason.DRAIN_FAILED) {
+            return Outcome.nop(state);
+        }
+
+        var writes = new ArrayList<KVCommand<AetherKey>>();
+        writes.add(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(stopReason)));
+        writes.add(removeDrainDeadline(state.peer()));
+        var effects = List.<MembershipEffect> of(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
+
+        return Outcome.outcome(MembershipFsmState.stopped(state.peer(), toMillis(at), stopReason, false),
+                               writes,
+                               effects);
+    }
+
+    /// `ForceOnDuty` — promote to ON_DUTY. Sources per spec §6: cluster-sync `readyCandidate`
+    /// arrival on the leader (the SYNCING sub-phase completion signal arriving via
+    /// `ClusterSyncPong`), reconciler post-sync convergence. Idempotent on already-ON_DUTY;
+    /// no-op from operator-owned states (Draining) and terminal states.
+    private Outcome applyForceOnDuty(MembershipFsmState state, ForceOnDuty cmd) {
+        return switch (state) {
+            case Untracked _ -> untrackedDirectToOnDuty(cmd.peer(), cmd.at());
+            case Joining s -> joiningToOnDuty(s, cmd.at());
+            case OnDuty s -> Outcome.nop(s);
+            case Provisioning s -> Outcome.nop(s);
+            case Draining s -> Outcome.nop(s);
+            case Stopped s -> Outcome.nop(s);
+        };
+    }
+
+    /// `RecordJoining` — register a JOINING entry. Sources per spec §6: reconciler
+    /// `GenerationLifecycleGap` rule (Rabia member with no lifecycle entry past budget),
+    /// CTM slot-claimed flow when JOINING entry is missing. No-op if peer is already tracked
+    /// in any non-Untracked / non-Provisioning state.
+    private Outcome applyRecordJoining(MembershipFsmState state, RecordJoining cmd) {
+        return switch (state) {
+            case Untracked _ -> enterJoining(cmd.peer(), cmd.slotId(), cmd.at());
+            case Provisioning _ -> enterJoining(cmd.peer(), cmd.slotId(), cmd.at());
+            case Joining s -> Outcome.nop(s);
+            case OnDuty s -> Outcome.nop(s);
+            case Draining s -> Outcome.nop(s);
+            case Stopped s -> Outcome.nop(s);
+        };
+    }
+
+    /// `RequestReJoin` — reset peer to Untracked so it can re-enter JOINING. Sources per
+    /// spec §6: drain coordinator on drain cancellation, operator API for forced re-join
+    /// after stuck DRAINING. Emits a `Remove` for the lifecycle key + cancels any in-flight
+    /// timers/drains. The next SlotClaimed / SwimHealthy / RecordJoining will recreate the
+    /// entry. No-op if already Untracked.
+    private Outcome applyRequestReJoin(MembershipFsmState state, RequestReJoin cmd) {
+        if (state instanceof Untracked s) {
+            return Outcome.nop(s);
+        }
+
+        var writes = new ArrayList<KVCommand<AetherKey>>();
+        writes.add(new KVCommand.Remove<>(NodeLifecycleKey.nodeLifecycleKey(cmd.peer())));
+
+        if (state instanceof Joining) {
+            writes.add(removeJoinDeadline(cmd.peer()));
+        }
+        if (state instanceof Draining) {
+            writes.add(removeDrainDeadline(cmd.peer()));
+        }
+
+        var effects = new ArrayList<MembershipEffect>();
+        effects.add(new CancelTimer(cmd.peer(), TimerKind.JOIN_DEADLINE));
+
+        if (state instanceof Draining) {
+            effects.add(new CancelDrain(cmd.peer()));
+        }
+
+        return Outcome.outcome(MembershipFsmState.untracked(cmd.peer()),
+                               writes,
+                               effects);
+    }
+
+    /// `ForceDrain` — transition to DRAINING carrying a `DrainReason` sidecar. Sources per
+    /// spec §6: Operator API drain endpoint, CLI `aether nodes drain <id>`. Delegates to
+    /// `enterDraining` on ON_DUTY so the `InvokeDrain` effect + join-deadline cancel are
+    /// emitted. Idempotent on already-DRAINING; no-op from pre-active (Untracked /
+    /// Provisioning / Joining) and terminal (Stopped) states — operator
+    /// intent against a peer that isn't actively serving is recorded by the audit stream but
+    /// does not advance the FSM.
+    private Outcome applyForceDrain(MembershipFsmState state, ForceDrain cmd) {
+        return switch (state) {
+            case OnDuty _ -> enterDraining(cmd.peer(), cmd.reason(), cmd.at());
+            case Draining s -> Outcome.nop(s);
+            case Untracked s -> Outcome.nop(s);
+            case Provisioning s -> Outcome.nop(s);
+            case Joining s -> Outcome.nop(s);
+            case Stopped s -> Outcome.nop(s);
         };
     }
 
@@ -287,146 +376,240 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     /// entries; post-H the `MembershipView` derived path returns the same answer either way,
     /// but the KV write is retained for legacy consumers that read `NodeLifecycleKey` directly.
     private Outcome untrackedDirectToOnDuty(NodeId peer, HlcTimestamp at) {
-        var writes = singleWrite(putLifecycle(peer, NodeLifecycleState.ON_DUTY, at));
-        var effects = List.<MembershipEffect>of(emit(peer, MembershipDomainEvent.NODE_ON_DUTY, REASON_NONE));
+        var writes = singleWrite(putLifecycle(peer, NodeLifecycleState.ON_DUTY, at, Option.none()));
+        var effects = List.<MembershipEffect> of(emit(peer, MembershipDomainEvent.NODE_ON_DUTY, REASON_NONE));
+
         return Outcome.outcome(MembershipFsmState.onDuty(peer, toMillis(at)), writes, effects);
     }
 
     private Outcome enterJoining(NodeId peer, Option<String> slotId, HlcTimestamp at) {
-        var writes = singleWrite(putLifecycle(peer, NodeLifecycleState.JOINING, at));
+        var writes = new ArrayList<KVCommand<AetherKey>>();
+        writes.add(putLifecycle(peer, NodeLifecycleState.JOINING, at, Option.none()));
+        writes.add(putJoinDeadline(peer, at));
         var effects = new ArrayList<MembershipEffect>();
         effects.add(emit(peer, MembershipDomainEvent.NODE_JOINING, REASON_NONE));
         effects.add(new ScheduleTimer(peer, TimerKind.JOIN_DEADLINE, config.joinDeadline()));
+
         return Outcome.outcome(MembershipFsmState.joining(peer, toMillis(at), slotId), writes, effects);
     }
 
     private Outcome joiningToOnDuty(Joining state, HlcTimestamp at) {
         var writes = new ArrayList<KVCommand<AetherKey>>();
-        writes.add(putLifecycle(state.peer(), NodeLifecycleState.ON_DUTY, at));
+        writes.add(putLifecycle(state.peer(), NodeLifecycleState.ON_DUTY, at, Option.none()));
+        writes.add(removeJoinDeadline(state.peer()));
         state.slotId().onPresent(slotId -> writes.add(removeSlot(slotId)));
         var effects = new ArrayList<MembershipEffect>();
         effects.add(new CancelTimer(state.peer(), TimerKind.JOIN_DEADLINE));
         effects.add(emit(state.peer(), MembershipDomainEvent.NODE_ON_DUTY, REASON_NONE));
+
         return Outcome.outcome(MembershipFsmState.onDuty(state.peer(), toMillis(at)),
                                writes,
                                effects);
     }
 
-    private Outcome joiningToDecommissioned(Joining state, HlcTimestamp at, String reason) {
+    private Outcome joiningToStopped(Joining state, HlcTimestamp at, String reason, StopReason stopReason) {
         var writes = new ArrayList<KVCommand<AetherKey>>();
-        writes.add(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, at));
+        writes.add(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(stopReason)));
+        writes.add(removeJoinDeadline(state.peer()));
         state.slotId().onPresent(slotId -> writes.add(removeSlot(slotId)));
         var effects = new ArrayList<MembershipEffect>();
         effects.add(new CancelTimer(state.peer(), TimerKind.JOIN_DEADLINE));
         effects.add(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), toMillis(at), isSwimReason(reason)),
+
+        return Outcome.outcome(MembershipFsmState.stopped(state.peer(), toMillis(at), stopReason, isSwimReason(reason)),
                                writes,
                                effects);
     }
 
-    private Outcome joiningOperatorDecommission(Joining state, OperatorDecommission event) {
-        return joiningToDecommissioned(state,
-                                       event.at(),
-                                       event.force()
-                                       ? REASON_OPERATOR_FORCED
-                                       : REASON_OPERATOR_DECOMMISSION);
-    }
+    private Outcome onDutyToStopped(OnDuty state, HlcTimestamp at, String reason, StopReason stopReason) {
+        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(stopReason)));
+        var effects = List.<MembershipEffect> of(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
 
-    private Outcome onDutyToDecommissioned(OnDuty state, HlcTimestamp at, String reason) {
-        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, at));
-        var effects = List.<MembershipEffect>of(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), toMillis(at), isSwimReason(reason)),
-                               writes,
-                               effects);
-    }
-
-    private Outcome onDutyOperatorDecommission(OnDuty state, OperatorDecommission event) {
-        if (event.force()) {return onDutyToDecommissioned(state, event.at(), REASON_OPERATOR_FORCED);}
-        return enterDraining(state.peer(), DrainReason.OPERATOR_DRAIN, event.at());
-    }
-
-    private Outcome untrackedOperatorDecommission(Untracked state, OperatorDecommission event) {
-        if (!event.force()) {return Outcome.nop(state);}
-        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, event.at()));
-        var effects = List.<MembershipEffect>of(emit(state.peer(),
-                                                     MembershipDomainEvent.NODE_FAILED,
-                                                     REASON_OPERATOR_FORCED));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), toMillis(event.at()), false),
+        return Outcome.outcome(MembershipFsmState.stopped(state.peer(), toMillis(at), stopReason, isSwimReason(reason)),
                                writes,
                                effects);
     }
 
     private Outcome enterDraining(NodeId peer, DrainReason reason, HlcTimestamp at) {
-        var writes = singleWrite(putLifecycle(peer, NodeLifecycleState.DRAINING, at));
+        var writes = new ArrayList<KVCommand<AetherKey>>();
+        writes.add(putLifecycle(peer, NodeLifecycleState.DRAINING, at, Option.none()));
+        writes.add(putDrainDeadline(peer, at));
         var effects = new ArrayList<MembershipEffect>();
         effects.add(new CancelTimer(peer, TimerKind.JOIN_DEADLINE));
         effects.add(new InvokeDrain(peer, reason));
+
         return Outcome.outcome(MembershipFsmState.draining(peer, toMillis(at), reason), writes, effects);
     }
 
     private Outcome drainingHardDeparted(Draining state, HlcTimestamp at) {
-        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, at));
+        var writes = new ArrayList<KVCommand<AetherKey>>();
+        writes.add(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(StopReason.FORCED)));
+        writes.add(removeDrainDeadline(state.peer()));
         var effects = new ArrayList<MembershipEffect>();
         effects.add(new CancelDrain(state.peer()));
         effects.add(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, REASON_SWIM_DEPARTED));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), toMillis(at), true),
-                               writes,
-                               effects);
-    }
 
-    private Outcome drainingOperatorDecommission(Draining state, OperatorDecommission event) {
-        if (!event.force()) {return Outcome.nop(state);}
-        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, event.at()));
-        var effects = new ArrayList<MembershipEffect>();
-        effects.add(new CancelDrain(state.peer()));
-        effects.add(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, REASON_OPERATOR_FORCED));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), toMillis(event.at()), false),
+        return Outcome.outcome(MembershipFsmState.stopped(state.peer(), toMillis(at), StopReason.FORCED, true),
                                writes,
                                effects);
     }
 
     private Outcome drainingDrainOutcome(Draining state, DrainOutcome event) {
         if (event.success()) {
-            var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, event.at()));
-            var effects = List.<MembershipEffect>of(emit(state.peer(), MembershipDomainEvent.NODE_DRAINED, REASON_NONE));
-            return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), toMillis(event.at()), false),
+            var writes = new ArrayList<KVCommand<AetherKey>>();
+            writes.add(putLifecycle(state.peer(),
+                                    NodeLifecycleState.STOPPED,
+                                    event.at(),
+                                    Option.some(StopReason.GRACEFUL)));
+            writes.add(removeDrainDeadline(state.peer()));
+            var effects = List.<MembershipEffect> of(emit(state.peer(), MembershipDomainEvent.NODE_DRAINED, REASON_NONE));
+
+            return Outcome.outcome(MembershipFsmState.stopped(state.peer(),
+                                                              toMillis(event.at()),
+                                                              StopReason.GRACEFUL,
+                                                              false),
                                    writes,
                                    effects);
         }
-        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.FAILED_DRAIN, event.at()));
-        var effects = List.<MembershipEffect>of(emit(state.peer(),
-                                                     MembershipDomainEvent.NODE_DRAIN_FAILED,
-                                                     REASON_DRAIN_HARD_DEADLINE));
-        return Outcome.outcome(MembershipFsmState.failedDrain(state.peer(), toMillis(event.at())),
+
+        var writes = new ArrayList<KVCommand<AetherKey>>();
+        writes.add(putLifecycle(state.peer(),
+                                NodeLifecycleState.STOPPED,
+                                event.at(),
+                                Option.some(StopReason.DRAIN_FAILED)));
+        writes.add(removeDrainDeadline(state.peer()));
+        var effects = List.<MembershipEffect> of(emit(state.peer(),
+                                                      MembershipDomainEvent.NODE_DRAIN_FAILED,
+                                                      REASON_DRAIN_HARD_DEADLINE));
+
+        return Outcome.outcome(MembershipFsmState.stopped(state.peer(),
+                                                          toMillis(event.at()),
+                                                          StopReason.DRAIN_FAILED,
+                                                          false),
                                writes,
                                effects);
     }
 
-    private Outcome failedDrainToDecommissioned(FailedDrain state, HlcTimestamp at, String reason) {
-        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.DECOMMISSIONED, at));
-        var effects = List.<MembershipEffect>of(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
-        return Outcome.outcome(MembershipFsmState.decommissioned(state.peer(), toMillis(at), isSwimReason(reason)),
+    /// Step H preserved transition: a `STOPPED+DRAIN_FAILED` peer that subsequently SWIM-departs
+    /// is re-written as `STOPPED+FORCED` to mark the resolved-by-departure path. Mirrors the
+    /// former `failedDrainToDecommissioned(_, _, REASON_SWIM_DEPARTED)` write.
+    private Outcome stoppedDrainFailedDeparted(Stopped state, HlcTimestamp at) {
+        var writes = singleWrite(putLifecycle(state.peer(),
+                                              NodeLifecycleState.STOPPED,
+                                              at,
+                                              Option.some(StopReason.FORCED)));
+        var effects = List.<MembershipEffect> of(emit(state.peer(),
+                                                      MembershipDomainEvent.NODE_FAILED,
+                                                      REASON_SWIM_DEPARTED));
+        return Outcome.outcome(MembershipFsmState.stopped(state.peer(), toMillis(at), StopReason.FORCED, true),
                                writes,
                                effects);
     }
 
-    /// Build a `Put<NodeLifecycleKey, NodeLifecycleValue>` carrying the originator's HLC.
-    /// The reducer emits a minimal value (state + updatedAt-millis + transitionedAt-HLC);
-    /// the wiring layer merges host/port/observedCoreEpoch/provisioningSource before
-    /// dispatching to consensus (see `MembershipFsm.resolveLifecycleWrites`).
-    private static KVCommand<AetherKey> putLifecycle(NodeId peer, NodeLifecycleState newState, HlcTimestamp at) {
+    /// Command-driven decommission from `Untracked`. The command carries an explicit
+    /// `StopReason` and is always honored. Writes a STOPPED entry so external
+    /// consumers reading `NodeLifecycleKey` directly see the operator's intent.
+    private Outcome untrackedToStopped(Untracked state, HlcTimestamp at, String reason, StopReason stopReason) {
+        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(stopReason)));
+        var effects = List.<MembershipEffect> of(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
+
+        return Outcome.outcome(MembershipFsmState.stopped(state.peer(), toMillis(at), stopReason, false),
+                               writes,
+                               effects);
+    }
+
+    /// Command-driven decommission from `Provisioning`. Clears the reserved slot atomically
+    /// with the lifecycle write so CTM accounting remains accurate.
+    private Outcome provisioningToStopped(Provisioning state, HlcTimestamp at, String reason, StopReason stopReason) {
+        var writes = new ArrayList<KVCommand<AetherKey>>();
+        writes.add(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(stopReason)));
+        writes.add(removeSlot(state.slotId()));
+        var effects = List.<MembershipEffect> of(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
+
+        return Outcome.outcome(MembershipFsmState.stopped(state.peer(), toMillis(at), stopReason, false),
+                               writes,
+                               effects);
+    }
+
+    /// Command-driven decommission from `Draining`. Cancels the in-flight drain and writes
+    /// STOPPED. Used by the reconciler `DrainTimeout` rule and operator API.
+    private Outcome drainingToStopped(Draining state, HlcTimestamp at, String reason, StopReason stopReason) {
+        var writes = new ArrayList<KVCommand<AetherKey>>();
+        writes.add(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(stopReason)));
+        writes.add(removeDrainDeadline(state.peer()));
+        var effects = new ArrayList<MembershipEffect>();
+        effects.add(new CancelDrain(state.peer()));
+        effects.add(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
+
+        return Outcome.outcome(MembershipFsmState.stopped(state.peer(), toMillis(at), stopReason, false),
+                               writes,
+                               effects);
+    }
+
+    /// Map a `StopReason` from a `ForceDecommission` command to a reducer reason string.
+    /// The reason is consumed by `MembershipDomainEvent` emission and by `isSwimReason` (none
+    /// of these stop-reasons are SWIM-driven, so the resulting `Stopped.swimDriven`
+    /// flag is always `false` for command-driven paths).
+    private static String stopReasonText(StopReason reason) {
+        return switch (reason) {
+            case GRACEFUL -> REASON_GRACEFUL_STOP;
+            case FORCED -> REASON_OPERATOR_FORCED;
+            case DRAIN_FAILED -> REASON_DRAIN_HARD_DEADLINE;
+        };
+    }
+
+    /// Build a `Put<NodeLifecycleKey, NodeLifecycleValue>` carrying the originator's HLC and
+    /// (for STOPPED writes) the `StopReason` sidecar. The reducer emits a minimal value
+    /// (state + updatedAt-millis + transitionedAt-HLC + stopReason); the wiring layer merges
+    /// host/port/observedCoreEpoch/provisioningSource before dispatching to consensus
+    /// (see `MembershipFsm.resolveLifecycleWrites`).
+    ///
+    /// `stopReason` is `Option.some(...)` only when `newState == STOPPED` — DRAINING / ON_DUTY /
+    /// JOINING writes pass `Option.none()` and the resulting `NodeLifecycleValue.stopReason()`
+    /// is `none()` (which the deserialiser also tolerates for pre-Step-I snapshots).
+    private static KVCommand<AetherKey> putLifecycle(NodeId peer,
+                                                     NodeLifecycleState newState,
+                                                     HlcTimestamp at,
+                                                     Option<StopReason> stopReason) {
         var key = NodeLifecycleKey.nodeLifecycleKey(peer);
-        var value = NodeLifecycleValue.nodeLifecycleValue(newState,
-                                                          toMillis(at),
-                                                          "",
-                                                          0,
-                                                          Epoch.ZERO,
-                                                          at);
+        var value = NodeLifecycleValue.nodeLifecycleValue(newState, toMillis(at), "", 0, Epoch.ZERO, at).withStopReason(stopReason);
+
         return new KVCommand.Put<>(key, value);
     }
 
     private static KVCommand<AetherKey> removeSlot(String slotId) {
         return new KVCommand.Remove<>(ProvisioningSlotKey.provisioningSlotKey(slotId));
+    }
+
+    /// Phase 1 step J — write the JOIN_DEADLINE observability atom. `deadlineMs` is wall-clock
+    /// millis derived from the event HLC plus `config.joinDeadline()`; `setAt` is the HLC stamp
+    /// of the triggering JOINING-entry event. Mirrors the in-process scheduler entry so a new
+    /// leader can reconstruct the deadline from KV on takeover.
+    private KVCommand<AetherKey> putJoinDeadline(NodeId peer, HlcTimestamp at) {
+        var deadlineMs = toMillis(at) + config.joinDeadline().millis();
+
+        return new KVCommand.Put<>(JoinDeadlineKey.joinDeadlineKey(peer),
+                                   JoinDeadlineValue.joinDeadlineValue(deadlineMs, at));
+    }
+
+    /// Phase 1 step J — write the DRAIN_DEADLINE observability atom. `deadlineMs` is wall-clock
+    /// millis derived from the event HLC plus `config.drainTimeout()`; `setAt` is the HLC stamp
+    /// of the triggering DRAINING-entry event.
+    private KVCommand<AetherKey> putDrainDeadline(NodeId peer, HlcTimestamp at) {
+        var deadlineMs = toMillis(at) + config.drainTimeout().millis();
+
+        return new KVCommand.Put<>(DrainDeadlineKey.drainDeadlineKey(peer),
+                                   DrainDeadlineValue.drainDeadlineValue(deadlineMs, at));
+    }
+
+    /// Phase 1 step J — clear the JOIN_DEADLINE atom on JOINING-exit (ON_DUTY / STOPPED).
+    private static KVCommand<AetherKey> removeJoinDeadline(NodeId peer) {
+        return new KVCommand.Remove<>(JoinDeadlineKey.joinDeadlineKey(peer));
+    }
+
+    /// Phase 1 step J — clear the DRAIN_DEADLINE atom on DRAINING-exit (any STOPPED variant).
+    private static KVCommand<AetherKey> removeDrainDeadline(NodeId peer) {
+        return new KVCommand.Remove<>(DrainDeadlineKey.drainDeadlineKey(peer));
     }
 
     private static List<KVCommand<AetherKey>> singleWrite(KVCommand<AetherKey> command) {
@@ -444,40 +627,39 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         return at.physicalMicros() / 1000L;
     }
 
-    /// `swimDriven` flag carried on the `Decommissioned` state. SWIM-driven reasons
+    /// `swimDriven` flag carried on the `Stopped` state. SWIM-driven reasons
     /// (`swim-faulty`, `swim-departed`) distinguish failure-detection paths from
     /// operator/drain-driven decommissions. Currently informational only — the H.4
     /// refractory gate that consumed it has been removed; the field is dormant and
-    /// scheduled for follow-up cleanup along with the `Decommissioned.swimDriven` field.
+    /// scheduled for follow-up cleanup along with the `Stopped.swimDriven` field.
     private static boolean isSwimReason(String reason) {
         return REASON_SWIM_FAULTY.equals(reason) || REASON_SWIM_DEPARTED.equals(reason);
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Outcome illegal(MembershipFsmState state, MembershipFsmEvent event) {
-        var message = "Illegal (state, event) transition: state=" + state.getClass().getSimpleName() + ", event=" + event.getClass()
-                                                                                                                                  .getSimpleName() + ", peer=" + state.peer()
-                                                                                                                                                                           .id();
+    @SuppressWarnings("JBCT-EX-01")
+    private static Outcome illegal(MembershipFsmState state, MembershipFsmEvent event) {
+        var message = "Illegal (state, event) transition: state=" + state.getClass().getSimpleName()
+                    + ", event=" + event.getClass().getSimpleName()
+                    + ", peer=" + state.peer().id();
         throw new IllegalStateException(message);
     }
 
     private static final String REASON_NONE = "";
-
     private static final String REASON_SWIM_FAULTY = "swim-faulty";
-
     private static final String REASON_SWIM_DEPARTED = "swim-departed";
-
     private static final String REASON_JOIN_TIMEOUT = "join-timeout";
-
     private static final String REASON_OPERATOR_FORCED = "operator-forced";
-
-    private static final String REASON_OPERATOR_DECOMMISSION = "operator-decommission";
-
     private static final String REASON_OPERATOR_OVERRIDE = "operator-override";
 
     private static final String REASON_DRAIN_HARD_DEADLINE = "drain-hard-deadline";
 
+    /// Command-branch reason: drain coordinator reports successful drain completion. Routed
+    /// through `ForceDecommission` with `StopReason.GRACEFUL`. Not a SWIM reason — produces
+    /// `Stopped.swimDriven = false`.
+    private static final String REASON_GRACEFUL_STOP = "graceful-stop";
+
     /// Topology-observation refactor Step 2: reason carried on `NodeLifecycleValue` writes
     /// triggered by `TransportUnreachable` events (JOINING and ON_DUTY cells). Not a SWIM
-    /// reason — does NOT mark the resulting Decommissioned state as `swimDriven`.
+    /// reason — does NOT mark the resulting Stopped state as `swimDriven`.
     private static final String REASON_TRANSPORT_FAILURE = "transport-failure";
 }

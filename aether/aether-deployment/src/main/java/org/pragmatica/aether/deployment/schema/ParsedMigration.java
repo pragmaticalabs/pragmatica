@@ -22,15 +22,18 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
     private static final int SEPARATOR_LENGTH = 2;
 
     public static Result<ParsedMigration> parsedMigration(MigrationEntry entry) {
-        return Option.option(entry.filename()).filter(f -> !f.isEmpty())
-                            .toResult(invalidMigrationFormat("", "filename is empty"))
-                            .flatMap(filename -> parseFilename(entry, filename));
+        return Option.option(entry.filename())
+                     .filter(f -> !f.isEmpty())
+                     .toResult(invalidMigrationFormat("", "filename is empty"))
+                     .flatMap(filename -> parseFilename(entry, filename));
     }
 
     private static Result<ParsedMigration> parseFilename(MigrationEntry entry, String filename) {
         if (!filename.endsWith(".sql")) {return invalidMigrationFormat(filename, "must end with .sql").result();}
+
         var prefix = filename.charAt(0);
-        return switch (prefix){
+
+        return switch (prefix) {
             case 'R' -> parseRepeatable(entry, filename);
             case 'V' -> parseVersioned(entry, filename, MigrationType.VERSIONED);
             case 'U' -> parseVersioned(entry, filename, MigrationType.UNDO);
@@ -41,16 +44,23 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
 
     private static Result<ParsedMigration> parseRepeatable(MigrationEntry entry, String filename) {
         var separatorIndex = filename.indexOf("__");
+
         if (separatorIndex <0) {return invalidMigrationFormat(filename, "missing '__' separator").result();}
+
         var description = filename.substring(separatorIndex + SEPARATOR_LENGTH, filename.length() - 4);
+
         if (description.isEmpty()) {return invalidMigrationFormat(filename, "description is empty").result();}
+
         return Result.success(new ParsedMigration(entry, MigrationType.REPEATABLE, 0, description));
     }
 
     private static Result<ParsedMigration> parseVersioned(MigrationEntry entry, String filename, MigrationType type) {
         var separatorIndex = filename.indexOf("__");
+
         if (separatorIndex <1) {return invalidMigrationFormat(filename, "missing '__' separator or version number").result();}
+
         var versionStr = filename.substring(1, separatorIndex);
+
         return parseVersion(filename, versionStr).map(version -> extractDescription(filename, separatorIndex))
                            .flatMap(desc -> validateDescription(filename, desc))
                            .map(desc -> new ParsedMigration(entry,

@@ -501,7 +501,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
             return new CallStats(new LongAdder(), new DoubleAdder());
         }
 
-        void record(long durationMs) {
+        @Contract void record(long durationMs) {
             count.increment();
             totalDuration.add(durationMs);
         }

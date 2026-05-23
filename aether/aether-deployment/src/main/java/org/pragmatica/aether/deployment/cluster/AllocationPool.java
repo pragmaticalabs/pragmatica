@@ -37,15 +37,16 @@ public record AllocationPool(List<NodeId> coreNodes,
     public List<NodeId> allNodes() {
         var all = new ArrayList<>(coreNodes);
         all.addAll(mainWorkers);
+
         return List.copyOf(all);
     }
 
     public List<NodeId> nodesForPolicy(PlacementPolicy policy) {
-        return switch (policy){
+        return switch (policy) {
             case CORE_ONLY -> coreNodes;
             case WORKERS_PREFERRED -> mainWorkers.isEmpty()
-                                     ? coreNodes
-                                     : mainWorkers;
+                                      ? coreNodes
+                                      : mainWorkers;
             case WORKERS_ONLY -> mainWorkers;
             case ALL -> allNodes();
         };

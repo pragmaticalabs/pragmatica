@@ -143,7 +143,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var selfId = node.self();
         var allNodeIds = topologyManager.topology();
         var membershipView = node.membershipView();
-        // Filter out DECOMMISSIONED / UNTRACKED / FAILED_DRAIN entries — these are peers
+        // Filter out STOPPED / UNTRACKED entries — these are peers
         // whose containers no longer exist but whose KV topology entry hasn't been GC'd
         // yet. Without this filter, killed-then-replaced peers leak into the topology
         // response as ACTIVE/HEALTHY, breaking `pick_non_leader` and any consumer that
@@ -267,7 +267,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private static boolean isEffectiveOnDuty(org.pragmatica.aether.slice.generation.CoreMember member) {
-        if (member.lifecycle() == NodeLifecycleState.DRAINING || member.lifecycle() == NodeLifecycleState.DECOMMISSIONED || member.lifecycle() == NodeLifecycleState.FAILED_DRAIN || member.lifecycle() == NodeLifecycleState.SHUTTING_DOWN) {
+        if (member.lifecycle() == NodeLifecycleState.DRAINING || member.lifecycle() == NodeLifecycleState.STOPPED) {
             return false;
         }
         return member.healthHint() == HealthHint.HEALTHY || member.lifecycle() == NodeLifecycleState.ON_DUTY;
@@ -280,7 +280,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     /// True when the peer's effective lifecycle keeps it in the operational topology.
-    /// Excludes DECOMMISSIONED / FAILED_DRAIN / UNTRACKED — KV entries for peers whose
+    /// Excludes STOPPED / UNTRACKED — KV entries for peers whose
     /// containers no longer exist but whose topology row hasn't yet been GC'd.
     /// JOINING / ON_DUTY / DRAINING all count as "live" — they remain valid `pick_non_leader`
     /// targets, valid CTM provisioning slots, and valid `/api/cluster/topology` rows.

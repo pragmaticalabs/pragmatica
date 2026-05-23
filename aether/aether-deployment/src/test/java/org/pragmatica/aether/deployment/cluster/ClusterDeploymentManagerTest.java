@@ -222,7 +222,7 @@ class ClusterDeploymentManagerTest {
             snapshotRef.set(Option.some(snapshotWithLifecycles(Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
                                                                       NODE_2, NodeLifecycleState.ON_DUTY,
                                                                       NODE_3, NodeLifecycleState.ON_DUTY,
-                                                                      DRAINING_NODE, NodeLifecycleState.DECOMMISSIONED))));
+                                                                      DRAINING_NODE, NodeLifecycleState.STOPPED))));
             var activeIdsAfter = invokeActiveNodes(active);
             assertThat(activeIdsAfter).containsExactlyInAnyOrder(NODE_1, NODE_2, NODE_3);
         }

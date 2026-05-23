@@ -13,7 +13,7 @@ import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.LifecycleSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.SlotSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.TimerScheduler;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Stopped;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.OnDuty;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -168,7 +168,7 @@ class MembershipFsmIncarnationTest {
             // DECOMMISSIONED write — peer was ON_DUTY).
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 10L));
             assertThat(commandApplier.calls).hasSize(1);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
         }
     }
 
@@ -194,7 +194,7 @@ class MembershipFsmIncarnationTest {
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 1L));
 
             assertThat(commandApplier.calls).hasSize(1);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
         }
 
         @Test
@@ -227,7 +227,7 @@ class MembershipFsmIncarnationTest {
             fsm.onSwimObservation(new FaultyObserved(PEER_B, 2L));
 
             assertThat(commandApplier.calls).hasSize(1);
-            assertThat(fsm.get(PEER_B).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_B).unwrap()).isInstanceOf(Stopped.class);
             // Peer A is unaffected.
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
         }
@@ -250,7 +250,7 @@ class MembershipFsmIncarnationTest {
             assertThat(commandApplier.calls).hasSize(1);
             // A unaffected; B decommissioned.
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
-            assertThat(fsm.get(PEER_B).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_B).unwrap()).isInstanceOf(Stopped.class);
         }
     }
 
@@ -270,7 +270,7 @@ class MembershipFsmIncarnationTest {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 50L));
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
             commandApplier.calls.clear();
 
             // After prune, a fresh stream at incarnation 1 reaches the reducer.
@@ -292,7 +292,7 @@ class MembershipFsmIncarnationTest {
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 2L));
 
             assertThat(commandApplier.calls).hasSize(1);
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
         }
 
         @Test
@@ -307,7 +307,7 @@ class MembershipFsmIncarnationTest {
 
             // External KV write transitions peer to DECOMMISSIONED. This must prune
             // the incarnation map entry.
-            applyExternalLifecyclePut(fsm, PEER_A, NodeLifecycleState.DECOMMISSIONED);
+            applyExternalLifecyclePut(fsm, PEER_A, NodeLifecycleState.STOPPED);
 
             // Re-seed ON_DUTY and deliver a low-incarnation SwimFaulty. If the prune
             // worked, stored is 0, incoming 5 admits, reducer writes DECOMMISSIONED.

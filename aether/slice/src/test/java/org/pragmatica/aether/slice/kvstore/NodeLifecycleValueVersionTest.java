@@ -89,8 +89,8 @@ class NodeLifecycleValueVersionTest {
             assertThat(v.version()).isEqualTo(NodeLifecycleValue.CURRENT_VERSION);
         }
 
-        @Test void currentVersion_isOne() {
-            assertThat(NodeLifecycleValue.CURRENT_VERSION).isEqualTo((byte) 1);
+        @Test void currentVersion_matchesSchemaV3() {
+            assertThat(NodeLifecycleValue.CURRENT_VERSION).isEqualTo((byte) 3);
         }
     }
 

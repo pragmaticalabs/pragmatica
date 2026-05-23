@@ -29,49 +29,62 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public sealed interface TaskGroupActivator {
+@SuppressWarnings("JBCT-RET-01")
+public sealed interface TaskGroupActivator {
     void register(DelegatedComponent component);
-    @MessageReceiver void onTaskAssignmentPut(ValuePut<TaskAssignmentKey, TaskAssignmentValue> valuePut);
-    @MessageReceiver void onTaskAssignmentRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> valueRemove);
+
+    @MessageReceiver
+    void onTaskAssignmentPut(ValuePut<TaskAssignmentKey, TaskAssignmentValue> valuePut);
+
+    @MessageReceiver
+    void onTaskAssignmentRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> valueRemove);
 
     static TaskGroupActivator taskGroupActivator(NodeId self, ClusterNode<KVCommand<AetherKey>> clusterNode) {
         return new taskGroupActivator(self, clusterNode, new ConcurrentHashMap<>());
     }
 
-    @SuppressWarnings("JBCT-RET-01") record taskGroupActivator(NodeId self,
-                                                               ClusterNode<KVCommand<AetherKey>> clusterNode,
-                                                               Map<TaskGroup, List<DelegatedComponent>> components) implements TaskGroupActivator {
+    @SuppressWarnings("JBCT-RET-01")
+    record taskGroupActivator(NodeId self,
+                              ClusterNode<KVCommand<AetherKey>> clusterNode,
+                              Map<TaskGroup, List<DelegatedComponent>> components) implements TaskGroupActivator {
         private static final Logger log = LoggerFactory.getLogger(taskGroupActivator.class);
 
-        @Override public void register(DelegatedComponent component) {
+        @Override
+        public void register(DelegatedComponent component) {
             components.computeIfAbsent(component.taskGroup(), _ -> new CopyOnWriteArrayList<>()).add(component);
             log.info("Registered component for task group {}", component.taskGroup());
         }
 
-        @Override public void onTaskAssignmentPut(ValuePut<TaskAssignmentKey, TaskAssignmentValue> valuePut) {
-            var taskGroup = valuePut.cause().key()
-                                          .taskGroup();
+        @Override
+        public void onTaskAssignmentPut(ValuePut<TaskAssignmentKey, TaskAssignmentValue> valuePut) {
+            var taskGroup = valuePut.cause().key().taskGroup();
             var assignment = valuePut.cause().value();
             var groupComponents = components.get(taskGroup);
+
             if (groupComponents == null || groupComponents.isEmpty()) {
                 log.debug("No components registered for task group {}, ignoring assignment", taskGroup);
+
                 return;
             }
             if (assignment.status() == AssignmentStatus.ACTIVE || assignment.status() == AssignmentStatus.FAILED) {
                 log.debug("Task group {} already in terminal state {}, ignoring", taskGroup, assignment.status());
+
                 return;
             }
-            if (isAssignedToSelf(assignment)) {handleLocalAssignment(taskGroup, groupComponents);} else {handleRemoteAssignment(taskGroup,
-                                                                                                                                groupComponents);}
+            if (isAssignedToSelf(assignment)) {handleLocalAssignment(taskGroup, groupComponents);} else {
+                handleRemoteAssignment(taskGroup, groupComponents);
+            }
         }
 
-        @Override public void onTaskAssignmentRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> valueRemove) {
-            var taskGroup = valueRemove.cause().key()
-                                             .taskGroup();
+        @Override
+        public void onTaskAssignmentRemove(ValueRemove<TaskAssignmentKey, TaskAssignmentValue> valueRemove) {
+            var taskGroup = valueRemove.cause().key().taskGroup();
             var groupComponents = components.get(taskGroup);
+
             if (groupComponents == null) {return;}
-            groupComponents.stream().filter(DelegatedComponent::isActive)
-                                  .forEach(component -> deactivateComponent(taskGroup, component));
+
+            groupComponents.stream().filter(DelegatedComponent::isActive).forEach(component -> deactivateComponent(taskGroup,
+                                                                                                                   component));
         }
 
         private boolean isAssignedToSelf(TaskAssignmentValue assignment) {
@@ -79,8 +92,7 @@ import org.slf4j.LoggerFactory;
         }
 
         private void handleLocalAssignment(TaskGroup taskGroup, List<DelegatedComponent> groupComponents) {
-            var inactive = groupComponents.stream().filter(c -> !c.isActive())
-                                                 .toList();
+            var inactive = groupComponents.stream().filter(c -> !c.isActive()).toList();
             // When all components are already active, the leader's reconcile may still
             // re-issue ASSIGNED (e.g., after a transient SUSPECTED health blip flips the
             // owner out of `collectHealthyCoreNodes`, then back in). Without re-publishing
@@ -89,44 +101,44 @@ import org.slf4j.LoggerFactory;
             if (inactive.isEmpty()) {
                 log.debug("Task group {} already active on node {}, re-confirming ACTIVE in KV", taskGroup, self);
                 reportActivationSuccess(taskGroup);
+
                 return;
             }
+
             log.info("Task group {} assigned to this node {}, activating {} components",
                      taskGroup,
                      self,
                      inactive.size());
-            var activations = inactive.stream().map(component -> activateComponent(taskGroup, component))
-                                             .toList();
-            Promise.allOf(activations).onSuccess(_ -> reportActivationSuccess(taskGroup))
-                         .onFailure(cause -> reportActivationFailure(taskGroup,
-                                                                     cause.message()));
+            var activations = inactive.stream().map(component -> activateComponent(taskGroup, component)).toList();
+            Promise.allOf(activations).onSuccess(_ -> reportActivationSuccess(taskGroup)).onFailure(cause -> reportActivationFailure(taskGroup,
+                                                                                                                                     cause.message()));
         }
 
         private void handleRemoteAssignment(TaskGroup taskGroup, List<DelegatedComponent> groupComponents) {
-            var activeComponents = groupComponents.stream().filter(DelegatedComponent::isActive)
-                                                         .toList();
-            if (!activeComponents.isEmpty()) {log.info("Task group {} reassigned away from node {}, deactivating {} components",
-                                                       taskGroup,
-                                                       self,
-                                                       activeComponents.size());}
+            var activeComponents = groupComponents.stream().filter(DelegatedComponent::isActive).toList();
+
+            if (!activeComponents.isEmpty()) {
+                log.info("Task group {} reassigned away from node {}, deactivating {} components",
+                         taskGroup,
+                         self,
+                         activeComponents.size());
+            }
+
             activeComponents.forEach(component -> deactivateComponent(taskGroup, component));
         }
 
         private Promise<Unit> activateComponent(TaskGroup taskGroup, DelegatedComponent component) {
             return component.activate()
-                                     .onSuccess(_ -> log.info("Task group {} component activated on node {}",
-                                                              taskGroup,
-                                                              self));
+                            .onSuccess(_ -> log.info("Task group {} component activated on node {}", taskGroup, self));
         }
 
         private void deactivateComponent(TaskGroup taskGroup, DelegatedComponent component) {
             component.deactivate().onSuccess(_ -> log.info("Task group {} component deactivated on node {}",
                                                            taskGroup,
-                                                           self))
-                                .onFailure(cause -> log.error("Task group {} deactivation failed on node {}: {}",
-                                                              taskGroup,
-                                                              self,
-                                                              cause.message()));
+                                                           self)).onFailure(cause -> log.error("Task group {} deactivation failed on node {}: {}",
+                                                                                               taskGroup,
+                                                                                               self,
+                                                                                               cause.message()));
         }
 
         private void reportActivationSuccess(TaskGroup taskGroup) {
@@ -134,10 +146,9 @@ import org.slf4j.LoggerFactory;
             var key = TaskAssignmentKey.taskAssignmentKey(taskGroup);
             var value = TaskAssignmentValue.taskAssignmentValue(self).withStatus(AssignmentStatus.ACTIVE);
             var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-            clusterNode.apply(List.of(command))
-                             .onFailure(cause -> log.error("Failed to report ACTIVE status for task group {}: {}",
-                                                           taskGroup,
-                                                           cause.message()));
+            clusterNode.apply(List.of(command)).onFailure(cause -> log.error("Failed to report ACTIVE status for task group {}: {}",
+                                                                             taskGroup,
+                                                                             cause.message()));
         }
 
         private void reportActivationFailure(TaskGroup taskGroup, String reason) {
@@ -145,10 +156,9 @@ import org.slf4j.LoggerFactory;
             var key = TaskAssignmentKey.taskAssignmentKey(taskGroup);
             var value = TaskAssignmentValue.taskAssignmentValue(self).withFailure(reason);
             var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-            clusterNode.apply(List.of(command))
-                             .onFailure(cause -> log.error("Failed to report FAILED status for task group {}: {}",
-                                                           taskGroup,
-                                                           cause.message()));
+            clusterNode.apply(List.of(command)).onFailure(cause -> log.error("Failed to report FAILED status for task group {}: {}",
+                                                                             taskGroup,
+                                                                             cause.message()));
         }
     }
 }

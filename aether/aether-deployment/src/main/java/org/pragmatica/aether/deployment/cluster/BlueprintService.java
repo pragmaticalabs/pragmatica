@@ -54,7 +54,6 @@ public interface BlueprintService {
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
     Result<Blueprint> validate(String dsl);
-
     Cause ARTIFACT_STORE_NOT_CONFIGURED = Causes.cause("ArtifactStore not configured");
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -71,19 +70,25 @@ public interface BlueprintService {
     }
 
     static List<SliceTopology> flattenTopologyResults(List<Result<List<SliceTopology>>> results) {
-        return results.stream().flatMap(result -> result.or(List.of()).stream())
-                             .toList();
+        return results.stream()
+                      .flatMap(result -> result.or(List.of())
+                                               .stream())
+                      .toList();
     }
 
     static int extractVersionNumber(String filename) {
         var underscoreIdx = filename.indexOf("__");
+
         if (underscoreIdx <= 1) {return 0;}
+
         var numPart = filename.substring(1, underscoreIdx);
+
         return Result.lift1(Causes::fromThrowable, Integer::parseInt, numPart).or(0);
     }
 }
 
-@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"}) class BlueprintServiceInstance implements BlueprintService {
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+class BlueprintServiceInstance implements BlueprintService {
     private static final Logger log = LoggerFactory.getLogger(BlueprintServiceInstance.class);
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
@@ -101,30 +106,36 @@ public interface BlueprintService {
         this.artifactStore = artifactStore;
     }
 
-    @Override public Promise<ExpandedBlueprint> publish(String dsl) {
-        return BlueprintParser.parse(dsl).async()
-                                    .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
-                                    .flatMap(this::validatePubSub)
-                                    .flatMap(this::storeBlueprint)
-                                    .onFailure(cause -> log.warn("Failed to publish blueprint: {}",
-                                                                 cause.message()));
-    }
-
-    @Override public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
-        var parsed = parseArtifactWithClassifier(artifactCoords);
-        return parsed.artifact().async()
-                              .flatMap(artifact -> resolveArtifactBytes(artifact,
-                                                                        parsed.classifier()))
-                              .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
-                              .flatMap(artifact -> expandAndStoreArtifact(artifact,
-                                                                          parsed.baseCoords()))
-                              .onFailure(cause -> log.warn("Failed to publish blueprint from artifact: {}",
+    @Override
+    public Promise<ExpandedBlueprint> publish(String dsl) {
+        return BlueprintParser.parse(dsl)
+                              .async()
+                              .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
+                              .flatMap(this::validatePubSub)
+                              .flatMap(this::storeBlueprint)
+                              .onFailure(cause -> log.warn("Failed to publish blueprint: {}",
                                                            cause.message()));
     }
 
+    @Override
+    public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
+        var parsed = parseArtifactWithClassifier(artifactCoords);
+
+        return parsed.artifact()
+                     .async()
+                     .flatMap(artifact -> resolveArtifactBytes(artifact,
+                                                               parsed.classifier()))
+                     .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
+                     .flatMap(artifact -> expandAndStoreArtifact(artifact,
+                                                                 parsed.baseCoords()))
+                     .onFailure(cause -> log.warn("Failed to publish blueprint from artifact: {}",
+                                                  cause.message()));
+    }
+
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact, String classifier) {
-        return repository.locate(artifact, classifier).flatMap(BlueprintServiceInstance::readLocationBytes)
-                                .orElse(() -> resolveFromArtifactStore(artifact));
+        return repository.locate(artifact, classifier)
+                         .flatMap(BlueprintServiceInstance::readLocationBytes)
+                         .orElse(() -> resolveFromArtifactStore(artifact));
     }
 
     private record ParsedArtifactCoords(Result<Artifact> artifact, String classifier, String baseCoords) {
@@ -139,49 +150,61 @@ public interface BlueprintService {
 
     private static ParsedArtifactCoords parseArtifactWithClassifier(String coords) {
         var parts = coords.split(":");
+
         if (parts.length == 4) {
             var baseCoords = parts[0] + ":" + parts[1] + ":" + parts[2];
+
             return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(baseCoords), parts[3], baseCoords);
         }
-        if (parts.length == 3) {return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(coords),
-                                                                                 "blueprint",
-                                                                                 coords);}
+        if (parts.length == 3) {
+            return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(coords), "blueprint", coords);
+        }
+
         return ParsedArtifactCoords.parsedArtifactCoords(MISSING_CLASSIFIER.result(), "", coords);
     }
 
     private Promise<byte[]> resolveFromArtifactStore(Artifact artifact) {
-        return artifactStore.async(ARTIFACT_STORE_NOT_CONFIGURED).flatMap(store -> store.resolve(artifact));
+        return artifactStore.async(ARTIFACT_STORE_NOT_CONFIGURED)
+                            .flatMap(store -> store.resolve(artifact));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static Promise<byte[]> readLocationBytes(Location location) {
+    @SuppressWarnings("JBCT-EX-01")
+    private static Promise<byte[]> readLocationBytes(Location location) {
         return Promise.lift(Causes::fromThrowable, () -> readStreamBytes(location));
     }
 
-    @SuppressWarnings("JBCT-EX-01") private static byte[] readStreamBytes(Location location) throws Exception {
+    @SuppressWarnings("JBCT-EX-01")
+    private static byte[] readStreamBytes(Location location) throws Exception {
         try (var stream = location.url().openStream()) {
             return stream.readAllBytes();
         }
     }
 
-    @Override public Option<ExpandedBlueprint> get(BlueprintId id) {
-        return store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id)).flatMap(this::extractBlueprint);
+    @Override
+    public Option<ExpandedBlueprint> get(BlueprintId id) {
+        return store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id))
+                    .flatMap(this::extractBlueprint);
     }
 
-    @Override public List<ExpandedBlueprint> list() {
+    @Override
+    public List<ExpandedBlueprint> list() {
         var result = new ArrayList<ExpandedBlueprint>();
         store.forEach(AetherKey.AppBlueprintKey.class,
                       AetherValue.AppBlueprintValue.class,
                       (_, value) -> result.add(value.blueprint()));
+
         return result;
     }
 
-    @Override public Promise<Unit> delete(BlueprintId id) {
+    @Override
+    public Promise<Unit> delete(BlueprintId id) {
         return removeFromStore(AetherKey.AppBlueprintKey.appBlueprintKey(id)).onFailure(cause -> log.warn("Failed to delete blueprint {}: {}",
                                                                                                           id.asString(),
                                                                                                           cause.message()));
     }
 
-    @Override public Result<Blueprint> validate(String dsl) {
+    @Override
+    public Result<Blueprint> validate(String dsl) {
         return BlueprintParser.parse(dsl);
     }
 
@@ -202,7 +225,9 @@ public interface BlueprintService {
                                                              Map<String, List<MigrationEntry>> migrations,
                                                              String artifactCoords) {
         var commands = buildAllCommands(expanded, resourcesConfig, migrations, artifactCoords);
-        return cluster.apply(commands).map(_ -> expanded);
+
+        return cluster.apply(commands)
+                      .map(_ -> expanded);
     }
 
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
@@ -216,6 +241,7 @@ public interface BlueprintService {
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
         // ExpandedBlueprint already embeds it for downstream consumers (e.g., schema gating).
         if (!migrations.isEmpty()) {commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));}
+
         return commands;
     }
 
@@ -230,53 +256,50 @@ public interface BlueprintService {
                                                                                              expanded.loadOrder(),
                                                                                              Option.some(rc),
                                                                                              expanded.securityOverrides()))
-        .or(expanded));
+                                              .or(expanded));
     }
 
     private List<KVCommand<AetherKey>> buildSchemaMigrationCommands(Map<String, List<MigrationEntry>> migrations,
                                                                     String artifactCoords) {
-        return migrations.entrySet().stream()
-                                  .map(entry -> buildMigrationCommand(entry, artifactCoords))
-                                  .toList();
+        return migrations.entrySet()
+                         .stream()
+                         .map(entry -> buildMigrationCommand(entry, artifactCoords))
+                         .toList();
     }
 
     private KVCommand<AetherKey> buildMigrationCommand(Map.Entry<String, List<MigrationEntry>> entry,
                                                        String artifactCoords) {
         var datasource = entry.getKey();
         var migrationList = entry.getValue();
-        var maxVersion = migrationList.stream().map(MigrationEntry::filename)
-                                             .filter(f -> f.startsWith("V"))
-                                             .mapToInt(BlueprintService::extractVersionNumber)
-                                             .max()
-                                             .orElse(0);
+        var maxVersion = migrationList.stream().map(MigrationEntry::filename).filter(f -> f.startsWith("V")).mapToInt(BlueprintService::extractVersionNumber).max().orElse(0);
         var lastFilename = migrationList.isEmpty()
-                          ? ""
-                          : migrationList.getLast().filename();
+                           ? ""
+                           : migrationList.getLast().filename();
         var key = SchemaVersionKey.schemaVersionKey(datasource);
         var value = SchemaVersionValue.schemaVersionValue(datasource,
                                                           maxVersion,
                                                           lastFilename,
                                                           SchemaStatus.PENDING,
                                                           artifactCoords);
+
         return new Put<>(key, value);
     }
 
     private Promise<ExpandedBlueprint> validatePubSub(ExpandedBlueprint expanded) {
-        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> PubSubValidator.validate(topologies).map(_ -> expanded)
-                                                                                                     .async());
+        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> PubSubValidator.validate(topologies)
+                                                                                            .map(_ -> expanded)
+                                                                                            .async());
     }
 
     private Promise<List<SliceTopology>> loadAllTopologies(List<ResolvedSlice> slices) {
-        return Promise.allOf(slices.stream().map(this::loadTopology)
-                                          .toList())
-        .map(BlueprintService::flattenTopologyResults);
+        return Promise.allOf(slices.stream().map(this::loadTopology).toList()).map(BlueprintService::flattenTopologyResults);
     }
 
     private Promise<List<SliceTopology>> loadTopology(ResolvedSlice slice) {
         return repository.locate(slice.artifact())
-                                .map(location -> TopologyParser.parseFromJar(location.url(),
-                                                                             slice.artifact().asString())
-        .or(List.of()));
+                         .map(location -> TopologyParser.parseFromJar(location.url(),
+                                                                      slice.artifact().asString())
+                                                        .or(List.of()));
     }
 
     private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {
@@ -288,16 +311,20 @@ public interface BlueprintService {
                                                              ExpandedBlueprint expanded) {
         var value = AppBlueprintValue.appBlueprintValue(expanded);
         KVCommand<AetherKey> command = new Put<>(key, value);
-        return cluster.apply(List.of(command)).map(_ -> expanded);
+
+        return cluster.apply(List.of(command))
+                      .map(_ -> expanded);
     }
 
     private Promise<Unit> removeFromStore(AetherKey.AppBlueprintKey key) {
         KVCommand<AetherKey> command = new Remove<>(key);
-        return cluster.apply(List.of(command)).mapToUnit();
+
+        return cluster.apply(List.of(command))
+                      .mapToUnit();
     }
 
     private Option<ExpandedBlueprint> extractBlueprint(AetherValue value) {
-        return switch (value){
+        return switch (value) {
             case AetherValue.AppBlueprintValue appValue -> Option.some(appValue.blueprint());
             default -> Option.none();
         };

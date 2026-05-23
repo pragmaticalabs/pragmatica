@@ -89,12 +89,12 @@ class MembershipViewQuorumTest {
                                           NODE_2, SwimHealth.HEALTHY,
                                           NODE_3, SwimHealth.HEALTHY),
                                    Map.of(NODE_1, NodeLifecycleState.DRAINING,
-                                          NODE_2, NodeLifecycleState.DECOMMISSIONED,
-                                          NODE_3, NodeLifecycleState.FAILED_DRAIN));
+                                          NODE_2, NodeLifecycleState.STOPPED,
+                                          NODE_3, NodeLifecycleState.STOPPED));
 
             assertThat(view.statusOf(NODE_1)).isEqualTo(MemberStatus.DRAINING);
-            assertThat(view.statusOf(NODE_2)).isEqualTo(MemberStatus.DECOMMISSIONED);
-            assertThat(view.statusOf(NODE_3)).isEqualTo(MemberStatus.FAILED_DRAIN);
+            assertThat(view.statusOf(NODE_2)).isEqualTo(MemberStatus.STOPPED);
+            assertThat(view.statusOf(NODE_3)).isEqualTo(MemberStatus.STOPPED);
         }
 
         @Test void joiningOverride_surviveNonQuorate() {
@@ -179,7 +179,7 @@ class MembershipViewQuorumTest {
                                          NODE_3, SwimHealth.FAULTY),
                                   Map.of(NODE_1, NodeLifecycleState.ON_DUTY,
                                          NODE_2, NodeLifecycleState.DRAINING,
-                                         NODE_3, NodeLifecycleState.DECOMMISSIONED));
+                                         NODE_3, NodeLifecycleState.STOPPED));
         }
 
         @Test void legacyOnDutyKv_equalSnapshots() {

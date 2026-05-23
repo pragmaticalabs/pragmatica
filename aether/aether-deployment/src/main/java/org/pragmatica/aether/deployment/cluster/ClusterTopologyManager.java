@@ -30,7 +30,8 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 
-@SuppressWarnings("JBCT-RET-01") public interface ClusterTopologyManager extends TopologyManager {
+@SuppressWarnings("JBCT-RET-01")
+public interface ClusterTopologyManager extends TopologyManager {
     NodeReconcilerState reconcilerState();
     Promise<Unit> setDesiredSize(int size);
     int desiredSize();
@@ -44,7 +45,7 @@ import java.util.function.Supplier;
     void deactivate();
     TopologyObserver observer();
 
-    record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped){}
+    record CircuitBreakerState(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
 
     CircuitBreakerState circuitBreakerState();
     int resetCircuitBreaker(String reason);

@@ -224,7 +224,7 @@ public final class ClusterEventAggregator {
 
         if (prior == newState) {return;}
         switch (newState) {
-            case DECOMMISSIONED -> emitDecommissionEvent(nodeId.id(), prior);
+            case STOPPED -> emitDecommissionEvent(nodeId.id(), prior);
             case DRAINING -> emitNodeLifecycleChangedEvent(nodeId.id(), prior, newState);
             default -> {}
         }

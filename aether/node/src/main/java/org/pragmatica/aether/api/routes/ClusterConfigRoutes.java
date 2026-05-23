@@ -206,13 +206,13 @@ public final class ClusterConfigRoutes implements RouteSource {
                                          nid.id().equals(leaderId));
     }
 
-    /// Collapse `SHUTTING_DOWN` to `DRAINING` for external viewers. Mirrors the normalization in
-    /// `StatusRoutes.externalStateName` / `NodeLifecycleRoutes.externalStateName`.
+    /// External-viewer state name. Pre-Step-I this collapsed `SHUTTING_DOWN` → `DRAINING`;
+    /// post-Step-I (H/I collapse 2026-05-22) the slice-layer enum no longer carries
+    /// `SHUTTING_DOWN` — the three former terminal arms unified into `STOPPED` with a
+    /// `StopReason` sidecar — so this is now a passthrough.
     /// See `aether/docs/specs/state-authority.md`.
     private static String externalStateName(AetherValue.NodeLifecycleState state) {
-        return state == AetherValue.NodeLifecycleState.SHUTTING_DOWN
-               ? AetherValue.NodeLifecycleState.DRAINING.name()
-               : state.name();
+        return state.name();
     }
 
     private static String reconcilerStateName(ManageableNode node) {

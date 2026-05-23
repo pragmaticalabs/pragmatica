@@ -15,8 +15,6 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.Schedule
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.TimerKind;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.DrainOutcome;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.JoinDeadlineExpired;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDecommission;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.OperatorDrain;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SlotClaimed;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimDeparted;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
@@ -29,6 +27,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityKind;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -89,7 +88,7 @@ import static org.pragmatica.lang.Option.some;
 /// — `DRAINING` → `drainCoordinator.awaitDrainAck(peer, remainingDrainTimeout)` is called and
 ///   the resulting `Promise` is chained back as a `DrainOutcome(peer, success, nowMs)` event.
 ///   If the deadline has already elapsed on entry, `DrainOutcome(peer, false, nowMs)` is
-///   enqueued immediately to drive `(DRAINING, DrainOutcome(false)) → FAILED_DRAIN`.
+///   enqueued immediately to drive `(DRAINING, DrainOutcome(false)) → STOPPED+DRAIN_FAILED`.
 /// — `JOINING` → a fresh one-shot `JOIN_DEADLINE` timer is scheduled with the remaining
 ///   budget; if elapsed, `JoinDeadlineExpired(peer, nowMs)` is enqueued immediately.
 /// Both are leader-gated: followers MUST NOT resume in-flight protocols (single-writer
@@ -102,19 +101,12 @@ public final class MembershipFsm {
     private static final Logger log = LoggerFactory.getLogger(MembershipFsm.class);
 
     private final NodeId self;
-
     private final MembershipFsmConfig config;
-
     private final ClusterMembershipReducer reducer;
-
     private final LifecycleSnapshotReader lifecycleSnapshotReader;
-
     private final SlotSnapshotReader slotSnapshotReader;
-
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier;
-
     private final DrainCoordinator drainCoordinator;
-
     private final TimerScheduler scheduler;
 
     private final BooleanSupplier isLeader;
@@ -132,7 +124,6 @@ public final class MembershipFsm {
     /// when the supplier returns `Option.none()`, the gate returns `true` (permissive) so the
     /// pre-Step-4 behavior is preserved before the first snapshot is produced.
     private final Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier;
-
     private final ReentrantLock fsmLock = new ReentrantLock();
 
     private final Map<NodeId, MembershipFsmState> fsmStates = new ConcurrentHashMap<>();
@@ -161,11 +152,8 @@ public final class MembershipFsm {
     // defence is no longer needed — `MembershipView` derives ON_DUTY from SWIM directly,
     // so there is no `(UNTRACKED, SwimHealthy) → ON_DUTY` write path to defend against
     // and no post-GC resurrection vector.
-
     private final Map<TimerHandle, ScheduledFuture<?>> pendingTimers = new ConcurrentHashMap<>();
-
     private final AtomicBoolean started = new AtomicBoolean();
-
     private volatile Function<NodeId, Boolean> swimHealthGate = ignored -> false;
 
     private MembershipFsm(NodeId self,
@@ -274,6 +262,7 @@ public final class MembershipFsm {
                                               HlcClock hlcClock,
                                               Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier) {
         var reducer = ClusterMembershipReducer.clusterMembershipReducer(config);
+
         return new MembershipFsm(self,
                                  config,
                                  reducer,
@@ -332,11 +321,11 @@ public final class MembershipFsm {
         if (!started.compareAndSet(false, true)) {
             return Promise.unitPromise();
         }
+
         replayFromKv();
         resumeInFlightProtocolsIfLeader();
-        log.info("MembershipFsm started for {} (peers reconstructed: {})",
-                 self.id(),
-                 fsmStates.size());
+        log.info("MembershipFsm started for {} (peers reconstructed: {})", self.id(), fsmStates.size());
+
         return Promise.unitPromise();
     }
 
@@ -344,9 +333,11 @@ public final class MembershipFsm {
         if (!started.compareAndSet(true, false)) {
             return Promise.unitPromise();
         }
+
         cancelAllTimers();
         clearState();
         log.info("MembershipFsm stopped for {}", self.id());
+
         return Promise.unitPromise();
     }
 
@@ -376,17 +367,20 @@ public final class MembershipFsm {
     /// `(ON_DUTY, SwimFaulty) → DECOMMISSIONED` transition fires here — this is the structural
     /// fix that closes the smoking-gun bug (previously the threshold gate + phase suppression
     /// in the legacy path prevented this write from ever firing).
-    @Contract public void onSwimObservation(SwimObservation observation) {
+    @Contract
+    public void onSwimObservation(SwimObservation observation) {
         if (!started.get()) {
             return;
         }
         if (!isLeader.getAsBoolean()) {
             logSwimDropOnFollower(observation);
+
             return;
         }
         if (!admitIncarnationOrDrop(observation)) {
             return;
         }
+
         translate(observation).onPresent(this::processOperatorOrFsmEvent);
     }
 
@@ -408,14 +402,17 @@ public final class MembershipFsm {
     /// translated to events — UNKNOWN means "no quorum either way" and must not produce a
     /// state transition. Step 4 will refine REACHABLE/UNREACHABLE gating with aggregator-
     /// quorum semantics; Step 3 fires the events unconditionally on quorum-derived kinds.
-    @Contract public void onTransportSnapshot(AggregatedReachabilitySnapshot snapshot) {
+    @Contract
+    public void onTransportSnapshot(AggregatedReachabilitySnapshot snapshot) {
         if (!started.get()) {
             return;
         }
         if (!isLeader.getAsBoolean()) {
             logTransportDropOnFollower(snapshot);
+
             return;
         }
+
         var now = hlcClock.now();
         snapshot.states().forEach((peer, state) -> dispatchTransportEvent(peer, state.kind(), now));
     }
@@ -424,7 +421,7 @@ public final class MembershipFsm {
         switch (kind) {
             case REACHABLE -> enqueueOperatorEvent(new TransportReachable(peer, now));
             case UNREACHABLE -> enqueueOperatorEvent(new TransportUnreachable(peer, now));
-            case UNKNOWN -> { /* suppress — quorum-undecided, no event */ }
+            case UNKNOWN -> {}
         }
     }
 
@@ -447,20 +444,23 @@ public final class MembershipFsm {
     /// Suspect/Unknown observations are not gated — they translate to `Option.none()`
     /// in `translate()` and never reach the reducer.
     private boolean admitIncarnationOrDrop(SwimObservation observation) {
-        if (!(observation instanceof HealthyObserved || observation instanceof FaultyObserved || observation instanceof DepartedObserved)) {
+        if (! (observation instanceof HealthyObserved || observation instanceof FaultyObserved || observation instanceof DepartedObserved)) {
             return true;
         }
+
         var peer = observation.peer();
         var incoming = observation.incarnation();
         var stored = latestObservedIncarnation.getOrDefault(peer, 0L);
+
         if (incoming == 0L) {
             latestObservedIncarnation.put(peer, 0L);
             log.debug("MembershipFsm: incarnation==0 restart-reset for peer={} (prior stored={}) — admitted, map reset",
                       peer.id(),
                       stored);
+
             return true;
         }
-        if (incoming < stored) {
+        if (incoming <stored) {
             log.debug("MembershipFsm: dropping stale SWIM observation {} for peer={} (incoming={} < stored={})",
                       observation.getClass().getSimpleName(),
                       peer.id(),
@@ -468,7 +468,9 @@ public final class MembershipFsm {
                       stored);
             return false;
         }
+
         latestObservedIncarnation.put(peer, incoming);
+
         return true;
     }
 
@@ -489,7 +491,8 @@ public final class MembershipFsm {
     /// follower-to-follower leader update), nothing is enqueued. The new leader writes self's
     /// ON_DUTY entry on its side; this node learns it via the `NodeLifecycleKey` KV
     /// notification path.
-    @Contract public void onLeaderChange(LeaderChange leaderChange) {
+    @Contract
+    public void onLeaderChange(LeaderChange leaderChange) {
         if (!started.get()) {
             return;
         }
@@ -497,32 +500,36 @@ public final class MembershipFsm {
             return;
         }
         if (isSelfAlreadyOnDuty()) {
-            log.debug("MembershipFsm: onLeaderChange(self={}) — already ON_DUTY, no synthetic SwimHealthy needed", self.id());
+            log.debug("MembershipFsm: onLeaderChange(self={}) — already ON_DUTY, no synthetic SwimHealthy needed",
+                      self.id());
             return;
         }
+
         log.info("MembershipFsm: onLeaderChange(self={}) — synthesizing SwimHealthy(self) for self-bootstrap (spec §6.2 step 7)",
                  self.id());
         onSwimObservation(new HealthyObserved(self, 0L));
     }
 
-    @Contract public void setSwimHealthGate(Function<NodeId, Boolean> gate) {
+    @Contract
+    public void setSwimHealthGate(Function<NodeId, Boolean> gate) {
         this.swimHealthGate = gate;
         // Re-evaluate JOINING peers immediately — handles the common wiring order where
         // AetherNode calls setSwimHealthGate after start(), so resumeJoinDeadline already
         // ran with the default false-gate and skipped synthesis for SWIM-healthy peers.
         if (started.get() && isLeader.getAsBoolean()) {
             fsmStates.forEach((peer, state) -> {
-                if (state instanceof MembershipFsmState.Joining && gate.apply(peer)) {
-                    log.info("MembershipFsm: setSwimHealthGate — SWIM already healthy for JOINING peer={}, synthesizing SwimHealthy",
-                             peer.id());
-                    onSwimObservation(new HealthyObserved(peer, 0L));
-                }
-            });
+                                  if (state instanceof MembershipFsmState.Joining && gate.apply(peer)) {
+                                  log.info("MembershipFsm: setSwimHealthGate — SWIM already healthy for JOINING peer={}, synthesizing SwimHealthy",
+                                           peer.id());
+                                  onSwimObservation(new HealthyObserved(peer, 0L));
+                              }
+                              });
         }
     }
 
     private boolean isSelfAlreadyOnDuty() {
         var current = fsmStates.get(self);
+
         return current instanceof MembershipFsmState.OnDuty;
     }
 
@@ -539,16 +546,18 @@ public final class MembershipFsm {
         if (HlcTimestamp.ZERO.equals(remote)) {
             return true;
         }
+
         var merge = hlcClock.update(remote);
+
         if (merge.isFailure()) {
-            merge.onFailure(cause -> log.warn(
-                    "MembershipFsm: dropping NodeLifecyclePut from peer={} — HLC drift exceeds threshold: {} (remote={}, local={})",
-                    peer.id(),
-                    cause.message(),
-                    remote,
-                    hlcClock.peek()));
+            merge.onFailure(cause -> log.warn("MembershipFsm: dropping NodeLifecyclePut from peer={} — HLC drift exceeds threshold: {} (remote={}, local={})",
+                                              peer.id(),
+                                              cause.message(),
+                                              remote,
+                                              hlcClock.peek()));
             return false;
         }
+
         return true;
     }
 
@@ -568,12 +577,15 @@ public final class MembershipFsm {
         }
     }
 
-    /// Event entry point for operator commands and leader-issued protocol feedback.
-    /// `OperatorDrain` / `OperatorDecommission` / `DrainOutcome` / `JoinDeadlineExpired`
-    /// events are applied on the leader (writes proposed via `commandApplier`, drain
-    /// coordinator invoked, timers scheduled). On followers, leader-writing events are
-    /// dropped with a WARN log (single-writer invariant).
-    @Contract public void enqueueOperatorEvent(MembershipFsmEvent event) {
+    /// Event entry point for leader-issued protocol feedback. `DrainOutcome` /
+    /// `JoinDeadlineExpired` events are applied on the leader (writes proposed via
+    /// `commandApplier`, drain coordinator invoked, timers scheduled). On followers,
+    /// leader-writing events are dropped with a WARN log (single-writer invariant).
+    /// Operator lifecycle intents (`ForceDrain`, `ForceDecommission`, etc.) flow through
+    /// `LifecycleWriter.applyCommand(...)` instead of this entry — see the convergence-
+    /// reconciler Phase 1 migration.
+    @Contract
+    public void enqueueOperatorEvent(MembershipFsmEvent event) {
         if (!started.get()) {
             log.debug("MembershipFsm: operator event {} for {} ignored (not started)",
                       event.getClass().getSimpleName(),
@@ -581,14 +593,14 @@ public final class MembershipFsm {
             return;
         }
         if (isLeaderWritingEvent(event) && !isLeader.getAsBoolean()) {
-            log.warn(
-                    "MembershipFsm: operator event {} for {} received on non-leader {} — no-op (single-writer invariant). "
+            log.warn("MembershipFsm: operator event {} for {} received on non-leader {} — no-op (single-writer invariant). "
                     + "Possible leader-handoff race; caller should retry against the new leader.",
-                    event.getClass().getSimpleName(),
-                    event.peer().id(),
-                    self.id());
+                     event.getClass().getSimpleName(),
+                     event.peer().id(),
+                     self.id());
             return;
         }
+
         processOperatorOrFsmEvent(event);
     }
 
@@ -603,22 +615,27 @@ public final class MembershipFsm {
     /// from polluting local causal ordering. Sentinel `HlcTimestamp.ZERO` (pre-RC1 entries,
     /// or values minted by a path that hasn't been migrated yet) is treated as "no remote HLC"
     /// and the put is admitted without a clock merge.
-    @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
+    @Contract
+    public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
         if (!started.get()) {
             return;
         }
+
         var peer = put.cause().key().nodeId();
         var value = put.cause().value();
+
         if (!mergeRemoteHlcOrDrop(peer, value.transitionedAt())) {
             return;
         }
+
         applyExternalLifecyclePut(peer, value);
     }
 
     /// KV-notification handler for `NodeLifecycleKey` removes. Returns the peer to `UNTRACKED`
     /// (this fires when `DecommissionedAtomGc` cleans up a fully-decommissioned atom). If the
     /// peer still has a provisioning slot, the shadow falls back to `PROVISIONING` instead.
-    @Contract public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> remove) {
+    @Contract
+    public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> remove) {
         if (!started.get()) {
             return;
         }
@@ -628,17 +645,20 @@ public final class MembershipFsm {
     /// KV-notification handler for `ProvisioningSlotKey` puts. Updates slot-to-peer mapping and,
     /// when the slot is newly claimed (`assignedNodeId.isPresent()`), feeds a `SlotClaimed`
     /// event into the reducer.
-    @Contract public void onProvisioningSlotPut(ValuePut<ProvisioningSlotKey, ProvisioningSlotValue> put) {
+    @Contract
+    public void onProvisioningSlotPut(ValuePut<ProvisioningSlotKey, ProvisioningSlotValue> put) {
         if (!started.get()) {
             return;
         }
-        applySlotPut(put.cause().key().slotId(), put.cause().value());
+        applySlotPut(put.cause().key().slotId(),
+                     put.cause().value());
     }
 
     /// KV-notification handler for `ProvisioningSlotKey` removes. Cleans up the slot-to-peer
     /// mapping. Does not feed the reducer (the lifecycle transition `JOINING → ON_DUTY` /
     /// `JOINING → DECOMMISSIONED` already removed the slot association).
-    @Contract public void onProvisioningSlotRemove(ValueRemove<ProvisioningSlotKey, ProvisioningSlotValue> remove) {
+    @Contract
+    public void onProvisioningSlotRemove(ValueRemove<ProvisioningSlotKey, ProvisioningSlotValue> remove) {
         if (!started.get()) {
             return;
         }
@@ -648,10 +668,11 @@ public final class MembershipFsm {
     /// Events that may produce consensus writes via the FSM reducer and therefore require
     /// the single-writer (leader-only) gate.
     ///
-    /// **E.4 set (operator + protocol feedback):** `OperatorDrain`, `OperatorDecommission`,
-    /// `DrainOutcome` (from `DrainCoordinator.awaitDrainAck`), `JoinDeadlineExpired` (from the
-    /// JOIN_DEADLINE timer) — the leader started the protocol, so the leader must own its
-    /// terminal write.
+    /// **E.4 set (protocol feedback):** `DrainOutcome` (from `DrainCoordinator.awaitDrainAck`),
+    /// `JoinDeadlineExpired` (from the JOIN_DEADLINE timer) — the leader started the protocol,
+    /// so the leader must own its terminal write. Operator lifecycle intents
+    /// (`ForceDrain`/`ForceDecommission`) have migrated to `LifecycleCommand` and are no longer
+    /// part of this set; they flow through `LifecycleWriter.applyCommand(...)` directly.
     ///
     /// **E.5 extension (SWIM observations):** `SwimFaulty`, `SwimDeparted`, `SwimHealthy`.
     /// Per spec §5 these can produce consensus writes:
@@ -673,24 +694,20 @@ public final class MembershipFsm {
     /// classified as shadow-only. If Step 4/5 introduces a `TransportReachable` write cell,
     /// add it here.
     ///
-    /// `SlotClaimed` IS a leader-writing event. CTM wrote the `ProvisioningSlotKey` atom, but
-    /// the lifecycle transition `(Untracked, SlotClaimed) → Joining` emitted by
-    /// `ClusterMembershipReducer.enterJoining` produces a SEPARATE `Put(NodeLifecycleKey,
-    /// JOINING)` write plus a `ScheduleTimer(JOIN_DEADLINE)` effect — both must flow through
-    /// `proposeWritesAndApply` and `applyEffectsLocked`. Misclassifying SlotClaimed as
-    /// shadow-only silently dropped the JOINING write, leaving CTM-provisioned replacements
-    /// with no `NodeLifecycleKey` atom in KV and no join-deadline tombstone path — observed
-    /// 2026-05-22 as the dominant failure mode of suite 02-chaos / test-joining-window-kill.sh.
+    /// `SlotClaimed` is INTENTIONALLY excluded — see the docstring directly above
+    /// `isLeaderWritingEvent` below. CTM-driven JOINING writes flow through the dedicated
+    /// `applySlotPutAssigned` path which calls `processOperatorEventLocked` directly, so
+    /// the leader gate on `enqueueOperatorEvent` is not load-bearing for that flow.
+    /// `SlotClaimed` is NOT in this set — production delivery is via `onProvisioningSlotPut`
+    /// → `applySlotPutAssigned` → `processOperatorEventLocked`, which bypasses
+    /// `enqueueOperatorEvent` and proposes the JOINING write directly under the FSM lock
+    /// regardless of the leader-writing classification. Synthetic deliveries of `SlotClaimed`
+    /// through `enqueueOperatorEvent` (test paths or future external callers) therefore route
+    /// via the shadow path: state is updated in-memory; the (unused) reducer write is logged
+    /// as a misclassification warn but does NOT block the state transition — keeping the
+    /// `enqueueOperatorEvent(SlotClaimed)` path safe on followers.
     private static boolean isLeaderWritingEvent(MembershipFsmEvent event) {
-        return event instanceof OperatorDrain
-               || event instanceof OperatorDecommission
-               || event instanceof DrainOutcome
-               || event instanceof JoinDeadlineExpired
-               || event instanceof SwimFaulty
-               || event instanceof SwimDeparted
-               || event instanceof SwimHealthy
-               || event instanceof TransportUnreachable
-               || event instanceof SlotClaimed;
+        return event instanceof DrainOutcome || event instanceof JoinDeadlineExpired || event instanceof SwimFaulty || event instanceof SwimDeparted || event instanceof SwimHealthy || event instanceof TransportUnreachable;
     }
 
     private void applyExternalLifecyclePut(NodeId peer, NodeLifecycleValue value) {
@@ -706,16 +723,16 @@ public final class MembershipFsm {
         }
     }
 
-    /// RC1 Step 3 — prune the incarnation map entry on terminal `Decommissioned`
+    /// RC1 Step 3 — prune the incarnation map entry on terminal `Stopped`
     /// transitions to bound map growth across long-running clusters with churning
     /// peer IDs. Called from both consensus-write success and KV-notification paths
     /// so leader-takeover and follower-side observation converge to the same pruned
     /// state.
     private void pruneIncarnationIfDecommissioned(NodeId peer, MembershipFsmState newState) {
-        if (newState instanceof MembershipFsmState.Decommissioned) {
+        if (newState instanceof MembershipFsmState.Stopped) {
             var removed = latestObservedIncarnation.remove(peer);
             if (removed != null && log.isDebugEnabled()) {
-                log.debug("MembershipFsm: pruned incarnation entry for decommissioned peer={} (stored was {})",
+                log.debug("MembershipFsm: pruned incarnation entry for stopped peer={} (stored was {})",
                           peer.id(),
                           removed);
             }
@@ -736,9 +753,7 @@ public final class MembershipFsm {
 
     private void applyLifecycleRemoveWithoutSlot(NodeId peer) {
         var previous = fsmStates.remove(peer);
-        log.info("MembershipFsm: lifecycle-removed peer={} previous={} → UNTRACKED",
-                 peer.id(),
-                 describe(previous));
+        log.info("MembershipFsm: lifecycle-removed peer={} previous={} → UNTRACKED", peer.id(), describe(previous));
     }
 
     private void applyLifecycleRemoveWithSlot(NodeId peer, String slotId) {
@@ -752,27 +767,29 @@ public final class MembershipFsm {
 
     private void applySlotPut(String slotId, ProvisioningSlotValue value) {
         value.assignedNodeId().apply(() -> applySlotPutUnassigned(slotId),
-                                      peer -> applySlotPutAssigned(slotId, peer, value));
+                                     peer -> applySlotPutAssigned(slotId, peer, value));
     }
 
     private void applySlotPutUnassigned(String slotId) {
         slotIdToPeer.remove(slotId);
-        log.debug("MembershipFsm: slot-put slotId={} unassigned (PROVISIONING placeholder; spec §4.2)",
-                  slotId);
+        log.debug("MembershipFsm: slot-put slotId={} unassigned (PROVISIONING placeholder; spec §4.2)", slotId);
     }
 
     private void applySlotPutAssigned(String slotId, NodeId peer, ProvisioningSlotValue value) {
         slotIdToPeer.put(slotId, peer);
         fsmLock.lock();
+
         try {
             ensureProvisioningTracked(peer, slotId);
-            // SlotClaimed is a leader-writing event (see isLeaderWritingEvent Javadoc) — route
-            // through processOperatorEventLocked so the reducer's `Put(NodeLifecycleKey, JOINING)`
-            // write reaches consensus and the `ScheduleTimer(JOIN_DEADLINE)` effect actually
-            // schedules. The prior `processFsmEventLocked` call updated the in-memory state map
-            // only, silently discarding the write and the timer — the symptom was CTM-provisioned
-            // replacements never appearing in `/api/nodes/lifecycle/<id>` and never being
-            // tombstoned when they failed to bootstrap.
+            // SlotClaimed routes through `processOperatorEventLocked` directly so the reducer's
+            // `Put(NodeLifecycleKey, JOINING)` + `Put(JoinDeadlineKey)` writes reach consensus
+            // and the `ScheduleTimer(JOIN_DEADLINE)` effect actually schedules. The prior
+            // `processFsmEventLocked` call updated the in-memory state map only, silently
+            // discarding the write and the timer — the symptom was CTM-provisioned replacements
+            // never appearing in `/api/nodes/lifecycle/<id>` and never being tombstoned when
+            // they failed to bootstrap. SlotClaimed is intentionally excluded from
+            // `isLeaderWritingEvent` so external callers using `enqueueOperatorEvent`
+            // (test paths) remain safe on followers — see that method's docstring.
             processOperatorEventLocked(new SlotClaimed(peer, slotId, hlcClock.now()));
         } finally {
             fsmLock.unlock();
@@ -787,7 +804,9 @@ public final class MembershipFsm {
         var removedPeer = slotIdToPeer.remove(slotId);
         log.debug("MembershipFsm: slot-removed slotId={} peer={}",
                   slotId,
-                  removedPeer == null ? "<unassigned>" : removedPeer.id());
+                  removedPeer == null
+                  ? "<unassigned>"
+                  : removedPeer.id());
     }
 
     private void processFsmEvent(MembershipFsmEvent event) {
@@ -811,11 +830,12 @@ public final class MembershipFsm {
         // exact bear-trap that hid the SlotClaimed JOINING-write loss; see 2026-05-22 fix).
         if (!outcome.writes().isEmpty()) {
             log.warn("MembershipFsm: shadow-only event {} for {} produced {} write(s) that will not be proposed — "
-                     + "the event is likely misclassified (see isLeaderWritingEvent)",
+                    + "the event is likely misclassified (see isLeaderWritingEvent)",
                      event.getClass().getSimpleName(),
                      peer.id(),
                      outcome.writes().size());
         }
+
         applyEffectsLocked(outcome.effects());
         logFsmOutcome(event, current, outcome);
     }
@@ -826,9 +846,12 @@ public final class MembershipFsm {
     private void processOperatorOrFsmEvent(MembershipFsmEvent event) {
         if (!isLeaderWritingEvent(event)) {
             processFsmEvent(event);
+
             return;
         }
+
         fsmLock.lock();
+
         try {
             processOperatorEventLocked(event);
         } finally {
@@ -840,36 +863,40 @@ public final class MembershipFsm {
         var peer = event.peer();
         var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
         var outcome = reducer.apply(current, event, currentReachabilityGate());
+
         if (outcome.writes().isEmpty()) {
             applyEffectsLocked(outcome.effects());
             logOperatorOutcome(event, current, outcome, true);
+
             return;
         }
+
         proposeWritesAndApply(event, current, outcome);
     }
 
-    @Contract private void proposeWritesAndApply(MembershipFsmEvent event,
-                                                  MembershipFsmState prior,
-                                                  Outcome outcome) {
+    @Contract
+    private void proposeWritesAndApply(MembershipFsmEvent event, MembershipFsmState prior, Outcome outcome) {
         var peer = event.peer();
         var resolvedWrites = resolveLifecycleWrites(outcome.writes());
         log.info("MembershipFsm: operator event {} for {} → proposing {} write(s) via consensus",
                  event.getClass().getSimpleName(),
                  peer.id(),
                  resolvedWrites.size());
-        commandApplier.apply(resolvedWrites)
-                       .onSuccess(_ -> handleOperatorWriteSuccess(event, prior, outcome, resolvedWrites))
-                       .onFailure(cause -> log.warn(
-                               "MembershipFsm: operator event {} for {} consensus rejected: {} — local state NOT mutated (I1)",
-                               event.getClass().getSimpleName(),
-                               peer.id(),
-                               cause.message()));
+        commandApplier.apply(resolvedWrites).onSuccess(_ -> handleOperatorWriteSuccess(event,
+                                                                                       prior,
+                                                                                       outcome,
+                                                                                       resolvedWrites)).onFailure(cause -> log.warn("MembershipFsm: operator event {} for {} consensus rejected: {} — local state NOT mutated (I1)",
+                                                                                                                                    event.getClass()
+                                                                                                                                         .getSimpleName(),
+                                                                                                                                    peer.id(),
+                                                                                                                                    cause.message()));
     }
 
-    @Contract private void handleOperatorWriteSuccess(MembershipFsmEvent event,
-                                                       MembershipFsmState prior,
-                                                       Outcome outcome,
-                                                       List<KVCommand<AetherKey>> resolvedWrites) {
+    @Contract
+    private void handleOperatorWriteSuccess(MembershipFsmEvent event,
+                                            MembershipFsmState prior,
+                                            Outcome outcome,
+                                            List<KVCommand<AetherKey>> resolvedWrites) {
         fsmLock.lock();
         try {
             var newState = outcome.newState();
@@ -889,13 +916,13 @@ public final class MembershipFsm {
     /// 2-arg values for purity; consensus must receive complete values. Non-lifecycle writes
     /// (e.g., `Remove<ProvisioningSlotKey>`) pass through untouched.
     private List<KVCommand<AetherKey>> resolveLifecycleWrites(List<KVCommand<AetherKey>> writes) {
-        return writes.stream().map(this::resolveSingleWrite).toList();
+        return writes.stream()
+                     .map(this::resolveSingleWrite)
+                     .toList();
     }
 
     private KVCommand<AetherKey> resolveSingleWrite(KVCommand<AetherKey> command) {
-        if (command instanceof Put<AetherKey, ?> put
-            && put.key() instanceof NodeLifecycleKey lifecycleKey
-            && put.value() instanceof NodeLifecycleValue minimal) {
+        if (command instanceof Put<AetherKey, ?> put && put.key() instanceof NodeLifecycleKey lifecycleKey && put.value() instanceof NodeLifecycleValue minimal) {
             return new Put<>(lifecycleKey, mergeWithPrior(lifecycleKey.nodeId(), minimal));
         }
         return command;
@@ -903,16 +930,21 @@ public final class MembershipFsm {
 
     private NodeLifecycleValue mergeWithPrior(NodeId peer, NodeLifecycleValue minimal) {
         var prior = priorLifecycle.get(peer);
+
         if (prior == null) {
             return minimal;
         }
+        // Step H/I (2026-05-22): thread the StopReason sidecar from the reducer-side minimal
+        // write through to consensus — `mergeWithPrior` previously dropped it because the
+        // 7-arg constructor defaulted `stopReason = none()`. Without this, STOPPED transitions
+        // would land in KV without their FORCED/GRACEFUL/DRAIN_FAILED discriminator.
         return new NodeLifecycleValue(minimal.state(),
-                                       minimal.updatedAt(),
-                                       prior.host(),
-                                       prior.port(),
-                                       prior.observedCoreEpoch(),
-                                       prior.transitionedAt(),
-                                       prior.provisioningSource());
+                                      minimal.updatedAt(),
+                                      prior.host(),
+                                      prior.port(),
+                                      prior.observedCoreEpoch(),
+                                      prior.transitionedAt(),
+                                      prior.provisioningSource()).withStopReason(minimal.stopReason());
     }
 
     private void recordResolvedLifecycleWrites(List<KVCommand<AetherKey>> resolvedWrites) {
@@ -920,9 +952,7 @@ public final class MembershipFsm {
     }
 
     private void recordSingleResolvedWrite(KVCommand<AetherKey> command) {
-        if (command instanceof Put<AetherKey, ?> put
-            && put.key() instanceof NodeLifecycleKey lifecycleKey
-            && put.value() instanceof NodeLifecycleValue value) {
+        if (command instanceof Put<AetherKey, ?> put && put.key() instanceof NodeLifecycleKey lifecycleKey && put.value() instanceof NodeLifecycleValue value) {
             priorLifecycle.put(lifecycleKey.nodeId(), value);
         }
     }
@@ -936,13 +966,12 @@ public final class MembershipFsm {
             case ScheduleTimer s -> scheduleTimer(s);
             case CancelTimer c -> cancelTimer(c.peer(), c.kind());
             case InvokeDrain d -> invokeDrain(d.peer(), d.reason());
-            case CancelDrain c -> log.info(
-                    "MembershipFsm: CancelDrain for {} — best-effort log only (E.7 wires coordinator cancel)",
-                    c.peer().id());
+            case CancelDrain c -> log.info("MembershipFsm: CancelDrain for {} — best-effort log only (E.7 wires coordinator cancel)",
+                                           c.peer().id());
             case EmitDomainEvent e -> log.info("MembershipFsm: domain event {} for {} (reason={})",
-                                                  e.event(),
-                                                  e.peer().id(),
-                                                  e.reason());
+                                               e.event(),
+                                               e.peer().id(),
+                                               e.reason());
         }
     }
 
@@ -960,6 +989,7 @@ public final class MembershipFsm {
     private void cancelTimer(NodeId peer, TimerKind kind) {
         var handle = new TimerHandle(peer, kind);
         var future = pendingTimers.remove(handle);
+
         if (future != null) {
             future.cancel(false);
             log.debug("MembershipFsm: cancelled timer {} for {}", kind, peer.id());
@@ -971,19 +1001,23 @@ public final class MembershipFsm {
         pendingTimers.clear();
     }
 
-    @Contract private void onTimerFired(TimerHandle handle) {
+    @Contract
+    private void onTimerFired(TimerHandle handle) {
         pendingTimers.remove(handle);
-        log.debug("MembershipFsm: timer {} fired for {}", handle.kind(), handle.peer().id());
+        log.debug("MembershipFsm: timer {} fired for {}",
+                  handle.kind(),
+                  handle.peer().id());
+
         if (handle.kind() == TimerKind.JOIN_DEADLINE) {
             enqueueOperatorEvent(new JoinDeadlineExpired(handle.peer(), hlcClock.now()));
         }
     }
 
-    @Contract private void invokeDrain(NodeId peer, DrainReason reason) {
+    @Contract
+    private void invokeDrain(NodeId peer, DrainReason reason) {
         log.info("MembershipFsm: invoking DrainCoordinator.prepareDrain({}, {})", peer.id(), reason);
-        drainCoordinator.prepareDrain(peer, reason)
-                         .onFailure(cause -> onPrepareDrainFailure(peer, cause))
-                         .onSuccess(_ -> awaitDrainAndFeedback(peer, config.drainTimeout()));
+        drainCoordinator.prepareDrain(peer, reason).onFailure(cause -> onPrepareDrainFailure(peer, cause)).onSuccess(_ -> awaitDrainAndFeedback(peer,
+                                                                                                                                                config.drainTimeout()));
     }
 
     private void onPrepareDrainFailure(NodeId peer, Cause cause) {
@@ -997,11 +1031,13 @@ public final class MembershipFsm {
     /// back into a `DrainOutcome` event (spec §8.2, F4). Success → `DrainOutcome(true)` →
     /// `(DRAINING, DrainOutcome(true)) → DECOMMISSIONED`. Failure (or hard-deadline) →
     /// `DrainOutcome(false)` → `(DRAINING, DrainOutcome(false)) → FAILED_DRAIN`.
-    @Contract private void awaitDrainAndFeedback(NodeId peer, TimeSpan timeout) {
+    @Contract
+    private void awaitDrainAndFeedback(NodeId peer, TimeSpan timeout) {
         log.debug("MembershipFsm: awaiting drain ack for {} (timeout={}ms)", peer.id(), timeout.millis());
-        drainCoordinator.awaitDrainAck(peer, timeout)
-                         .onSuccess(_ -> enqueueOperatorEvent(new DrainOutcome(peer, true, hlcClock.now())))
-                         .onFailure(cause -> onAwaitDrainAckFailure(peer, cause));
+        drainCoordinator.awaitDrainAck(peer, timeout).onSuccess(_ -> enqueueOperatorEvent(new DrainOutcome(peer,
+                                                                                                           true,
+                                                                                                           hlcClock.now()))).onFailure(cause -> onAwaitDrainAckFailure(peer,
+                                                                                                                                                                       cause));
     }
 
     private void onAwaitDrainAckFailure(NodeId peer, Cause cause) {
@@ -1018,9 +1054,7 @@ public final class MembershipFsm {
             slotSnapshotReader.forEachSlot(this::indexSlotForReplay);
             lifecycleSnapshotReader.forEachLifecycle(this::reconstructPeerFromLifecycle);
             slotSnapshotReader.forEachSlot(this::ensureSlotPeerCovered);
-            log.info("MembershipFsm replay: lifecycle peers={}, slot peers={}",
-                     fsmStates.size(),
-                     slotIdToPeer.size());
+            log.info("MembershipFsm replay: lifecycle peers={}, slot peers={}", fsmStates.size(), slotIdToPeer.size());
         } finally {
             fsmLock.unlock();
         }
@@ -1055,49 +1089,66 @@ public final class MembershipFsm {
     private void resumeInFlightProtocolsIfLeader() {
         if (!isLeader.getAsBoolean()) {
             log.debug("MembershipFsm: resumeInFlightProtocols skipped on {} — not leader", self.id());
+
             return;
         }
+
         var nowMs = System.currentTimeMillis();
         priorLifecycle.forEach((peer, value) -> resumePerPeer(peer, value, nowMs));
     }
 
     private void resumePerPeer(NodeId peer, NodeLifecycleValue value, long nowMs) {
         switch (value.state()) {
-            case DRAINING, SHUTTING_DOWN -> resumeDrain(peer, value, nowMs);
+            case DRAINING -> resumeDrain(peer, value, nowMs);
             case JOINING -> resumeJoinDeadline(peer, value, nowMs);
-            default -> { /* no-op for ON_DUTY/DECOMMISSIONED/FAILED_DRAIN — nothing to resume */ }
+            default -> {}
         }
     }
 
-    @Contract private void resumeDrain(NodeId peer, NodeLifecycleValue value, long nowMs) {
+    @Contract
+    private void resumeDrain(NodeId peer, NodeLifecycleValue value, long nowMs) {
         var elapsed = Math.max(0L, nowMs - value.updatedAt());
         var remainingMs = config.drainTimeout().millis() - elapsed;
+
         if (remainingMs <= 0L) {
             log.info("MembershipFsm: resumeDrain peer={} hard-deadline elapsed (drainStarted={}, elapsed={}ms) → DrainOutcome(false) immediate",
-                     peer.id(), value.updatedAt(), elapsed);
+                     peer.id(),
+                     value.updatedAt(),
+                     elapsed);
             enqueueOperatorEvent(new DrainOutcome(peer, false, hlcClock.now()));
+
             return;
         }
+
         log.info("MembershipFsm: resumeDrain peer={} remaining={}ms — re-attaching awaitDrainAck",
-                 peer.id(), remainingMs);
-        awaitDrainAndFeedback(peer, TimeSpan.timeSpan(remainingMs).millis());
+                 peer.id(),
+                 remainingMs);
+        awaitDrainAndFeedback(peer,
+                              TimeSpan.timeSpan(remainingMs).millis());
     }
 
-    @Contract private void resumeJoinDeadline(NodeId peer, NodeLifecycleValue value, long nowMs) {
+    @Contract
+    private void resumeJoinDeadline(NodeId peer, NodeLifecycleValue value, long nowMs) {
         var elapsed = Math.max(0L, nowMs - value.updatedAt());
         var remainingMs = config.joinDeadline().millis() - elapsed;
+
         if (remainingMs <= 0L) {
             log.info("MembershipFsm: resumeJoinDeadline peer={} deadline elapsed (joinedAt={}, elapsed={}ms) → JoinDeadlineExpired immediate",
-                     peer.id(), value.updatedAt(), elapsed);
+                     peer.id(),
+                     value.updatedAt(),
+                     elapsed);
             enqueueOperatorEvent(new JoinDeadlineExpired(peer, hlcClock.now()));
+
             return;
         }
-        log.info("MembershipFsm: resumeJoinDeadline peer={} remaining={}ms — scheduling timer",
-                 peer.id(), remainingMs);
+
+        log.info("MembershipFsm: resumeJoinDeadline peer={} remaining={}ms — scheduling timer", peer.id(), remainingMs);
         var handle = new TimerHandle(peer, TimerKind.JOIN_DEADLINE);
         cancelTimer(peer, TimerKind.JOIN_DEADLINE);
-        var future = scheduler.schedule(() -> onTimerFired(handle), TimeSpan.timeSpan(remainingMs).millis());
+        var future = scheduler.schedule(() -> onTimerFired(handle),
+                                        TimeSpan.timeSpan(remainingMs).millis());
         pendingTimers.put(handle, future);
+
         if (swimHealthGate.apply(peer)) {
             log.info("MembershipFsm: resumeJoinDeadline peer={} — SWIM already healthy on leader takeover, synthesizing SwimHealthy",
                      peer.id());
@@ -1115,15 +1166,16 @@ public final class MembershipFsm {
     }
 
     private static MembershipFsmState deriveStateFromLifecycle(NodeId peer,
-                                                                NodeLifecycleValue value,
-                                                                Option<String> slotId) {
+                                                               NodeLifecycleValue value,
+                                                               Option<String> slotId) {
         return switch (value.state()) {
             case JOINING -> MembershipFsmState.joining(peer, value.updatedAt(), slotId);
             case ON_DUTY -> MembershipFsmState.onDuty(peer, value.updatedAt());
             case DRAINING -> MembershipFsmState.draining(peer, value.updatedAt(), DrainReason.OPERATOR_DRAIN);
-            case DECOMMISSIONED -> MembershipFsmState.decommissioned(peer, value.updatedAt(), true);
-            case FAILED_DRAIN -> MembershipFsmState.failedDrain(peer, value.updatedAt());
-            case SHUTTING_DOWN -> MembershipFsmState.draining(peer, value.updatedAt(), DrainReason.OPERATOR_DRAIN);
+            case STOPPED -> MembershipFsmState.stopped(peer,
+                                                       value.updatedAt(),
+                                                       value.stopReason().or(StopReason.FORCED),
+                                                       true);
         };
     }
 
@@ -1135,6 +1187,7 @@ public final class MembershipFsm {
     /// clock and is gated by the drift policy.
     private Option<MembershipFsmEvent> translate(SwimObservation observation) {
         var at = hlcClock.now();
+
         return switch (observation) {
             case HealthyObserved h -> some(new SwimHealthy(h.peer(), h.incarnation(), at));
             case FaultyObserved f -> some(new SwimFaulty(f.peer(), f.incarnation(), at));
@@ -1145,9 +1198,7 @@ public final class MembershipFsm {
         };
     }
 
-    private void logFsmOutcome(MembershipFsmEvent event,
-                                  MembershipFsmState priorState,
-                                  Outcome outcome) {
+    private void logFsmOutcome(MembershipFsmEvent event, MembershipFsmState priorState, Outcome outcome) {
         log.info("MembershipFsm: event={} peer={} priorState={} → newState={} would-write={} would-effect={}",
                  event.getClass().getSimpleName(),
                  event.peer().id(),
@@ -1186,7 +1237,8 @@ public final class MembershipFsm {
         if (state == null) {
             return "<absent/UNTRACKED>";
         }
-        return state.getClass().getSimpleName();
+        return state.getClass()
+                    .getSimpleName();
     }
 
     private record TimerHandle(NodeId peer, TimerKind kind) {}
@@ -1197,13 +1249,15 @@ public final class MembershipFsm {
     /// hand-rolled fake.
     @FunctionalInterface
     public interface LifecycleSnapshotReader {
-        @Contract void forEachLifecycle(BiConsumer<NodeLifecycleKey, NodeLifecycleValue> consumer);
+        @Contract
+        void forEachLifecycle(BiConsumer<NodeLifecycleKey, NodeLifecycleValue> consumer);
     }
 
     /// Snapshot reader for `ProvisioningSlotKey → ProvisioningSlotValue` entries.
     @FunctionalInterface
     public interface SlotSnapshotReader {
-        @Contract void forEachSlot(BiConsumer<ProvisioningSlotKey, ProvisioningSlotValue> consumer);
+        @Contract
+        void forEachSlot(BiConsumer<ProvisioningSlotKey, ProvisioningSlotValue> consumer);
     }
 
     /// One-shot timer scheduler. Returns a `ScheduledFuture` so the FSM can cancel pending
@@ -1218,25 +1272,30 @@ public final class MembershipFsm {
         return SharedScheduler::schedule;
     }
 
-    private static final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> NO_OP_COMMAND_APPLIER =
-            MembershipFsm::noOpCommandApply;
+    private static final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> NO_OP_COMMAND_APPLIER = MembershipFsm::noOpCommandApply;
 
     private static Promise<List<Object>> noOpCommandApply(List<KVCommand<AetherKey>> commands) {
         log.debug("MembershipFsm: no-op command applier — {} write(s) discarded", commands.size());
+
         return Promise.success(List.of());
     }
 
     private static final DrainCoordinator NO_OP_DRAIN_COORDINATOR = new DrainCoordinator() {
-        @Override public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
+        @Override
+        public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
             log.debug("MembershipFsm: no-op DrainCoordinator.prepareDrain({}, {})", nodeId.id(), reason);
+
             return Promise.unitPromise();
         }
 
-        @Override public Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout) {
+        @Override
+        public Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout) {
             return Promise.unitPromise();
         }
 
-        @Override @Contract public void markDrainComplete(NodeId nodeId) {
+        @Override
+        @Contract
+        public void markDrainComplete(NodeId nodeId) {
             log.debug("MembershipFsm: no-op DrainCoordinator.markDrainComplete({})", nodeId.id());
         }
     };
@@ -1255,12 +1314,14 @@ public final class MembershipFsm {
     /// and UNKNOWN both gate to `false` (a confirmed cluster-wide failure is required).
     private ReachabilityGate currentReachabilityGate() {
         var snapshotOpt = aggregatorSnapshotSupplier.get();
+
         return snapshotOpt.fold(() -> ReachabilityGate.ALWAYS_CONFIRMED,
-                                 snapshot -> peer -> isUnreachableInSnapshot(snapshot, peer));
+                                snapshot -> peer -> isUnreachableInSnapshot(snapshot, peer));
     }
 
     private static boolean isUnreachableInSnapshot(AggregatedReachabilitySnapshot snapshot, NodeId peer) {
         var entry = snapshot.states().get(peer);
+
         return entry != null && entry.kind() == ReachabilityKind.UNREACHABLE;
     }
 

@@ -199,14 +199,14 @@ class ClusterTopologyManagerIdentityBoundSlotE2ETest {
         ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A,
                                                                 List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
 
-        // Step 5a — DECOMMISSIONED tombstone written for the assigned NodeId.
+        // Step 5a — STOPPED tombstone written for the assigned NodeId.
         var tombstone = clusterStore.lifecycle(assignedNodeId);
         assertThat(tombstone.isPresent())
                 .as("lifecycle atom written for expired-slot owner")
                 .isTrue();
         assertThat(tombstone.unwrap().state())
-                .as("expired-slot owner authoritatively DECOMMISSIONED")
-                .isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+                .as("expired-slot owner authoritatively STOPPED")
+                .isEqualTo(NodeLifecycleState.STOPPED);
 
         // Step 5b — terminateNode invoked on the recording lifecycle manager with that exact id.
         assertThat(lifecycleManager.terminateCount.get())
@@ -224,23 +224,23 @@ class ClusterTopologyManagerIdentityBoundSlotE2ETest {
                 .as("FSM reconstructs tracked state for the tombstoned peer from KV replay")
                 .isTrue();
         assertThat(fsm.get(assignedNodeId).unwrap())
-                .as("FSM derives Decommissioned from the lifecycle KV entry")
-                .isInstanceOf(MembershipFsmState.Decommissioned.class);
+                .as("FSM derives Stopped from the lifecycle KV entry")
+                .isInstanceOf(MembershipFsmState.Stopped.class);
 
         var commandsBeforeLateArrival = clusterStore.commandCount();
 
         // Step 7 — simulate the late arrival: SWIM observes the tombstoned node healthy.
-        // The reducer cell (DECOMMISSIONED, SwimHealthy) → nop must keep the FSM at
-        // Decommissioned and must NOT propose any KV writes.
+        // The reducer cell (STOPPED, SwimHealthy) → nop must keep the FSM at
+        // Stopped and must NOT propose any KV writes.
         fsm.onSwimObservation(new HealthyObserved(assignedNodeId, 1L));
 
-        // Step 8 — assert FSM remains in Decommissioned, no ON_DUTY write follows.
+        // Step 8 — assert FSM remains in Stopped, no ON_DUTY write follows.
         assertThat(fsm.get(assignedNodeId).unwrap())
-                .as("FSM stays DECOMMISSIONED after late SwimHealthy — applyDecommissioned == nop")
-                .isInstanceOf(MembershipFsmState.Decommissioned.class);
+                .as("FSM stays STOPPED after late SwimHealthy — applyStopped == nop")
+                .isInstanceOf(MembershipFsmState.Stopped.class);
         assertThat(clusterStore.lifecycle(assignedNodeId).unwrap().state())
-                .as("KV lifecycle entry remains DECOMMISSIONED — no late revival write")
-                .isEqualTo(NodeLifecycleState.DECOMMISSIONED);
+                .as("KV lifecycle entry remains STOPPED — no late revival write")
+                .isEqualTo(NodeLifecycleState.STOPPED);
         assertThat(clusterStore.commandCount())
                 .as("FSM emitted no KV writes for the late SwimHealthy event")
                 .isEqualTo(commandsBeforeLateArrival);

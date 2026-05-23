@@ -198,9 +198,15 @@ class MembershipFsmHlcMonotonicityTest {
             var outcome = reducer.apply(MembershipFsmState.untracked(PEER_A),
                                          new SlotClaimed(PEER_A, SLOT_A, eventAt), ReachabilityGate.ALWAYS_CONFIRMED);
 
-            assertThat(outcome.writes()).hasSize(1);
-            var put = (KVCommand.Put<?, ?>) outcome.writes().get(0);
-            var value = (NodeLifecycleValue) put.value();
+            // Phase 1 step J co-write: lifecycle Put (JOINING) + JoinDeadlineKey Put.
+            assertThat(outcome.writes()).hasSize(2);
+            var lifecyclePut = outcome.writes().stream()
+                                                .filter(c -> c instanceof KVCommand.Put<?, ?> p
+                                                             && p.value() instanceof NodeLifecycleValue)
+                                                .map(c -> (KVCommand.Put<?, ?>) c)
+                                                .findFirst()
+                                                .orElseThrow();
+            var value = (NodeLifecycleValue) lifecyclePut.value();
             assertThat(value.state()).isEqualTo(NodeLifecycleState.JOINING);
             assertThat(value.transitionedAt()).isEqualTo(eventAt);
             assertThat(value.updatedAt()).isEqualTo(eventAt.physicalMicros() / 1000L);

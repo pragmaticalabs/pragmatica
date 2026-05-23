@@ -130,7 +130,7 @@ public final class SelfDrainCoordinator {
     }
 
     private void routeOnVisibility(int visible, int threshold) {
-        if (visible < threshold) {
+        if (visible <threshold) {
             recordBelowQuorum(visible, threshold);
         } else {
             recoverAboveQuorum();
@@ -172,7 +172,7 @@ public final class SelfDrainCoordinator {
         var nowMs = System.currentTimeMillis();
         var prev = firstBelowQuorumMs.get();
 
-        if (prev < 0) {
+        if (prev <0) {
             firstBelowQuorumMs.compareAndSet(prev, nowMs);
             log.info("Self-drain: visible={} below quorum={} on {} — starting debounce window {}ms",
                      visible,
@@ -227,12 +227,17 @@ public final class SelfDrainCoordinator {
             eventPublisher.publish(ClusterEventValue.EventType.SELF_DRAIN_INITIATED,
                                    ClusterEventValue.Severity.WARNING,
                                    "Self-drain initiated on " + self.id() + " (reason=" + reason + ")",
-                                   Map.of("nodeId", self.id(),
-                                          "reason", reason,
-                                          "graceMs", String.valueOf(config.inflightGrace().millis())));
+                                   Map.of("nodeId",
+                                          self.id(),
+                                          "reason",
+                                          reason,
+                                          "graceMs",
+                                          String.valueOf(config.inflightGrace().millis())));
         } catch (Throwable t) {
             log.warn("Self-drain: SELF_DRAIN_INITIATED publish failed on {} (reason={}): {} — drain proceeds regardless",
-                     self.id(), reason, t.getMessage());
+                     self.id(),
+                     reason,
+                     t.getMessage());
         }
     }
 

@@ -20,7 +20,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class SwimHintsRegistry {
     private final Map<NodeId, TimedHint> hints = new ConcurrentHashMap<>();
-
     private final Duration ttl;
     private final Fn0<Long> nowSupplier;
     private final Runnable onChange;
@@ -39,17 +38,20 @@ public final class SwimHintsRegistry {
         return new SwimHintsRegistry(ttl, nowSupplier, onChange);
     }
 
-    @Contract public void onPeerHealth(PeerHealthObservation obs) {
+    @Contract
+    public void onPeerHealth(PeerHealthObservation obs) {
         toHint(obs.hint()).apply(() -> clear(obs.peerId()),
                                  hint -> putHint(obs.peerId(), hint, obs.producedAtMs()));
     }
 
-    @Contract public void putHint(NodeId node, HealthHint hint, long observedAtMs) {
+    @Contract
+    public void putHint(NodeId node, HealthHint hint, long observedAtMs) {
         var prev = hints.put(node, new TimedHint(hint, observedAtMs));
         if (prev == null || prev.hint != hint) {onChange.run();}
     }
 
-    @Contract public void clear(NodeId node) {
+    @Contract
+    public void clear(NodeId node) {
         if (hints.remove(node) != null) {onChange.run();}
     }
 
@@ -62,19 +64,23 @@ public final class SwimHintsRegistry {
         var deadline = now - ttl.toMillis();
         var snapshot = new HashMap<NodeId, HealthHint>();
         hints.forEach((node, timed) -> {
-                          if (timed.observedAtMs >= deadline) {snapshot.put(node, timed.hint);} else {hints.remove(node,
-                                                                                                                   timed);}
+                          if (timed.observedAtMs >= deadline) {
+                          snapshot.put(node, timed.hint);
+                      } else {
+                          hints.remove(node, timed);
+                      }
                       });
+
         return snapshot;
     }
 
     private static Option<HealthHint> toHint(HealthHintWire wire) {
-        return switch (wire){
+        return switch (wire) {
             case FAULTY -> Option.some(HealthHint.FAULTY);
             case SUSPECTED -> Option.some(HealthHint.SUSPECTED);
             case HEALTHY -> Option.none();
         };
     }
 
-    private record TimedHint(HealthHint hint, long observedAtMs){}
+    private record TimedHint(HealthHint hint, long observedAtMs) {}
 }

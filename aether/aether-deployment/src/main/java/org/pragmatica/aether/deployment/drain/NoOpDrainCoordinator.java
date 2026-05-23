@@ -17,13 +17,17 @@ import org.pragmatica.lang.io.TimeSpan;
 
 
 public record NoOpDrainCoordinator() implements DrainCoordinator {
-    @Override public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
+    @Override
+    public Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason) {
         return Promise.unitPromise();
     }
 
-    @Override public Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout) {
+    @Override
+    public Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout) {
         return Promise.unitPromise();
     }
 
-    @Override@Contract public void markDrainComplete(NodeId nodeId) {}
+    @Override
+    @Contract
+    public void markDrainComplete(NodeId nodeId) {}
 }

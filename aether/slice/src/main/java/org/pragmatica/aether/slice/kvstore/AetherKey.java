@@ -437,6 +437,63 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
+    /// Phase 1 step J — observability atom mirroring the in-process `JOIN_DEADLINE`
+    /// scheduler entry the leader's `MembershipFsm` arms when a peer enters JOINING.
+    /// Replicated via Rabia so a new leader on takeover can reconstruct the deadline from
+    /// KV state instead of relying on the prior leader's in-memory scheduler. The atom is
+    /// pure observability — the scheduler is still the trigger; the KV `Remove` on
+    /// JOINING-exit is what stops the new leader from re-arming a stale timer.
+    record JoinDeadlineKey(NodeId nodeId) implements AetherKey {
+        private static final String PREFIX = "join-deadline/";
+
+        @Override public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static JoinDeadlineKey joinDeadlineKey(NodeId nodeId) {
+            return new JoinDeadlineKey(nodeId);
+        }
+
+        public static Result<JoinDeadlineKey> joinDeadlineKey(String key) {
+            if (!key.startsWith(PREFIX)) {return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            var nodeIdPart = key.substring(PREFIX.length());
+            if (nodeIdPart.isEmpty()) {return JOIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            return NodeId.nodeId(nodeIdPart).map(JoinDeadlineKey::new);
+        }
+    }
+
+    /// Phase 1 step J — observability atom mirroring the in-process `DRAIN_DEADLINE`
+    /// scheduler entry. Written on DRAINING entry, removed on any DRAINING-exit
+    /// (DECOMMISSIONED, FAILED_DRAIN). The new leader inspects this atom on takeover to
+    /// resume the drain hard-deadline countdown against wall-clock instead of the prior
+    /// leader's elapsed timer.
+    record DrainDeadlineKey(NodeId nodeId) implements AetherKey {
+        private static final String PREFIX = "drain-deadline/";
+
+        @Override public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static DrainDeadlineKey drainDeadlineKey(NodeId nodeId) {
+            return new DrainDeadlineKey(nodeId);
+        }
+
+        public static Result<DrainDeadlineKey> drainDeadlineKey(String key) {
+            if (!key.startsWith(PREFIX)) {return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            var nodeIdPart = key.substring(PREFIX.length());
+            if (nodeIdPart.isEmpty()) {return DRAIN_DEADLINE_KEY_FORMAT_ERROR.apply(key).result();}
+            return NodeId.nodeId(nodeIdPart).map(DrainDeadlineKey::new);
+        }
+    }
+
     record ConfigKey(String key, Option<NodeId> nodeScope) implements AetherKey {
         private static final String CLUSTER_PREFIX = "config/";
 
@@ -776,6 +833,10 @@ import static org.pragmatica.lang.Result.success;
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 
     Fn1<Cause, String> NODE_LIFECYCLE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-lifecycle key format: %s");
+
+    Fn1<Cause, String> JOIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid join-deadline key format: %s");
+
+    Fn1<Cause, String> DRAIN_DEADLINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid drain-deadline key format: %s");
 
     Fn1<Cause, String> WORKER_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid worker-directive key format: %s");
 

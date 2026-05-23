@@ -18,7 +18,6 @@ import org.slf4j.LoggerFactory;
 
 public sealed interface ClusterConfigApplier {
     Logger log = LoggerFactory.getLogger(ClusterConfigApplier.class);
-
     Promise<Unit> apply(List<DiffAction> actions);
 
     static ClusterConfigApplier clusterConfigApplier(ClusterTopologyManager topologyManager) {
@@ -26,21 +25,26 @@ public sealed interface ClusterConfigApplier {
     }
 
     record unused() implements ClusterConfigApplier {
-        @Override public Promise<Unit> apply(List<DiffAction> actions) {
+        @Override
+        public Promise<Unit> apply(List<DiffAction> actions) {
             return Promise.unitPromise();
         }
     }
 }
 
-@SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"}) record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implements ClusterConfigApplier {
-    @Override public Promise<Unit> apply(List<DiffAction> actions) {
+@SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"})
+record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implements ClusterConfigApplier {
+    @Override
+    public Promise<Unit> apply(List<DiffAction> actions) {
         var promise = Promise.unitPromise();
+
         for (var action : actions) {promise = promise.flatMap(_ -> applySingle(action));}
+
         return promise;
     }
 
     private Promise<Unit> applySingle(DiffAction action) {
-        return switch (action){
+        return switch (action) {
             case ScaleUp scale -> applyScaleUp(scale);
             case ScaleDown scale -> applyScaleDown(scale);
             default -> logApplied(action);
@@ -48,19 +52,22 @@ public sealed interface ClusterConfigApplier {
     }
 
     private Promise<Unit> applyScaleUp(ScaleUp scale) {
-        return topologyManager.setDesiredSize(scale.to()).onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-up: {}",
-                                                                                                       scale.description()))
-                                             .mapToUnit();
+        return topologyManager.setDesiredSize(scale.to())
+                              .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-up: {}",
+                                                                            scale.description()))
+                              .mapToUnit();
     }
 
     private Promise<Unit> applyScaleDown(ScaleDown scale) {
-        return topologyManager.setDesiredSize(scale.to()).onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-down: {}",
-                                                                                                       scale.description()))
-                                             .mapToUnit();
+        return topologyManager.setDesiredSize(scale.to())
+                              .onSuccess(_ -> ClusterConfigApplier.log.info("Applied scale-down: {}",
+                                                                            scale.description()))
+                              .mapToUnit();
     }
 
     private static Promise<Unit> logApplied(DiffAction action) {
         ClusterConfigApplier.log.info("Applied config action: {} {}", action.symbol(), action.description());
+
         return Promise.unitPromise();
     }
 }

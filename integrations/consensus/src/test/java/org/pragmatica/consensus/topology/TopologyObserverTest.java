@@ -352,55 +352,12 @@ class TopologyObserverTest {
         }
 
         @Test
-        void publishMembershipDeltas_emitsNodeFailedDrain_onLifecycleTransitionToFailedDrain() {
-            var emissions = new CopyOnWriteArrayList<MembershipDecision>();
-            var snapshot = new StatefulSnapshotSource();
-            var hlc = new HlcTimestamp(HlcTimestamp.pack(7L, 0), "node-self");
-
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.DRAINING,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          5L);
-
-            var observer = observerWith(routerCapturing(emissions), snapshot, () -> hlc);
-            observer.start().await();
-            emissions.clear();
-
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.FAILED_DRAIN,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          6L);
-            observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(3));
-
-            assertThat(emissions).anyMatch(MembershipDecision.NodeFailedDrain.class::isInstance);
-        }
-
-        @Test
-        void publishMembershipDeltas_emitsNodeShuttingDown_onLifecycleTransitionToShuttingDown() {
-            var emissions = new CopyOnWriteArrayList<MembershipDecision>();
-            var snapshot = new StatefulSnapshotSource();
-            var hlc = new HlcTimestamp(HlcTimestamp.pack(33L, 0), "node-self");
-
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.ON_DUTY,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          10L);
-
-            var observer = observerWith(routerCapturing(emissions), snapshot, () -> hlc);
-            observer.start().await();
-            emissions.clear();
-
-            snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.SHUTTING_DOWN,
-                                                   PEER_B, LifecycleState.ON_DUTY)),
-                          11L);
-            observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(3));
-
-            assertThat(emissions).anyMatch(MembershipDecision.NodeShuttingDown.class::isInstance);
-        }
-
-        @Test
-        void publishMembershipDeltas_emitsNodeDecommissioned_onLifecycleTransitionToDecommissioned() {
+        void publishMembershipDeltas_emitsNodeDecommissioned_onLifecycleTransitionToStopped() {
+            // After Step H/I collapse: all terminal lifecycle transitions (former
+            // DECOMMISSIONED, FAILED_DRAIN, SHUTTING_DOWN) map to the single STOPPED
+            // value and route uniformly to MembershipDecision.NodeDecommissioned.
+            // The StopReason discriminator (FORCED / DRAIN_FAILED / GRACEFUL) lives
+            // on the slice-side NodeLifecycleValue sidecar — not on the consensus event.
             var emissions = new CopyOnWriteArrayList<MembershipDecision>();
             var snapshot = new StatefulSnapshotSource();
             snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
@@ -413,7 +370,7 @@ class TopologyObserverTest {
             emissions.clear();
 
             snapshot.set(viewWithLifecycles(Map.of(SELF, LifecycleState.ON_DUTY,
-                                                   PEER_A, LifecycleState.DECOMMISSIONED,
+                                                   PEER_A, LifecycleState.STOPPED,
                                                    PEER_B, LifecycleState.ON_DUTY)),
                           2L);
             observer.handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(3));

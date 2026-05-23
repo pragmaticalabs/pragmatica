@@ -178,7 +178,7 @@ class ClusterEventLogSweeperTest {
         var snap = new HashMap<AetherKey, AetherValue>();
         snap.put(ClusterEventLogKey.clusterEventLogKey(1L, NODE_A, 0L), value(1L, 0L));
         snap.put(NodeLifecycleKey.nodeLifecycleKey(new NodeId("node-x")),
-                 NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED));
+                 NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED));
 
         var applier = new CapturingApplier();
         var sweeper = ClusterEventLogSweeper.clusterEventLogSweeper(() -> snap,

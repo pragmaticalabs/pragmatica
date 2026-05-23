@@ -106,7 +106,7 @@ public sealed interface ThresholdStrategy {
                 return new MethodStats(new AtomicLong(), new AtomicReference<>(0.0));
             }
 
-            void update(long durationNs) {
+            @Contract void update(long durationNs) {
                 var c = count.incrementAndGet();
                 if (c == 1) {ema.set((double) durationNs);} else {updateEma(durationNs);}
             }

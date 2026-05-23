@@ -205,7 +205,8 @@ public final class NodeDeploymentContext {
         return fsm;
     }
 
-    @Contract public void dispatch(ClusterFsmEvent event) {
+    @Contract
+    public void dispatch(ClusterFsmEvent event) {
         fsm.dispatch(event);
     }
 
@@ -294,7 +295,8 @@ public final class NodeDeploymentContext {
         return Option.option(shutdownCallback.get());
     }
 
-    @Contract public void setShutdownCallback(Runnable callback) {
+    @Contract
+    public void setShutdownCallback(Runnable callback) {
         shutdownCallback.set(callback);
     }
 
@@ -302,7 +304,8 @@ public final class NodeDeploymentContext {
         return Option.option(activeOnEntryCallback.get());
     }
 
-    @Contract public void setActiveOnEntryCallback(Runnable callback) {
+    @Contract
+    public void setActiveOnEntryCallback(Runnable callback) {
         activeOnEntryCallback.set(callback);
     }
 

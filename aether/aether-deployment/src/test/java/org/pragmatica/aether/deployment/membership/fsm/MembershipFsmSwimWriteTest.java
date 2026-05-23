@@ -12,7 +12,7 @@ import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.LifecycleSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.SlotSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.TimerScheduler;
-import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Decommissioned;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Stopped;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Joining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.OnDuty;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -104,7 +104,7 @@ class MembershipFsmSwimWriteTest {
             var fsm = startedFsm();
             fsm.onSwimObservation(new FaultyObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.STOPPED);
         }
     }
 
@@ -148,7 +148,7 @@ class MembershipFsmSwimWriteTest {
             var fsm = startedFsm();
             fsm.onSwimObservation(new DepartedObserved(PEER_A, 7L));
             assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
+            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.STOPPED);
         }
     }
 
@@ -202,7 +202,7 @@ class MembershipFsmSwimWriteTest {
             // KV write).
             var decommissionedAt = System.currentTimeMillis() - 40_000L;
             lifecycleSnapshot.put(PEER_A,
-                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED,
                                                                         decommissionedAt));
             var fsm = startedFsm();
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
@@ -217,15 +217,15 @@ class MembershipFsmSwimWriteTest {
             // peer cannot resurrect it.
             var withinRefractoryDecommissionedAt = System.currentTimeMillis() - 5_000L;
             lifecycleSnapshot.put(PEER_A,
-                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED,
                                                                         withinRefractoryDecommissionedAt));
             var fsm = startedFsm();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
 
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
 
             assertThat(commandApplier.calls).isEmpty();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
         }
 
         @Test void swimHealthy_staleDecommissioned_leader_staysZombie() {
@@ -233,15 +233,15 @@ class MembershipFsmSwimWriteTest {
             // FSM must NOT revive. Preserves the zombie-protection invariant.
             var staleDecommissionedAt = System.currentTimeMillis() - 600_000L;  // 10 min ago
             lifecycleSnapshot.put(PEER_A,
-                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED,
+                                  NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED,
                                                                         staleDecommissionedAt));
             var fsm = startedFsm();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
 
             fsm.onSwimObservation(new HealthyObserved(PEER_A, 1L));
 
             assertThat(commandApplier.calls).isEmpty();
-            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
+            assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Stopped.class);
         }
     }
 
@@ -285,13 +285,15 @@ class MembershipFsmSwimWriteTest {
     private static void assertSingleLifecyclePut(List<KVCommand<AetherKey>> commands,
                                                   NodeId expectedPeer,
                                                   NodeLifecycleState expectedState) {
-        assertThat(commands).hasSize(1);
-        assertThat(commands.get(0)).isInstanceOf(Put.class);
-        var put = (Put<?, ?>) commands.get(0);
+        assertThat(commands).isNotEmpty();
+        var lifecyclePuts = commands.stream()
+                                    .filter(c -> c instanceof Put<?, ?> p && p.value() instanceof NodeLifecycleValue)
+                                    .toList();
+        assertThat(lifecyclePuts).as("expected exactly one NodeLifecycleValue Put").hasSize(1);
+        var put = (Put<?, ?>) lifecyclePuts.get(0);
         assertThat(put.key()).isInstanceOf(NodeLifecycleKey.class);
         var key = (NodeLifecycleKey) put.key();
         assertThat(key.nodeId()).isEqualTo(expectedPeer);
-        assertThat(put.value()).isInstanceOf(NodeLifecycleValue.class);
         var value = (NodeLifecycleValue) put.value();
         assertThat(value.state()).isEqualTo(expectedState);
     }

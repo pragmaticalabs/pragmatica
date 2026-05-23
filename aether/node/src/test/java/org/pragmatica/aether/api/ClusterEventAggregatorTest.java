@@ -91,7 +91,7 @@ class ClusterEventAggregatorTest {
     void onNodeLifecyclePut_decommissionedFromUnknown_emitsNodeFailed() {
         var h = new LoopbackHarness(NODE_A);
 
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
+        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
 
         var events = h.aggregator.events();
         assertThat(events).hasSize(1);
@@ -106,7 +106,7 @@ class ClusterEventAggregatorTest {
         var h = new LoopbackHarness(NODE_A);
 
         h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DRAINING));
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
+        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
 
         var events = h.aggregator.events();
         assertThat(events).hasSize(2);
@@ -119,9 +119,9 @@ class ClusterEventAggregatorTest {
     void onNodeLifecyclePut_idempotentOnSameState_noDoubleEmit() {
         var h = new LoopbackHarness(NODE_A);
 
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.DECOMMISSIONED));
+        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
+        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
+        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_A, NodeLifecycleState.STOPPED));
 
         var events = h.aggregator.events();
         assertThat(events).hasSize(1);
@@ -260,7 +260,7 @@ class ClusterEventAggregatorTest {
     void onNodeLifecyclePut_nonLeader_doesNotPublish() {
         var h = new LoopbackHarness(NODE_A, false);
 
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_B, NodeLifecycleState.DECOMMISSIONED));
+        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_B, NodeLifecycleState.STOPPED));
 
         assertThat(h.appliedCommands).isEmpty();
         assertThat(h.aggregator.events()).isEmpty();
@@ -270,7 +270,7 @@ class ClusterEventAggregatorTest {
     void onNodeLifecyclePut_leader_publishesNodeFailed() {
         var h = new LoopbackHarness(NODE_A, true);
 
-        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_B, NodeLifecycleState.DECOMMISSIONED));
+        h.aggregator.onNodeLifecyclePut(lifecyclePut(NODE_B, NodeLifecycleState.STOPPED));
 
         assertThat(h.aggregator.events()).hasSize(1);
         assertThat(h.aggregator.events().getFirst().type()).isEqualTo(ClusterEventValue.EventType.NODE_FAILED);

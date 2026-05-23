@@ -20,7 +20,9 @@ import org.pragmatica.lang.io.TimeSpan;
 public interface DrainCoordinator {
     Promise<Unit> prepareDrain(NodeId nodeId, DrainReason reason);
     Promise<Unit> awaitDrainAck(NodeId nodeId, TimeSpan timeout);
-    @Contract void markDrainComplete(NodeId nodeId);
+
+    @Contract
+    void markDrainComplete(NodeId nodeId);
 
     enum DrainReason {
         SCALE_DOWN,
