@@ -150,13 +150,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                       () -> true);
     }
 
-<<<<<<< HEAD
     /// Phase-aware overload (D.3 three-phase model, 2026-05-11). `isBootingSupplier`
     /// is the cluster's `ClusterPhaseView.compute() == ClusterPhase.COLD_BOOT` projection
     /// wired from `AetherNode`. When `false` (NORMAL or RECOVERING), SWIM emits
     /// `FaultyObserved` regardless of per-peer `everSeenHealthy`.
-=======
->>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
                                                                 TopologyConfig topologyConfig,
                                                                 Serializer serializer,

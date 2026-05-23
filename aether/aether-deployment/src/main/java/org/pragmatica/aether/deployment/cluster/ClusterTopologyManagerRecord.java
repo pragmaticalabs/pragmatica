@@ -403,7 +403,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (prev > 0) {log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)",
                                 reason,
                                 prev);}
-<<<<<<< HEAD
     }
 
     @Override public CircuitBreakerState circuitBreakerState() {
@@ -443,8 +442,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  : "disabled");
         if (enabled && active.get() && stateRef.get() instanceof NodeReconcilerState.Reconciling) {reconcile();}
         return prev;
-=======
->>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
     }
 
     private static long computeProvisioningBackoffMs(int failureCount) {
@@ -1200,7 +1197,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private ProvisionContext buildProvisionContext() {
-<<<<<<< HEAD
         // Always include self as a fallback bootstrap target — the CTM runs on the leader, which
         // is alive by definition. Without this fallback, transient "no healthy remote peers"
         // windows during chaos (e.g., a leader has just decommissioned several SWIM-faulty peers
@@ -1216,13 +1212,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                  .filter(entry -> !entry.equals(selfEntry));
         var peers = Stream.concat(Stream.of(selfEntry), remoteEntries)
                                                   .collect(Collectors.joining(","));
-=======
-        var peers = observer.topology().stream()
-                                     .filter(this::isHealthyPeer)
-                                     .flatMap(nodeId -> observer.get(nodeId).stream())
-                                     .map(ClusterTopologyManagerRecord::formatPeerEntry)
-                                     .collect(Collectors.joining(","));
->>>>>>> e70d861e1 (chore: migrate peglib 0.5.0 -> 0.6.0; absorb formatter/lint deltas)
         var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName)
                                                  .or("");
         return ProvisionContext.provisionContext(clusterName,
