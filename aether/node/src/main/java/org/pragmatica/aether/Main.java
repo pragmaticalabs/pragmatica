@@ -274,7 +274,9 @@ public record Main(String[] args) {
 
     private NodeId parseNodeId(Option<AetherConfig> aetherConfig) {
         return findArg("--node-id=").flatMap(id -> NodeId.nodeId(id).option())
+                      .orElse(findEnv("AETHER_NODE_ID").flatMap(id -> NodeId.nodeId(id).option()))
                       .orElse(findEnv("NODE_ID").flatMap(id -> NodeId.nodeId(id).option()))
+                      .orElse(findEnv("HOSTNAME").flatMap(id -> NodeId.nodeId(id).option()))
                       .or(NodeId::randomNodeId);
     }
 
