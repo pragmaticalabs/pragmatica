@@ -370,7 +370,7 @@ public class AetherCli implements Runnable {
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
-    String delete(ManagementRoute route, List<String> params) {
+    public String delete(ManagementRoute route, List<String> params) {
         return assembleOr(route, params, this::rawDelete);
     }
 

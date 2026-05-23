@@ -42,6 +42,9 @@ import org.pragmatica.aether.api.routes.ProblemResponses;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
+import org.pragmatica.aether.api.routes.StreamApiRoutes;
+import org.pragmatica.aether.api.routes.StreamNamespacesRoutes;
+import org.pragmatica.aether.api.routes.StreamRoutes;
 import org.pragmatica.aether.api.routes.TaskRoutes;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
@@ -283,6 +286,14 @@ class ManagementServerImpl implements ManagementServer {
                                                                      .backupService(),
                                                    nodeSupplier));
         routeSources.add(SchemaRoutes.schemaRoutes(nodeSupplier));
+        routeSources.add(StreamRoutes.streamRoutes(nodeSupplier,
+                                                   nodeSupplier.get().consumerGroupCoordinator(),
+                                                   nodeSupplier.get().consumerGroupRegistry()));
+        routeSources.add(StreamApiRoutes.streamApiRoutes(nodeSupplier,
+                                                          nodeSupplier.get().streamNamespacesService(),
+                                                          nodeSupplier.get().consumerGroupCoordinator(),
+                                                          nodeSupplier.get().consumerGroupRegistry()));
+        routeSources.add(StreamNamespacesRoutes.streamNamespacesRoutes(nodeSupplier.get().streamNamespacesService()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
         routeSources.add(TaskRoutes.taskRoutes(nodeSupplier));

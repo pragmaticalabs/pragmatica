@@ -468,11 +468,12 @@ The parser rejects:
 
 ## 12. HTTP API shape
 
-URL shape: `/api/streams/{namespace}/{stream}[/{version}]`
+URL shape: `/api/streams/<verb>/{namespace}/{stream}[/{version}][/{group}]`
 
+- Path scheme is **`/api/streams/<verb>/<address>`**: literal verb sits before the variable address segments (RC1 amendment, accommodates rc1's positional route matcher).
 - Namespace is a single path segment; its internal `.`, `_`, and `-` characters are legal in URL path segments and pass through unescaped.
 - Stream is a single path segment.
-- Version is optional. When omitted, resolution follows the reader's `latest` semantics (§9.2).
+- Version is required for endpoints that operate on a specific version; the `latest` verb resolves to the highest registered version per §9.2.
 
 ### 12.1. Routes
 
@@ -482,40 +483,41 @@ Role bindings reference the existing management-API role model (`VIEWER` < `OPER
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/streams` | List streams. Query: `?namespace=<ns>&limit=N&cursor=X` |
-| GET | `/api/streams/{ns}/{stream}` | List versions of a stream |
-| GET | `/api/streams/{ns}/{stream}/{version}` | Stream metadata: refcount, partition_count, retention, registered_at |
-| GET | `/api/streams/{ns}/{stream}/latest` | Resolve to highest registered version per §9.2 |
-| GET | `/api/streams/{ns}/{stream}/{version}/tail` | Tail subscription. SSE for HTTP/2; WebSocket for bidirectional. Frozen-at-connect per §9.3 |
-| GET | `/api/streams/{ns}/{stream}/{version}/groups` | List durable consumer groups for this version |
+| GET | `/api/streams/list` | List streams. Query: `?namespace=<ns>&limit=N&cursor=X` |
+| GET | `/api/streams/versions/{ns}/{stream}` | List versions of a stream |
+| GET | `/api/streams/metadata/{ns}/{stream}/{version}` | Stream metadata: refcount, partition_count, retention, registered_at |
+| GET | `/api/streams/latest/{ns}/{stream}` | Resolve to highest registered version per §9.2 |
+| GET | `/api/streams/tail/{ns}/{stream}/{version}` | Tail subscription. SSE for HTTP/2; WebSocket for bidirectional. Frozen-at-connect per §9.3 |
+| GET | `/api/streams/events/{ns}/{stream}/{version}` | Paginated polling read (Wave 6B; RC1 fallback for SSE/WebSocket — see §16) |
+| GET | `/api/streams/groups/{ns}/{stream}/{version}` | List durable consumer groups for this version |
 
 #### Write routes — `OPERATOR_AND_ABOVE` (existing `/api/streams` mutation default)
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/streams/{ns}/{stream}/{version}/publish` | Publish a single event |
-| POST | `/api/streams/{ns}/{stream}/{version}/publish-batch` | Batch publish; body is an array of events |
-| POST | `/api/streams/{ns}/{stream}/{version}/groups` | Create durable consumer group; body specifies group name + initial position |
-| DELETE | `/api/streams/{ns}/{stream}/{version}/groups/{group}` | Remove durable consumer group; releases its reference (may cascade to stream deletion if last ref) |
+| POST | `/api/streams/publish/{ns}/{stream}/{version}` | Publish a single event |
+| POST | `/api/streams/publish-batch/{ns}/{stream}/{version}` | Batch publish; body is an array of events |
+| POST | `/api/streams/groups/create/{ns}/{stream}/{version}` | Create durable consumer group; body specifies group name + initial position |
+| DELETE | `/api/streams/groups/delete/{ns}/{stream}/{version}/{group}` | Remove durable consumer group; releases its reference (may cascade to stream deletion if last ref) |
 
 #### Destructive routes — `ADMIN_ONLY` (override)
 
 | Method | Path | Purpose |
 |---|---|---|
-| DELETE | `/api/streams/{ns}/{stream}/{version}` | Force-purge a specific version. Mirrors §8.6 CLI `aether stream delete` |
+| DELETE | `/api/streams/delete/{ns}/{stream}/{version}` | Force-purge a specific version. Mirrors §8.6 CLI `aether stream delete` |
 
-`RoutePermissionRegistry` requires a DELETE-specific override under the `/api/streams` prefix to elevate this route from the prefix's default `OPERATOR_AND_ABOVE` to `ADMIN_ONLY`. The `groups/{group}` DELETE remains at `OPERATOR_AND_ABOVE`.
+`RoutePermissionRegistry` requires a DELETE-specific override under the `/api/streams/delete` prefix to elevate this route from the prefix's default `OPERATOR_AND_ABOVE` to `ADMIN_ONLY`. The `groups/delete` DELETE remains at `OPERATOR_AND_ABOVE`.
 
 ### 12.2. `system:*` HTTP behavior
 
 The closed-write principle from §6.1 extends to HTTP: any HTTP write attempt against `system:*` returns **`405 Method Not Allowed`** regardless of authenticated role:
 
 ```
-POST   /api/streams/system/cluster-events/1.0.0/publish        → 405
-POST   /api/streams/system/cluster-events/1.0.0/publish-batch  → 405
-POST   /api/streams/system/cluster-events/1.0.0/groups         → 405  # groups are write paths
-DELETE /api/streams/system/cluster-events/1.0.0                → 405  # framework-only lifecycle
-DELETE /api/streams/system/cluster-events/1.0.0/groups/X       → 405
+POST   /api/streams/publish/system/cluster-events/1.0.0          → 405
+POST   /api/streams/publish-batch/system/cluster-events/1.0.0    → 405
+POST   /api/streams/groups/create/system/cluster-events/1.0.0    → 405  # groups are write paths
+DELETE /api/streams/delete/system/cluster-events/1.0.0           → 405  # framework-only lifecycle
+DELETE /api/streams/groups/delete/system/cluster-events/1.0.0/X  → 405
 ```
 
 Read routes against `system:*` follow the standard role buckets (`ALL_AUTHENTICATED` for GET). Operators who want to test event flow use a non-system namespace.
@@ -545,12 +547,12 @@ Both share the framework's internal stream fan-out. The choice is per-connection
 ### 12.5. Examples
 
 ```
-GET    /api/streams/system/cluster-events/1.0.0                 # metadata
-GET    /api/streams/system/cluster-events/1.0.0/tail            # tail (SSE or WS)
-GET    /api/streams/com.example.myapp/orders                    # list versions of orders
-GET    /api/streams/com.example.myapp/orders/latest             # latest metadata
-POST   /api/streams/com.example.myapp/orders/1.0.0/publish      # publish (OPERATOR)
-DELETE /api/streams/com.example.myapp/orders/1.0.0              # force-purge (ADMIN)
+GET    /api/streams/metadata/system/cluster-events/1.0.0          # metadata
+GET    /api/streams/tail/system/cluster-events/1.0.0              # tail (SSE or WS)
+GET    /api/streams/versions/com.example.myapp/orders             # list versions of orders
+GET    /api/streams/latest/com.example.myapp/orders               # latest metadata
+POST   /api/streams/publish/com.example.myapp/orders/1.0.0        # publish (OPERATOR)
+DELETE /api/streams/delete/com.example.myapp/orders/1.0.0         # force-purge (ADMIN)
 ```
 
 Access control per §10 (slice level — open in RC1) and §12.1 (route level — existing role model) apply at their respective layers.
