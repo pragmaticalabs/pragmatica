@@ -69,14 +69,19 @@ test_task_last_execution_advances() {
     # slice's bridge (see SliceInvokerImpl.findSenderBridge). When the LB routes the
     # request to a non-hosting node the path used to NPE on the empty bridge Option and
     # surface as a generic 500. Route the inject directly to a node that hosts the slice
-    # by parsing `tasks.0.registeredBy` (e.g. `node-5` → MGMT_PORT+4 in docker-compose).
+    # by parsing `tasks.0.registeredBy` (e.g. `aether-a-node-5` → MGMT_PORT+4 in docker-compose).
+    #
+    # Post NodeId-as-container-name migration (release-1.0.0-rc1), `registeredBy` is
+    # emitted as `aether-{a|b}-node-N` for the integration cluster containers; the
+    # optional prefix group accommodates that while still accepting the legacy
+    # bare `node-N` form for non-Docker deployments.
     local registered_by registered_offset
     registered_by=$(aether_field "scheduled-tasks list" "tasks.0.registeredBy")
-    if [[ ! "$registered_by" =~ ^node-([0-9]+)$ ]]; then
-        log_fail "Cannot derive direct mgmt port from tasks.0.registeredBy='${registered_by}' (expected node-N pattern)"
+    if [[ ! "$registered_by" =~ ^(aether-[ab]-)?node-([0-9]+)$ ]]; then
+        log_fail "Cannot derive direct mgmt port from tasks.0.registeredBy='${registered_by}' (expected [aether-{a|b}-]node-N pattern)"
         return 1
     fi
-    registered_offset=$(( ${BASH_REMATCH[1]} - 1 ))
+    registered_offset=$(( ${BASH_REMATCH[2]} - 1 ))
     local inject_body inject_response inject_rc post_ts
     inject_body="{\"section\":\"${section}\",\"artifact\":\"${artifact}\",\"method\":\"${method}\"}"
     set +e
