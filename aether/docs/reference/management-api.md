@@ -2919,9 +2919,11 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 
 | GET | `/api/nodes/lifecycle` | Node Lifecycle |
 | GET | `/api/nodes/lifecycle/{id}` | Node Lifecycle |
+| POST | `/api/nodes/lifecycle/commands` | Node Lifecycle |
 | POST | `/api/nodes/drain/{id}` | Node Lifecycle |
 | POST | `/api/nodes/activate/{id}` | Node Lifecycle |
 | POST | `/api/nodes/shutdown/{id}` | Node Lifecycle |
+| GET | `/api/audit/commands` | Observability |
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
 | POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
@@ -3061,6 +3063,116 @@ Accepted values for `targetRole` (case-insensitive): `"CORE"`, `"WORKER"`. Promo
   "newRole": "WORKER",
   "message": "Promoted node from CORE to WORKER"
 }
+```
+
+### POST /api/nodes/lifecycle/commands
+
+**Phase 3 PR-C (cluster-convergence-reconciler):** explicit operator-facing channel for emitting any of the five `LifecycleCommand` variants directly. Routes through `LifecycleWriter.applyCommand(...)` with `source=OPERATOR` so the resulting events on the `audit.lifecycle.commands` stream and the in-memory `RecentCommandsBuffer` are distinguishable from reconciler / CTM / drain-coordinator emissions.
+
+Route target is `LEADER` — the management plane forwards the request to the consensus writer automatically when the caller hits a follower. The request stamps an HLC timestamp from the local node's clock so the resulting `NodeLifecycleValue.transitionedAt` is causally ordered against every other HLC-stamped action on this node (RC1 Step 4 convention).
+
+Use this endpoint as an operator escape hatch for stuck silent-divergence cases (e.g., cluster B 02-chaos cascade where a peer is stuck in `JOINING`); it is also the foundation for the symmetric `aether nodes decommission|force-on-duty|record-joining|request-rejoin` CLI subcommands.
+
+**Authorization:** ADMIN (direct lifecycle writes are a topology operation).
+
+**Request body:**
+```json
+{
+  "type": "FORCE_DECOMMISSION",
+  "nodeId": "node-2",
+  "reason": "stuck JOINING after slot-claim race",
+  "stopReason": "FORCED"
+}
+```
+
+Required fields:
+- `type` — one of `FORCE_DECOMMISSION`, `FORCE_DRAIN`, `FORCE_ON_DUTY`, `RECORD_JOINING`, `REQUEST_REJOIN` (case-insensitive).
+- `nodeId` — target node ID (must be parseable).
+- `reason` — operator-supplied justification string; flows onto the audit event's `justificationMessage` payload.
+
+Optional variant-specific fields:
+- `stopReason` — `FORCE_DECOMMISSION` only. One of `FORCED` (default), `GRACEFUL`, `DRAIN_FAILED`.
+- `drainReason` — `FORCE_DRAIN` only. Defaults to `OPERATOR_DRAIN`.
+- `slotId` — `RECORD_JOINING` only. Defaults to none.
+
+**Response (202 Accepted):**
+```json
+{
+  "accepted": true,
+  "commandType": "ForceDecommission",
+  "nodeId": "node-2",
+  "audit": "see /api/audit/commands?source=operator"
+}
+```
+
+**Error responses:**
+- `400` — missing body, missing required field, unknown command type, unknown reason value.
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/nodes/lifecycle/commands \
+  -H "Content-Type: application/json" \
+  -d '{"type":"FORCE_DECOMMISSION","nodeId":"node-2","reason":"stuck JOINING"}'
+```
+
+---
+
+## Audit
+
+### GET /api/audit/commands
+
+**Phase 3 PR-C (cluster-convergence-reconciler):** operator inspection surface for the `audit.lifecycle.commands` stream — surfaces the most recent `CommandReceived` / `CommandApplied` events the local node has emitted (via `DirectLifecycleWriter`).
+
+**Scope note:** the backing store is a per-node in-memory ring buffer (capacity 1024 by default), not a full stream subscription. Events survive the lifetime of the JVM only. For cluster-wide audit visibility operators should target the leader (`-c <leader-host>`); a follower will only surface events emitted via writers running on this same node. RC2 follow-up: replace with a proper `StreamReadRouter`-backed subscription so audit history survives node restarts.
+
+**Authorization:** ADMIN (audit channel — operational observability).
+
+**Query parameters (all optional):**
+- `since` — time window. Accepts epoch-millis (e.g., `1700000000000`), ISO-8601 (`2026-05-23T10:00:00Z`), or relative duration with unit suffix:
+  - `<N>s` — N seconds ago
+  - `<N>m` — N minutes ago
+  - `<N>h` — N hours ago
+  - `<N>d` — N days ago
+- `source` — case-insensitive emitter discriminator: `operator`, `reconciler`, `ctm`, `drain_coordinator`, `bootstrap`, `unknown`, or `all` (default).
+- `limit` — most-recent N entries (default 100; capped at buffer capacity).
+
+**Response:**
+```json
+{
+  "events": [
+    {
+      "commandType": "ForceDecommission",
+      "peerId": "node-2",
+      "reasonTag": "FORCED",
+      "justificationMessage": "Operator FORCE_DECOMMISSION: stuck JOINING",
+      "source": "OPERATOR",
+      "timestampMs": 1700000000123
+    },
+    {
+      "commandType": "ForceDecommission",
+      "peerId": "node-2",
+      "reasonTag": "FORCED",
+      "justificationMessage": "Operator FORCE_DECOMMISSION: stuck JOINING",
+      "source": "OPERATOR",
+      "timestampMs": 1700000000125,
+      "accepted": true
+    }
+  ]
+}
+```
+
+Each `LifecycleCommand` that flows through `DirectLifecycleWriter.applyCommand(...)` produces a pair of entries: `CommandReceived` on entry, `CommandApplied` after the underlying KV write resolves (carrying the `accepted` boolean).
+
+**Examples:**
+```bash
+# All events seen by this node in the last 5 minutes
+curl 'http://localhost:8080/api/audit/commands?since=5m'
+
+# Only operator-emitted events
+curl 'http://localhost:8080/api/audit/commands?source=operator'
+
+# Reconciler-emitted events since a specific ISO-8601 timestamp, limit 50
+curl 'http://localhost:8080/api/audit/commands?source=reconciler&since=2026-05-23T10:00:00Z&limit=50'
 ```
 
 ---

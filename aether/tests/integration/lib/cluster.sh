@@ -1624,6 +1624,19 @@ shutdown_node() {
     api_post "/api/nodes/shutdown/${node_id}" "{}"
 }
 
+# Phase 3 PR-C (cluster-convergence-reconciler) — operator escape hatch for
+# silent-divergence cases (e.g., cluster B 02-chaos cascade where a peer is
+# stuck in JOINING). Wraps POST /api/nodes/lifecycle/commands with
+# type=FORCE_DECOMMISSION, source=OPERATOR. Use sparingly until Phase 4-5
+# reconciler lands and surfaces the same recovery via RECONCILER source.
+force_decommission_node() {
+    local node_id="$1"
+    local reason="${2:-test-harness cleanup}"
+    log_info "Force-decommissioning node: ${node_id} (reason: ${reason})"
+    api_post "/api/nodes/lifecycle/commands" \
+        "{\"type\":\"FORCE_DECOMMISSION\",\"nodeId\":\"${node_id}\",\"reason\":\"${reason}\"}"
+}
+
 # ---------------------------------------------------------------------------
 # Scaling
 # ---------------------------------------------------------------------------

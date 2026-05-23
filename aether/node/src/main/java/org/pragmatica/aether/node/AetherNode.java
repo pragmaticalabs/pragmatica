@@ -596,6 +596,7 @@ public interface AetherNode extends ManageableNode {
                           Option<DHTClient> dhtClient,
                           Option<DHTNode> dhtNode,
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
+                          org.pragmatica.aether.deployment.audit.RecentCommandsBuffer recentCommandsBuffer,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -1249,8 +1250,15 @@ public interface AetherNode extends ManageableNode {
         // code owns provisioning + binding directly. The AtomicReference indirection lets
         // `LifecycleWriter` capture a stable publisher view before the manager exists.
         var auditLifecycleCommandPublisherRef = new AtomicReference<StreamPublisher<CommandLifecycleEvent>>(_ -> Promise.unitPromise());
-        StreamPublisher<CommandLifecycleEvent> auditLifecycleCommandPublisher = event -> Option.option(auditLifecycleCommandPublisherRef.get())
-                                                                                                .fold(Promise::<Unit>unitPromise, p -> p.publish(event));
+        // Phase 3 PR-C: in-memory ring buffer over the same audit events the writer publishes
+        // to the stream. Backs `GET /api/audit/commands`. Capacity 1024 covers operator
+        // inspection windows comfortably (events at 16KB max ⇒ 16MB worst-case footprint).
+        var recentCommandsBuffer = org.pragmatica.aether.deployment.audit.RecentCommandsBuffer.recentCommandsBuffer(1024);
+        StreamPublisher<CommandLifecycleEvent> auditLifecycleCommandPublisher = event -> {
+            recentCommandsBuffer.record(event);
+            return Option.option(auditLifecycleCommandPublisherRef.get())
+                         .fold(Promise::<Unit>unitPromise, p -> p.publish(event));
+        };
         var ctmLifecycleWriter = LifecycleWriter.directLifecycleWriter(lifecycleReader::apply, clusterCommandApplier, auditLifecycleCommandPublisher);
         // Bind the forward-ref so the Phase 2 PR-B `readyCandidateSink` (wired above) can emit
         // `LifecycleCommand.ForceOnDuty` once the lifecycle writer exists.
@@ -1932,6 +1940,7 @@ public interface AetherNode extends ManageableNode {
                                   dhtClientOption,
                                   Option.some(dhtNode),
                                   effectivePhaseSupplier,
+                                  recentCommandsBuffer,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(nodeLifecycle::signalReady);
@@ -2040,6 +2049,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                       dhtClientOption,
                                                                                                       Option.some(dhtNode),
                                                                                                       effectivePhaseSupplier,
+                                                                                                      recentCommandsBuffer,
                                                                                                       startTimeMs);
                                                                             }
                                                                                 return node;

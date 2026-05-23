@@ -1130,6 +1130,26 @@ aether nodes shutdown <nodeId>
 # Promote a node to a new role (CORE or WORKER) via consensus
 aether nodes promote <nodeId> --role WORKER
 aether nodes promote <nodeId> --role CORE
+
+# --- Phase 3 PR-C (cluster-convergence-reconciler) operator escape hatches ---
+# Force-decommission a stuck peer (writes STOPPED via LifecycleWriter; emits audit
+# event with source=OPERATOR). Use for silent-divergence cases reconciler will own
+# in Phase 4-5.
+aether nodes decommission <nodeId> --reason "stuck JOINING"
+aether nodes decommission <nodeId> --reason "drain stalled" --stop-reason DRAIN_FAILED
+
+# Force a peer to ON_DUTY (use when a node is stuck in JOINING/DRAINING but is
+# operationally healthy).
+aether nodes force-on-duty <nodeId> --reason "manual unstick"
+
+# Write a JOINING lifecycle entry for a peer (use for reconciler
+# GenerationLifecycleGap cases where a Rabia member lacks a lifecycle entry).
+aether nodes record-joining <nodeId> --reason "operator gap fill"
+aether nodes record-joining <nodeId> --slot slot-a --reason "with slot assignment"
+
+# Remove a peer's lifecycle entry so it can re-enter JOINING (use for stuck
+# DRAINING that needs operator intervention).
+aether nodes request-rejoin <nodeId> --reason "cancel drain"
 ```
 
 Example workflow:
@@ -1633,6 +1653,36 @@ Show the per-slice governor assignment across the cluster — which node current
 ```bash
 aether cluster governors
 ```
+
+### `aether cluster audit`
+
+**Phase 3 PR-C (cluster-convergence-reconciler):** show recent `audit.lifecycle.commands` events seen by the target node. Backed by the per-node in-memory `RecentCommandsBuffer` populated via a tee on the lifecycle audit publisher.
+
+Each `LifecycleCommand` emitted via `LifecycleWriter.applyCommand(...)` produces a `CommandReceived` + `CommandApplied` pair in the buffer. Use this to inspect operator-issued `aether nodes decommission|force-on-duty|...` actions, and (Phase 4-5) reconciler-emitted recovery commands.
+
+**Per-node scope:** the buffer is local to the node serving the request. Target the leader (`-c <leader-host>`) for cluster-wide visibility. RC2 follow-up: full stream subscription survives restarts and cross-node fan-out.
+
+```bash
+# All events the local node has seen (most recent 100)
+aether cluster audit
+
+# Only operator-emitted events
+aether cluster audit --source operator
+
+# Reconciler-emitted events in the last hour
+aether cluster audit --source reconciler --since 1h
+
+# Specific ISO-8601 window, limit 50, JSON output
+aether cluster audit --since 2026-05-23T10:00:00Z --limit 50 --format json
+```
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--source <name>` | Filter by emitter discriminator: `operator`, `reconciler`, `ctm`, `drain_coordinator`, `bootstrap`, `unknown`, or `all` (default). Case-insensitive. |
+| `--since <when>` | Time window. Accepts epoch-millis, ISO-8601 (`2026-05-23T10:00:00Z`), or relative duration (`30s`, `5m`, `1h`, `2d`). Default: entire buffer. |
+| `--limit <N>` | Max entries to return. Default: 100. Capped by buffer capacity. |
 
 ### `aether cluster tasks`
 

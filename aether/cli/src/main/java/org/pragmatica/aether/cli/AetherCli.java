@@ -583,7 +583,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection", subcommands = {NodesCommand.LifecycleCommand.class, NodesCommand.DrainCommand.class, NodesCommand.ActivateCommand.class, NodesCommand.ShutdownCommand.class, NodesCommand.PromoteCommand.class, NodesCommand.SlicesCommand.class, NodesCommand.RoutesCommand.class, NodesCommand.InflightCommand.class, NodesCommand.MetricsCommand.class, NodesCommand.HealthCommand.class})
+    @Command(name = "nodes", description = "Node management — list, lifecycle, per-node introspection", subcommands = {NodesCommand.LifecycleCommand.class, NodesCommand.DrainCommand.class, NodesCommand.ActivateCommand.class, NodesCommand.ShutdownCommand.class, NodesCommand.PromoteCommand.class, NodesCommand.DecommissionCommand.class, NodesCommand.ForceOnDutyCommand.class, NodesCommand.RecordJoiningCommand.class, NodesCommand.RequestRejoinCommand.class, NodesCommand.SlicesCommand.class, NodesCommand.RoutesCommand.class, NodesCommand.InflightCommand.class, NodesCommand.MetricsCommand.class, NodesCommand.HealthCommand.class})
     static class NodesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -695,6 +695,118 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response, nodesParent.parent.outputOptions(), "promote node " + nodeId + " to " + role.trim().toUpperCase());
             }
+        }
+
+        @Command(name = "decommission", description = "Force-decommission a node (Phase 3 PR-C — operator escape hatch for stuck/silent-divergence cases). Writes STOPPED via LifecycleWriter; emits audit event with source=OPERATOR.")
+        static class DecommissionCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @CommandLine.Option(names = {"--reason"}, required = true, description = "Operator-supplied justification (flows onto the audit event's justificationMessage)")
+            private String reason;
+
+            @CommandLine.Option(names = {"--stop-reason"}, description = "StopReason sidecar — one of FORCED (default), GRACEFUL, DRAIN_FAILED")
+            private String stopReason;
+
+            @Override
+            public Integer call() {
+                return postLifecycleCommand(nodesParent, nodeId, "FORCE_DECOMMISSION", reason, "stopReason", stopReason, "decommission");
+            }
+        }
+
+        @Command(name = "force-on-duty", description = "Force a node to ON_DUTY via LifecycleWriter (operator escape hatch for stuck JOINING/DRAINING). Emits audit event with source=OPERATOR.")
+        static class ForceOnDutyCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @CommandLine.Option(names = {"--reason"}, required = true, description = "Operator-supplied justification (flows onto the audit event's justificationMessage)")
+            private String reason;
+
+            @Override
+            public Integer call() {
+                return postLifecycleCommand(nodesParent, nodeId, "FORCE_ON_DUTY", reason, null, null, "force-on-duty");
+            }
+        }
+
+        @Command(name = "record-joining", description = "Force-write a JOINING lifecycle entry for a peer (operator escape hatch for reconciler GenerationLifecycleGap cases). Emits audit event with source=OPERATOR.")
+        static class RecordJoiningCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @CommandLine.Option(names = {"--reason"}, required = true, description = "Operator-supplied justification (flows onto the audit event's justificationMessage)")
+            private String reason;
+
+            @CommandLine.Option(names = {"--slot"}, description = "Optional provisioning slot id to associate with the JOINING entry")
+            private String slot;
+
+            @Override
+            public Integer call() {
+                return postLifecycleCommand(nodesParent, nodeId, "RECORD_JOINING", reason, "slotId", slot, "record-joining");
+            }
+        }
+
+        @Command(name = "request-rejoin", description = "Remove a peer's lifecycle entry so it can re-enter JOINING (operator escape hatch for stuck DRAINING). Emits audit event with source=OPERATOR.")
+        static class RequestRejoinCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodesCommand nodesParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @CommandLine.Option(names = {"--reason"}, required = true, description = "Operator-supplied justification (flows onto the audit event's justificationMessage)")
+            private String reason;
+
+            @Override
+            public Integer call() {
+                return postLifecycleCommand(nodesParent, nodeId, "REQUEST_REJOIN", reason, null, null, "request-rejoin");
+            }
+        }
+
+        /// Build the JSON body for `POST /api/nodes/lifecycle/commands` and dispatch via
+        /// `AetherCli.post(...)`. Centralises escaping + response handling for the four
+        /// operator-facing lifecycle-command subcommands above.
+        @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"})
+        private static Integer postLifecycleCommand(NodesCommand nodesParent,
+                                                     String nodeId,
+                                                     String type,
+                                                     String reason,
+                                                     String extraField,
+                                                     String extraValue,
+                                                     String action) {
+            var body = new StringBuilder();
+            body.append("{\"type\":\"").append(type).append("\",")
+                .append("\"nodeId\":\"").append(jsonEscape(nodeId)).append("\",")
+                .append("\"reason\":\"").append(jsonEscape(reason)).append("\"");
+            if (extraField != null && extraValue != null && !extraValue.isBlank()) {
+                body.append(",\"").append(extraField).append("\":\"")
+                    .append(jsonEscape(extraValue))
+                    .append("\"");
+            }
+            body.append("}");
+
+            var response = nodesParent.parent.post(NODE_LIFECYCLE_COMMANDS, List.of(), body.toString());
+            var errorCode = OutputFormatter.checkResponseError(response,
+                                                                nodesParent.parent.outputOptions(),
+                                                                "Failed to " + action + " node " + nodeId);
+            if (errorCode >= 0) {return errorCode;}
+
+            return OutputFormatter.printAction(response, nodesParent.parent.outputOptions(), action + " node " + nodeId);
+        }
+
+        private static String jsonEscape(String value) {
+            return value == null
+                   ? ""
+                   : value.replace("\\", "\\\\")
+                          .replace("\"", "\\\"");
         }
 
         @Command(name = "slices", description = "Show slices on a node (defaults to local; pass [id] for any node)")

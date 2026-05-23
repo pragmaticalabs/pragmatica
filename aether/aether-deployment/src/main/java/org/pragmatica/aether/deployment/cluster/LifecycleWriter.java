@@ -71,7 +71,33 @@ public interface LifecycleWriter {
     /// The default implementation delegates to the legacy `request*` methods so existing
     /// `DirectLifecycleWriter` instances pick up the new API without changes. Implementations
     /// that need reducer-routing or audit-stream publication should override.
+    ///
+    /// Equivalent to `applyCommand(command, CommandLifecycleEvent.SOURCE_UNKNOWN)` —
+    /// preserved for backward compatibility with legacy call sites (CTM scale-down, drain
+    /// coordinator, bootstrap) that have not yet been migrated to thread their own source
+    /// tag. Phase 3 PR-C (Phase 4-5 readiness): new emitter sites SHOULD use the
+    /// source-tagged overload so the `audit.lifecycle.commands` topic can distinguish
+    /// operator/reconciler/CTM-emitted commands.
     default Promise<Unit> applyCommand(LifecycleCommand command) {
+        return dispatchCommandToLegacyWriters(command);
+    }
+
+    /// Source-tagged variant of `applyCommand(LifecycleCommand)`. The `source` string flows
+    /// onto the `audit.lifecycle.commands` payload (`CommandReceived.source` /
+    /// `CommandApplied.source`) so downstream consumers can distinguish reconciler-emitted
+    /// commands from operator/drain-coordinator/CTM-emitted ones. The default
+    /// implementation discards `source` and delegates to the legacy per-variant
+    /// `request*` methods; `DirectLifecycleWriter` overrides to thread the tag onto the
+    /// emitted audit events.
+    default Promise<Unit> applyCommand(LifecycleCommand command, String source) {
+        return dispatchCommandToLegacyWriters(command);
+    }
+
+    /// Shared dispatch — used by both `applyCommand` defaults to avoid mutual recursion
+    /// across the two arities. `DirectLifecycleWriter` overrides both arities and routes
+    /// through `dispatchCommand(...)` directly, so this helper is only invoked by
+    /// non-overriding implementations (legacy fixtures, hand-rolled writers).
+    private Promise<Unit> dispatchCommandToLegacyWriters(LifecycleCommand command) {
         return switch (command) {
             case ForceDecommission cmd -> requestDecommission(cmd.peer());
             case ForceOnDuty cmd -> requestActivate(cmd.peer());
@@ -155,9 +181,13 @@ final class DirectLifecycleWriter implements LifecycleWriter {
     /// underlying KV write resolves). Audit publishes are fire-and-forget — failures inside
     /// the audit path do not affect the lifecycle write outcome.
     @Override public Promise<Unit> applyCommand(LifecycleCommand command) {
-        publishReceived(command);
-        return dispatchCommand(command).onSuccess(_ -> publishApplied(command, true))
-                                       .onFailure(_ -> publishApplied(command, false));
+        return applyCommand(command, CommandLifecycleEvent.SOURCE_UNKNOWN);
+    }
+
+    @Override public Promise<Unit> applyCommand(LifecycleCommand command, String source) {
+        publishReceived(command, source);
+        return dispatchCommand(command).onSuccess(_ -> publishApplied(command, source, true))
+                                       .onFailure(_ -> publishApplied(command, source, false));
     }
 
     private Promise<Unit> dispatchCommand(LifecycleCommand command) {
@@ -166,19 +196,21 @@ final class DirectLifecycleWriter implements LifecycleWriter {
                : LifecycleWriter.super.applyCommand(command);
     }
 
-    @Contract private void publishReceived(LifecycleCommand command) {
+    @Contract private void publishReceived(LifecycleCommand command, String source) {
         auditPublisher.publish(new CommandReceived(commandType(command),
                                                    peerId(command),
                                                    reasonTag(command),
                                                    justificationMessage(command),
+                                                   source,
                                                    System.currentTimeMillis()));
     }
 
-    @Contract private void publishApplied(LifecycleCommand command, boolean accepted) {
+    @Contract private void publishApplied(LifecycleCommand command, String source, boolean accepted) {
         auditPublisher.publish(new CommandApplied(commandType(command),
                                                   peerId(command),
                                                   reasonTag(command),
                                                   justificationMessage(command),
+                                                  source,
                                                   System.currentTimeMillis(),
                                                   accepted));
     }

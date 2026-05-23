@@ -96,6 +96,8 @@ public enum ManagementRoute {
     MAVEN_METADATA(GET, "/repository", List.of("groupPath", "artifactId", "file"), taskGroup(DEPLOYMENT)),
     NODE_LIFECYCLE_LIST(GET, "/api/nodes/lifecycle", List.of(), ANY),
     NODE_LIFECYCLE_GET(GET, "/api/nodes/lifecycle", List.of("id"), ANY),
+    NODE_LIFECYCLE_COMMANDS(POST, "/api/nodes/lifecycle/commands", List.of(), LEADER),
+    AUDIT_COMMANDS_LIST(GET, "/api/audit/commands", List.of(), ANY),
     NODE_DRAIN(POST, "/api/nodes/drain", List.of("id"), taskGroup(DEPLOYMENT)),
     NODE_ACTIVATE(POST, "/api/nodes/activate", List.of("id"), taskGroup(DEPLOYMENT)),
     NODE_SHUTDOWN(POST, "/api/nodes/shutdown", List.of("id"), taskGroup(DEPLOYMENT)),

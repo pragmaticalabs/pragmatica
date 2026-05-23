@@ -29,16 +29,45 @@ import org.pragmatica.serialization.Codec;
 ///                              · `ForceDrain`        → `DrainReason.name()`
 ///                              · other variants      → empty string.
 ///   - `justificationMessage` — `Cause.message()` text from the command's `justification()`.
+///   - `source`             — emitter discriminator (`OPERATOR`, `RECONCILER`,
+///                            `DRAIN_COORDINATOR`, `CTM`, `BOOTSTRAP`, `UNKNOWN`).
+///                            Phase 3 PR-C convergence-reconciler addition — Phase 4-5
+///                            reconciler-emitted commands carry `RECONCILER`; the new
+///                            operator-facing `POST /api/nodes/lifecycle/commands` route
+///                            stamps `OPERATOR`. Legacy callers that have not yet been
+///                            converted carry `UNKNOWN` — explicit threading at the
+///                            remaining call sites is RC2 polish.
 ///
 /// Downstream consumers (operator UI, ops-LLM, external decision-makers) can correlate
 /// receive/apply latency and detect rejected/failed transitions using `commandType`,
 /// `peerId`, and the timestamps.
 @Codec
 public sealed interface CommandLifecycleEvent permits CommandLifecycleEvent.CommandReceived, CommandLifecycleEvent.CommandApplied {
+    /// Source tag for legacy / unconverted emitter sites — explicit per-site threading is
+    /// RC2 polish per Phase 3 PR-C.
+    String SOURCE_UNKNOWN = "UNKNOWN";
+
+    /// Source tag stamped by the operator-facing `POST /api/nodes/lifecycle/commands`
+    /// route (and the symmetric `aether nodes decommission` CLI subcommand).
+    String SOURCE_OPERATOR = "OPERATOR";
+
+    /// Source tag reserved for Phase 4-5 reconciler-emitted commands.
+    String SOURCE_RECONCILER = "RECONCILER";
+
+    /// Source tag stamped by the drain coordinator on drain-complete / drain-failed paths.
+    String SOURCE_DRAIN_COORDINATOR = "DRAIN_COORDINATOR";
+
+    /// Source tag stamped by the cluster topology manager on scale-down decommission.
+    String SOURCE_CTM = "CTM";
+
+    /// Source tag stamped by bootstrap-driven lifecycle writes.
+    String SOURCE_BOOTSTRAP = "BOOTSTRAP";
+
     String commandType();
     String peerId();
     String reasonTag();
     String justificationMessage();
+    String source();
 
     long timestampMs();
 
@@ -48,6 +77,7 @@ public sealed interface CommandLifecycleEvent permits CommandLifecycleEvent.Comm
                            String peerId,
                            String reasonTag,
                            String justificationMessage,
+                           String source,
                            long timestampMs) implements CommandLifecycleEvent {}
 
     /// Emitted after the underlying KV write completes; `accepted=false` means the
@@ -57,6 +87,7 @@ public sealed interface CommandLifecycleEvent permits CommandLifecycleEvent.Comm
                           String peerId,
                           String reasonTag,
                           String justificationMessage,
+                          String source,
                           long timestampMs,
                           boolean accepted) implements CommandLifecycleEvent {}
 }

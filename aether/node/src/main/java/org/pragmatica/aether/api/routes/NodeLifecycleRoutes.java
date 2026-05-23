@@ -7,9 +7,14 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeResponse;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDrain;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RequestReJoin;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -65,6 +70,31 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     record InFlightResponse(int count) {}
 
+    /// Body for `POST /api/nodes/lifecycle/commands` (Phase 3 PR-C).
+    /// `type` is required and must map to one of the 5 `LifecycleCommand` variants
+    /// (`FORCE_DECOMMISSION`, `FORCE_DRAIN`, `FORCE_ON_DUTY`, `RECORD_JOINING`,
+    /// `REQUEST_REJOIN`). `nodeId` is required. `reason` is the operator-supplied
+    /// justification string flowed onto the audit event's `justificationMessage`.
+    ///
+    /// Optional variant-specific fields:
+    ///   - `stopReason` — `ForceDecommission` only; defaults to `FORCED`.
+    ///                    One of `FORCED`, `GRACEFUL`, `DRAIN_FAILED`.
+    ///   - `drainReason` — `ForceDrain` only; defaults to `OPERATOR_DRAIN`.
+    ///   - `slotId` — `RecordJoining` only; defaults to `Option.none()`.
+    record LifecycleCommandRequest(String type,
+                                   String nodeId,
+                                   String reason,
+                                   String stopReason,
+                                   String drainReason,
+                                   String slotId) {}
+
+    /// Response for `POST /api/nodes/lifecycle/commands`. `audit` is a pointer to the
+    /// GET endpoint that exposes the resulting `audit.lifecycle.commands` entry.
+    record LifecycleCommandResponse(boolean accepted,
+                                    String commandType,
+                                    String nodeId,
+                                    String audit) {}
+
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<List<LifecycleEntry>> route(ManagementRoute.NODE_LIFECYCLE_LIST)
@@ -91,6 +121,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                          .withPath(aString())
                                          .withBody(PromoteNodeRequest.class)
                                          .toJson(this::promoteNode),
+                         ManagementRoutes.<LifecycleCommandResponse> route(ManagementRoute.NODE_LIFECYCLE_COMMANDS)
+                                         .withBody(LifecycleCommandRequest.class)
+                                         .toJson(this::handleLifecycleCommand),
                          ManagementRoutes.<InFlightResponse> route(ManagementRoute.NODE_INFLIGHT).toJson(this::getInFlightCount),
                          ManagementRoutes.<InFlightResponse> route(ManagementRoute.NODE_INFLIGHT_GET)
                                          .withPath(aString())
@@ -501,5 +534,169 @@ public final class NodeLifecycleRoutes implements RouteSource {
                            .get(key)
                            .filter(v -> v instanceof NodeLifecycleValue)
                            .map(v -> (NodeLifecycleValue) v);
+    }
+
+    /// Phase 3 PR-C: explicit operator/test-harness channel for `LifecycleCommand` ingress.
+    /// Body parsing is sealed-switch-exhaustive over the 5 `LifecycleCommandType` variants;
+    /// missing fields and unknown types return 400 via a typed `LifecycleCommandError`.
+    /// On success the command is stamped with `source=OPERATOR` and routed through
+    /// `LifecycleWriter.applyCommand(...)`, producing the corresponding
+    /// `CommandReceived` + `CommandApplied` events on the `audit.lifecycle.commands`
+    /// stream and in the local `RecentCommandsBuffer`.
+    private Promise<LifecycleCommandResponse> handleLifecycleCommand(LifecycleCommandRequest request) {
+        return parseLifecycleCommand(request).async()
+                                             .flatMap(this::dispatchOperatorCommand);
+    }
+
+    /// Test-only entry point — `handleLifecycleCommand` is private (route binding goes
+    /// through method reference). Phase 3 PR-C: lets unit tests exercise the parse + dispatch
+    /// path without standing up a full HTTP layer.
+    Promise<LifecycleCommandResponse> handleLifecycleCommandForTesting(LifecycleCommandRequest request) {
+        return handleLifecycleCommand(request);
+    }
+
+    private Promise<LifecycleCommandResponse> dispatchOperatorCommand(LifecycleCommand command) {
+        var node = nodeSupplier.get();
+        return node.lifecycleWriter()
+                   .applyCommand(command, CommandLifecycleEvent.SOURCE_OPERATOR)
+                   .map(_ -> buildLifecycleCommandResponse(command, true))
+                   .onSuccess(_ -> auditAndEmitLifecycleTransition(operatorCommandTransitionResult(command),
+                                                                   operatorCommandResultingState(command)));
+    }
+
+    private static LifecycleCommandResponse buildLifecycleCommandResponse(LifecycleCommand command, boolean accepted) {
+        return new LifecycleCommandResponse(accepted,
+                                            command.getClass().getSimpleName(),
+                                            commandPeerId(command),
+                                            "see /api/audit/commands?source=operator");
+    }
+
+    private static TransitionResult operatorCommandTransitionResult(LifecycleCommand command) {
+        return new TransitionResult(true,
+                                    commandPeerId(command),
+                                    operatorCommandResultingState(command).name(),
+                                    "Operator " + command.getClass().getSimpleName() + " accepted");
+    }
+
+    private static NodeLifecycleState operatorCommandResultingState(LifecycleCommand command) {
+        return switch (command) {
+            case ForceDecommission _ -> NodeLifecycleState.STOPPED;
+            case ForceDrain _ -> NodeLifecycleState.DRAINING;
+            case ForceOnDuty _ -> NodeLifecycleState.ON_DUTY;
+            case RecordJoining _ -> NodeLifecycleState.JOINING;
+            // RequestReJoin removes the lifecycle entry — the closest "resulting state" we
+            // can report on the operational event channel is STOPPED (the peer has been
+            // removed from the active lifecycle ledger; SWIM will rediscover it as JOINING
+            // once the peer reconnects).
+            case RequestReJoin _ -> NodeLifecycleState.STOPPED;
+        };
+    }
+
+    private static String commandPeerId(LifecycleCommand command) {
+        return switch (command) {
+            case ForceDecommission cmd -> cmd.peer().id();
+            case ForceDrain cmd -> cmd.peer().id();
+            case ForceOnDuty cmd -> cmd.peer().id();
+            case RecordJoining cmd -> cmd.peer().id();
+            case RequestReJoin cmd -> cmd.peer().id();
+        };
+    }
+
+    private Result<LifecycleCommand> parseLifecycleCommand(LifecycleCommandRequest request) {
+        return validateLifecycleRequest(request).flatMap(this::buildLifecycleCommandFromRequest);
+    }
+
+    private static Result<LifecycleCommandRequest> validateLifecycleRequest(LifecycleCommandRequest request) {
+        if (request == null) {
+            return LifecycleCommandError.MISSING_BODY.result();
+        }
+        if (request.type() == null || request.type().isBlank()) {
+            return LifecycleCommandError.MISSING_TYPE.result();
+        }
+        if (request.nodeId() == null || request.nodeId().isBlank()) {
+            return LifecycleCommandError.MISSING_NODE_ID.result();
+        }
+        return Result.success(request);
+    }
+
+    private Result<LifecycleCommand> buildLifecycleCommandFromRequest(LifecycleCommandRequest request) {
+        return NodeId.nodeId(request.nodeId().trim())
+                     .flatMap(peer -> buildCommandForType(peer, request));
+    }
+
+    private Result<LifecycleCommand> buildCommandForType(NodeId peer, LifecycleCommandRequest request) {
+        var normalizedType = request.type().trim().toUpperCase(Locale.ROOT);
+        var justification = Causes.cause(buildJustificationText(request));
+        var at = nodeSupplier.get().hlcClock().now();
+
+        return switch (normalizedType) {
+            case "FORCE_DECOMMISSION" -> parseStopReason(request.stopReason())
+                    .map(stop -> new ForceDecommission(peer, stop, justification, at));
+            case "FORCE_DRAIN" -> parseDrainReason(request.drainReason())
+                    .map(drain -> new ForceDrain(peer, drain, justification, at));
+            case "FORCE_ON_DUTY" -> Result.success(new ForceOnDuty(peer, justification, at));
+            case "RECORD_JOINING" -> Result.success(new RecordJoining(peer,
+                                                                       Option.option(request.slotId())
+                                                                             .filter(s -> !s.isBlank())
+                                                                             .map(String::trim),
+                                                                       justification, at));
+            case "REQUEST_REJOIN" -> Result.success(new RequestReJoin(peer, justification, at));
+            default -> LifecycleCommandError.UNKNOWN_TYPE.result();
+        };
+    }
+
+    private static String buildJustificationText(LifecycleCommandRequest request) {
+        var supplied = request.reason() == null
+                       ? ""
+                       : request.reason().trim();
+        return supplied.isEmpty()
+               ? "Operator " + request.type().trim().toUpperCase(Locale.ROOT)
+               : "Operator " + request.type().trim().toUpperCase(Locale.ROOT) + ": " + supplied;
+    }
+
+    private static Result<StopReason> parseStopReason(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Result.success(StopReason.FORCED);
+        }
+        var normalized = raw.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "FORCED" -> Result.success(StopReason.FORCED);
+            case "GRACEFUL" -> Result.success(StopReason.GRACEFUL);
+            case "DRAIN_FAILED" -> Result.success(StopReason.DRAIN_FAILED);
+            default -> LifecycleCommandError.UNKNOWN_STOP_REASON.result();
+        };
+    }
+
+    private static Result<DrainReason> parseDrainReason(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Result.success(DrainReason.OPERATOR_DRAIN);
+        }
+        var normalized = raw.trim().toUpperCase(Locale.ROOT);
+        for (var reason : DrainReason.values()) {
+            if (reason.name().equals(normalized)) {
+                return Result.success(reason);
+            }
+        }
+        return LifecycleCommandError.UNKNOWN_DRAIN_REASON.result();
+    }
+
+    private enum LifecycleCommandError implements Cause {
+        MISSING_BODY("Request body is required"),
+        MISSING_TYPE("type field is required (FORCE_DECOMMISSION|FORCE_DRAIN|FORCE_ON_DUTY|RECORD_JOINING|REQUEST_REJOIN)"),
+        MISSING_NODE_ID("nodeId field is required"),
+        UNKNOWN_TYPE("type must be one of FORCE_DECOMMISSION, FORCE_DRAIN, FORCE_ON_DUTY, RECORD_JOINING, REQUEST_REJOIN"),
+        UNKNOWN_STOP_REASON("stopReason must be one of FORCED, GRACEFUL, DRAIN_FAILED"),
+        UNKNOWN_DRAIN_REASON("drainReason must match one of the DrainReason enum values");
+
+        private final String message;
+
+        LifecycleCommandError(String message) {
+            this.message = message;
+        }
+
+        @Override
+        public String message() {
+            return message;
+        }
     }
 }
