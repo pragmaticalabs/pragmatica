@@ -293,13 +293,15 @@ final class DeploymentManagerImpl implements DeploymentManager {
     }
 
     private Result<Deployment> applyRollbackRouting(Deployment deployment) {
-        var commands = new ArrayList<KVCommand<AetherKey>>();
-        for (var base : deployment.artifacts()) {
-            addVersionRoutingAllOld(commands, base, deployment.oldVersion(), deployment.newVersion());
-            addSliceTargetCommand(commands, base, deployment.oldVersion(), deployment.newInstances());
-        }
-        addDeploymentCommand(commands, deployment);
-        return applyConsensus(commands).map(_ -> cacheDeployment(deployment));
+        return deployment.rolledBack().flatMap(finalized -> {
+            var commands = new ArrayList<KVCommand<AetherKey>>();
+            for (var base : finalized.artifacts()) {
+                addVersionRoutingAllOld(commands, base, finalized.oldVersion(), finalized.newVersion());
+                addSliceTargetCommand(commands, base, finalized.oldVersion(), finalized.newInstances());
+            }
+            addDeploymentCommand(commands, finalized);
+            return applyConsensus(commands).map(_ -> cacheDeployment(finalized));
+        });
     }
 
     private Result<Deployment> applyCompleteRouting(Deployment deployment) {
