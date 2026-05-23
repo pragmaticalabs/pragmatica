@@ -326,11 +326,16 @@ pick_non_leader() {
         # The cluster-side fix lives upstream; in the meantime we skip dead
         # candidates so the test can pick a live one — and log the skip so the
         # underlying staleness stays visible instead of being silently papered over.
+        #
+        # NodeId == container_name (post-migration): probe directly by name via
+        # `docker ps` rather than the legacy label lookup. A label lookup would
+        # still match a stopped container; `docker ps` (no -a) returns running
+        # only, which is what we want for the "live candidate" assertion.
         if [ "${CLOUD_MODE:-false}" != "true" ]; then
             local _alive_name
-            _alive_name=$(_docker_container_by_node_id_label "$candidate" 2>/dev/null || true)
+            _alive_name=$(remote_exec "docker ps --filter 'name=^${candidate}\$' --format '{{.Names}}' | head -1" 2>/dev/null || true)
             if [ -z "$_alive_name" ]; then
-                log_warn "pick_non_leader: lifecycle reports '${candidate}' as ON_DUTY but no live container carries label aether.node-id=${candidate} on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: MembershipView/CTM tombstone propagation)" >&2
+                log_warn "pick_non_leader: lifecycle reports '${candidate}' as ON_DUTY but no live container named '${candidate}' on ${TARGET_HOST:-<host>} — skipping stale candidate (upstream: MembershipView/CTM tombstone propagation)" >&2
                 continue
             fi
         fi
@@ -1153,72 +1158,52 @@ list_blueprints() {
 # ---------------------------------------------------------------------------
 # Node operations
 # ---------------------------------------------------------------------------
+# DEPRECATED — kept as a thin pass-through after the NodeId == container_name
+# migration. Both compose-fixed and CTM-auto-heal containers now use the NodeId
+# verbatim as the container name (aether-{a,b}-node-{1..5} for compose,
+# aether-{a,b}-node-{6,7,...} for CTM extensions), so this helper is a no-op.
+# Retained so any caller missed during the migration still resolves correctly.
 _docker_container_name() {
-    # Remote Docker compose files name containers `aether-<cluster_id>-<node_id>`
-    # (aether-a-node-1, aether-b-node-2, ...). Fall back for older single-cluster
-    # environments that just use `aether-<node_id>`.
-    #
-    # CTM-provisioned replacement containers carry their own `aether-*` prefix
-    # from DockerComputeProvider. Two name shapes have shipped:
-    #   - pre-F.3: `aether-core-node-<idx>-<hex>` (single global prefix)
-    #   - post-F.3 (`6fc426b48`): `aether-<cluster>-<pool>-node-<idx>-<hex>`
-    #     — e.g. `aether-default-core-node-0-50e5bb67e` when CTM uses the
-    #     default cluster name. Either way, the node_id IS the container name;
-    #     prepending `aether-<CLUSTER_ID>-` produces `aether-b-aether-...`
-    #     which doesn't exist on the host and `docker kill` returns
-    #     "No such container", silently masking the failed kill.
     local node_id="$1"
-    case "$node_id" in
-        aether-*) printf '%s' "$node_id"; return ;;
-    esac
-    if [ -n "${CLUSTER_ID:-}" ]; then
-        printf 'aether-%s-%s' "$CLUSTER_ID" "$node_id"
-    else
-        printf 'aether-%s' "$node_id"
-    fi
+    printf '%s' "$node_id"
+}
+
+# DEPRECATED — kept as a thin pass-through after the NodeId == container_name
+# migration. Returns the running container name iff a container with that name
+# exists on TARGET_HOST; empty otherwise. Previously did a label lookup; now a
+# direct name match is the canonical path (label filter is redundant when name
+# is authoritative).
+_docker_container_by_node_id_label() {
+    local node_id="$1"
+    remote_exec "docker ps --filter 'name=^${node_id}\$' --format '{{.Names}}' | head -1"
 }
 
 # Resolve container name on TARGET_HOST by aether.node-id label.
-# CTM-provisioned containers carry this label via DockerComputeProvider#buildRunCommand.
-# Compose-deployed containers carry it via labels: block in docker-compose-{a,b}.yml
-# (added in this commit). Returns empty string if no container matches; caller falls
-# back to _docker_container_name for transient cases / pre-label-coverage environments.
-#
-# Cluster scoping: when running cluster A + cluster B in parallel on the same host,
-# both clusters have a compose `node-1`/.../`node-5` container, each carrying the same
-# `aether.node-id` label value (the label isn't cluster-scoped). A bare label filter
-# returns whichever container Docker enumerates first, causing cross-cluster kills
-# (e.g., 15-delegation running on cluster A accidentally killing `aether-b-node-2`).
-# Primary scope is the orthogonal `aether.cluster=<id>` label set by compose YAML on
-# fixed nodes and by `DockerComputeProvider.buildRunCommand` on CTM-provisioned
-# replacements (whose ProvisionContext inherits the cluster name from KV-Store).
-# Defence-in-depth: the docker-network filter is retained so a missing or stale
-# label cannot leak a cross-cluster match (e.g., a hand-rolled compose fixture
-# that omits the label).
+# DEPRECATED — after the NodeId == container_name migration, the NodeId IS the
+# container name (compose-fixed aether-{a,b}-node-{1..5} + CTM extensions
+# aether-{a,b}-node-{6,7,...}). Retained as a thin wrapper that probes by name
+# directly. The previous label-+-network filter scoping is now redundant
+# (container names are globally unique on a single Docker host), but we keep
+# the cluster-network filter as defence-in-depth so a stale orphan from the
+# sibling cluster cannot match.
 _docker_container_by_node_id_label() {
     local node_id="$1"
-    local cluster_filter=""
+    local network_filter=""
     if [ -n "${CLUSTER_ID:-}" ]; then
-        # Primary scope: aether.cluster label set by docker-compose-{a,b}.yml on
-        # compose-fixed nodes and by DockerComputeProvider.buildRunCommand on
-        # CTM-provisioned replacements. Defence-in-depth: ALSO constrain to the
-        # cluster's docker network, so a missing or stale label cannot leak a
-        # cross-cluster match (e.g., when an operator forgets to set the label
-        # on a hand-rolled compose fixture).
-        cluster_filter="--filter label=aether.cluster=${CLUSTER_ID} --filter network=aether-${CLUSTER_ID}-network"
+        network_filter="--filter network=aether-${CLUSTER_ID}-network"
     fi
-    remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' ${cluster_filter} --format '{{.Names}}' | head -1"
+    remote_exec "docker ps --filter 'name=^${node_id}\$' ${network_filter} --format '{{.Names}}' | head -1"
 }
 
 # Tear down any CTM-provisioned replacement containers on the remote host so the
 # cluster settles back to the fixed compose-node set. Called between disruption
 # tests to avoid phantom-sixth-node inflation.
 #
-# Two naming shapes are matched (see `_docker_container_name`): pre-F.3
-# `aether-core-*` (single global prefix) and post-F.3 `aether-<cluster>-<pool>-...`
-# where `<pool>` defaults to `core` (e.g. `aether-default-core-node-0-<hex>`).
-# The shared `core-node-` infix distinguishes CTM-provisioned containers from
-# compose-fixed ones (`aether-a-node-1`, `aether-b-node-2`).
+# Post-migration: CTM containers are named `aether-<cluster>-node-N` with
+# N >= 6 (compose owns 1..5). The label `aether.provisioned-by=ctm` is the
+# authoritative selector — names sometimes still match the compose pattern
+# for slots claimed during CTM scale-up, so a name-based filter alone would
+# be ambiguous.
 drop_ctm_replacements() {
     if [ "$CLOUD_MODE" = "true" ]; then
         return 0
@@ -1227,9 +1212,19 @@ drop_ctm_replacements() {
     # rather than being swallowed by the legacy `2>/dev/null` wrapper. The inner
     # `2>/dev/null` on `docker rm -f $(docker ps -aq ...)` stays — that one
     # legitimately silences "no matching containers" when the cluster is clean.
+    # Post-migration filter: `aether.provisioned-by=ctm` label set by
+    # DockerComputeProvider.buildRunCommand on every auto-heal container.
+    # Compose-fixed nodes don't carry this label so the sweep can't mistakenly
+    # evict them. Cluster scoping via `aether.cluster=${CLUSTER_ID}` is added
+    # whenever the harness has it so the sweep on cluster A can't touch
+    # cluster B's auto-heal replacements.
+    local cluster_filter=""
+    if [ -n "${CLUSTER_ID:-}" ]; then
+        cluster_filter="--filter label=aether.cluster=${CLUSTER_ID}"
+    fi
     local err_file rc
     err_file=$(mktemp -t drop_ctm.XXXXXX)
-    remote_exec "docker rm -f \$(docker ps -aq --filter name=core-node-) 2>/dev/null || true" >/dev/null 2>"$err_file"
+    remote_exec "docker rm -f \$(docker ps -aq --filter label=aether.provisioned-by=ctm ${cluster_filter}) 2>/dev/null || true" >/dev/null 2>"$err_file"
     rc=$?
     if [ "$rc" -ne 0 ]; then
         log_warn "drop_ctm_replacements: remote_exec rc=${rc}: $(head -c 300 < "$err_file")"
@@ -1372,13 +1367,17 @@ restart_all_nodes() {
     # broken state — yet the test harness believed it had reset the cluster and
     # interpreted subsequent "no leader elected" as a Rabia convergence failure rather
     # than the real cause: the compose cycle never ran.
+    # CTM-replacement cleanup: post-NodeId==container_name migration, auto-heal
+    # containers are named aether-<cluster>-node-N with N >= 6, indistinguishable
+    # from a hypothetical compose extension. Use the authoritative provisioner
+    # label `aether.provisioned-by=ctm` for the pre-compose-cycle sweep.
     local restart_out restart_rc
     if [ -f "$compose" ] && [ "${prefix}" = "aether-b-node-" ]; then
-        restart_out=$(remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>&1)
+        restart_out=$(remote_exec "docker rm -f \$(docker ps -a -q --filter label=aether.provisioned-by=ctm --filter label=aether.cluster=b) 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>&1)
         restart_rc=$?
     else
         # Fallback for non-standard cluster names — best-effort start of exited containers.
-        restart_out=$(remote_exec "docker rm -f \$(docker ps -a -q --filter name=aether-core) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>&1)
+        restart_out=$(remote_exec "docker rm -f \$(docker ps -a -q --filter label=aether.provisioned-by=ctm) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>&1)
         restart_rc=$?
     fi
     if [ "$restart_rc" -ne 0 ]; then
@@ -1518,9 +1517,12 @@ kill_node() {
             fi
         fi
     else
-        local name
-        name=$(_docker_container_by_node_id_label "$node_id")
-        [ -z "$name" ] && name=$(_docker_container_name "$node_id")
+        # NodeId == container_name (post-migration): the NodeId IS the docker
+        # container name, by construction. Compose-fixed nodes are named
+        # aether-{a,b}-node-{1..5}; CTM auto-heal replacements continue the
+        # sequence (aether-{a,b}-node-6, -7, ...). `docker kill ${node_id}` Just
+        # Works — no NodeId→container mapping required.
+        local name="$node_id"
         log_info "  (container=${name})"
         local kill_out kill_rc=0
         kill_out=$(remote_exec "docker kill ${name} 2>&1" 2>&1) || kill_rc=$?
@@ -1588,8 +1590,8 @@ start_node() {
             fi
         fi
     else
-        local name
-        name=$(_docker_container_name "$node_id")
+        # NodeId == container_name (post-migration) — see kill_node for rationale.
+        local name="$node_id"
         # Capture stderr — `2>/dev/null` previously hid failures (container not found,
         # docker daemon error, race with rm). Caller checks $? for success/failure.
         local start_out

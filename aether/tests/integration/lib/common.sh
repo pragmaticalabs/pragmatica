@@ -483,9 +483,15 @@ CLOUD_SOURCE_NAME="${CLOUD_SOURCE_NAME:-hetzner-eu}"
 MGMT_SCHEME="${MGMT_SCHEME:-http}"
 
 # Translate a friendly Docker-style node id (node-N, 1-based) into the actual
-# node id stored under NodeLifecycleKey at the runtime. On Docker, node ids ARE
-# `node-N` so the input passes through unchanged. On cloud, runtime ids carry
-# the bootstrap source prefix: `node-1` → `${CLOUD_SOURCE_NAME}-core-0`, etc.
+# node id used at the runtime.
+#
+# - Docker: NodeId == container_name; compose names containers `aether-<CLUSTER_ID>-node-<N>`
+#   (CLUSTER_ID is "a" or "b"). `node-1` → `aether-${CLUSTER_ID}-node-1`. If
+#   the caller already passes the full form, it's returned unchanged. If
+#   CLUSTER_ID is unset (legacy single-cluster scripts), the input passes
+#   through verbatim.
+# - Cloud: runtime ids carry the bootstrap source prefix: `node-1` →
+#   `${CLOUD_SOURCE_NAME}-core-0`, etc.
 #
 # Use this whenever a test calls a management endpoint that takes a node-id path
 # parameter (e.g. /api/nodes/drain/<id>, /api/node/lifecycle/<id>). Test helpers
@@ -493,13 +499,21 @@ MGMT_SCHEME="${MGMT_SCHEME:-http}"
 # this only when the node id reaches the runtime as-is.
 to_node_id() {
     local node_id="$1"
-    if [ "${CLOUD_MODE:-false}" != "true" ]; then
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        if [[ "$node_id" =~ ^node-([0-9]+)$ ]]; then
+            local idx=$((${BASH_REMATCH[1]} - 1))
+            echo "${CLOUD_SOURCE_NAME}-core-${idx}"
+            return 0
+        fi
         echo "$node_id"
         return 0
     fi
-    if [[ "$node_id" =~ ^node-([0-9]+)$ ]]; then
-        local idx=$((${BASH_REMATCH[1]} - 1))
-        echo "${CLOUD_SOURCE_NAME}-core-${idx}"
+    # Docker path: pre-prefixed full forms pass through unchanged.
+    case "$node_id" in
+        aether-*) echo "$node_id"; return 0 ;;
+    esac
+    if [[ "$node_id" =~ ^node-([0-9]+)$ ]] && [ -n "${CLUSTER_ID:-}" ]; then
+        echo "aether-${CLUSTER_ID}-node-${BASH_REMATCH[1]}"
         return 0
     fi
     echo "$node_id"

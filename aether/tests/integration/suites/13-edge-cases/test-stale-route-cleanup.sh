@@ -65,7 +65,7 @@ test_kill_node_hosting_routes() {
     done
 
     if [ -z "$victim" ]; then
-        victim="node-2"
+        victim="aether-b-node-2"
     fi
 
     log_info "Killing node with potential routes: ${victim}"

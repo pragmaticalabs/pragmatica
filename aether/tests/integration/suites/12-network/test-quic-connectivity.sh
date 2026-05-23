@@ -51,7 +51,7 @@ test_kill_node_and_detect_drop() {
     leader=$(cluster_leader)
     local victim
     victim=$(pick_non_leader "$leader" 1)
-    : "${victim:=node-3}"
+    : "${victim:=aether-b-node-3}"
 
     local baseline
     baseline=$(topology_now)

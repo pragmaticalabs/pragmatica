@@ -40,9 +40,11 @@ _reactivate_auto_heal_trap() {
 trap _reactivate_auto_heal_trap EXIT
 
 test_drain_first_node_allowed() {
-    # node-5 is the docker-style fixture id; on cloud it maps to ${CLOUD_SOURCE_NAME}-core-4.
-    # The runtime stores NodeLifecycleKey under the actual node id, so the drain endpoint
-    # path parameter must use the translated form or it returns 500 (no such lifecycle).
+    # node-5 is the friendly fixture id; to_node_id translates to the runtime form
+    # — `aether-b-node-5` on docker (NodeId == container_name) and
+    # `${CLOUD_SOURCE_NAME}-core-4` on cloud. The runtime stores NodeLifecycleKey
+    # under the actual node id, so the drain endpoint path parameter must use the
+    # translated form or it returns 500 (no such lifecycle).
     local node1
     node1=$(to_node_id "node-5")
     log_info "Draining first node: ${node1}"

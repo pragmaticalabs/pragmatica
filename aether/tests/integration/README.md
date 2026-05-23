@@ -191,8 +191,9 @@ The quiesce barriers replace the old `self_heal` 3-step recovery. See [`aether/d
   ssh $TARGET_HOST 'docker rm -f $(docker ps -aq --filter "name=aether-"); docker network prune -f'
   ```
 
-**Stale `aether-core-*` containers** (CTM auto-heal remnants)
-- `docker rm -f $(docker ps -aq --filter name=aether-core)` on the target host.
+**Stale CTM-replacement containers** (auto-heal remnants)
+- `docker rm -f $(docker ps -aq --filter label=aether.provisioned-by=ctm)` on the target host.
+- Post-NodeId==container_name migration: CTM containers are named `aether-<cluster>-node-N` with `N >= 6` (compose owns slots 1..5). The authoritative selector is the `aether.provisioned-by=ctm` label set by `DockerComputeProvider.buildRunCommand`.
 - With the ClusterGeneration barrier in place, CTM's reconciliation drives these to a quiesced steady state — leftovers usually mean the test was killed mid-suite.
 
 **Test hangs in `await_generation_quiesced`**

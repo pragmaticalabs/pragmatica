@@ -34,7 +34,7 @@ test_swim_detection_time() {
     leader=$(cluster_leader)
     local victim
     victim=$(pick_non_leader "$leader" 1)
-    : "${victim:=node-4}"
+    : "${victim:=aether-b-node-4}"
 
     local baseline
     baseline=$(topology_now)
