@@ -206,6 +206,83 @@ class LifecycleReconcilerRecordTest {
         }
     }
 
+    @Nested
+    class NormalPhaseWarmup {
+        @Test
+        void firstTickAfterNormalEntry_skipsRulesEvenIfBudgetExceeded() {
+            phaseRef.set(ClusterPhase.NORMAL);
+            seedDecommissionableJoiner();
+
+            var reconciler = (LifecycleReconcilerRecord) buildReconciler(enforcingConfigWithWarmup(60_000L));
+            reconciler.activate();
+            invokeReconcileDirectly(reconciler);
+
+            // Warmup window has just opened (60s budget unmet) — even with all rule
+            // budgets satisfied, the reconciler must not fire on the first NORMAL tick.
+            assertEquals(0, dispatchedCommands.size(), "warmup must suppress enforce");
+            assertEquals(0, auditEvents.size(), "warmup must also suppress audit-only emit");
+            reconciler.deactivate();
+        }
+
+        @Test
+        void tickPastWarmup_firesNormally() {
+            phaseRef.set(ClusterPhase.NORMAL);
+            seedDecommissionableJoiner();
+            var initialNowMs = clockMs.get();
+
+            var reconciler = (LifecycleReconcilerRecord) buildReconciler(enforcingConfigWithWarmup(60_000L));
+            reconciler.activate();
+            invokeReconcileDirectly(reconciler);
+            assertEquals(0, dispatchedCommands.size(), "first tick is in warmup");
+
+            // Advance clock past warmup deadline. Rules now fire on subsequent tick.
+            clockMs.set(initialNowMs + 61_000L);
+            invokeReconcileDirectly(reconciler);
+
+            assertEquals(1, dispatchedCommands.size(), "post-warmup tick must fire");
+            reconciler.deactivate();
+        }
+
+        @Test
+        void phaseTransitionAwayFromNormal_clearsWarmupAndSwimSince() {
+            phaseRef.set(ClusterPhase.NORMAL);
+            seedDecommissionableJoiner();
+            var initialNowMs = clockMs.get();
+
+            var reconciler = (LifecycleReconcilerRecord) buildReconciler(enforcingConfigWithWarmup(60_000L));
+            reconciler.activate();
+            invokeReconcileDirectly(reconciler); // first NORMAL tick — warmup starts
+            clockMs.set(initialNowMs + 30_000L);
+            invokeReconcileDirectly(reconciler); // still warmup
+            assertEquals(0, dispatchedCommands.size());
+
+            // Phase wobbles to RECOVERING then back. Warmup must restart.
+            phaseRef.set(ClusterPhase.RECOVERING);
+            invokeReconcileDirectly(reconciler);
+            phaseRef.set(ClusterPhase.NORMAL);
+            clockMs.set(initialNowMs + 35_000L);
+            invokeReconcileDirectly(reconciler); // fresh NORMAL entry — warmup restarted
+            clockMs.set(initialNowMs + 35_000L + 30_000L);
+            invokeReconcileDirectly(reconciler); // 30s after fresh entry → still warmup
+            assertEquals(0, dispatchedCommands.size(), "warmup must restart on each NORMAL entry");
+
+            clockMs.set(initialNowMs + 35_000L + 61_000L);
+            invokeReconcileDirectly(reconciler);
+            assertEquals(1, dispatchedCommands.size(), "rule fires once new warmup elapses");
+            reconciler.deactivate();
+        }
+    }
+
+    private static ReconcilerConfig enforcingConfigWithWarmup(long warmupMs) {
+        var enforce = RuleSpec.enforcing();
+        var rules = new ReconcilerRulesConfig(enforce, enforce, enforce, enforce, enforce, enforce, enforce);
+        return new ReconcilerConfig(true,
+                                    TimeSpan.timeSpan(10).seconds(),
+                                    TimeSpan.timeSpan(warmupMs).millis(),
+                                    rules,
+                                    50);
+    }
+
     private void seedDecommissionableJoiner() {
         var node = NodeId.nodeId("node-2").unwrap();
         var lifecycleEntries = new HashMap<NodeId, NodeLifecycleValue>();
@@ -221,15 +298,17 @@ class LifecycleReconcilerRecordTest {
     private static ReconcilerConfig enforcingConfig() {
         var enforce = RuleSpec.enforcing();
         var rules = new ReconcilerRulesConfig(enforce, enforce, enforce, enforce, enforce, enforce, enforce);
-        return new ReconcilerConfig(true, TimeSpan.timeSpan(10).seconds(), rules, 50);
+        // Warmup=0 so single-tick tests exercise rule firing immediately on NORMAL entry.
+        // Warmup semantics covered separately by `NormalPhaseWarmupTest`.
+        return new ReconcilerConfig(true, TimeSpan.timeSpan(10).seconds(), TimeSpan.timeSpan(0).millis(), rules, 50);
     }
 
     /// Phase 4 dry-run shape — every rule enabled, every rule audit-only. Kept for tests
-    /// that exercise the audit-only dispatch path now that `ReconcilerConfig.defaults()`
-    /// has been flipped to the Phase 5 PR-E enforcing baseline.
+    /// that exercise the audit-only dispatch path. Warmup=0 — see `enforcingConfig`.
     private static ReconcilerConfig dryRunConfig() {
         return new ReconcilerConfig(true,
                                     TimeSpan.timeSpan(10).seconds(),
+                                    TimeSpan.timeSpan(0).millis(),
                                     ReconcilerRulesConfig.dryRunDefaults(),
                                     50);
     }

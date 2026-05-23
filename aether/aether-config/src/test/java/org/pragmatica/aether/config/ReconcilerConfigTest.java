@@ -11,11 +11,12 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Phase 5 PR-E — verifies the enforcing flip of `ReconcilerConfig.defaults()` and the
-/// dual factory split in `ReconcilerRulesConfig`. The flip switches five of the seven
-/// reconciliation rules to enforcing while keeping `joiningStuckAlert` and `stoppedZombie`
-/// audit-only forever (spec §7.1). All rules remain `enabled=true` in both factories —
-/// operators flip back to dry-run by per-rule TOML override, never by auto-disable.
+/// Phase 5 PR-E + grace-period fix — verifies `ReconcilerConfig.defaults()` returns the
+/// enforcing rule set (five rules enforce, two audit-only forever per spec §7.1) AND
+/// surfaces the `normalPhaseWarmup` grace period (default 60s) that gates rule
+/// evaluation after every NORMAL-phase entry. The warmup absorbs SWIM gossip flap
+/// during cluster formation / RECOVERING re-entry so the enforcing rules don't
+/// force-decommission peers that are still on the recovery path.
 class ReconcilerConfigTest {
 
     @Nested
@@ -24,23 +25,23 @@ class ReconcilerConfigTest {
         void defaults_returnsRulesWhereJoiningTimeoutIsEnforcing() {
             var config = ReconcilerConfig.defaults();
 
-            assertThat(config.rules().joiningTimeout().enforce()).isFalse();
+            assertThat(config.rules().joiningTimeout().enforce()).isTrue();
             assertThat(config.rules().joiningTimeout().enabled()).isTrue();
         }
 
         @Test
-        void defaults_allRulesAuditOnly() {
+        void defaults_flipsFiveEnforcingRules() {
             var rules = ReconcilerConfig.defaults().rules();
 
-            assertThat(rules.joiningTimeout().enforce()).isFalse();
-            assertThat(rules.onDutyFaulty().enforce()).isFalse();
-            assertThat(rules.drainTimeout().enforce()).isFalse();
-            assertThat(rules.generationLifecycleGap().enforce()).isFalse();
-            assertThat(rules.swimLifecycleGap().enforce()).isFalse();
+            assertThat(rules.joiningTimeout().enforce()).isTrue();
+            assertThat(rules.onDutyFaulty().enforce()).isTrue();
+            assertThat(rules.drainTimeout().enforce()).isTrue();
+            assertThat(rules.generationLifecycleGap().enforce()).isTrue();
+            assertThat(rules.swimLifecycleGap().enforce()).isTrue();
         }
 
         @Test
-        void defaults_alertOnlyRulesStillAuditOnly() {
+        void defaults_keepsAlertOnlyRulesAuditOnly() {
             var rules = ReconcilerConfig.defaults().rules();
 
             assertThat(rules.joiningStuckAlert().enforce()).isFalse();
@@ -54,6 +55,32 @@ class ReconcilerConfigTest {
             assertThat(config.enabled()).isTrue();
             assertThat(config.tickInterval()).isEqualTo(ReconcilerConfig.DEFAULT_TICK_INTERVAL);
             assertThat(config.recentDecisionsCapacity()).isEqualTo(ReconcilerConfig.DEFAULT_RECENT_DECISIONS_CAPACITY);
+        }
+
+        @Test
+        void defaults_surfacesNormalPhaseWarmup() {
+            var config = ReconcilerConfig.defaults();
+
+            assertThat(config.normalPhaseWarmup()).isEqualTo(ReconcilerConfig.DEFAULT_NORMAL_PHASE_WARMUP);
+            // The default must be longer than `SWIM_FAULTY_DECLARATION × 3` (=30s) to
+            // guarantee OnDutyFaulty doesn't fire on transient flap during cluster
+            // formation — otherwise the warmup gate adds nothing over the existing rule
+            // budget. 60s gives comfortable headroom without being operator-perceived
+            // sluggish.
+            assertThat(config.normalPhaseWarmup().millis()).isGreaterThanOrEqualTo(60_000L);
+        }
+    }
+
+    @Nested
+    class BackwardCompatConstructor {
+        @Test
+        void fourArg_constructor_defaultsWarmupTo60s() {
+            var config = new ReconcilerConfig(true,
+                                              ReconcilerConfig.DEFAULT_TICK_INTERVAL,
+                                              ReconcilerRulesConfig.enforcingDefaults(),
+                                              ReconcilerConfig.DEFAULT_RECENT_DECISIONS_CAPACITY);
+
+            assertThat(config.normalPhaseWarmup()).isEqualTo(ReconcilerConfig.DEFAULT_NORMAL_PHASE_WARMUP);
         }
     }
 
@@ -121,12 +148,8 @@ class ReconcilerConfigTest {
         }
 
         @Test
-        void enforcingDefaults_matchesDefaultsRulesShape_DISABLED_post_RC1_revert() {
-            // RC1 revert (HEAD post-86bcb53d8): defaults() now calls dryRunDefaults() not
-            // enforcingDefaults() — remote validation #3 surfaced premature OnDutyFaulty
-            // firing during cluster formation without a NORMAL-phase grace period.
-            // enforcingDefaults() factory is retained for operators who opt in.
-            assertThat(ReconcilerConfig.defaults().rules()).isEqualTo(ReconcilerRulesConfig.dryRunDefaults());
+        void enforcingDefaults_matchesDefaultsRulesShape() {
+            assertThat(ReconcilerConfig.defaults().rules()).isEqualTo(ReconcilerRulesConfig.enforcingDefaults());
         }
     }
 }

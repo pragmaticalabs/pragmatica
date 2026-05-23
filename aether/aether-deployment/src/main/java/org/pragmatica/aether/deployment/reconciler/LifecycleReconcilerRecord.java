@@ -109,6 +109,7 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                  AtomicReference<ScheduledFuture<?>> scheduledTickRef,
                                  AtomicLong lastTickAtMs,
                                  AtomicLong lastActionAtMs,
+                                 AtomicLong normalEnteredAtMs,
                                  AtomicReference<ClusterPhase> lastObservedPhase,
                                  List<ReconciliationRule> rules,
                                  ConcurrentHashMap<String, AtomicLong> ruleLastFiredAtMs,
@@ -151,6 +152,7 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                              clock,
                                              new AtomicBoolean(false),
                                              new AtomicReference<>(null),
+                                             new AtomicLong(UNINITIALIZED),
                                              new AtomicLong(UNINITIALIZED),
                                              new AtomicLong(UNINITIALIZED),
                                              new AtomicReference<>(ClusterPhase.COLD_BOOT),
@@ -224,14 +226,46 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
     @Contract private void doReconcile() {
         if (!activeRef.get()) {return;}
         var phase = phaseSupplier.get();
-        lastObservedPhase.set(phase);
+        var priorPhase = lastObservedPhase.getAndSet(phase);
+        var nowMs = clock.getAsLong();
 
         if (phase != ClusterPhase.NORMAL) {
+            if (priorPhase == ClusterPhase.NORMAL) {
+                // NORMAL → not-NORMAL: clear warmup + SWIM-since so the next NORMAL entry
+                // gets a fresh observation window (stale Faulty-since stamps from the prior
+                // NORMAL window must not fire OnDutyFaulty / JoiningTimeout on re-entry).
+                normalEnteredAtMs.set(UNINITIALIZED);
+                swimSinceTracker.clear();
+                log.info("Reconciler: phase {} -> {} — cleared warmup + SWIM-since tracker",
+                         priorPhase,
+                         phase);
+            }
             log.debug("Reconciler: tick skipped — phase={}", phase);
             return;
         }
+
+        if (priorPhase != ClusterPhase.NORMAL) {
+            // not-NORMAL → NORMAL transition. Stamp the entry time and start warmup.
+            normalEnteredAtMs.set(nowMs);
+            swimSinceTracker.clear();
+            log.info("Reconciler: phase {} -> NORMAL — warmup={} starts at nowMs={}",
+                     priorPhase,
+                     config.normalPhaseWarmup(),
+                     nowMs);
+        }
+
         var snapshot = buildSnapshot();
         lastTickAtMs.set(snapshot.nowMs());
+
+        var normalEntered = normalEnteredAtMs.get();
+        var warmupRemaining = (normalEntered == UNINITIALIZED)
+                              ? 0L
+                              : (normalEntered + config.normalPhaseWarmup().millis() - snapshot.nowMs());
+        if (warmupRemaining > 0L) {
+            log.debug("Reconciler: NORMAL-phase warmup active ({}ms remaining) — rules skipped this tick",
+                      warmupRemaining);
+            return;
+        }
 
         var fired = false;
         for (var rule : rules) {
