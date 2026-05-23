@@ -54,7 +54,7 @@ NODE_COUNT="${NODE_COUNT:-5}"
 # the per-call override keeps the pinned-endpoint contract for the next invocation,
 # so forwarding bugs still surface on the happy path.
 aether_failover() {
-    local timeout="${AETHER_CLI_TIMEOUT:-5}"
+    local timeout="${AETHER_CLI_TIMEOUT:-30}"
     local host_port="${MGMT_ENTRY_POINT#http://}"
     if ! curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${MGMT_ENTRY_POINT}/health/live" >/dev/null 2>&1; then
         # Failover: probe alternate live core endpoints.
@@ -213,10 +213,10 @@ _api_call() {
     local method="$1" url="$2" body="${3:-}"
     local response status body_only
     if [ -n "$body" ]; then
-        response=$(curl -sk -m 10 -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
+        response=$(curl -sk -m 30 -X "$method" -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
             -d "$body" -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     else
-        response=$(curl -sk -m 10 -X "$method" -H "X-API-Key: ${API_KEY}" \
+        response=$(curl -sk -m 30 -X "$method" -H "X-API-Key: ${API_KEY}" \
             -w "\n__API_HTTP_STATUS:%{http_code}__" "$url" 2>&1)
     fi
     status=$(printf '%s' "$response" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | sed 's/__API_HTTP_STATUS://;s/__//')
