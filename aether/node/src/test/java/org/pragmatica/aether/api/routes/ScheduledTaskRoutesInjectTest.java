@@ -316,6 +316,13 @@ class ScheduledTaskRoutesInjectTest {
                         invocations.add(new Invocation(slice.asString(), methodName.name()));
                         return failure == null ? Promise.success(Unit.unit()) : failure.promise();
                     }
+                    // `hasLocalSlice` is the inject-route's locality gate (added after the
+                    // `findSenderBridge` NPE fix). Test stub always reports "local" — the
+                    // remote-routing branch is exercised in a dedicated integration test
+                    // (test-scheduled-tasks.sh routes inject directly to the hosting node).
+                    if ("hasLocalSlice".equals(method.getName())) {
+                        return Boolean.TRUE;
+                    }
                     throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
                 }
             );

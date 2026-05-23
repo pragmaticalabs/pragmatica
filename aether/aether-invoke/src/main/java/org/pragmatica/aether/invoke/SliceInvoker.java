@@ -97,6 +97,19 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                    TypeToken<R> responseType,
                                    int maxRetries);
     <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
+
+    /// Returns true when the target slice is loaded on this node. Callers that need to
+    /// invoke a slice with a request whose codec lives only inside the slice's loader
+    /// (e.g., `/api/scheduled-tasks/inject` posting `Unit.unit()`) should gate on this
+    /// before calling `invoke` — when the slice is remote `sendFireAndForget` cannot
+    /// encode the payload and fails with SENDER_BRIDGE_NOT_FOUND.
+    ///
+    /// Default returns `false` so test stubs that don't model slice-loaded state stay
+    /// compilable without semantic accidents — production overrides via SliceInvokerImpl
+    /// consult the InvocationHandler's local-bridge registry.
+    default boolean hasLocalSlice(Artifact slice) {
+        return false;
+    }
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onInvokeResponse(InvokeResponse response);
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeRemoved(MembershipDecision.NodeRemoved event);
     @MessageReceiver@SuppressWarnings("JBCT-RET-01") void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event);
@@ -173,6 +186,11 @@ class SliceInvokerImpl implements SliceInvoker {
     private static final Cause NO_ENDPOINT_FOUND = Causes.cause("No endpoint found for slice/method");
 
     private static final Cause SLICE_NOT_FOUND = Causes.cause("Slice not found locally");
+
+    private static final Cause SENDER_BRIDGE_NOT_FOUND = Causes.cause(
+            "No local SliceBridge available to encode cross-node request payload — "
+            + "request type's classloader has no slice and target slice is not loaded here. "
+            + "Caller must route the request to a node hosting the target slice.");
 
     private static final Cause INVOKER_STOPPED = Causes.cause("SliceInvoker has been stopped");
 
@@ -279,6 +297,10 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                          request));
     }
 
+    @Override public boolean hasLocalSlice(Artifact slice) {
+        return invocationHandler.localSlice(slice).isPresent();
+    }
+
     private Promise<Unit> invokeLocalFireAndForget(Artifact slice, MethodName method, Object request) {
         return invocationHandler.localSlice(slice).async(SLICE_NOT_FOUND)
                                            .flatMap(bridge -> observabilityInterceptor.intercept(slice,
@@ -293,9 +315,9 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private Promise<Unit> sendFireAndForget(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
-        var senderBridge = findSenderBridge(slice, request);
-        return senderBridge.encode(request)
-                                  .flatMap(payload -> sendFireAndForgetPayload(endpoint, slice, method, payload));
+        return findSenderBridge(slice, request).async(SENDER_BRIDGE_NOT_FOUND)
+                                               .flatMap(senderBridge -> senderBridge.encode(request))
+                                               .flatMap(payload -> sendFireAndForgetPayload(endpoint, slice, method, payload));
     }
 
     private Promise<Unit> sendFireAndForgetPayload(Endpoint endpoint,
@@ -340,13 +362,13 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private <R> Promise<R> sendRequestResponse(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
-        var senderBridge = findSenderBridge(slice, request);
-        return senderBridge.encode(request)
-                                  .flatMap(payload -> sendAndAwaitResponse(endpoint,
-                                                                           slice,
-                                                                           method,
-                                                                           payload,
-                                                                           senderBridge));
+        return findSenderBridge(slice, request).<Promise<R>> fold(() -> SENDER_BRIDGE_NOT_FOUND.promise(),
+                                                                   senderBridge -> senderBridge.encode(request)
+                                                                                               .flatMap(payload -> sendAndAwaitResponse(endpoint,
+                                                                                                                                        slice,
+                                                                                                                                        method,
+                                                                                                                                        payload,
+                                                                                                                                        senderBridge)));
     }
 
     @SuppressWarnings("unchecked") private <R> Promise<R> sendAndAwaitResponse(Endpoint endpoint,
@@ -497,13 +519,15 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private <R> void invokeRemoteForFailover(Promise<R> promise, FailoverContext<R> ctx, NodeId targetNode) {
-        var senderBridge = findSenderBridge(ctx.slice(), ctx.request);
-        senderBridge.encode(ctx.request).onSuccess(payload -> sendFailoverPayload(promise,
-                                                                                  ctx,
-                                                                                  targetNode,
-                                                                                  payload,
-                                                                                  senderBridge))
-                           .onFailure(cause -> handleFailoverFailure(promise, ctx, targetNode, cause));
+        findSenderBridge(ctx.slice(), ctx.request)
+                .onEmpty(() -> handleFailoverFailure(promise, ctx, targetNode, SENDER_BRIDGE_NOT_FOUND))
+                .onPresent(senderBridge -> senderBridge.encode(ctx.request)
+                                                       .onSuccess(payload -> sendFailoverPayload(promise,
+                                                                                                 ctx,
+                                                                                                 targetNode,
+                                                                                                 payload,
+                                                                                                 senderBridge))
+                                                       .onFailure(cause -> handleFailoverFailure(promise, ctx, targetNode, cause)));
     }
 
     @SuppressWarnings("unchecked") private <R> void sendFailoverPayload(Promise<R> promise,
@@ -668,15 +692,18 @@ class SliceInvokerImpl implements SliceInvoker {
                                   .map(result -> (R) result);
     }
 
-    private SliceBridge findSenderBridge(Artifact slice, Object request) {
+    private Option<SliceBridge> findSenderBridge(Artifact slice, Object request) {
         // Prefer artifact-based lookup: works even when `request` lives in a parent
         // classloader (e.g. `Unit.unit()` from the scheduled-tasks inject path, whose
         // class is in pragmatica-core, not the slice loader — classloader-only lookup
         // would miss the bridge). Fall back to classloader lookup for back-compat with
-        // request types that genuinely live in the slice loader.
+        // request types that genuinely live in the slice loader. When neither lookup
+        // produces a bridge the caller MUST surface SENDER_BRIDGE_NOT_FOUND as a Promise
+        // failure — historically this path `.unwrap()`'d the empty Option and threw an
+        // unchecked exception that surfaced to clients as `500 {"error":"Internal Server
+        // Error"}` (see ScheduledTaskRoutes.invokeAndAdvanceState).
         return invocationHandler.localSlice(slice)
-                                .orElse(() -> invocationHandler.findBridgeByClassLoader(request.getClass().getClassLoader()))
-                                .unwrap();
+                                .orElse(() -> invocationHandler.findBridgeByClassLoader(request.getClass().getClassLoader()));
     }
 
     @Override@SuppressWarnings({"JBCT-RET-01"}) public void onInvokeResponse(InvokeResponse response) {
