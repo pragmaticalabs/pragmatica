@@ -1,12 +1,12 @@
 # Session Handover — 2026-05-23
 
-**Branch:** `release-1.0.0-rc1` | **HEAD:** `3557b05bd`
+**Branch:** `release-1.0.0-rc1` | **HEAD:** `7705532bf`
 **Predecessor:** [session-handover-2026-05-22e.md](session-handover-2026-05-22e.md)
 **Tag (rollback safety net before NodeId migration):** `v1.0.0-rc1-candidate` → `ebebd2a6b`
 
 ## 1. One-line summary
 
-Landed Phases 1-5 of the cluster-convergence-reconciler initiative + reconciler warmup fix + NodeId-as-container-name architectural migration + a swarm of RC1 hygiene fixes (publish/deploy decoupling, HLC threading, DHT timeout bump, scheduled-task locality routing, marker-event ordering race, and 8 other test-infra fixes). 30 commits this session. Cluster A converges cleanly at ~10/10 minus 2 known pre-existing 09-artifacts flakes. Cluster B 02-chaos + 03/05/12/13 still cascade — root cause now well-characterised and a clean architectural fix path identified (operator-API-driven test cleanup), discussion deferred per user.
+Landed Phases 1-5 of the cluster-convergence-reconciler initiative + reconciler warmup fix + NodeId-as-container-name architectural migration + a swarm of RC1 hygiene fixes (publish/deploy decoupling, HLC threading, DHT timeout bump, scheduled-task locality routing, marker-event ordering race, CLI/curl timeout bumps, and 9 other test-infra fixes). 32 commits this session. Cluster A converges cleanly at ~10/10 minus 2 known pre-existing 09-artifacts flakes after the timeout fix. Cluster B 02-chaos + 03/05/12/13 still cascade — root cause now well-characterised and a clean architectural fix path identified (operator-API-driven test cleanup), discussion deferred per user.
 
 ## 2. State at handover
 
@@ -88,10 +88,11 @@ Landed Phases 1-5 of the cluster-convergence-reconciler initiative + reconciler 
 | `ec8f3ac5b` | 11-observability All_nodes_agree_on_order waits for marker-count convergence before snapshotting (eliminates open-replication-window race) |
 | `ebebd2a6b` | 05-security cert helper quoting (`aether_field "certs status" tlsEnabled` — three-arg form silently dropped the field) |
 | `3557b05bd` | 08-resources NodeId regex `^(aether-[ab]-)?node-([0-9]+)$` accepts post-migration form |
+| `7705532bf` | **CLI + curl-fallback timeouts 5s/10s → 30s** — first deploy on bootstrapping+parallel-loaded cluster needs headroom (aligned with DHT/Repository 30s convention) |
 
 ## 7. Validation results
 
-Six validation runs across the session. Cluster A trajectory clean by the end:
+Eight validation runs across the session. Cluster A trajectory clean by the end (post-CLI-timeout fix):
 
 | Run | Cluster A | Cluster B | Notes |
 |---|---|---|---|
@@ -102,8 +103,26 @@ Six validation runs across the session. Cluster A trajectory clean by the end:
 | #5 (14 suites, no 02) | 10/10 + 2 new regressions (08 Last_execution + 11 marker race) | 03/05/12/13 cascade | Both new findings → fixed in next round |
 | #6 | 10/10 - 2 flakes | 03/05/12/13 cascade | All 3 cluster A regressions resolved |
 | #7 (post-NodeId-migration) | 8/10 + 2 new regressions (06 all strategies + 08 NodeId regex) + 2 flakes | 02-chaos showed `aether-b-node-6` (sequential CTM allocation working!) | NodeId migration validated at allocation layer; DHT timeout surfaced |
+| #8 (post-DHT-timeout-bump) | Still 8/10 — 06 strategies cascade persisted | (not reached due to early cluster A failures) | Diagnostic surface: failure was CLI-side `status=000` (curl gives up at 5s/10s), not server-side timeout. Fix: bump CLI/curl timeouts to 30s (commit `7705532bf`) |
 
-Validation #8 with the DHT timeout + 08 regex fix is the natural next checkpoint.
+**Validation #9 is the natural next checkpoint** — full 15 suites with the CLI-timeout bump applied.
+
+## 7.1 The 06-deployment failure cascade timeline (detailed for next session)
+
+Reproducer for next-session debugging in case 06-deployment regresses again:
+
+1. **Test setup (cluster A bootstrap + parallel suites start)** — 4 suites kick off simultaneously: 04-streaming, 06-deployment, 07-cluster-mgmt, 08-resources. Each starts pushing artifacts. Cluster is freshly formed; 5 nodes are still settling SWIM gossip and HLC convergence.
+2. **`test_blue_green_start` runs `deploy_blueprint v1.0.0`** — calls `aether_failover blueprints deploy ...` which tries CLI first.
+3. **CLI times out at 5s** — old default `AETHER_CLI_TIMEOUT=5`. Falls back to `api_post` (curl `-m 10`).
+4. **Curl times out at 10s** — `status=000` returned (no response body). Test logs `[WARN] api POST api/blueprints/deploy status=000:` (empty body).
+5. **Test continues to `publish_blueprint v1.0.1`** — `/api/blueprints/publish` succeeds because (a) cluster now has had a few more seconds to settle, (b) it's a Put for a different blueprint base+version, no contention.
+6. **Test calls `deploy_start v1.0.1 rolling/canary/blue-green`** — calls `/api/deploy`.
+7. **Server checks: `if (resolved.equals(newVersion))` in `DeploymentManagerImpl.resolveSlicesAndCurrentVersion:199`**. `resolved` is whatever `SliceTargetValue.currentVersion` is for the slice base.
+8. **Fix A's suppression check (`registerOnly && existing SliceTargetValue present`)** — fails the bootstrap-fresh guard. Because step 3's deploy timed out client-side but the server may have continued processing (or step 5's publish wrote the SliceTargetValue freshly because no existing entry was there), `currentVersion = 1.0.1`.
+9. **Server returns 500** — `Cannot deploy version 1.0.1 — already active. Use /api/blueprints/deploy for redeployment.`
+10. **Test cascade** — Blue-green/Canary/Rolling all fail the same way; deploy_cleanup tries to rollback the (non-existent) deployment and 500s; subsequent tests see broken state.
+
+The **root cause was always the first deploy's client-side timeout** (steps 3-4). The DHT 30s bump (commit `3fcf58745`) addresses server-side budget but not the client-side fail-fast. The CLI/curl 30s bump (commit `7705532bf`) addresses the client side.
 
 ## 8. Set-aside item — #5 (cluster B 02-chaos + 03/05/12/13)
 
@@ -147,24 +166,25 @@ The NodeId migration removed naming-domain mismatch but didn't address the timin
 ```
 #5    [set aside]   Cluster B 02-chaos + 03/05/12/13 unblock — operator-API + auto-heal-disable discipline
 #13   [pending]     JBCT-RET-01 26 pre-existing violations — blocks ./build.sh Step 2
-#18   [completed]   Validation #7 — surfaced DHT timeout + 08 regex regressions
+#19   [completed]   Validation #8 — surfaced CLI/curl 5s/10s timeout, fixed in commit 7705532bf
 ```
 
 ## 11. Verification recipe (run on session start)
 
 ```bash
 # Confirm git state
-git rev-parse HEAD                       # expect 3557b05bd (or further if user committed more)
+git rev-parse HEAD                       # expect 7705532bf (or further if user committed more)
 git status --short                       # expect clean
-git log --oneline abded84fa..HEAD | wc -l  # expect 30+
+git log --oneline abded84fa..HEAD | wc -l  # expect 32+
 
 # Confirm key commits are in tree (sample check)
 git log --oneline --grep="NodeId == container" -1   # cc531643b
 git log --oneline --grep="DEFAULT_TIMEOUT 10s" -1    # 3fcf58745
+git log --oneline --grep="CLI + curl-fallback timeouts" -1   # 7705532bf
 git log --oneline --grep="Phase 5 PR-E" -1           # e848b12e3 (and 8c2a21972 for warmup)
 
 # Focused builds (avoid build.sh Step 2 RED)
-mvn -pl aether/node install -DskipTests -am          # refresh shaded JAR
+mvn -pl aether/node install -DskipTests -am          # refresh shaded JAR (NOT strictly needed unless src changed since)
 ls -lh aether/node/target/aether-node.jar            # expect ~51 MB
 
 # Test totals sanity
@@ -176,15 +196,19 @@ mvn -pl integrations/dht test                        # expect 102 / 0F / 0E
 
 ## 12. Suggested first action in the next session
 
-Three options:
+**Validation #9** — full 15 suites with CLI/curl timeout bumped to 30s. Expected: cluster A clean 10/10 minus the 2 known 09-artifacts flakes (06-deployment Blue-green/Canary/Rolling should now succeed because the first deploy gets full 30s headroom on bootstrap). Cluster B 02/03/05/12/13 will need #5 (operator-API-driven cleanup) to fully converge, but the NodeId migration + CLI timeout combination should let them get further before cascade.
 
-**A. Validation #8** — full 15 suites, prove cluster A holds + measure how far cluster B got with the DHT timeout + NodeId migration. Cheap (~30 min).
+Recipe:
+```bash
+# Remote may still have stale containers from prior runs — clean first.
+ssh "$AETHER_SSH_USER@$TARGET_HOST" -i "$AETHER_SSH_KEY" 'docker rm -f $(docker ps -aq) 2>/dev/null'
 
-**B. Discuss #5** — operator-API-driven destructive-test cleanup architecture. Then implement.
+cd aether/tests/integration && ./run-tests.sh --env remote --skip-build
+```
 
-**C. Wrap-up:** if validation #8 is clean on cluster A, this is a reasonable RC1 candidate. Move tag, push to main candidate, draft release notes.
+If cluster A is clean: discuss #5 (operator-API destructive-test cleanup) and implement. Then this is a credible RC1 candidate; move tag, push to main candidate, draft release notes.
 
-Recommended: A → B → C.
+If 06-deployment still fails: the CLI timeout wasn't the full story — investigate server-side processing time more deeply (e.g. is the server actually completing the deploy in <30s, or is it genuinely hung). Worst case: profile under reproducer load with `-Xss` and thread dumps.
 
 ## 13. Constraints carry-over (still in effect)
 
@@ -213,3 +237,5 @@ Recommended: A → B → C.
 5. **DHT default timeout 30s** — aligned with `RemoteRepository.DEFAULT_HTTP_TIMEOUT` + `ArtifactStoreImpl.DEPLOY_TIMEOUT`. The 10s previous default was insufficient for the deploy chain under bootstrap + parallel load conditions.
 
 6. **HLC stamping** — reconciler commands now use per-tick HLC stamps via `ReconciliationSnapshot.at`. `HlcTimestamp.ZERO` placeholders remain in F-migration call sites (CTM + drain coordinator) — those are open follow-ups.
+
+7. **Test infra CLI/curl timeout = 30s** — was 5s/10s, was correct as fail-fast for stable-state but too aggressive during cluster bootstrap + parallel suite load. 30s aligns with the server-side conventions (DHT, Repository, ArtifactStore). Production CLI default is `--request-timeout=130s`, so 30s for tests is still tight-defensive.
