@@ -84,9 +84,16 @@ test_config_identical_after_reapply() {
     # `/api/config` returns a flat Map<String,String> serialized by
     # DynamicConfigManager#mapToJson; iteration order is not guaranteed stable
     # across calls so we sort the entries before comparing.
+    #
+    # Filter out runtime-maintenance keys that drift between exports even when
+    # user-applied config is identical:
+    #   - `scaling-cooldown/<slice>`: timestamp of last scale-action per slice;
+    #     bumps whenever the scheduler fires (independent of user config). It
+    #     is observability metadata, not user-authored config, so it does not
+    #     belong in a round-trip identity check.
     local first_canonical second_canonical
-    first_canonical=$(printf '%s' "$first" | tr ',' '\n' | tr -d '[:space:]' | sort)
-    second_canonical=$(printf '%s' "$second" | tr ',' '\n' | tr -d '[:space:]' | sort)
+    first_canonical=$(printf '%s' "$first" | tr ',' '\n' | tr -d '[:space:]' | grep -v '"scaling-cooldown/' | sort)
+    second_canonical=$(printf '%s' "$second" | tr ',' '\n' | tr -d '[:space:]' | grep -v '"scaling-cooldown/' | sort)
     if ! assert_eq "$second_canonical" "$first_canonical" "Config round-trip canonical-form equality"; then
         log_info "first (canonical): $(printf '%s' "$first_canonical" | head -c 500)"
         log_info "second (canonical): $(printf '%s' "$second_canonical" | head -c 500)"
