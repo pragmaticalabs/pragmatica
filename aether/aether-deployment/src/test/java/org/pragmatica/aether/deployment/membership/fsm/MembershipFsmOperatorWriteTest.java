@@ -29,12 +29,12 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
-import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -43,18 +43,15 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
-import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -69,6 +66,14 @@ class MembershipFsmOperatorWriteTest {
     private static final long T0 = 1_000L;
 
     private static final long T1 = 2_000L;
+
+    /// RC1 Step 4 — HLC equivalent of `T1` used when constructing events that carry
+    /// `HlcTimestamp at`. State expectations stay on the millis path via `T0` / `T1`.
+    private static final HlcTimestamp T1_HLC = new HlcTimestamp(HlcTimestamp.pack(T1 * 1000L, 0), "test");
+
+    private static HlcTimestamp hlc(long millis) {
+        return new HlcTimestamp(HlcTimestamp.pack(millis * 1000L, 0), "test");
+    }
 
     private FakeLifecycleSnapshot lifecycleSnapshot;
 
@@ -117,7 +122,7 @@ class MembershipFsmOperatorWriteTest {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             // Drain ack stays pending → only the DRAINING write reaches consensus.
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DRAINING);
@@ -131,7 +136,7 @@ class MembershipFsmOperatorWriteTest {
         @Test void operatorDecommission_force_leader_proposesDecommissionedKvWrite() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, true, T1));
+            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, true, T1_HLC));
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
             assertThat(drainCoordinator.prepareCalls).isEmpty();
@@ -144,7 +149,7 @@ class MembershipFsmOperatorWriteTest {
             // invokes drain coordinator (spec §5 row OnDuty col OperatorDecommission(force=false)).
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, false, T1));
+            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, false, T1_HLC));
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DRAINING);
             assertThat(drainCoordinator.prepareCalls).containsExactly(new PrepareDrainCall(PEER_A,
@@ -161,7 +166,7 @@ class MembershipFsmOperatorWriteTest {
             leaderFlag.set(false);
             var fsm = startedFsm();
             var priorState = fsm.get(PEER_A).unwrap();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             assertThat(commandApplier.calls).isEmpty();
             assertThat(drainCoordinator.prepareCalls).isEmpty();
             // Local state unchanged: I1 says state derives from KV; without a write, no mutation.
@@ -177,7 +182,7 @@ class MembershipFsmOperatorWriteTest {
             var fsm = startedFsm();
             commandApplier.rejectWith(Causes.cause("consensus rejected"));
             var priorState = fsm.get(PEER_A).unwrap();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             // Write attempted but rejected — local state must remain prior state.
             assertThat(commandApplier.calls).hasSize(1);
             assertThat(fsm.get(PEER_A).unwrap()).isEqualTo(priorState);
@@ -189,7 +194,7 @@ class MembershipFsmOperatorWriteTest {
         @Test void operatorDrain_then_awaitDrainAckSuccess_writesDecommissioned() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             awaitState(fsm, PEER_A, Draining.class);
             assertThat(commandApplier.calls).hasSize(1);
             // F4: completing the awaitDrainAck Promise drives DrainOutcome(true) →
@@ -204,7 +209,7 @@ class MembershipFsmOperatorWriteTest {
         @Test void operatorDrain_then_awaitDrainAckFailure_writesFailedDrain() {
             seedOnDuty(PEER_A, T0);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             awaitState(fsm, PEER_A, Draining.class);
             drainCoordinator.failAckAt(0, Causes.cause("drain-hard-deadline"));
             awaitState(fsm, PEER_A, FailedDrain.class);
@@ -225,7 +230,7 @@ class MembershipFsmOperatorWriteTest {
             // F2: the timer's runnable enqueues JoinDeadlineExpired. We invoke the same path
             // directly to validate leader-writing classification + reducer wiring.
             commandApplier.calls.clear();
-            fsm.enqueueOperatorEvent(new JoinDeadlineExpired(PEER_A, System.currentTimeMillis()));
+            fsm.enqueueOperatorEvent(new JoinDeadlineExpired(PEER_A, hlc(System.currentTimeMillis())));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Decommissioned.class);
             assertThat(commandApplier.calls).hasSize(1);
             assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.DECOMMISSIONED);
@@ -236,7 +241,7 @@ class MembershipFsmOperatorWriteTest {
             leaderFlag.set(false);
             var fsm = startedFsm();
             commandApplier.calls.clear();
-            fsm.enqueueOperatorEvent(new JoinDeadlineExpired(PEER_A, T0 + 60_000L));
+            fsm.enqueueOperatorEvent(new JoinDeadlineExpired(PEER_A, hlc(T0 + 60_000L)));
             assertThat(commandApplier.calls).isEmpty();
         }
     }
@@ -289,114 +294,6 @@ class MembershipFsmOperatorWriteTest {
             assertThat(commandApplier.calls).isEmpty();
             assertThat(fsm.get(SELF).isEmpty()).isTrue();
         }
-    }
-
-    @Nested @DisplayName("F.4: QUIC PeerConnected → SwimHealthy synthesis bridge")
-    class QuicPeerConnectedBridgeTests {
-        // F.4 (2026-05-12): When QUIC handshake completes for a peer that is BOTH (a) in
-        // static topology config AND (b) currently SWIM-alive, MembershipFsm.onPeerConnected
-        // synthesizes a HealthyObserved observation that routes through the same
-        // onSwimObservation leader-write gate. Reducer cell (UNTRACKED, SwimHealthy) → ON_DUTY
-        // fires on the leader (Put(L=ON_DUTY) via consensus). On followers, the leader-write
-        // gate drops the synthesis. Filter conditions and idempotence are also covered.
-
-        @Test void onPeerConnected_realClusterPeer_leader_writesOnDuty() {
-            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
-            fsm.start().await();
-            fsm.onPeerConnected(PEER_A);
-            assertThat(commandApplier.calls).hasSize(1);
-            assertSingleLifecyclePut(commandApplier.calls.get(0), PEER_A, NodeLifecycleState.ON_DUTY);
-        }
-
-        @Test void onPeerConnected_realClusterPeer_idempotent() {
-            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
-            fsm.start().await();
-            fsm.onPeerConnected(PEER_A);
-            fsm.onPeerConnected(PEER_A);
-            assertThat(commandApplier.calls).hasSize(1);
-        }
-
-        @Test void onPeerConnected_unknownPeer_dropsSynthesis() {
-            // Peer NOT in static topology config (auto-provisioned, fresh NodeId) — synthesis
-            // must be filtered out. Such peers legitimately go through SWIM probe-Ack.
-            var fsm = buildFsmWithKnownPeers(Set.of()); // no known static peers → predicate rejects
-            fsm.start().await();
-            fsm.onPeerConnected(PEER_A);
-            assertThat(commandApplier.calls).isEmpty();
-            assertThat(fsm.get(PEER_A).isEmpty()).isTrue();
-        }
-
-        @Test void onPeerConnected_swimNotAlive_dropsSynthesis() {
-            // Peer is in static topology config but SWIM has not yet admitted it (e.g.,
-            // stale or pre-handshake state). Avoid premature ON_DUTY write — wait for the
-            // SWIM-alive sub-check to flip true. Modelled by an "always false" predicate
-            // (the production composite predicate would yield false on the SWIM-alive arm).
-            var fsm = buildFsmWithPredicate(_ -> false);
-            fsm.start().await();
-            fsm.onPeerConnected(PEER_A);
-            assertThat(commandApplier.calls).isEmpty();
-            assertThat(fsm.get(PEER_A).isEmpty()).isTrue();
-        }
-
-        @Test void onPeerConnected_follower_dropsViaLeaderGate() {
-            // Static-config peer + SWIM-alive predicate true, BUT this node is a follower.
-            // The synthesis routes through onSwimObservation, which drops on followers (the
-            // leader-write gate at spec §6.1). Single-writer invariant preserved.
-            leaderFlag.set(false);
-            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
-            fsm.start().await();
-            fsm.onPeerConnected(PEER_A);
-            assertThat(commandApplier.calls).isEmpty();
-        }
-
-        @Test void onPeerConnected_thenSwimHealthy_idempotent() {
-            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
-            fsm.start().await();
-            fsm.onPeerConnected(PEER_A);
-            fsm.onSwimObservation(new HealthyObserved(PEER_A, 0L));
-            assertThat(commandApplier.calls).hasSize(1);
-        }
-
-        @Test void onPeerConnected_self_dropsViaSelfFilter() {
-            // Self-bootstrap goes through the NodeLifecycle ACTIVE / LeaderChange paths,
-            // not the QUIC bridge. Even if the predicate would admit self, the explicit
-            // self filter in onPeerConnected rejects.
-            var fsm = buildFsmWithPredicate(_ -> true); // would admit anything
-            fsm.start().await();
-            fsm.onPeerConnected(SELF);
-            assertThat(commandApplier.calls).isEmpty();
-            assertThat(fsm.get(SELF).isEmpty()).isTrue();
-        }
-
-        @Test void onPeerConnected_beforeStart_dropsViaStartedGate() {
-            // Pre-start calls must drop — mirrors all other FSM entry points.
-            var fsm = buildFsmWithKnownPeers(Set.of(PEER_A));
-            // No fsm.start() invoked.
-            fsm.onPeerConnected(PEER_A);
-            assertThat(commandApplier.calls).isEmpty();
-        }
-    }
-
-    /// F.4 helper: build an FSM where the QUIC `onPeerConnected` bridge admits ONLY the
-    /// supplied static-config peers (modelling the composite `topologyConfig ∧ swim-alive`
-    /// predicate as "trust the test to pre-classify"). Uses the 9-arg production factory.
-    private MembershipFsm buildFsmWithKnownPeers(Set<NodeId> knownAlivePeers) {
-        var knownSnapshot = new HashSet<>(knownAlivePeers);
-        return buildFsmWithPredicate(knownSnapshot::contains);
-    }
-
-    private MembershipFsm buildFsmWithPredicate(Predicate<NodeId> predicate) {
-        var config = MembershipFsmConfig.defaultMembershipFsmConfig();
-        BooleanSupplier isLeader = leaderFlag::get;
-        return MembershipFsm.membershipFsm(SELF,
-                                            config,
-                                            lifecycleSnapshot,
-                                            slotSnapshot,
-                                            commandApplier,
-                                            drainCoordinator,
-                                            scheduler,
-                                            isLeader,
-                                            predicate);
     }
 
     @Nested @DisplayName("F7+F8: leader-takeover resumes in-flight protocols")
@@ -466,7 +363,7 @@ class MembershipFsmOperatorWriteTest {
                                                                     HlcTimestamp.ZERO);
             lifecycleSnapshot.put(PEER_A, priorValue);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1));
+            fsm.enqueueOperatorEvent(new OperatorDrain(PEER_A, DrainReason.OPERATOR_DRAIN, T1_HLC));
             assertThat(commandApplier.calls).hasSize(1);
             var write = (NodeLifecycleValue) ((Put<?, ?>) commandApplier.calls.get(0).get(0)).value();
             assertThat(write.state()).isEqualTo(NodeLifecycleState.DRAINING);
@@ -484,7 +381,7 @@ class MembershipFsmOperatorWriteTest {
                                                                     HlcTimestamp.ZERO);
             lifecycleSnapshot.put(PEER_A, priorValue);
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, true, T1));
+            fsm.enqueueOperatorEvent(new OperatorDecommission(PEER_A, true, T1_HLC));
             var write = (NodeLifecycleValue) ((Put<?, ?>) commandApplier.calls.get(0).get(0)).value();
             assertThat(write.state()).isEqualTo(NodeLifecycleState.DECOMMISSIONED);
             assertThat(write.host()).isEqualTo("10.4.5.6");

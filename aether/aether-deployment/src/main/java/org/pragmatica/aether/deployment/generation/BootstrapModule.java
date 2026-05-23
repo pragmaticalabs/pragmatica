@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -36,7 +37,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -57,6 +57,12 @@ public interface BootstrapModule {
     @Contract void onLeaderLost();
     @Contract void retryIfNeeded();
     @Contract BootstrapModule onBootstrapCommitted(Runnable callback);
+    /// RC1 Step 2: tail `MembershipDecision` events from `TopologyObserver` so the
+    /// bootstrap module retries its core-partition seeding whenever the membership
+    /// projection changes. The committed-atom KV snapshot supplier remains the source
+    /// for actual seeding work — the subscription is the dirty signal
+    /// (snapshot-then-tail).
+    @Contract void onMembershipDecision(MembershipDecision decision);
 
     static BootstrapModule bootstrapModule(BooleanSupplier isLeaderSupplier,
                                            Supplier<Long> rabiaTermSupplier,
@@ -78,8 +84,6 @@ public interface BootstrapModule {
                                          Option.some(cluster),
                                          new AtomicBoolean(false),
                                          new AtomicInteger(),
-                                         new AtomicLong(0L),
-                                         new AtomicLong(0L),
                                          new AtomicReference<>());
     }
 }
@@ -95,14 +99,8 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                              Option<ClusterNode<KVCommand<AetherKey>>> cluster,
                              AtomicBoolean bootstrapComplete,
                              AtomicInteger bootstrapAttempts,
-                             AtomicLong leaderBootstrapTimeMs,
-                             AtomicLong lastSeedAttemptMs,
                              AtomicReference<Runnable> bootstrapCommittedCallback) implements BootstrapModule {
     private static final Logger log = LoggerFactory.getLogger(BootstrapModuleRecord.class);
-
-    private static final long SEED_GRACE_MS = 60_000L;
-
-    private static final long SEED_ATTEMPT_THROTTLE_MS = 5_000L;
 
     private static final int SEED_CORE_MIN = 3;
 
@@ -112,8 +110,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         log.info("BootstrapModule becoming leader — projecting from committed atoms, then planning bootstrap");
         bootstrapComplete.set(false);
         bootstrapAttempts.set(0);
-        leaderBootstrapTimeMs.set(System.currentTimeMillis());
-        lastSeedAttemptMs.set(0L);
         var seeded = projectFromCommittedAtoms();
         performLeaderChangeBootstrap(seeded);
     }
@@ -122,8 +118,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         log.info("BootstrapModule stepping down — resetting bootstrap state");
         bootstrapComplete.set(false);
         bootstrapAttempts.set(0);
-        leaderBootstrapTimeMs.set(0L);
-        lastSeedAttemptMs.set(0L);
     }
 
     @Contract@Override public void retryIfNeeded() {
@@ -133,6 +127,11 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract@Override public BootstrapModule onBootstrapCommitted(Runnable callback) {
         bootstrapCommittedCallback.set(callback);
         return this;
+    }
+
+    @Contract@Override public void onMembershipDecision(MembershipDecision decision) {
+        log.debug("BootstrapModule received {}", decision);
+        retryIfNeeded();
     }
 
     @Contract private void performLeaderChangeBootstrap(ClusterGenerationSnapshot seeded) {
@@ -217,7 +216,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
             log.debug("Skipping ClusterConfigValue seed: initial core size {} below quorum minimum", initialSize);
             return Option.none();
         }
-        if (!seedGraceElapsedOrConverged(initialSize)) {return Option.none();}
         var coreMax = Math.max(initialSize, SEED_CORE_MAX);
         if (coreMax % 2 == 0) {coreMax += 1;}
         var seed = ClusterConfigValue.clusterConfigValue("",
@@ -230,32 +228,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                                                          1L);
         KVCommand<AetherKey> command = new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT, seed);
         return Option.some(new ClusterConfigSeedPlan(command, initialSize, coreMax));
-    }
-
-    private boolean seedGraceElapsedOrConverged(int initialSize) {
-        var lifecycleCount = countLifecycleAtoms();
-        if (lifecycleCount >= initialSize) {return true;}
-        var nowMs = System.currentTimeMillis();
-        var bootstrapTime = leaderBootstrapTimeMs.get();
-        if (bootstrapTime == 0L) {return true;}
-        var elapsed = nowMs - bootstrapTime;
-        if (elapsed >= SEED_GRACE_MS) {
-            log.info("ClusterConfigValue seed grace expired ({}ms >= {}ms) with lifecycle count {} of expected {} — seeding anyway",
-                     elapsed,
-                     SEED_GRACE_MS,
-                     lifecycleCount,
-                     initialSize);
-            return true;
-        }
-        var lastAttempt = lastSeedAttemptMs.get();
-        if (lastAttempt > 0L && nowMs - lastAttempt <SEED_ATTEMPT_THROTTLE_MS) {return false;}
-        lastSeedAttemptMs.set(nowMs);
-        log.debug("Deferring ClusterConfigValue seed: lifecycle count {} < initialSize {}, grace elapsed {}ms / {}ms",
-                  lifecycleCount,
-                  initialSize,
-                  elapsed,
-                  SEED_GRACE_MS);
-        return false;
     }
 
     private int countLifecycleAtoms() {
@@ -282,9 +254,20 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     }
 
     @Contract private void retryBootstrapIfNeeded() {
-        if (bootstrapComplete.get() || !isLeaderSupplier.getAsBoolean()) {return;}
-        if (bootstrapAttempts.get() >= BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS) {return;}
-        attemptBootstrap(projectFromCommittedAtoms());
+        if (!isLeaderSupplier.getAsBoolean()) {return;}
+        if (!bootstrapComplete.get() && bootstrapAttempts.get() < BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS) {
+            attemptBootstrap(projectFromCommittedAtoms());
+        }
+        retryConfigSeedIfNeeded();
+    }
+
+    @Contract private void retryConfigSeedIfNeeded() {
+        cluster.onPresent(clusterNode -> planClusterConfigSeed().onPresent(plan -> {
+            logClusterConfigSeed(plan);
+            clusterNode.apply(List.of(plan.command()))
+                       .onFailure(cause -> log.warn("Config seed retry failed: {}", cause.message()))
+                       .onSuccess(_ -> log.info("Config seed applied on retry"));
+        }));
     }
 
     private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<PartitionOwner> existing,

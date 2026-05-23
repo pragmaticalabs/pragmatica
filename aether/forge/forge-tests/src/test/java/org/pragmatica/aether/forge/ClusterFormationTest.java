@@ -106,7 +106,7 @@ class ClusterFormationTest {
         // Collect status from all nodes
         var leaderNode = cluster.currentLeader().unwrap();
 
-        // All nodes should report the same leader via /api/status endpoint
+        // All nodes should report the same leader via /api/nodes/status endpoint
         for (var node : cluster.status().nodes()) {
             var status = getStatus(node.mgmtPort());
             assertThat(status).contains(leaderNode);
@@ -145,7 +145,7 @@ class ClusterFormationTest {
     }
 
     private String getStatus(int port) {
-        return httpGet(port, "/api/status");
+        return httpGet(port, "/api/nodes/status");
     }
 
     private String getMetrics(int port) {

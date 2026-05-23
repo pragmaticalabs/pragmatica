@@ -87,26 +87,14 @@ public final class ManagementRouter {
     private void handleRoute(Route<?> route, RequestContext serverCtx, ResponseWriter response) {
         var routingCtx = adaptContext(serverCtx, route);
         route.handler().handle(routingCtx)
-                     .onFailure(cause -> writeError(response, cause))
+                     .onFailure(cause -> writeError(response, cause, serverCtx))
                      .onSuccess(value -> writeSuccess(value,
                                                       route.contentType(),
                                                       response));
     }
 
-    private void writeError(ResponseWriter response, org.pragmatica.lang.Cause cause) {
-        var status = resolveHttpStatus(cause);
-        response.error(status, cause.message());
-    }
-
-    private static org.pragmatica.http.HttpStatus resolveHttpStatus(org.pragmatica.lang.Cause cause) {
-        if (cause instanceof org.pragmatica.http.routing.HttpError httpError) {return findByCode(httpError.status()
-                                                                                                                 .code());}
-        return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
-    }
-
-    private static org.pragmatica.http.HttpStatus findByCode(int code) {
-        for (var status : org.pragmatica.http.HttpStatus.values()) {if (status.code() == code) {return status;}}
-        return org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR;
+    private void writeError(ResponseWriter response, org.pragmatica.lang.Cause cause, RequestContext serverCtx) {
+        ProblemResponses.writeProblem(response, cause, serverCtx.path(), serverCtx.requestId());
     }
 
     private void writeSuccess(Object value, ContentType contentType, ResponseWriter response) {

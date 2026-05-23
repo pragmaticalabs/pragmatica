@@ -48,6 +48,14 @@ public sealed interface OutputFormatter {
 
     private static int printValue(String json, String fieldPath) {
         if (fieldPath == null) {return printJson(json);}
+        // Detect server-side error envelope (e.g., `{"error":"..."}` from a forward failure
+        // or 4xx/5xx response). Surface the actual error instead of the misleading
+        // "Path not found: <fieldPath>" — that message implied the field was renamed
+        // when in reality the response body was an error envelope without the expected shape.
+        if (isErrorResponse(json)) {
+            System.err.println("Error: " + extractErrorMessage(json));
+            return ExitCode.ERROR;
+        }
         return MAPPER.extractField(json, fieldPath)
                                   .fold(OutputFormatter::handleFieldError, OutputFormatter::printToStdout);
     }
@@ -177,25 +185,42 @@ public sealed interface OutputFormatter {
     }
 
     static boolean isErrorResponse(String json) {
-        return MAPPER.readTree(json).map(node -> node.has("error"))
-                              .or(false);
+        return MAPPER.readTree(json).map(OutputFormatter::looksLikeError).or(false);
     }
 
     static boolean isNotFoundResponse(String json) {
-        return MAPPER.readTree(json).map(OutputFormatter::containsNotFound)
-                              .or(false);
+        return MAPPER.readTree(json).map(OutputFormatter::containsNotFound).or(false);
     }
 
     static String extractErrorMessage(String json) {
-        return MAPPER.readTree(json).map(OutputFormatter::extractErrorField)
-                              .or(json);
+        return MAPPER.readTree(json).map(OutputFormatter::extractErrorField).or(json);
+    }
+
+    /// RFC 9457 ProblemDetail (`application/problem+json`) carries an integer `status` member
+    /// for client classification. Legacy `{"error":"..."}` envelopes do not — those remain
+    /// detectable via the `error` field for backward compat with any external endpoint that
+    /// hasn't migrated to the canonical envelope.
+    private static boolean looksLikeError(JsonNode node) {
+        if (node == null || !node.isObject()) {return false;}
+        if (isProblemDetail(node)) {return true;}
+        return node.has("error");
+    }
+
+    private static boolean isProblemDetail(JsonNode node) {
+        var statusNode = node.path("status");
+        return statusNode.isInt() && statusNode.asInt() >= 400 && statusNode.asInt() < 600;
     }
 
     private static String extractErrorField(JsonNode node) {
+        if (isProblemDetail(node)) {
+            var detail = node.path("detail");
+            if (detail.isTextual()) {return detail.asText();}
+            var title = node.path("title");
+            if (title.isTextual()) {return title.asText();}
+            return node.toString();
+        }
         var errorNode = node.path("error");
-        return errorNode.isMissingNode()
-              ? node.toString()
-              : errorNode.asText();
+        return errorNode.isMissingNode() ? node.toString() : errorNode.asText();
     }
 
     static int printError(String message, OutputOptions options) {
@@ -217,6 +242,7 @@ public sealed interface OutputFormatter {
     }
 
     private static boolean containsNotFound(JsonNode node) {
+        if (isProblemDetail(node)) {return node.path("status").asInt() == 404;}
         if (!node.has("error")) {return false;}
         var errorText = node.path("error").asText()
                                  .toLowerCase();

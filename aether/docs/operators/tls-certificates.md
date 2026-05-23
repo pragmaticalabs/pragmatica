@@ -181,7 +181,7 @@ the current key first, then fall back to the previous key.
 ### Management API
 
 ```
-GET /api/certificate
+GET /api/certificates
 ```
 
 Response:
@@ -216,10 +216,10 @@ When no certificate provider is configured, the response returns:
 ### CLI
 
 ```bash
-aether cert status
+aether certs status
 ```
 
-This fetches and displays the `/api/certificate` endpoint output for the connected node.
+This fetches and displays the `/api/certificates` endpoint output for the connected node.
 
 ### Cluster-Level Status
 
@@ -241,7 +241,7 @@ cluster:
 continue to work until they are closed or time out.
 
 **Resolution:**
-1. Check renewal scheduler status: `GET /api/certificate` -- look for `renewalStatus: "FAILED"`
+1. Check renewal scheduler status: `GET /api/certificates` -- look for `renewalStatus: "FAILED"`
 2. Check logs for `CertificateRenewalScheduler` errors
 3. If auto-generating, verify `cluster_secret` is set and consistent across all nodes
 4. Restart the node -- a fresh certificate will be generated on startup

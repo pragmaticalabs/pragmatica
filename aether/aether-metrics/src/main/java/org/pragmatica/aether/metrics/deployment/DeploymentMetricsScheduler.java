@@ -102,9 +102,15 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
 
     @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
         switch (decision){
-            case NodeJoined(_, List<NodeId> newTopology) -> topology.set(newTopology);
-            case NodeRemoved(_, List<NodeId> newTopology) -> topology.set(newTopology);
-            case NodeDecommissioned(_, List<NodeId> newTopology) -> topology.set(newTopology);
+            case NodeJoined(_, List<NodeId> newTopology, _, _) -> topology.set(newTopology);
+            case NodeRemoved(_, List<NodeId> newTopology, _, _) -> topology.set(newTopology);
+            case NodeDecommissioned(_, List<NodeId> newTopology, _, _) -> topology.set(newTopology);
+            // RC1 Step 2 lifecycle-projection variants: pre-terminal transitions do not
+            // change the committed topology shape — schedule unchanged.
+            case MembershipDecision.NodeJoining _,
+                 MembershipDecision.NodeDraining _,
+                 MembershipDecision.NodeFailedDrain _,
+                 MembershipDecision.NodeShuttingDown _ -> {}
         }
     }
 

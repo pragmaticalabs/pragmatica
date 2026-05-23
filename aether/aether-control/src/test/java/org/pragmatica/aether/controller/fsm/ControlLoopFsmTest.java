@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.metrics.CommunityReport;
@@ -35,6 +36,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.lang.Option;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -45,6 +47,7 @@ import org.pragmatica.statemachine.FsmTestHarness;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -318,5 +321,9 @@ class ControlLoopFsmTest {
         @Override public void addPongListener(Consumer<ClusterSyncPong> listener) {}
         @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}
         @Override public void setPeerObservationBuffer(PeerObservationBuffer buffer) {}
+        @Override public Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot() { return Option.none(); }
+        @Override public void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier) {}
+        @Override public Option<AggregatedReachabilitySnapshot> bestSnapshot() { return Option.none(); }
+        @Override public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {}
     }
 }

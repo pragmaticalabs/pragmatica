@@ -76,8 +76,8 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
 
             @Override public void onMembershipDecision(MembershipDecision decision) {
                 switch (decision){
-                    case NodeRemoved(NodeId removedNode, _) -> handleNodeDeparture(removedNode);
-                    case NodeDecommissioned(NodeId decommissioned, _) -> handleNodeDeparture(decommissioned);
+                    case NodeRemoved(NodeId removedNode, _, _, _) -> handleNodeDeparture(removedNode);
+                    case NodeDecommissioned(NodeId decommissioned, _, _, _) -> handleNodeDeparture(decommissioned);
                     default -> {}
                 }
             }

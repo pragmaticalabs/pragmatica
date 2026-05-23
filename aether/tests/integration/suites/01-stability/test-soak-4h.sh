@@ -12,6 +12,8 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 SOAK_DURATION="${SOAK_DURATION:-14400}"  # 4 hours default
 SOAK_RPS="${SOAK_RPS:-100}"             # 100 rps default
 SOAK_LOG="/tmp/sustained_load_soak.log"
+# Soak baseline — see aether/docs/specs/test-readiness-contract.md §4 (Soak tier, 1.0%).
+# Long-running steady-state load with no disruption; threshold is the measurement noise floor.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-1.0}"
 BLUEPRINT="${SOAK_BLUEPRINT:-org.pragmatica.aether.test:test-persistence:1.0.0}"
 SOAK_KEY="${SOAK_KEY:-soak-test}"
@@ -31,7 +33,7 @@ collect_stats() {
         local node_name="node-$((port_offset + 1))"
         # Collect via management metrics endpoint (no SSH needed)
         local status_json
-        status_json=$(curl -s -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${mgmt_port}/api/status" 2>/dev/null)
+        status_json=$(curl -s -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${mgmt_port}/api/nodes/status" 2>/dev/null)
         local uptime
         uptime=$(json_value "$status_json" "uptimeSeconds")
         uptime="${uptime:-0}"
@@ -41,9 +43,9 @@ collect_stats() {
 }
 
 test_cluster_baseline() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "${NODE_COUNT:-5}" "Baseline: ${count} nodes (>= ${NODE_COUNT:-5})"
 }
 
@@ -79,7 +81,7 @@ test_collect_pre_stats() {
 
 test_soak_load() {
     local start_nodes
-    start_nodes=$(cluster_node_count)
+    start_nodes=$(cluster_member_count)
 
     log_info "Starting ${SOAK_DURATION}s soak at ${SOAK_RPS} rps against app endpoint"
     rm -f "$SOAK_LOG"
@@ -107,7 +109,7 @@ test_collect_post_stats() {
 
 test_no_node_drift() {
     local end_nodes
-    end_nodes=$(cluster_node_count)
+    end_nodes=$(cluster_member_count)
     assert_ge "$end_nodes" "${NODE_COUNT:-5}" "No node drift: ${end_nodes} nodes (>= ${NODE_COUNT:-5})"
 }
 

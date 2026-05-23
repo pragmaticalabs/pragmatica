@@ -24,6 +24,7 @@ import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.ManageableNode;
@@ -34,6 +35,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -77,7 +79,7 @@ import org.slf4j.LoggerFactory;
         return Stream.of(ManagementRoutes.<ClusterConfigResponse>route(ManagementRoute.CLUSTER_CONFIG_GET)
                                          .to(_ -> buildConfigResponse())
                                          .asJson(),
-                         ManagementRoutes.<ClusterStatusResponse>route(ManagementRoute.CLUSTER_CONFIG_STATUS)
+                         ManagementRoutes.<ClusterStatusResponse>route(ManagementRoute.CLUSTER_STATUS)
                                          .to(_ -> buildStatusResponse())
                                          .asJson(),
                          ManagementRoutes.<Object>route(ManagementRoute.CLUSTER_CONFIG_APPLY)
@@ -145,19 +147,65 @@ import org.slf4j.LoggerFactory;
     }
 
     private static List<ClusterStatusNodeInfo> buildNodeInfos(ManageableNode node, String leaderId) {
+        var leaderOpt = node.leader();
+        var view = node.membershipView();
+        var reachabilitySnapshot = node.metricsCollector().lastReachabilitySnapshot();
+        var selfId = node.self();
+        // Per-peer KV state pre-fetch — authoritative FSM intent, mirrors the kvState/derivedStatus
+        // split applied to /api/nodes/status NodeInfo. See aether/docs/specs/state-authority.md.
+        // TODO (B5, RC2): replace forEach with an indexed accessor for large clusters.
+        var kvStateMap = new java.util.HashMap<NodeId, String>();
+        node.kvStore().forEach(AetherKey.NodeLifecycleKey.class,
+                               AetherValue.NodeLifecycleValue.class,
+                               (key, value) -> kvStateMap.put(key.nodeId(), externalStateName(value.state())));
         return node.metricsCollector().allMetrics()
                                     .keySet()
                                     .stream()
-                                    .map(nid -> toStatusNodeInfo(nid, leaderId))
+                                    .map(nid -> toStatusNodeInfo(nid,
+                                                                  leaderOpt,
+                                                                  view,
+                                                                  reachabilitySnapshot,
+                                                                  selfId,
+                                                                  kvStateMap.getOrDefault(nid, ""),
+                                                                  leaderId))
                                     .toList();
     }
 
-    private static ClusterStatusNodeInfo toStatusNodeInfo(NodeId nid, String leaderId) {
+    private static ClusterStatusNodeInfo toStatusNodeInfo(NodeId nid,
+                                                          Option<NodeId> leaderOpt,
+                                                          MembershipView view,
+                                                          Option<AggregatedReachabilitySnapshot> reachabilitySnapshot,
+                                                          NodeId selfId,
+                                                          String kvState,
+                                                          String leaderId) {
+        // derivedStatus — operator-visible projection of KV ∪ SWIM ∪ aggregated reachability ∪ quorum,
+        // mirrors StatusRoutes.toNodeInfo. ROUTE-LAYER DOWNGRADE: if KV says ON_DUTY but a quorum of
+        // observers reports UNREACHABLE in the latest aggregated snapshot, we show UNKNOWN here so
+        // operator dashboards stop trusting a peer the cluster has consensus-lost.
+        var status = view.statusOf(nid);
+        var transportLag = status == MembershipView.MemberStatus.ON_DUTY
+                           && !nid.equals(selfId)
+                           && reachabilitySnapshot.fold(() -> false, s -> !s.isReachable(nid));
+        var derivedStatus = transportLag
+                            ? "UNKNOWN"
+                            : (status == MembershipView.MemberStatus.UNTRACKED ? "UNKNOWN" : status.name());
+        // TODO (follow-up): role is still hardcoded "core" — should read from ActivationDirectiveValue
+        // in kvStore (see StatusRoutes.collectNodeRoles). Out of scope for the state-authority split.
         return new ClusterStatusNodeInfo(nid.id(),
                                          "core",
-                                         "ON_DUTY",
+                                         kvState,
+                                         derivedStatus,
                                          AetherNode.VERSION,
                                          nid.id().equals(leaderId));
+    }
+
+    /// Collapse `SHUTTING_DOWN` to `DRAINING` for external viewers. Mirrors the normalization in
+    /// `StatusRoutes.externalStateName` / `NodeLifecycleRoutes.externalStateName`.
+    /// See `aether/docs/specs/state-authority.md`.
+    private static String externalStateName(AetherValue.NodeLifecycleState state) {
+        return state == AetherValue.NodeLifecycleState.SHUTTING_DOWN
+              ? AetherValue.NodeLifecycleState.DRAINING.name()
+              : state.name();
     }
 
     private static String reconcilerStateName(ManageableNode node) {

@@ -991,7 +991,11 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Triggers a resync when the node detects it's significantly behind.
+    /// No-op when already syncing — doSynchronize() handles retries internally.
     private void triggerResync() {
+        if (engineState.get() instanceof EngineState.Syncing) {
+            return;
+        }
         doClusterConnected();
     }
 

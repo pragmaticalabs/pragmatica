@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
@@ -18,16 +18,16 @@ test_get_current_config() {
 }
 
 test_apply_config_override() {
-    # Apply a benign config change
-    local body='{"overrides":{"test.integration.marker":"applied"}}'
+    # /api/config expects {key, value, nodeId?} per ConfigRoutes.SetConfigRequest.
+    # The earlier {overrides:{...}} shape always 500s with "Missing key or value field".
+    local body='{"key":"test.integration.marker","value":"applied"}'
     local result
     result=$(config_apply "$body")
-    # Accept any non-error response
     if [ -n "$result" ]; then
         log_pass "Config apply returned response"
     else
-        log_warn "Config apply returned empty — may not support arbitrary overrides"
-        log_pass "Config apply endpoint responds"
+        log_fail "Config apply returned empty for {key,value} body"
+        return 1
     fi
 }
 
@@ -60,7 +60,7 @@ test_overrides_endpoint() {
 
 test_cluster_unchanged() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Node count unchanged after config apply"
 }
 

@@ -4,10 +4,20 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.security;
 
+import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.routing.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 
 
-public sealed interface SecurityError extends Cause {
+public sealed interface SecurityError extends Cause, HttpStatusAware {
+    /// Default 401 — most security failures are authentication-related. Authorization
+    /// failures (AccessDenied, InsufficientRole) override to 403; server-side JWKS
+    /// fetch failures override to 500.
+    @Override
+    default HttpStatus httpStatus() {
+        return HttpStatus.UNAUTHORIZED;
+    }
+
     SecurityError MISSING_API_KEY = new MissingCredentials("X-API-Key header required");
 
     SecurityError INVALID_API_KEY = new InvalidCredentials("Invalid API key");
@@ -20,7 +30,11 @@ public sealed interface SecurityError extends Cause {
 
     record InvalidCredentials(String message) implements SecurityError{}
 
-    record AccessDenied(String message) implements SecurityError{}
+    record AccessDenied(String message) implements SecurityError{
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.FORBIDDEN;
+        }
+    }
 
     record TokenExpired(String message) implements SecurityError{}
 
@@ -32,9 +46,17 @@ public sealed interface SecurityError extends Cause {
 
     record KeyNotFound(String message) implements SecurityError{}
 
-    record JwksFetchFailed(String message) implements SecurityError{}
+    record JwksFetchFailed(String message) implements SecurityError{
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+    }
 
     SecurityError NO_VALIDATOR_CONFIGURED = new MissingCredentials("Route requires authentication but no security mode is configured");
 
-    record InsufficientRole(String message) implements SecurityError{}
+    record InsufficientRole(String message) implements SecurityError{
+        @Override public HttpStatus httpStatus() {
+            return HttpStatus.FORBIDDEN;
+        }
+    }
 }

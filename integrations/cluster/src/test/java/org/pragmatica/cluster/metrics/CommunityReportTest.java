@@ -6,6 +6,7 @@ package org.pragmatica.cluster.metrics;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import java.util.Set;
 
@@ -46,7 +47,7 @@ class CommunityReportTest {
     void construct_nullPartitions_normalizesToEmpty() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 
-        var report = new CommunityReport("pool-a", 0L, 0L, 0L, governor, 0, 0, 0, 0, null, 0L);
+        var report = new CommunityReport("pool-a", 0L, 0L, 0L, governor, 0, 0, 0, 0, null, 0L, Option.none());
 
         assertThat(report.partitionsHeld()).isEmpty();
     }
@@ -55,7 +56,7 @@ class CommunityReportTest {
     void construct_nullCommunityId_normalizesToEmpty() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 
-        var report = new CommunityReport(null, 0L, 0L, 0L, governor, 0, 0, 0, 0, Set.of(), 0L);
+        var report = new CommunityReport(null, 0L, 0L, 0L, governor, 0, 0, 0, 0, Set.of(), 0L, Option.none());
 
         assertThat(report.communityId()).isEmpty();
     }

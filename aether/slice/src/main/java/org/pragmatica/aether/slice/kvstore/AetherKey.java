@@ -1334,4 +1334,60 @@ import static org.pragmatica.lang.Result.success;
             return Number.parseInt(parts[2]).map(partition -> new ConsumerGroupKey(parts[0], parts[1], partition));
         }
     }
+
+    Fn1<Cause, String> CLUSTER_EVENT_LOG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-event-log key format: %s");
+
+    /// RC1 Step 1 — cluster-scoped replicated event log key.
+    ///
+    /// `(epoch, nodeId, seq)` is the Rabia-committed triple that gives strict total order
+    /// across the cluster without HLC ties. Total order is established by the commit, not the
+    /// HLC stamp inside the value — sidesteps the OB1 receive-time race where two events
+    /// POSTed to two nodes within the same wall-clock tick could otherwise interleave
+    /// differently per node.
+    ///
+    /// **`nodeId` is included to prevent cross-node `(epoch, seq)` collisions.** The
+    /// publisher's `seq` is a per-node `AtomicLong`; without `nodeId` in the key two nodes
+    /// publishing the same `(epoch, seq)` pair would collide on KV (last-write-wins),
+    /// silently dropping events. With `nodeId` each node owns a disjoint sub-keyspace; total
+    /// cross-node order is recovered at read time via Rabia commit order (commitOrder of
+    /// `KVCommand.Put`s on the materialised-view subscriber).
+    ///
+    /// `epoch` is also the sweep unit: `ClusterEventLogSweeper` deletes all keys with
+    /// `epoch < currentEpoch - retainedEpochs` in a single pass. See spec §3.6.
+    ///
+    /// **String form:** `cluster-event-log/<epoch>/<nodeId>/<seq>`. The parser splits the
+    /// stripped suffix into exactly three parts on `/` — `nodeId` is the middle slot and
+    /// must not contain `/` itself (no current call site produces that; `NodeId.nodeId(...)`
+    /// validates non-blank but does not forbid `/`, so we keep this an in-process invariant).
+    record ClusterEventLogKey(long epoch, NodeId nodeId, long seq) implements AetherKey {
+        private static final String PREFIX = "cluster-event-log/";
+
+        @Override public String asString() {
+            return PREFIX + epoch + "/" + nodeId.id() + "/" + seq;
+        }
+
+        @Override public String toString() {
+            return asString();
+        }
+
+        public static ClusterEventLogKey clusterEventLogKey(long epoch, NodeId nodeId, long seq) {
+            return new ClusterEventLogKey(epoch, nodeId, seq);
+        }
+
+        public static Result<ClusterEventLogKey> clusterEventLogKey(String key) {
+            if (!key.startsWith(PREFIX)) {return CLUSTER_EVENT_LOG_KEY_FORMAT_ERROR.apply(key).result();}
+            var content = key.substring(PREFIX.length());
+            var firstSlash = content.indexOf('/');
+            var lastSlash = content.lastIndexOf('/');
+            if (firstSlash <= 0 || lastSlash <= firstSlash || lastSlash >= content.length() - 1) {return CLUSTER_EVENT_LOG_KEY_FORMAT_ERROR.apply(key)
+                                                                                                                                                  .result();}
+            var epochPart = content.substring(0, firstSlash);
+            var nodeIdPart = content.substring(firstSlash + 1, lastSlash);
+            var seqPart = content.substring(lastSlash + 1);
+            return Result.all(Number.parseLong(epochPart),
+                              NodeId.nodeId(nodeIdPart),
+                              Number.parseLong(seqPart))
+            .map(ClusterEventLogKey::new);
+        }
+    }
 }

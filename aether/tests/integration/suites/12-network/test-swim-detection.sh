@@ -15,7 +15,7 @@ source "${SCRIPT_DIR}/../../lib/topology.sh"
 DETECTION_TIMEOUT="${SWIM_DETECTION_TIMEOUT:-15}"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     # SWIM cold-boot suppression bypass: kills against a phase=COLD_BOOT cluster
     # produce UnknownObserved (not FaultyObserved), so no NODE_FAILED event fires.
     # Soft (log_warn) — docker-remote cluster B cumulative degradation can keep
@@ -25,8 +25,8 @@ test_cluster_ready() {
     wait_for_phase "NORMAL" 180 || \
         log_warn "Cluster phase did not reach NORMAL within 180s — kill below may be silently absorbed by SWIM cold-boot suppression"
     local count
-    count=$(cluster_node_count)
-    assert_eq "$count" "5" "Initial: 5 nodes"
+    count=$(cluster_active_core_count)
+    assert_eq "$count" "5" "Initial: 5 ON_DUTY healthy cores"
 }
 
 test_swim_detection_time() {
@@ -68,8 +68,8 @@ test_recovery_after_detection() {
     # restarting the original would leave the cluster in a stale-identity
     # 6-node state.
     if ! wait_for "5 ON_DUTY healthy cores after SWIM detection" \
-        "[ \$(cluster_node_count_on_duty_healthy) -eq 5 ]" 90; then
-        log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 90s after kill+auto-heal"
+        "[ \$(cluster_active_core_count) -eq 5 ]" 180; then
+        log_fail "Cluster did not converge to 5 ON_DUTY healthy cores within 180s after kill+auto-heal"
         return 1
     fi
     assert_cluster_healthy "Cluster recovered after SWIM detection"

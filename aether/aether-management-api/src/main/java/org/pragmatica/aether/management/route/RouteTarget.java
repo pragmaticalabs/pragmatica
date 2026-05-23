@@ -18,6 +18,13 @@ public sealed interface RouteTarget {
         return new TaskGroupTarget(group);
     }
 
+    /// Forward to the node identified by the path param at the given index.
+    /// Used by per-node variant endpoints (`/api/nodes/<resource>/{id}`) where
+    /// the request is dispatched to a specific peer named in the URL.
+    static RouteTarget nodeIdParam(int paramIndex) {
+        return new NodeIdParam(paramIndex);
+    }
+
     record TaskGroupTarget(TaskGroup group) implements RouteTarget{}
 
     record AnyCoreNode() implements RouteTarget{}
@@ -25,4 +32,6 @@ public sealed interface RouteTarget {
     record LocalNode() implements RouteTarget{}
 
     record LeaderNode() implements RouteTarget{}
+
+    record NodeIdParam(int paramIndex) implements RouteTarget{}
 }

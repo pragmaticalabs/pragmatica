@@ -21,7 +21,7 @@ document.addEventListener('alpine:init', function() {
         },
 
         updateFromStatus(data) {
-            // /api/status doesn't include events directly; poll /api/events
+            // /api/nodes/status doesn't include events directly; poll /api/events
         },
 
         async refresh() {

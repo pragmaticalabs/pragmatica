@@ -80,7 +80,10 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeDraining;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeFailedDrain;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeJoined;
+import org.pragmatica.consensus.topology.MembershipDecision.NodeJoining;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Cause;
@@ -199,8 +202,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision, tx);
                 case SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) -> handleSelfShutdown(selfShutdown,
                                                                                                                 tx);
-                case NodeLifecyclePutReceived(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) -> handleNodeLifecyclePut(valuePut,
-                                                                                                                                 tx);
+                // RC1 Step 2: NodeLifecyclePutReceived is retired — its work folded into
+                // MembershipDecisionReceived (NodeDraining/NodeFailedDrain/NodeDecommissioned).
+                // The event record itself is kept for backward-compat with serialised replay
+                // logs but is ignored if dispatched.
+                case NodeLifecyclePutReceived _ -> tx.ignore();
                 case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
                                                                                                                                                          tx);
                 case ActivationDirectiveRemoveReceived(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) -> handleActivationDirectiveRemove(valueRemove,
@@ -275,33 +281,72 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void processMembershipDecision(MembershipDecision decision) {
             log.info("Received membership decision: {}", decision);
             switch (decision){
-                case NodeJoined(NodeId addedNode, List<NodeId>_) -> handleNodeAdded(addedNode);
-                case NodeRemoved(NodeId removedNode, List<NodeId>_) -> handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
-                case NodeDecommissioned(NodeId removedNode, List<NodeId>_) -> handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
+                case NodeJoined(NodeId addedNode, List<NodeId>_, _, _) -> handleNodeAdded(addedNode);
+                case NodeRemoved(NodeId removedNode, List<NodeId>_, _, _) -> handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
+                // RC1 Step 2: lifecycle-projected DECOMMISSIONED replaces the prior
+                // KV-put-driven cleanupAfterLifecycleDepartedAtomic invocation. The
+                // semantics are identical — clean up dependent KV entries plus reconcile.
+                case NodeDecommissioned(NodeId removedNode, List<NodeId>_, _, _) -> {
+                    cleanupAfterLifecycleDepartedAtomic(removedNode);
+                    handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
+                }
+                // RC1 Step 2 lifecycle-projection variants: JOINING / DRAINING / FAILED_DRAIN
+                // fold in the work the now-retired `onNodeLifecyclePut` performed.
+                case NodeJoining _ -> {
+                    // JOINING is provisional admission. Steady-state ON_DUTY arrives next
+                    // as a NodeJoined via the core-membership delta; no work needed here.
+                }
+                case NodeDraining(NodeId drainingNode, _, _, _) -> startDrainEviction(drainingNode);
+                case NodeFailedDrain(NodeId failedDrainNode, _, _, _) ->
+                    log.warn("Node {} drain failed — operator intervention may be required", failedDrainNode);
+                // RC1 Step 2: SHUTTING_DOWN is handled by NodeDeploymentManager
+                // (self-shutdown trigger). ClusterDeploymentManager does not need to
+                // react to it — the node will exit the cluster via DECOMMISSIONED next.
+                case MembershipDecision.NodeShuttingDown _ -> {}
             }
         }
 
         private void handleNodeAdded(NodeId addedNode) {
-            if (!ctx.seedNodes().contains(addedNode)) {assignNodeRole(addedNode);}
+            if (ctx.seedNodes().contains(addedNode)) {
+                // Seed nodes skip the ActivationDirective → MembershipFsm path that
+                // joining nodes follow, so the FSM never writes their NodeLifecycleKey
+                // unless we plant a JOINING entry here. From JOINING the standard
+                // MembershipFsm machinery drives the transition to ON_DUTY.
+                ensureSeedNodeLifecycleEntry(addedNode);
+            } else {
+                assignNodeRole(addedNode);
+            }
             reconcile();
+            if (allocatableNodes().isEmpty()) {
+                log.info("No allocatable nodes after NodeJoined (snapshot not yet ready); scheduling retry in 2s");
+                SharedScheduler.schedule(this::reconcileIfActive, timeSpan(2).seconds());
+            }
+        }
+
+        /// Plants `NodeLifecycleKey(node) = JOINING` for a seed node iff no entry already
+        /// exists in KV-Store. Idempotent — preserves any existing state (ON_DUTY /
+        /// DRAINING / DECOMMISSIONED) so a re-issued NodeJoined for an already-known
+        /// seed never overwrites richer state. Runs only on the leader (this method
+        /// lives inside `Active`, which is the leader-scoped state).
+        private void ensureSeedNodeLifecycleEntry(NodeId seedNode) {
+            var existing = ctx.kvStore().get(NodeLifecycleKey.nodeLifecycleKey(seedNode))
+                                      .filter(NodeLifecycleValue.class::isInstance);
+            if (existing.isPresent()) {
+                log.debug("Seed node {} already has NodeLifecycleKey entry; skipping JOINING write", seedNode);
+                return;
+            }
+            log.info("Seed node {} missing NodeLifecycleKey; planting JOINING entry so MembershipFsm can drive it to ON_DUTY", seedNode);
+            var command = new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(seedNode),
+                                                                     NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.JOINING));
+            ctx.cluster().apply(List.of(command))
+                       .onFailure(cause -> log.error("Failed to plant JOINING NodeLifecycleKey for seed node {}: {}",
+                                                     seedNode,
+                                                     cause.message()));
         }
 
         private void processSelfShutdown(NodeId downNode) {
             log.warn("Self {} is shutting down, triggering immediate reconciliation", downNode);
             handleNodeRemoval(downNode).onSuccess(_ -> reconcile());
-        }
-
-        private void handleNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut,
-                                            TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
-            tx.handle(() -> processNodeLifecyclePut(valuePut));
-        }
-
-        private void processNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
-            var nodeId = valuePut.cause().key()
-                                       .nodeId();
-            var state = valuePut.cause().value()
-                                      .state();
-            handleNodeLifecycleChange(nodeId, state);
         }
 
         private void handleActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut,
@@ -697,20 +742,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                               .isPresent();
         }
 
-        private void handleNodeLifecycleChange(NodeId nodeId, NodeLifecycleState state) {
-            switch (state){
-                case DRAINING -> startDrainEviction(nodeId);
-                case ON_DUTY -> onDutyReturn(nodeId);
-                case DECOMMISSIONED -> cleanupAfterLifecycleDepartedAtomic(nodeId);
-                default -> {}
-            }
-        }
-
-        private void onDutyReturn(NodeId nodeId) {
-            cancelDrainEviction(nodeId);
-            reconcile();
-        }
-
         private void cleanupAfterLifecycleDepartedAtomic(NodeId departedNode) {
             log.info("Snapshot-delta cleanup triggered for departed node {} (lifecycle=DECOMMISSIONED)", departedNode);
             var sliceKeysToRemove = sliceStates.keySet().stream()
@@ -756,10 +787,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void startDrainEviction(NodeId drainingNode) {
             log.info("Starting drain eviction for node {}", drainingNode);
             evictNextSliceFromNode(drainingNode);
-        }
-
-        private void cancelDrainEviction(NodeId nodeId) {
-            log.info("Cancelling drain eviction for node {} (returned to ON_DUTY)", nodeId);
         }
 
         private void evictNextSliceFromNode(NodeId drainingNode) {

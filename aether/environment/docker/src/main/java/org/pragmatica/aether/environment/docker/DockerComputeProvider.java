@@ -109,6 +109,26 @@ import static org.pragmatica.lang.Result.success;
               .onSuccess(ignored -> log.info("Rollback removed partial container {}", containerName));
     }
 
+    @Override public void resetProvisionerState(String clusterName) {
+        nodeCounter.set(0);
+        if (!clusterName.isEmpty()) {
+            runner.execute(buildCtmPruneCommand(clusterName))
+                  .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}", clusterName, cause.message()))
+                  .onSuccess(out -> { if (!out.isBlank()) {log.info("CTM sweep for cluster {}: {}", clusterName, out.strip());}});
+        }
+    }
+
+    private static List<String> buildCtmPruneCommand(String clusterName) {
+        return List.of("docker",
+                       "container",
+                       "prune",
+                       "--force",
+                       "--filter",
+                       "label=aether.cluster=" + clusterName,
+                       "--filter",
+                       "label=aether.provisioned-by=ctm");
+    }
+
     private static List<String> buildForceRemoveCommand(String containerName) {
         return List.of("docker", "rm", "-f", containerName);
     }
@@ -193,6 +213,8 @@ import static org.pragmatica.lang.Result.success;
                                               "aether.role=" + role,
                                               "--label",
                                               "aether.node-id=" + nodeId,
+                                              "--label",
+                                              "aether.provisioned-by=ctm",
                                               "-e",
                                               "NODE_ID=" + nodeId,
                                               "-e",
@@ -339,9 +361,16 @@ import static org.pragmatica.lang.Result.success;
     }
 
     private static String clusterOrDefault(ProvisionContext ctx) {
-        return ctx.clusterName().isEmpty()
-              ? "default"
-              : ctx.clusterName();
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        // Fallback: when ClusterConfigValue isn't yet seeded in KV-Store (e.g., compose-only
+        // deployments that never ran `aether cluster bootstrap`), source the cluster name
+        // from the AETHER_CLUSTER_NAME env var so CTM-provisioned replacements still get a
+        // matching `aether.cluster=<name>` label. The integration test compose YAMLs set
+        // this env to `a` / `b` so cluster A/B's CTM replacements carry the same label as
+        // their compose-fixed siblings — closes the spec's caveat-c gap.
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        if (fromEnv != null && !fromEnv.isEmpty()) {return fromEnv;}
+        return "default";
     }
 
     static List<InstanceInfo> parseContainerList(String output) {

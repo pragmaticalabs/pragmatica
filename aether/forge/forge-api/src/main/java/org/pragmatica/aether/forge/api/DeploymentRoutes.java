@@ -69,7 +69,7 @@ public sealed interface DeploymentRoutes {
     private static Route<ProxyResponse> blueprintRoute(EmberCluster cluster,
                                                        JdkHttpOperations http,
                                                        Consumer<EventLogEntry> eventLogger) {
-        return Route.<ProxyResponse>post("/api/blueprint")
+        return Route.<ProxyResponse>post("/api/blueprints")
                     .withBody(TypeToken.typeToken(String.class))
                     .toJson(body -> proxyBlueprint(cluster, http, eventLogger, body));
     }
@@ -96,7 +96,7 @@ public sealed interface DeploymentRoutes {
                                                          Consumer<EventLogEntry> eventLogger,
                                                          String blueprintJson) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
-                             .flatMap(port -> proxyPost(http, port, "/api/blueprint", blueprintJson))
+                             .flatMap(port -> proxyPost(http, port, "/api/blueprints", blueprintJson))
                              .map(body -> logAndBuildBlueprintResponse(eventLogger, body));
     }
 

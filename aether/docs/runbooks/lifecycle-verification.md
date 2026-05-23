@@ -38,7 +38,7 @@ Expected output:
 ### 2. Verify Cluster Status
 
 ```bash
-curl -s http://localhost:5150/api/status
+curl -s http://localhost:5150/api/nodes/status
 ```
 
 Expected: JSON with `status: "running"`, `isLeader: true`
@@ -54,7 +54,7 @@ Expected: `{"nodes":["node-1"]}`
 ### 4. Deploy a Slice
 
 ```bash
-curl -s -X POST http://localhost:5150/api/blueprint \
+curl -s -X POST http://localhost:5150/api/blueprints \
   -H "Content-Type: application/json" \
   -d '{"id": "test-blueprint", "slices": [{"artifact": "org.example:test-slice:1.0.0", "instances": 1}]}'
 ```
@@ -111,7 +111,7 @@ sleep 8
 Direct API access:
 ```bash
 # Status
-curl -s http://localhost:5150/api/status
+curl -s http://localhost:5150/api/nodes/status
 
 # Nodes
 curl -s http://localhost:5150/api/nodes
@@ -120,7 +120,7 @@ curl -s http://localhost:5150/api/nodes
 curl -s http://localhost:5150/api/slices
 
 # Slices (per-node flat list)
-curl -s http://localhost:5150/api/node/slices
+curl -s http://localhost:5150/api/nodes/slices
 
 # Health
 curl -s http://localhost:5150/api/health
@@ -129,7 +129,7 @@ curl -s http://localhost:5150/api/health
 ### 3. Deploy via API
 
 ```bash
-curl -s -X POST http://localhost:5150/api/blueprint \
+curl -s -X POST http://localhost:5150/api/blueprints \
   -H "Content-Type: application/json" \
   -d '{"id": "test-blueprint", "slices": [{"artifact": "org.pragmatica-lite.aether.demo:inventory-service:0.1.0", "instances": 1}]}'
 ```
@@ -147,7 +147,7 @@ grep -E "LOAD|LOADING|LOADED|ACTIVATE|ACTIVATING|ACTIVE|FAILED" /tmp/forge.log
 ### 5. Undeploy
 
 ```bash
-curl -s -X DELETE http://localhost:5150/api/blueprint/test-blueprint
+curl -s -X DELETE http://localhost:5150/api/blueprints/test-blueprint
 ```
 
 Expected lifecycle: `DEACTIVATE → DEACTIVATING → LOADED → UNLOAD → UNLOADING → (deleted)`

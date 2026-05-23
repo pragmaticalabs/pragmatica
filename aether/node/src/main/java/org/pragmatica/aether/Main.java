@@ -18,6 +18,7 @@ import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
@@ -57,6 +58,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
     private void run() {
         var aetherConfig = loadConfig();
+        verifyClusterLabelConsistency(aetherConfig);
         var nodeId = parseNodeId(aetherConfig);
         var port = parsePort(aetherConfig);
         var managementPort = parseManagementPort(aetherConfig);
@@ -93,6 +95,32 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
     private static AppHttpConfig resolveAppHttp(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::appHttp).filter(AppHttpConfig::enabled)
                                .or(AppHttpConfig.appHttpConfig());
+    }
+
+    /// First-boot consistency gate: compares this container's `aether.cluster` label
+    /// (read from the Docker daemon via `/var/run/docker.sock`) against the configured
+    /// cluster name (sourced from `AETHER_CLUSTER_NAME` env). On mismatch, aborts startup
+    /// with `System.exit(1)` so a misconfigured node never joins the wrong cluster — the
+    /// failure surfaces immediately at deployment time, not as a silent membership drift.
+    ///
+    /// Skipped silently when not running in Docker, when the socket isn't mounted, or
+    /// when either side of the comparison is empty (we don't claim disagreement against
+    /// missing information). The `aetherConfig` parameter is retained so this hook can
+    /// trivially extend to read `[cluster] name` from local TOML once that field exists
+    /// on runtime `ClusterConfig` (currently bootstrap-only).
+    @SuppressWarnings("unused")
+    private void verifyClusterLabelConsistency(Option<AetherConfig> aetherConfig) {
+        var configured = Option.option(System.getenv("AETHER_CLUSTER_NAME")).filter(s -> !s.isBlank()).or("");
+        if (configured.isEmpty()) {
+            log.debug("verifyClusterLabelConsistency: AETHER_CLUSTER_NAME not set — skipping label check");
+            return;
+        }
+        ContainerLabelInspector.inspectSelfLabels().onPresent(labels -> ContainerLabelInspector.compareWithConfigured(configured, labels)
+                                                                                                                         .onSuccess(_ -> log.info("Cluster label consistency OK: aether.cluster='{}' matches AETHER_CLUSTER_NAME", configured))
+                                                                                                                         .onFailure(cause -> {
+                                                                                                                             log.error("FATAL: {}", cause.message());
+                                                                                                                             System.exit(1);
+                                                                                                                         }));
     }
 
     private Result<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {

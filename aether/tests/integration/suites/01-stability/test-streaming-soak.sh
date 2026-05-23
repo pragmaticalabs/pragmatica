@@ -10,6 +10,8 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 STREAM_DURATION="${STREAM_DURATION:-3600}"  # 1 hour default
 STREAM_RPS="${STREAM_RPS:-5}"
 STREAM_NAME="${STREAM_NAME:-notifications}"
+# Operational event tier — see aether/docs/specs/test-readiness-contract.md §4 (2.0%).
+# 1h stream publish soak; small percentage of in-flight requests lost during reconfigurations.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
 test_stream_exists() {
@@ -61,7 +63,7 @@ test_sustained_publish() {
 
 test_cluster_stable_after_stream() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "Cluster stable: 5 nodes after streaming soak"
 }
 

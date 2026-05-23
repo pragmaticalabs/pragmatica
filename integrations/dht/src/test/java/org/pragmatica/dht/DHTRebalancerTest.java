@@ -254,7 +254,7 @@ class DHTRebalancerTest {
 
             storage.put(key("item"), value("data")).await();
 
-            listener.onNodeRemoved(new MembershipDecision.NodeRemoved(PEER_B, List.of(LOCAL, PEER_A)));
+            listener.onNodeRemoved(MembershipDecision.nodeRemoved(PEER_B, List.of(LOCAL, PEER_A)));
 
             assertThat(ring.nodes()).doesNotContain(PEER_B);
             assertThat(ring.nodes()).containsExactlyInAnyOrder(LOCAL, PEER_A);

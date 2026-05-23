@@ -7,14 +7,14 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
 test_admin_identity_in_response() {
     # Make an authenticated request and check if the response acknowledges the caller
     local response
-    response=$(curl -sf -H "X-API-Key: ${ADMIN_API_KEY}" "${CLUSTER_ENDPOINT}/api/status")
+    response=$(curl -sf -H "X-API-Key: ${ADMIN_API_KEY}" "${CLUSTER_ENDPOINT}/api/nodes/status")
     assert_ne "$response" "" "Status response with admin key"
 }
 
@@ -26,8 +26,8 @@ test_different_keys_different_identity() {
 
     # Both keys should get valid responses but potentially different views
     local admin_response viewer_response
-    admin_response=$(curl -sf -H "X-API-Key: ${ADMIN_API_KEY}" "${CLUSTER_ENDPOINT}/api/status")
-    viewer_response=$(curl -sf -H "X-API-Key: ${VIEWER_API_KEY}" "${CLUSTER_ENDPOINT}/api/status")
+    admin_response=$(curl -sf -H "X-API-Key: ${ADMIN_API_KEY}" "${CLUSTER_ENDPOINT}/api/nodes/status")
+    viewer_response=$(curl -sf -H "X-API-Key: ${VIEWER_API_KEY}" "${CLUSTER_ENDPOINT}/api/nodes/status")
 
     assert_ne "$admin_response" "" "Admin gets status response"
     assert_ne "$viewer_response" "" "Viewer gets status response"
@@ -54,7 +54,7 @@ test_app_endpoint_principal() {
 test_unauthenticated_response_format() {
     # 401 response should include WWW-Authenticate header
     local headers
-    headers=$(curl -s -D - -o /dev/null "${CLUSTER_ENDPOINT}/api/status")
+    headers=$(curl -s -D - -o /dev/null "${CLUSTER_ENDPOINT}/api/nodes/status")
     if echo "$headers" | grep -qi "WWW-Authenticate"; then
         log_pass "401 includes WWW-Authenticate header"
     else

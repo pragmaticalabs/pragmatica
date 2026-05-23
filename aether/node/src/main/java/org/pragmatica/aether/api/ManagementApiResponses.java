@@ -23,6 +23,7 @@ public sealed interface ManagementApiResponses {
                           MetricsSummary metrics,
                           String nodeId,
                           String status,
+                          String runtimeState,
                           String lifecycleState,
                           String clusterPhase,
                           boolean isLeader,
@@ -32,7 +33,7 @@ public sealed interface ManagementApiResponses {
 
     record ClusterInfo(int nodeCount, String leaderId, boolean quorate, List<NodeInfo> nodes){}
 
-    record NodeInfo(String id, boolean isLeader, String lifecycleState){}
+    record NodeInfo(String id, boolean isLeader, String kvState, String derivedStatus){}
 
     record MetricsSummary(double requestsPerSecond, double successRate, double avgLatencyMs){}
 
@@ -413,7 +414,7 @@ public sealed interface ManagementApiResponses {
                                  long uptimeSeconds,
                                  Option<LoadBalancerStatusInfo> loadBalancer){}
 
-    record ClusterStatusNodeInfo(String nodeId, String role, String lifecycleState, String version, boolean isLeader){}
+    record ClusterStatusNodeInfo(String nodeId, String role, String kvState, String derivedStatus, String version, boolean isLeader){}
 
     record ApplyConfigRequest(String tomlContent, long expectedVersion){}
 
@@ -441,4 +442,14 @@ public sealed interface ManagementApiResponses {
                                 String sha1,
                                 long deployedAt,
                                 boolean isDeployed){}
+
+    /// Wire shape for the idempotent artifact PUT response (`PUT /repository/...`).
+    /// `status` is `"uploaded"` on a fresh upload, `"already-present"` when the
+    /// artifact was already in the store (200 OK in both cases). `coords` is the
+    /// canonical `group:artifact:version` triple; `size`/`md5`/`sha1` reflect the
+    /// persisted artifact (recomputed on upload, read from KV metadata on duplicate).
+    /// The record lives here for documentation/test purposes; the actual JSON is
+    /// rendered inline in `MavenProtocolHandlerImpl.renderPushJson` to avoid a
+    /// Jackson dependency at the artifact-repo layer.
+    record ArtifactPushResponse(String status, String coords, long size, String md5, String sha1){}
 }

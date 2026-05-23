@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.HttpError;
 import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -30,6 +31,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -58,7 +60,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     @Override public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<List<LifecycleEntry>>route(ManagementRoute.NODE_LIFECYCLE_LIST)
-                                         .toJson(this::getAllLifecycleStates),
+                                         .withQuery(QueryParameter.aString("state"))
+                                         .toValue(this::getAllLifecycleStates)
+                                         .asJson(),
                          ManagementRoutes.<LifecycleEntry>route(ManagementRoute.NODE_LIFECYCLE_GET)
                                          .withPath(aString())
                                          .to(this::getNodeLifecycle)
@@ -76,7 +80,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                          .to(this::shutdownNode)
                                          .asJson(),
                          ManagementRoutes.<InFlightResponse>route(ManagementRoute.NODE_INFLIGHT)
-                                         .toJson(this::getInFlightCount));
+                                         .toJson(this::getInFlightCount),
+                         ManagementRoutes.<InFlightResponse>route(ManagementRoute.NODE_INFLIGHT_GET)
+                                         .withPath(aString())
+                                         .to(__ -> Promise.success(getInFlightCount()))
+                                         .asJson());
     }
 
     private InFlightResponse getInFlightCount() {
@@ -95,32 +103,52 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// retain their consensus timestamp). For SWIM-only entries (peers with no KV record),
     /// `updatedAt` is 0 — they are derived from the live SWIM view and have no consensus-
     /// audit anchor yet.
-    private List<LifecycleEntry> getAllLifecycleStates() {
+    /// List form is KV-direct (matches the single-id form). Authoritative FSM state only;
+    /// MembershipView's SWIM/reachability overlay is exposed via `/api/nodes/status` instead.
+    /// See `aether/docs/specs/state-authority.md` for the two-endpoint contract.
+    ///
+    /// Optional `state` filter (single state or `+`-separated union, e.g. `state=ON_DUTY` or
+    /// `state=JOINING+ON_DUTY`) is parsed via the shared `RouteFilters.parseStateFilter` helper
+    /// and applied as a membership predicate against the externalised state name (post
+    /// SHUTTING_DOWN→DRAINING collapse — operators filter on what they see, not the
+    /// internal state). Empty filter set (e.g. `state=+` alone) matches no entry.
+    private List<LifecycleEntry> getAllLifecycleStates(Option<String> stateFilter) {
+        var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
-        nodeSupplier.get().membershipView().snapshot().forEach((peer, member) -> appendIfTracked(entries, peer, member));
+        nodeSupplier.get().kvStore().forEach(NodeLifecycleKey.class,
+                                              NodeLifecycleValue.class,
+                                              (key, value) -> appendIfMatches(entries, key, value, normalizedFilter));
         return entries;
     }
 
-    private static void appendIfTracked(List<LifecycleEntry> entries,
-                                          NodeId peer,
-                                          MembershipView.MemberView member) {
-        if (member.status() == MembershipView.MemberStatus.UNTRACKED) {
-            return;
+    private static void appendIfMatches(List<LifecycleEntry> entries,
+                                        NodeLifecycleKey key,
+                                        NodeLifecycleValue value,
+                                        Option<Set<String>> normalizedFilter) {
+        var entry = toLifecycleEntry(key, value);
+        if (normalizedFilter.map(set -> set.contains(entry.state())).or(true)) {
+            entries.add(entry);
         }
-        var updatedAt = member.lifecycle().map(NodeLifecycleValue::updatedAt).or(0L);
-        entries.add(new LifecycleEntry(peer.id(), member.status().name(), updatedAt));
     }
 
     private static LifecycleEntry toLifecycleEntry(NodeLifecycleKey key, NodeLifecycleValue value) {
         return new LifecycleEntry(key.nodeId().id(),
-                                  value.state().name(),
+                                  externalStateName(value.state()),
                                   value.updatedAt());
     }
 
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
         return resolveNodeLifecycle(nodeIdStr).map(value -> new LifecycleEntry(nodeIdStr,
-                                                                               value.state().name(),
+                                                                               externalStateName(value.state()),
                                                                                value.updatedAt()));
+    }
+
+    /// Collapse `SHUTTING_DOWN` to `DRAINING` for external viewers. Internal FSM/`NodeDeploymentManager`
+    /// still distinguish them (the former triggers self-shutdown), but operators see them as the same
+    /// "node is going away" state. See `cluster-membership-fsm-spec.md` §R6 — the FSM no longer emits
+    /// `SHUTTING_DOWN`, only the `NODE_SHUTDOWN` API action writes it transiently before halt.
+    private static String externalStateName(NodeLifecycleState state) {
+        return state == NodeLifecycleState.SHUTTING_DOWN ? NodeLifecycleState.DRAINING.name() : state.name();
     }
 
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
@@ -132,11 +160,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeLifecycleValue current) {
-        if (current.state() != NodeLifecycleState.ON_DUTY) {return Promise.success(new TransitionResult(false,
-                                                                                                        nodeIdStr,
-                                                                                                        current.state()
-                                                                                                                     .name(),
-                                                                                                        "Cannot drain from " + current.state() + " (must be ON_DUTY)"));}
+        if (current.state() != NodeLifecycleState.ON_DUTY) {
+            return HttpError.httpError(HttpStatus.CONFLICT,
+                                       Causes.cause("Cannot drain node " + nodeIdStr + " from " + current.state() + " (must be ON_DUTY)"))
+                                  .promise();
+        }
         return NodeId.nodeId(nodeIdStr).async()
                             .flatMap(this::runDrainProtocol);
     }
@@ -158,11 +186,16 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     /// Step 1 of drain: write DRAINING via consensus through `MembershipFsm` (spec §9 E.4).
     /// The FSM emits `InvokeDrain` so the coordinator's drain protocol runs.
+    ///
+    /// RC1 Step 4: stamp the event with the node's canonical `HlcClock` so the resulting
+    /// `NodeLifecycleValue.transitionedAt` is causally ordered against every other HLC-
+    /// stamped action on this node.
     private Promise<Unit> initiateDrain(NodeId nodeId) {
-        nodeSupplier.get().membershipFsm()
-                          .enqueueOperatorEvent(new OperatorDrain(nodeId,
-                                                                    DrainReason.OPERATOR_DRAIN,
-                                                                    System.currentTimeMillis()));
+        var node = nodeSupplier.get();
+        node.membershipFsm()
+                  .enqueueOperatorEvent(new OperatorDrain(nodeId,
+                                                            DrainReason.OPERATOR_DRAIN,
+                                                            node.hlcClock().now()));
         return Promise.unitPromise();
     }
 
@@ -208,8 +241,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
-        var intendedSize = nodeSupplier.get().initialTopology()
-                                           .size();
+        // Use live on-duty count; initialTopology() can accumulate stale entries across restarts.
+        var intendedSize = Math.max(nodeSupplier.get().membershipView().onDutyPeers().size(), 1);
         var minAvailable = (intendedSize / 2) + 1;
         var operationalAfterDrain = countOnDuty() - 1;
         if (operationalAfterDrain >= minAvailable) {return Promise.success(new TransitionResult(true,
@@ -242,11 +275,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Promise<TransitionResult> guardActivateState(String nodeIdStr, NodeLifecycleValue current) {
-        if (current.state() != NodeLifecycleState.DRAINING && current.state() != NodeLifecycleState.DECOMMISSIONED) {return Promise.success(new TransitionResult(false,
-                                                                                                                                                                 nodeIdStr,
-                                                                                                                                                                 current.state()
-                                                                                                                                                                              .name(),
-                                                                                                                                                                 "Cannot activate from " + current.state() + " (must be DRAINING or DECOMMISSIONED)"));}
+        if (current.state() != NodeLifecycleState.DRAINING && current.state() != NodeLifecycleState.DECOMMISSIONED) {
+            return HttpError.httpError(HttpStatus.CONFLICT,
+                                       Causes.cause("Cannot activate node " + nodeIdStr + " from " + current.state() + " (must be DRAINING or DECOMMISSIONED)"))
+                                  .promise();
+        }
         return NodeId.nodeId(nodeIdStr).async()
                             .flatMap(this::routeActivateThroughLifecycleWriter)
                             .map(_ -> activateSuccessResult(nodeIdStr));
@@ -275,9 +308,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// Decommission entry point. Routes through `MembershipFsm` with `OperatorDecommission(force=true)`
     /// (spec §9 E.4). The `force` flag is `true` because the `/api/node/shutdown` route bypasses
     /// the drain protocol — this matches direct-DECOMMISSIONED-write semantics.
+    ///
+    /// RC1 Step 4: stamp the event with the node's canonical `HlcClock`.
     private Promise<Unit> initiateDecommission(NodeId nodeId) {
-        nodeSupplier.get().membershipFsm()
-                          .enqueueOperatorEvent(new OperatorDecommission(nodeId, true, System.currentTimeMillis()));
+        var node = nodeSupplier.get();
+        node.membershipFsm()
+                  .enqueueOperatorEvent(new OperatorDecommission(nodeId, true, node.hlcClock().now()));
         return Promise.unitPromise();
     }
 

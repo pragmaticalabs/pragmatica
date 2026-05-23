@@ -45,6 +45,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.lang.concurrent.CancellableTask;
+import org.pragmatica.utility.IdGenerator;
 
 import java.net.SocketAddress;
 import java.time.Instant;
@@ -216,8 +217,27 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private int snapshotHealthyOnDutyCount() {
+        // Fall back to configured cluster size when no generation snapshot exists yet
+        // (cold start / leader just elected before first snapshot is published).
         return snapshotSource.currentMembershipView().map(MembershipView::healthyOnDutyCount)
-                                                   .or(0);
+                                                   .or(observer.clusterSize());
+    }
+
+    /// Counts un-expired provisioning slot atoms in the KV-Store. A slot is "live" when its
+    /// `deadlineMs` is in the future (using the same expiry rule applied by
+    /// `classifySlotForRehydration` and `deleteExpiredSlotAtoms`). Deficit accounting subtracts
+    /// this count so that an in-flight wave (already written to KV) is not counted as missing
+    /// capacity — preventing the provisioning storm where the leader top-ups against a deficit
+    /// that JOINING / stalled peers are already covering.
+    private int liveProvisioningSlotCount() {
+        var slots = slotReader.get();
+        if (slots.isEmpty()) {return 0;}
+        var nowMs = nowMs();
+        var count = 0;
+        for (var value : slots.values()) {
+            if (value.deadlineMs() >= nowMs) {count++;}
+        }
+        return count;
     }
 
     @Contract@Override public void onNodeReady(NodeId nodeId) {
@@ -265,6 +285,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             case NodeJoined joined -> handleNodeJoined(joined);
             case NodeRemoved removed -> handleNodeRemoved(removed);
             case NodeDecommissioned decommissioned -> handleNodeDecommissioned(decommissioned);
+            // RC1 Step 2 lifecycle-projection variants: CTM owns provisioning lifecycle
+            // through DRAINING / FAILED_DRAIN / SHUTTING_DOWN via internal pending-removal
+            // accounting; it does not need the consensus-projected event for these
+            // transitions because the slot-state is authoritative locally. JOINING is
+            // observed separately via the slot-state ladder.
+            case MembershipDecision.NodeJoining _,
+                 MembershipDecision.NodeDraining _,
+                 MembershipDecision.NodeFailedDrain _,
+                 MembershipDecision.NodeShuttingDown _ -> {}
         }
     }
 
@@ -369,6 +398,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract private void resetProvisioningCircuit(String reason) {
         var prev = consecutiveProvisioningFailures.getAndSet(0);
         nextProvisioningAllowedMs.set(0L);
+        var clusterName = clusterConfigReader.get().map(ClusterConfigValue::clusterName).or("");
+        lifecycleManager.resetProvisionerState(clusterName);
         if (prev > 0) {log.info("CTM: provisioning circuit breaker reset ({}); cleared {} prior failure(s)",
                                 reason,
                                 prev);}
@@ -524,9 +555,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private int activationDesiredSize() {
         var fromSnapshot = snapshotDesiredCoreSize();
-        return fromSnapshot > 0
-              ? fromSnapshot
-              : observer.healthyActiveNodeCount();
+        if (fromSnapshot > 0) {
+            return fromSnapshot;
+        }
+        // clusterSize() includes SWIM-faulty nodes, returning pre-kill count during the snapshot-gap after failover
+        return clusterConfigReader.get()
+            .map(ClusterConfigValue::coreCount)
+            .or(() -> observer.clusterSize());
     }
 
     @Contract private void activateWithLeaderFailover(int effectiveActual, int desired) {
@@ -657,10 +692,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var configured = view.desiredCoreSize();
         if (configured == 0) {return;}
         var actual = snapshotHealthyOnDutyCount();
-        var deficit = configured - actual;
-        log.debug("CTM reconcile: actual={} desired={} deficit={} hints={}",
+        var liveSlots = liveProvisioningSlotCount();
+        var rawDeficit = configured - actual - liveSlots;
+        var deficit = Math.max(rawDeficit, 0);
+        log.debug("CTM reconcile: actual={} desired={} liveSlots={} deficit={} hints={}",
                   actual,
                   configured,
+                  liveSlots,
                   deficit,
                   summarizeHealthHints(view));
         var effectiveState = currentState;
@@ -684,12 +722,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             observeRealActualForStability(actual);
             return;
         }
-        if (effectiveState instanceof NodeReconcilerState.Converged) {log.info("CTM deficit detected: actual={} desired={} deficit={} hints={}",
+        if (effectiveState instanceof NodeReconcilerState.Converged) {log.info("CTM deficit detected: actual={} desired={} liveSlots={} deficit={} hints={}",
                                                                                actual,
                                                                                configured,
+                                                                               liveSlots,
                                                                                deficit,
                                                                                summarizeHealthHints(view));}
-        if (actual <configured) {handleDeficit(actual, configured);} else {handleSurplus(actual, configured);}
+        if (actual <configured) {
+            if (deficit <= 0) {
+                log.debug("CTM: deficit covered by {} live provisioning slot(s); no dispatch (actual={}, configured={})",
+                          liveSlots,
+                          actual,
+                          configured);
+                return;
+            }
+            handleDeficit(actual, configured);
+        } else {handleSurplus(actual, configured);}
     }
 
     @Contract private void observeRealActualForStability(int actual) {
@@ -855,11 +903,23 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract private void handleSurplus(int actual, int configured) {
         var current = stateRef.get();
-        if (current instanceof NodeReconcilerState.Reconciling) {
-            log.debug("CTM: Already reconciling, waiting for in-flight terminations to complete");
-            return;
-        }
         var surplus = actual - configured;
+        if (surplus <= 0) {return;}
+        var liveSlots = liveProvisioningSlotCount();
+        if (current instanceof NodeReconcilerState.Reconciling reconciling) {
+            if (liveSlots > 0) {
+                log.debug("CTM: surplus={} but {} live slot(s) in flight — waiting for completion before terminating",
+                          surplus,
+                          liveSlots);
+                return;
+            }
+            if (!reconciling.terminating().isEmpty()) {
+                log.debug("CTM: surplus={} but {} termination(s) already in flight — waiting for completion",
+                          surplus,
+                          reconciling.terminating().size());
+                return;
+            }
+        }
         if (!lifecycleManager.isCloudManaged()) {
             log.info("CTM: Cluster has {} surplus nodes but no ComputeProvider, cannot auto-terminate", surplus);
             transitionTo(new NodeReconcilerState.Converged());
@@ -1016,50 +1076,102 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Contract private void provisionSingleNode() {
-        var context = buildProvisionContext();
-        if (context.peers().or("").isEmpty()) {
+        var contextBase = buildProvisionContext();
+        if (contextBase.peers().or("").isEmpty()) {
             log.warn("CTM: provisioning deferred — no healthy peers visible in observed topology (peers list empty). "
                      + "Spawning a new node without PEERS would cold-boot it in isolation and corrupt cluster views; "
                      + "next reconcile tick will retry once at least one peer is HEALTHY.");
             recordProvisioningFailure("no healthy peers visible in topology");
             return;
         }
+        var allocatedId = generateProvisioningNodeId();
+        var context = contextBase.withNodeId(allocatedId.id());
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", context).unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
-        var localTag = NodeId.nodeId("ctm-inflight-" + System.nanoTime() + "-" + Math.abs(spec.hashCode())).unwrap();
         var slotKvKey = ProvisioningSlotKey.provisioningSlotKey(java.util.UUID.randomUUID().toString());
-        writeProvisioningSlotAtom(slotKvKey);
-        var promise = lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded"))
+        writeProvisioningSlotAtom(slotKvKey, allocatedId);
+        slotKeyByNodeId.put(allocatedId, slotKvKey);
+        var promise = lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded for nodeId={}",
+                                                                                    allocatedId))
                                                     .onFailure(cause -> recordProvisioningFailure("API rejection: " + cause.message()));
-        inFlightProvisions.put(localTag, promise);
-        promise.onResult(_ -> inFlightProvisions.remove(localTag));
+        inFlightProvisions.put(allocatedId, promise);
+        promise.onResult(_ -> inFlightProvisions.remove(allocatedId));
     }
 
-    @Contract private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey) {
+    /// Allocate a fresh, globally unique NodeId for an upcoming provisioning slot. The id must
+    /// match the value the new container/VM will self-report (it is passed through
+    /// `ProvisionContext.nodeId` → docker `--label aether.node-id` / `-e NODE_ID`), otherwise
+    /// tag-by-NodeId cleanup (`NodeLifecycleManager.lookupAndTerminate`) would fail to match.
+    ///
+    /// KSUIDs are collision-resistant by design; we still consult the live snapshot to skip the
+    /// vanishingly rare case where a previously-decommissioned-but-still-present NodeId would
+    /// collide.
+    private NodeId generateProvisioningNodeId() {
+        for (var attempt = 0;attempt <8;attempt++) {
+            var candidate = NodeId.nodeId(IdGenerator.generate("aether-core-node")).unwrap();
+            if (isNodeIdFree(candidate)) {return candidate;}
+        }
+        // Final fallback: trust KSUID's uniqueness even if our paranoia check kept matching.
+        return NodeId.nodeId(IdGenerator.generate("aether-core-node")).unwrap();
+    }
+
+    private boolean isNodeIdFree(NodeId candidate) {
+        if (observer.topology().contains(candidate)) {return false;}
+        if (lifecycleReader.apply(candidate).isPresent()) {return false;}
+        if (inFlightProvisions.containsKey(candidate)) {return false;}
+        return !slotKeyByNodeId.containsKey(candidate);
+    }
+
+    @Contract private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey, NodeId assignedNodeId) {
         var nowMs = nowMs();
         var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
-        var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs);
+        var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs, assignedNodeId);
         commandApplier.apply(List.of(putSlotCommand(slotKvKey, value))).onFailure(cause -> log.warn("CTM: failed to mirror provisioning slot {} to KV: {}",
                                                                                                     slotKvKey.slotId(),
                                                                                                     cause.message()))
-                            .onSuccess(_ -> log.debug("CTM: mirrored provisioning slot {} to KV (deadlineMs={})",
+                            .onSuccess(_ -> log.debug("CTM: mirrored provisioning slot {} (assignedNodeId={}, deadlineMs={}) to KV",
                                                       slotKvKey.slotId(),
+                                                      assignedNodeId,
                                                       deadlineMs));
     }
 
     @Contract private void deleteExpiredSlotAtoms(long nowMs) {
         var snapshotSlots = slotReader.get();
         if (snapshotSlots.isEmpty()) {return;}
-        var deletes = snapshotSlots.entrySet().stream()
+        var expired = snapshotSlots.entrySet().stream()
                                             .filter(e -> e.getValue().deadlineMs() <nowMs)
+                                            .toList();
+        if (expired.isEmpty()) {return;}
+        expired.forEach(this::tombstoneAssignedNodeOnExpiry);
+        var deletes = expired.stream()
                                             .map(e -> deleteSlotCommand(e.getKey()))
                                             .toList();
-        if (deletes.isEmpty()) {return;}
         commandApplier.apply(deletes).onFailure(cause -> log.warn("CTM: failed to delete {} expired slot atom(s) from KV: {}",
                                                                   deletes.size(),
                                                                   cause.message()))
                             .onSuccess(_ -> log.debug("CTM: deleted {} expired slot atom(s) from KV",
                                                       deletes.size()));
+    }
+
+    /// Structural ownership: when a slot expires unfulfilled, the NodeId it was bound to is
+    /// authoritatively tombstoned (NodeLifecycleKey → DECOMMISSIONED) so that a late-arriving
+    /// node carrying that id cannot silently promote to ON_DUTY. Best-effort cloud-side reap
+    /// via lifecycleManager.terminateNode — if the instance was provisioned it gets reclaimed,
+    /// if it never existed the lookup yields zero matches and we log+continue.
+    @Contract private void tombstoneAssignedNodeOnExpiry(Map.Entry<ProvisioningSlotKey, ProvisioningSlotValue> entry) {
+        entry.getValue().assignedNodeId().onPresent(assignedId -> {
+            log.warn("CTM: provisioning slot {} expired with assignedNodeId={} unfulfilled — tombstoning",
+                     entry.getKey().slotId(),
+                     assignedId);
+            lifecycleWriter.requestDecommission(assignedId).onFailure(cause -> log.warn("CTM: failed to tombstone expired slot owner {}: {}",
+                                                                                         assignedId,
+                                                                                         cause.message()));
+            lifecycleManager.terminateNode(assignedId).onFailure(cause -> log.debug("CTM: best-effort terminate of expired-slot owner {} returned {}",
+                                                                                     assignedId,
+                                                                                     cause.message()));
+            slotKeyByNodeId.remove(assignedId);
+            inFlightProvisions.remove(assignedId);
+        });
     }
 
     @Contract private void cancelInFlightProvisions(String reason) {

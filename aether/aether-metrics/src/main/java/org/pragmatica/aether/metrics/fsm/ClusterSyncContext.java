@@ -5,23 +5,29 @@
 package org.pragmatica.aether.metrics.fsm;
 
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
+import org.pragmatica.aether.metrics.PeriodicObservationConfig;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignal;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.Fsm;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
@@ -56,6 +62,16 @@ public final class ClusterSyncContext {
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
 
     private final PeerObservationStore observationStore;
+    private final Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier;
+
+    /// RC1 (S01 fix) — peers this node has locally evicted via ping-timeout, with the
+    /// nanos timestamp at which the eviction was recorded. Snapshotted into each outbound
+    /// `ClusterSyncPing.evictionHints` as a suggestion to followers. Entries older than
+    /// `EVICTION_HINT_TTL` are pruned on read. ConcurrentHashMap so the periodic
+    /// ping tick (read) and `emitPingTimeoutIfExceeded` (write) don't race.
+    private final Map<NodeId, Long> evictionHints = new ConcurrentHashMap<>();
+    private static final TimeSpan EVICTION_HINT_TTL = TimeSpan.timeSpan(15).seconds();
+    private final PeriodicObservationConfig periodicConfig;
     private final ClusterSyncState dormant;
     private final ClusterSyncState stopped;
 
@@ -69,6 +85,57 @@ public final class ClusterSyncContext {
                               int pingTimeoutThreshold,
                               Supplier<Epoch> epochSupplier,
                               PeerObservationStore observationStore) {
+        this(fsm,
+             self,
+             network,
+             collector,
+             interval,
+             rabiaTermSupplier,
+             signalSink,
+             pingTimeoutThreshold,
+             epochSupplier,
+             observationStore,
+             Option::none,
+             PeriodicObservationConfig.defaultConfig());
+    }
+
+    public ClusterSyncContext(Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
+                              NodeId self,
+                              ClusterNetwork network,
+                              ClusterSyncCollector collector,
+                              TimeSpan interval,
+                              Supplier<Long> rabiaTermSupplier,
+                              HealthSignalSink signalSink,
+                              int pingTimeoutThreshold,
+                              Supplier<Epoch> epochSupplier,
+                              PeerObservationStore observationStore,
+                              Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier) {
+        this(fsm,
+             self,
+             network,
+             collector,
+             interval,
+             rabiaTermSupplier,
+             signalSink,
+             pingTimeoutThreshold,
+             epochSupplier,
+             observationStore,
+             reachabilitySnapshotSupplier,
+             PeriodicObservationConfig.defaultConfig());
+    }
+
+    public ClusterSyncContext(Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
+                              NodeId self,
+                              ClusterNetwork network,
+                              ClusterSyncCollector collector,
+                              TimeSpan interval,
+                              Supplier<Long> rabiaTermSupplier,
+                              HealthSignalSink signalSink,
+                              int pingTimeoutThreshold,
+                              Supplier<Epoch> epochSupplier,
+                              PeerObservationStore observationStore,
+                              Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
+                              PeriodicObservationConfig periodicConfig) {
         this.fsm = fsm;
         this.self = self;
         this.network = network;
@@ -79,11 +146,16 @@ public final class ClusterSyncContext {
         this.pingTimeoutThreshold = pingTimeoutThreshold;
         this.epochSupplier = epochSupplier;
         this.observationStore = observationStore;
+        this.reachabilitySnapshotSupplier = reachabilitySnapshotSupplier == null
+                                            ? Option::none
+                                            : reachabilitySnapshotSupplier;
+        this.periodicConfig = periodicConfig == null
+                              ? PeriodicObservationConfig.defaultConfig()
+                              : periodicConfig;
         this.observationStore.setCapSupplier(this::bufferCap);
         this.dormant = new ClusterSyncState.Dormant(this);
         this.stopped = new ClusterSyncState.Stopped(this);
     }
-
     public Fsm<ClusterSyncState, ClusterFsmEvent> fsm() {
         return fsm;
     }
@@ -146,6 +218,32 @@ public final class ClusterSyncContext {
         return SharedScheduler.scheduleAtFixedRate(tick, interval);
     }
 
+    /// Schedule the periodic `PeerConnectivityObservation` emission task. Returns
+    /// the future for cancellation on `Pinging.onExit`. The task fires at
+    /// `periodicConfig.period()` cadence and invokes
+    /// `emitPeriodicConnectivityNow()` on the context.
+    public ScheduledFuture<?> schedulePeriodicEmission() {
+        return SharedScheduler.scheduleAtFixedRate(this::emitPeriodicConnectivityNow,
+                                                   periodicConfig.period(),
+                                                   periodicConfig.period());
+    }
+
+    public PeriodicObservationConfig periodicConfig() {
+        return periodicConfig;
+    }
+
+    /// Drive one periodic emission tick synchronously. Invoked by the periodic
+    /// scheduler task and by `ClusterSyncScheduler.emitPeriodicConnectivityNow()`
+    /// for deterministic testing. NOT leader-gated — every node emits its own
+    /// view; leader gating happens at FSM consumption (Step 3).
+    @Contract public void emitPeriodicConnectivityNow() {
+        var currentTopology = topology.get();
+        if (currentTopology == null || currentTopology.isEmpty()) {return;}
+        var topologySet = Set.copyOf(currentTopology);
+        var connected = new HashSet<>(network.connectedPeers());
+        collector.emitPeriodicConnectivity(topologySet, connected, self, System.currentTimeMillis());
+    }
+
     @Contract public void clearObservationBuffers() {
         observationStore.clear();
     }
@@ -159,7 +257,9 @@ public final class ClusterSyncContext {
                                        collector.allMetrics(),
                                        rabiaTerm,
                                        currentEpoch.rabiaTerm(),
-                                       currentEpoch.localCounter());
+                                       currentEpoch.localCounter(),
+                                       reachabilitySnapshotSupplier.get(),
+                                       currentEvictionHints());
         log.debug("ClusterSync: sending PING to {} (rabiaTerm={}, epoch={}:{})",
                   peer,
                   rabiaTerm,
@@ -169,6 +269,18 @@ public final class ClusterSyncContext {
         return currentEpoch;
     }
 
+    /// RC1 (S01 fix) — snapshot of peers this node has locally evicted via
+    /// `emitPingTimeoutIfExceeded` recently. Included in each outbound `ClusterSyncPing`
+    /// as a SUGGESTION to followers ("I think these peers are dead — verify and act").
+    /// Followers reconcile against their own `lastReceivedNanos` before evicting locally;
+    /// owner is not authoritative. Entries age out after `evictionHintTtlNanos`.
+    private Set<NodeId> currentEvictionHints() {
+        var now = System.nanoTime();
+        var ttl = EVICTION_HINT_TTL.nanos();
+        evictionHints.entrySet().removeIf(e -> (now - e.getValue()) > ttl);
+        return Set.copyOf(evictionHints.keySet());
+    }
+
     public long currentRabiaTerm() {
         return rabiaTermSupplier.get();
     }
@@ -176,12 +288,31 @@ public final class ClusterSyncContext {
     @Contract public void emitPingTimeoutIfExceeded(NodeId peer, int missed) {
         if (missed <pingTimeoutThreshold) {return;}
         signalSink.emit(new HealthSignal.PingTimeout(peer, missed, epochSupplier.get()));
+        // RC1 (S01 fix): app-level liveness detection. QUIC's MAX_IDLE_TIMEOUT is
+        // intentionally disabled (cluster connections are persistent per QUIC RFC 9000
+        // §10.1), so the QUIC layer has no autonomous dead-peer detection — UDP sends
+        // are fire-and-forget. The cluster-sync ping/pong cycle IS an app-level liveness
+        // signal: `pingTimeoutThreshold` consecutive missed pongs (default 3 = ~3s) means
+        // the peer is unresponsive. Without this local disconnect, `ReachabilityAggregator.
+        // foldSelfObservations` would keep voting REACHABLE for the unresponsive peer
+        // (its QUIC `PeerState` stays CONNECTED), diluting follower UNREACHABLE evidence
+        // and forcing the FSM to wait on SWIM's 10s suspectTimeout floor for transport-
+        // gated decommission. Local disconnect here strips the false REACHABLE vote and
+        // lets the aggregator converge within the ping-timeout window. Disconnect is
+        // idempotent (peer.evict() guards against double-eviction). See spec §16 S01/S02
+        // and the QuicClusterClient.java:139 / QuicClusterServer.java:136 idle-timeout note.
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(peer));
+        // Track this eviction so the next `ClusterSyncPing` broadcasts it as a
+        // SUGGESTION to followers. Followers verify against their own `lastReceivedNanos`
+        // before acting — owner's eviction is informational, not authoritative.
+        evictionHints.put(peer, System.nanoTime());
     }
 
     public int bufferCap() {
         var peers = Math.max(topology.get().size() - 1,
                              0);
-        return Math.max(peers * PER_PEER_BURST, MIN_BUFFER_CAP);
+        var floor = Math.max(periodicConfig.capFloor().getAsInt(), MIN_BUFFER_CAP);
+        return Math.max(peers * PER_PEER_BURST, floor);
     }
 
     @Contract public void pushHealth(PeerHealthObservation observation) {

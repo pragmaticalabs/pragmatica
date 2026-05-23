@@ -26,6 +26,7 @@ import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.NettySwimTransport;
 import org.pragmatica.swim.SwimConfig;
+import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMembershipListener;
 import org.pragmatica.swim.SwimMessage;
@@ -67,6 +68,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     /// (the only edge SWIM emits to the cluster-wide `TransportObservation` stream) to
     /// the cluster `MessageRouter`. Wired by the Aether node assembly.
     private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
+    private volatile Option<AnnounceJoinCall> pendingAnnounceJoin = none();
+
+    private record AnnounceJoinCall(NodeInfo self, String clusterName, long incarnation,
+                                     List<InetSocketAddress> seeds, BooleanSupplier quorumReached) {}
 
     private CoreSwimHealthDetector(SwimHealthContext context, SwimConfig swimConfig) {
         this.context = context;
@@ -311,6 +316,16 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         protocol().onPresent(p -> p.addObservationListener(consumer));
     }
 
+    @Contract public void announceJoin(NodeInfo self, String clusterName, long incarnation,
+                                        List<InetSocketAddress> seeds, BooleanSupplier quorumReached) {
+        pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, seeds, quorumReached));
+        protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, seeds, quorumReached));
+    }
+
+    public SwimHealth healthOf(NodeId nodeId) {
+        return protocol().map(p -> p.healthOf(nodeId)).or(SwimHealth.UNKNOWN);
+    }
+
     /// Register a cluster-wide [`org.pragmatica.consensus.topology.TransportObservation`] emitter.
     /// Invoked from `SwimProtocol.emitFaultyOrUnknown` whenever a peer transitions to FAULTY,
     /// producing `TransportObservation.PeerObservedFaulty` for the cluster `MessageRouter`.
@@ -367,6 +382,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         seedMembers(protocol);
         pendingObservationListeners.forEach(protocol::addObservationListener);
         pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
+        pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(), call.clusterName(),
+                                                                     call.incarnation(), call.seeds(), call.quorumReached()));
         return new SwimHealthEvents.ProtocolReady(protocol, transport, encryptor);
     }
 

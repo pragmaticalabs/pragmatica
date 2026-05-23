@@ -6,7 +6,15 @@ package org.pragmatica.aether.invoke;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.invoke.InvocationTraceStore.ClusterTraceEvent;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -63,6 +71,63 @@ class InvocationTraceStoreInjectTest {
             var forReq = store.forRequest(requestId);
             assertEquals(1, forReq.size(), "forRequest must locate the injected entry by id");
             assertEquals("processPayment", forReq.get(0).callee());
+        }
+    }
+
+    @Nested
+    class ClusterReplication {
+
+        @Test
+        void inject_publishesTraceInjectedEvent_whenPublisherBound() {
+            var store = InvocationTraceStore.invocationTraceStore();
+            var capturedTypes = new CopyOnWriteArrayList<ClusterEventValue.EventType>();
+            var capturedMetadata = new CopyOnWriteArrayList<Map<String, String>>();
+            store.bindEventLogPublisher((type, severity, message, metadata) -> {
+                capturedTypes.add(type);
+                capturedMetadata.add(metadata);
+                return Promise.success(Unit.unit());
+            });
+
+            store.inject("processOrder",
+                         Option.option(150L),
+                         Option.option(3),
+                         Option.option("req-replicated-001"),
+                         Option.empty())
+                 .onFailure(cause -> fail("Inject failed: " + cause.message()));
+
+            assertEquals(1, capturedTypes.size(), "inject must publish exactly one cluster event");
+            assertEquals(ClusterEventValue.EventType.TRACE_INJECTED, capturedTypes.get(0),
+                          "Published event type must be TRACE_INJECTED");
+            var metadata = capturedMetadata.get(0);
+            assertEquals("req-replicated-001", metadata.get("requestId"));
+            assertEquals("processOrder", metadata.get("operation"));
+            assertEquals("150", metadata.get("durationMs"));
+            assertEquals("3", metadata.get("depth"));
+            assertNotNull(metadata.get("timestamp"), "metadata must carry timestamp");
+        }
+
+        @Test
+        void all_includesClusterWideInjectedTraces_andDedupsByRequestId() {
+            var store = InvocationTraceStore.invocationTraceStore();
+            store.inject("localOp",
+                          Option.option(20L),
+                          Option.empty(),
+                          Option.option("req-local-001"),
+                          Option.empty())
+                  .onFailure(cause -> fail("Local inject failed: " + cause.message()));
+
+            var peerEvent = new ClusterTraceEvent("req-peer-001", "peerOp", 80L, 2, 1700000000000L, "peer-node");
+            var echoEvent = new ClusterTraceEvent("req-local-001", "localOp", 20L, 0, 1700000000001L, "self-node");
+            store.bindClusterEventsSource(() -> List.of(peerEvent, echoEvent));
+
+            var all = store.all();
+            var requestIds = all.stream().map(InvocationNode::requestId).toList();
+            assertTrue(requestIds.contains("req-local-001"),
+                       "Originator's local trace must remain visible: " + requestIds);
+            assertTrue(requestIds.contains("req-peer-001"),
+                       "Peer-originated trace must be unioned in: " + requestIds);
+            assertEquals(2, all.size(),
+                          "Echo of originator's requestId must dedup: " + requestIds);
         }
     }
 

@@ -26,6 +26,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -108,6 +109,18 @@ public final class GenerationSnapshotPublisher {
 
     @Contract public void markDirty() {
         dispatch(PublisherEvent.Mark.INSTANCE);
+    }
+
+    /// RC1 Step 2: receive `MembershipDecision` events from the canonical
+    /// `TopologyObserver` emitter. Membership changes alter the lifecycle map that
+    /// `projectFromKv` consumes, so every decision flips the publisher into the
+    /// Mark/Publishing path. The KV snapshot supplier is still used to actually project
+    /// the next generation snapshot — the subscription only tells the publisher *when*
+    /// the projection must re-run (snapshot-then-tail: initialise from KV snapshot at
+    /// construction; tail MembershipDecision for dirty signalling).
+    @Contract public void onMembershipDecision(MembershipDecision decision) {
+        log.debug("GenerationSnapshotPublisher received {}", decision);
+        markDirty();
     }
 
     PublisherState currentState() {

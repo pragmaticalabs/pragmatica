@@ -20,10 +20,10 @@ class RouteMatcherTest {
 
     @Test
     void match_returnsRoute_forParameterlessGet() {
-        var result = matcher.match(GET, "/api/status");
+        var result = matcher.match(GET, "/api/nodes/status");
         assertThat(result.isSuccess()).isTrue();
         result.onSuccess(matched -> {
-            assertThat(matched.route()).isEqualTo(ManagementRoute.CLUSTER_STATUS);
+            assertThat(matched.route()).isEqualTo(ManagementRoute.NODE_STATUS);
             assertThat(matched.params()).isEmpty();
         });
     }
@@ -41,7 +41,7 @@ class RouteMatcherTest {
         assertThat(result.isSuccess()).isTrue();
         result.onSuccess(matched -> {
             assertThat(matched.route()).isEqualTo(ManagementRoute.DEPLOY_STATUS);
-            assertThat(matched.param("deploymentId").or((String) null)).isEqualTo("abc-123");
+            assertThat(matched.param("id").or((String) null)).isEqualTo("abc-123");
         });
     }
 
@@ -51,7 +51,7 @@ class RouteMatcherTest {
         assertThat(result.isSuccess()).isTrue();
         result.onSuccess(matched -> {
             assertThat(matched.route()).isEqualTo(ManagementRoute.STREAM_PARTITION);
-            assertThat(matched.param("streamName").or((String) null)).isEqualTo("orders");
+            assertThat(matched.param("name").or((String) null)).isEqualTo("orders");
             assertThat(matched.param("partition").or((String) null)).isEqualTo("4");
         });
     }
@@ -63,7 +63,7 @@ class RouteMatcherTest {
         assertThat(promote.isSuccess()).isTrue();
         promote.onSuccess(matched -> {
             assertThat(matched.route()).isEqualTo(ManagementRoute.DEPLOY_PROMOTE);
-            assertThat(matched.param("deploymentId").or((String) null)).isEqualTo("dep-1");
+            assertThat(matched.param("id").or((String) null)).isEqualTo("dep-1");
         });
     }
 
@@ -89,7 +89,7 @@ class RouteMatcherTest {
 
     @Test
     void match_handlesDeleteWithParam() {
-        var result = matcher.match(DELETE, "/api/blueprint/bp-1");
+        var result = matcher.match(DELETE, "/api/blueprints/bp-1");
         result.onSuccess(matched -> assertThat(matched.route()).isEqualTo(ManagementRoute.BLUEPRINT_DELETE));
         assertThat(result.isSuccess()).isTrue();
     }
@@ -125,7 +125,7 @@ class RouteMatcherTest {
 
     @Test
     void match_returnsNoMatch_forWrongMethod() {
-        var result = matcher.match(DELETE, "/api/status");
+        var result = matcher.match(DELETE, "/api/nodes/status");
         assertThat(result.isFailure()).isTrue();
     }
 
@@ -139,7 +139,7 @@ class RouteMatcherTest {
     @Test
     void match_decodesUrlEncodedSegments() {
         var result = matcher.match(GET, "/api/deploy/abc%20def");
-        result.onSuccess(matched -> assertThat(matched.param("deploymentId").or((String) null)).isEqualTo("abc def"));
+        result.onSuccess(matched -> assertThat(matched.param("id").or((String) null)).isEqualTo("abc def"));
         assertThat(result.isSuccess()).isTrue();
     }
 
@@ -161,7 +161,7 @@ class RouteMatcherTest {
     void match_acceptsAllStandardMethods() {
         for (var method : HttpMethod.values()) {
             // Just verify no NPE — most will return NoMatch
-            var result = matcher.match(method, "/api/status");
+            var result = matcher.match(method, "/api/nodes/status");
             assertThat(result).isNotNull();
         }
     }

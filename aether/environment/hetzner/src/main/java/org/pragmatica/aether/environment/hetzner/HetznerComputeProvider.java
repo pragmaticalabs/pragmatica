@@ -107,7 +107,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        return client.listServers(toLabelSelector(tagFilter)).map(HetznerComputeProvider::toInstanceInfoList)
+        return client.listServers(toLabelSelector(translateKeys(tagFilter))).map(HetznerComputeProvider::toInstanceInfoList)
                                  .mapError(HetznerComputeProvider::toListInstancesError);
     }
 
@@ -161,13 +161,46 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var role = ctx.role().isEmpty()
                   ? "core"
                   : ctx.role();
-        return appendCompatible(buildLabels(clusterLabel, role, ctx.sourceName()), ctx.extraTags());
+        var base = buildLabels(clusterLabel, role, ctx.sourceName());
+        // Hetzner labels use the hyphenated `aether-node-id` (HCloud key regex disallows
+        // bare dots in unprefixed keys), while the Docker provider tags with dotted
+        // `aether.node-id`. Both flow from the same ProvisionContext.nodeId() field — the
+        // dotted↔hyphenated asymmetry is encoded native-side here and at the listInstances
+        // translation site (see translateKeys) so the upper layer (NodeLifecycleManager,
+        // NODE_ID_TAG = "aether.node-id") stays provider-agnostic.
+        ctx.nodeId().onPresent(id -> base.put(NODE_ID_LABEL, id));
+        return appendCompatible(base, ctx.extraTags());
+    }
+
+    /// Provider-agnostic tag key (matches `NodeLifecycleManager.NODE_ID_TAG`) used by upper
+    /// layers — translated here to the Hetzner-native hyphenated form so a terminate-by-NodeId
+    /// lookup written as `Map.of("aether.node-id", id)` selects servers whose Hetzner label
+    /// was set to `aether-node-id=<id>` in `labelsFor`. Without this rewrite, the dotted upper-
+    /// layer key would never match the hyphenated native label and terminate would silently
+    /// log "no cloud instance with tag aether.node-id=...".
+    static final String UPPER_LAYER_NODE_ID_TAG = "aether.node-id";
+
+    static final String NODE_ID_LABEL = "aether-node-id";
+
+    static Map<String, String> translateKeys(Map<String, String> tagFilter) {
+        if (tagFilter.isEmpty() || !tagFilter.containsKey(UPPER_LAYER_NODE_ID_TAG)) {
+            return tagFilter;
+        }
+        var translated = new HashMap<>(tagFilter);
+        var value = translated.remove(UPPER_LAYER_NODE_ID_TAG);
+        translated.put(NODE_ID_LABEL, value);
+        return translated;
     }
 
     private String clusterNameOrDefault(ProvisionContext ctx) {
-        return ctx.clusterName().isEmpty()
-              ? config.clusterName().or("unknown")
-              : ctx.clusterName();
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        // Fallback: when ClusterConfigValue isn't yet seeded in KV-Store (pre-bootstrap
+        // path), source the cluster name from AETHER_CLUSTER_NAME env var so
+        // CTM-provisioned Hetzner servers carry a matching `aether-cluster` label.
+        // Mirrors `DockerComputeProvider.clusterOrDefault` — closes spec caveat-c.
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        if (fromEnv != null && !fromEnv.isEmpty()) {return fromEnv;}
+        return config.clusterName().or("unknown");
     }
 
     private static Map<String, String> buildLabels(String clusterLabel, String role, String sourceName) {

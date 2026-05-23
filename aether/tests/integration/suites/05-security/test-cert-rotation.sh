@@ -9,10 +9,12 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 
 LOAD_DURATION="${LOAD_DURATION:-60}"
 LOAD_RPS="${LOAD_RPS:-5}"
+# Mid-flight ops tier — see aether/docs/specs/test-readiness-contract.md §4 (5.0%).
+# TLS cert rotation during concurrent load; handshake retries across the rotation window.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-5.0}"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready for cert rotation test"
 }
 
@@ -31,7 +33,7 @@ test_rotation_under_load() {
 
     # Check if TLS is configured before attempting rotation
     local cert_info
-    cert_info=$(api_get "/api/certificate" 2>/dev/null)
+    cert_info=$(api_get "/api/certificates" 2>/dev/null)
     local renewal_status
     renewal_status=$(json_value "$cert_info" "renewalStatus")
     local rotation_triggered=false
@@ -78,7 +80,7 @@ test_cluster_healthy_after_rotation() {
 
 test_all_nodes_present() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_ge "$count" "${NODE_COUNT:-5}" "All ${NODE_COUNT:-5} nodes present after cert rotation"
 }
 

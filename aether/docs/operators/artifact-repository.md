@@ -103,14 +103,14 @@ For production, push artifacts to the cluster repository:
 mvn clean install
 
 # Then push to cluster
-aether artifact push com.example:my-slice:1.0.0
+aether artifacts push com.example:my-slice:1.0.0
 ```
 
 Alternatively, deploy a JAR directly without Maven:
 
 ```bash
 # Deploy JAR file directly to cluster
-aether artifact deploy target/my-slice-1.0.0.jar \
+aether artifacts deploy target/my-slice-1.0.0.jar \
   -g com.example \
   -a my-slice \
   -v 1.0.0
@@ -158,37 +158,37 @@ repositories = ["local"]
 
 ```bash
 # Push from local Maven repository to cluster
-aether artifact push <groupId:artifactId:version>
+aether artifacts push <groupId:artifactId:version>
 
 # Deploy JAR directly (without Maven)
-aether artifact deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
+aether artifacts deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
 ```
 
 ### Query Artifacts
 
 ```bash
 # List all artifacts in cluster
-aether artifact list
+aether artifacts list
 
 # List versions of specific artifact
-aether artifact versions <groupId:artifactId>
+aether artifacts versions <groupId:artifactId>
 
 # Show artifact details
-aether artifact info <groupId:artifactId:version>
+aether artifacts info <groupId:artifactId:version>
 ```
 
 ### Manage Artifacts
 
 ```bash
 # Remove artifact from cluster
-aether artifact delete <groupId:artifactId:version>
+aether artifacts delete <groupId:artifactId:version>
 ```
 
 ### Metrics
 
 ```bash
 # Show storage and deployment metrics
-aether artifact metrics
+aether artifacts metrics
 ```
 
 ## Metrics
@@ -338,7 +338,7 @@ Current implementation uses in-memory storage:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  CLI / ManagementServer                                         │
-│  └─ aether artifact push/deploy/list/delete                     │
+│  └─ aether artifacts push/deploy/list/delete                     │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐

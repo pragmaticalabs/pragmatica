@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AlertThresholdValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
@@ -25,11 +26,13 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,9 +56,46 @@ import org.slf4j.LoggerFactory;
 
     private final AtomicLong injectionSequence = new AtomicLong();
 
+    /// Narrow publisher shape so tests and alternative producers can bind without depending on
+    /// `ClusterEventLogPublisher`'s rate-cap / HLC machinery. Production wiring adapts via
+    /// `publisher::publish`.
+    @FunctionalInterface public interface EventLogPublisher {
+        Promise<Unit> publish(ClusterEventValue.EventType type,
+                              ClusterEventValue.Severity severity,
+                              String message,
+                              Map<String, String> metadata);
+    }
+
+    /// Optional publisher for the cluster-scoped replicated event log. Bound post-construction
+    /// because the publisher is constructed AFTER `AlertManager` in `AetherNode` wiring
+    /// (publisher depends on `hlcClock` + `clusterCommandApplier` resolved later in the bring-up
+    /// sequence). When unbound (`readOnly` factory, unit tests without consensus), inject paths
+    /// fall back to the legacy node-local map only — preserving the prior contract.
+    private volatile Option<EventLogPublisher> eventLogPublisher = Option.none();
+
+    /// Optional cluster-wide read source for cross-node visibility on `/api/alerts`. When
+    /// bound, `activeAlertsAsList()` UNIONs the local `injectedAlerts` map with any
+    /// `ALERT_INJECTED` cluster events originating from peer nodes — dedup by `alertId`.
+    private volatile Option<Supplier<List<ClusterEvent>>> clusterEventsSource = Option.none();
+
     private AlertManager(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
         this.kvStore = kvStore;
+    }
+
+    /// Bind the replicated event-log publisher. Idempotent: re-binding replaces the prior
+    /// reference. Called from `AetherNode` once the publisher exists (after `eventLogPublisher`
+    /// construction at the ~1024 lifecycle slot).
+    public void bindEventLogPublisher(EventLogPublisher publisher) {
+        this.eventLogPublisher = Option.option(publisher);
+    }
+
+    /// Bind the cross-node cluster events reader. The supplier should expose the full,
+    /// up-to-date materialised view (typically `ClusterEventAggregator::events`). Filtering by
+    /// `EventType.ALERT_INJECTED` happens in `activeAlertsAsList()` to keep the binding
+    /// projection-agnostic.
+    public void bindClusterEventsSource(Supplier<List<ClusterEvent>> source) {
+        this.clusterEventsSource = Option.option(source);
     }
 
     public static AlertManager alertManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
@@ -169,8 +209,43 @@ import org.slf4j.LoggerFactory;
         var alert = new InjectedAlert(alertId, name, severity, message, metric, value, timestamp);
         injectedAlerts.put(alertId, alert);
         addInjectedToHistory(alert);
+        publishInjectionToClusterLog(alert);
         log.info("Injected synthetic alert id={} name={} severity={}", alertId, name, severity);
         return new AlertInjectResponse(alertId, name, severity, message, timestamp);
+    }
+
+    /// Replicate the injected alert via the cluster-scoped event log so peer nodes can return
+    /// it on their `/api/alerts` reads. Failures are logged and swallowed — the local map
+    /// already holds the injection, so the originating node remains correct even if Rabia
+    /// apply is briefly unavailable (e.g., minority partition, mid-leader-transfer).
+    private void publishInjectionToClusterLog(InjectedAlert alert) {
+        eventLogPublisher.onPresent(publisher -> publisher.publish(ClusterEventValue.EventType.ALERT_INJECTED,
+                                                                    severityFor(alert.severity),
+                                                                    alert.message,
+                                                                    buildAlertInjectMetadata(alert))
+                                                            .onFailure(cause -> log.warn("Failed to replicate injected alert id={}: {}",
+                                                                                          alert.alertId,
+                                                                                          cause.message())));
+    }
+
+    private static ClusterEventValue.Severity severityFor(String severity) {
+        return switch (severity){
+            case "CRITICAL" -> ClusterEventValue.Severity.CRITICAL;
+            case "WARNING" -> ClusterEventValue.Severity.WARNING;
+            default -> ClusterEventValue.Severity.INFO;
+        };
+    }
+
+    private static Map<String, String> buildAlertInjectMetadata(InjectedAlert alert) {
+        var metadata = new LinkedHashMap<String, String>();
+        metadata.put("alertId", alert.alertId);
+        metadata.put("name", alert.name);
+        metadata.put("severity", alert.severity);
+        metadata.put("message", alert.message);
+        metadata.put("timestamp", Long.toString(alert.timestamp));
+        alert.metric.onPresent(m -> metadata.put("metric", m));
+        alert.value.onPresent(v -> metadata.put("value", Double.toString(v)));
+        return Map.copyOf(metadata);
     }
 
     private void addInjectedToHistory(InjectedAlert alert) {
@@ -340,17 +415,56 @@ import org.slf4j.LoggerFactory;
 
     public List<AlertView> activeAlertsAsList() {
         var list = new java.util.ArrayList<AlertView>(activeAlerts.size() + injectedAlerts.size());
+        var seenInjectedIds = new java.util.HashSet<String>();
         for (var alert : activeAlerts.values()) {
             list.add(new AlertView(null, null, alert.severity, null, "threshold",
                                     alert.metric, alert.value, alert.nodeId.id(), alert.threshold,
                                     alert.triggeredAt, null));
         }
         for (var alert : injectedAlerts.values()) {
+            seenInjectedIds.add(alert.alertId);
             list.add(new AlertView(alert.alertId, alert.name, alert.severity, alert.message, "injected",
                                     alert.metric.or((String) null), alert.value.or((Double) null), null, null,
                                     null, alert.timestamp));
         }
+        appendClusterWideInjectedAlerts(list, seenInjectedIds);
         return List.copyOf(list);
+    }
+
+    private void appendClusterWideInjectedAlerts(java.util.List<AlertView> sink, java.util.Set<String> seenIds) {
+        clusterEventsSource.onPresent(source -> {
+            for (var event : source.get()) {
+                if (event.type() != ClusterEventValue.EventType.ALERT_INJECTED) {continue;}
+                var view = projectClusterEventToAlertView(event);
+                if (view == null) {continue;}
+                if (view.alertId() != null && !seenIds.add(view.alertId())) {continue;}
+                sink.add(view);
+            }
+        });
+    }
+
+    private static AlertView projectClusterEventToAlertView(ClusterEvent event) {
+        var details = event.details();
+        var alertId = details.get("alertId");
+        if (alertId == null) {return null;}
+        var name = details.getOrDefault("name", "");
+        var severity = details.getOrDefault("severity", event.severity().name());
+        var message = details.getOrDefault("message", event.summary());
+        var metric = details.get("metric");
+        var value = parseDoubleOrNull(details.get("value"));
+        var timestamp = parseLongOrNull(details.get("timestamp"));
+        return new AlertView(alertId, name, severity, message, "injected",
+                              metric, value, null, null, null, timestamp);
+    }
+
+    private static Double parseDoubleOrNull(String raw) {
+        if (raw == null) {return null;}
+        return org.pragmatica.lang.parse.Number.parseDouble(raw).option().or((Double) null);
+    }
+
+    private static Long parseLongOrNull(String raw) {
+        if (raw == null) {return null;}
+        return org.pragmatica.lang.parse.Number.parseLong(raw).option().or((Long) null);
     }
 
     public List<AlertHistoryView> alertHistoryAsList() {
@@ -376,6 +490,7 @@ import org.slf4j.LoggerFactory;
         var sb = new StringBuilder();
         sb.append("[");
         boolean first = true;
+        var seenInjectedIds = new java.util.HashSet<String>();
         for (var alert : activeAlerts.values()) {
             if (!first) sb.append(",");
             sb.append("{");
@@ -394,6 +509,7 @@ import org.slf4j.LoggerFactory;
             first = false;
         }
         for (var alert : injectedAlerts.values()) {
+            seenInjectedIds.add(alert.alertId);
             if (!first) sb.append(",");
             sb.append("{");
             sb.append("\"alertId\":\"").append(escapeJson(alert.alertId))
@@ -413,8 +529,44 @@ import org.slf4j.LoggerFactory;
             sb.append("}");
             first = false;
         }
+        // Cross-node UNION: include ALERT_INJECTED events from peer nodes via the replicated
+        // log. Dedup by alertId so the originator's local entry is not duplicated.
+        for (var injection : clusterWideInjectedAlerts(seenInjectedIds)) {
+            if (!first) sb.append(",");
+            sb.append("{");
+            sb.append("\"alertId\":\"").append(escapeJson(injection.alertId()))
+                     .append("\",");
+            sb.append("\"name\":\"").append(escapeJson(injection.name()))
+                     .append("\",");
+            sb.append("\"severity\":\"").append(escapeJson(injection.severity()))
+                     .append("\",");
+            sb.append("\"message\":\"").append(escapeJson(injection.message()))
+                     .append("\",");
+            sb.append("\"metric\":\"").append(escapeJson(injection.metric() == null ? "" : injection.metric()))
+                     .append("\",");
+            sb.append("\"value\":").append(injection.value() == null ? 0.0 : injection.value())
+                     .append(",");
+            sb.append("\"source\":\"injected\",");
+            sb.append("\"timestamp\":").append(injection.timestamp() == null ? 0L : injection.timestamp());
+            sb.append("}");
+            first = false;
+        }
         sb.append("]");
         return sb.toString();
+    }
+
+    private List<AlertView> clusterWideInjectedAlerts(java.util.Set<String> seenIds) {
+        var list = new java.util.ArrayList<AlertView>();
+        clusterEventsSource.onPresent(source -> {
+            for (var event : source.get()) {
+                if (event.type() != ClusterEventValue.EventType.ALERT_INJECTED) {continue;}
+                var view = projectClusterEventToAlertView(event);
+                if (view == null) {continue;}
+                if (view.alertId() != null && !seenIds.add(view.alertId())) {continue;}
+                list.add(view);
+            }
+        });
+        return list;
     }
 
     @SuppressWarnings("JBCT-PAT-01") public String alertHistoryAsJson() {

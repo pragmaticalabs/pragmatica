@@ -85,7 +85,7 @@ phase_deploy() {
 
     # Deploy via management API
     echo "Deploying blueprint..."
-    curl -sf -X POST "$MGMT_URL/api/blueprint/deploy" \
+    curl -sf -X POST "$MGMT_URL/api/blueprints/deploy" \
         -H "Content-Type: application/json" \
         -d "{\"artifact\": \"$BLUEPRINT_COORDS\"}" \
         || { echo "ERROR: Deployment failed"; exit 1; }
@@ -96,7 +96,7 @@ phase_deploy() {
 
     # Verify slices
     echo "Cluster status:"
-    curl -sf "$MGMT_URL/api/status" | head -c 500
+    curl -sf "$MGMT_URL/api/nodes/status" | head -c 500
     echo ""
     echo "Phase 2 complete: blueprint deployed."
 }

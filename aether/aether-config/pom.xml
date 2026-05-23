@@ -27,6 +27,12 @@
             <artifactId>toml</artifactId>
         </dependency>
 
+        <!-- HTTP status enum + HttpStatusAware mixin for error→status mapping -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>http-routing</artifactId>
+        </dependency>
+
         <!-- Environment integration SPI (for CloudConfig) -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>

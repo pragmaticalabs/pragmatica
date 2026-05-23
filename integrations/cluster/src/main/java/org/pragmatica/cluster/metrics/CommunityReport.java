@@ -5,6 +5,7 @@
 package org.pragmatica.cluster.metrics;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
 import java.util.Set;
@@ -13,7 +14,10 @@ import java.util.Set;
 /// Per-community health report produced by a Spokesman (Tier 2) and piggybacked on
 /// that core node's Tier 1 `ClusterSyncPong` to the leader.
 ///
-/// See `aether/docs/specs/cluster-generation-spec.md` §7.3.
+/// See `aether/docs/specs/cluster-generation-spec.md` §7.3 and
+/// `aether/docs/specs/reachability-aggregator-spec.md` Layer 6 for the optional
+/// `communityReachability` field that propagates the spokesman's aggregated
+/// per-community transport reachability snapshot up to the cluster leader.
 @Codec public record CommunityReport(String communityId,
                                      long communityTerm,
                                      long communityEpochTerm,
@@ -24,12 +28,16 @@ import java.util.Set;
                                      int suspectedMembers,
                                      int faultyMembers,
                                      Set<String> partitionsHeld,
-                                     long lastPongFromGovernorAtMs) {
+                                     long lastPongFromGovernorAtMs,
+                                     Option<AggregatedReachabilitySnapshot> communityReachability) {
     public CommunityReport {
         if (communityId == null) {communityId = "";}
         partitionsHeld = partitionsHeld == null
                         ? Set.of()
                         : Set.copyOf(partitionsHeld);
+        communityReachability = communityReachability == null
+                                ? Option.none()
+                                : communityReachability;
     }
 
     public static CommunityReport communityReport(String communityId,
@@ -53,6 +61,7 @@ import java.util.Set;
                                    suspectedMembers,
                                    faultyMembers,
                                    partitionsHeld,
-                                   lastPongFromGovernorAtMs);
+                                   lastPongFromGovernorAtMs,
+                                   Option.none());
     }
 }

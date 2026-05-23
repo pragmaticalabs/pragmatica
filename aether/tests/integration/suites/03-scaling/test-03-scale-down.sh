@@ -10,12 +10,18 @@ source "${SCRIPT_DIR}/../../lib/load.sh"
 
 LOAD_RPS="${LOAD_RPS:-5}"
 LOAD_DURATION="${LOAD_DURATION:-180}"
+# Operational event tier — see aether/docs/specs/test-readiness-contract.md §4 (2.0%).
+# Single moderate disruption (one node drained); small percentage lost during cutover window.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
 test_seed_config() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_leader 60
     seed_cluster_config
+    # Wait for generation to quiesce after previous suite's scale-down — ensures
+    # leadership is stable before issuing scale operations (avoids "quorum unavailable"
+    # on the first scale call during a brief re-election window).
+    await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 60 || true
 }
 
 test_scale_up_to_7() {
@@ -26,14 +32,16 @@ test_scale_up_to_7() {
     # Hetzner remote even when the cluster was actually at 7.
     wait_for_node_count_fast 7 180
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "7" "Scaled to 7 nodes"
 }
 
 test_scale_down_under_load() {
-    # Start load against the local health endpoint on each node directly
-    # (LOCAL routes are served on every node — no LB forwarding required)
-    APP_ENDPOINT="${CLUSTER_ENDPOINT}" start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/health/live"
+    # Production-like load: hit an app-port slice endpoint (test-echo blueprint
+    # deployed by suite harness) rather than the synthetic /health/live. Exercises
+    # the slice routing table that gets republished on every generation advance
+    # during a scale-down — masked by /health/live which is a node-local probe.
+    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/echo/health"
     sleep 5
 
     # Scale down to 5
@@ -55,7 +63,7 @@ test_scale_down_under_load() {
 
 test_5_nodes_healthy() {
     local count
-    count=$(cluster_node_count)
+    count=$(cluster_member_count)
     assert_eq "$count" "5" "5 nodes present after scale-down"
     assert_cluster_healthy "Cluster healthy at 5 nodes"
 }

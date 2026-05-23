@@ -88,6 +88,19 @@ public final class DHTTopologyListener {
         rebalancer.onPresent(r -> r.onNodeRemoved(downNodeId));
     }
 
+    /// Transport-disconnect ring-prune is intentionally NOT exposed.
+    ///
+    /// Earlier work (reverted) pruned the ring on every `TransportObservation.PeerDisconnected`,
+    /// which caused a rebalance storm under sustained write pressure (e.g. 16-chunk 1MB
+    /// artifact deploy fan-out): each prune triggered re-replication that saturated QUIC,
+    /// which in turn caused `writeIfWritable` watermark drops, which manifested as
+    /// indefinite hangs on `Promise.allOf` of chunk DHT puts. The consensus-driven path
+    /// (`MembershipDecision.NodeRemoved` → `onNodeRemoved`) IS the correct ring-prune
+    /// trigger: it fires only after the cluster has agreed the node is gone, not on every
+    /// transient QUIC flap. Genuinely-dead peers reach `NodeRemoved` via SWIM failure
+    /// detection + reconciler decision within seconds; transient flaps reconnect and
+    /// preserve ring locality.
+
     private void removeFromRing(NodeId removedNodeId) {
         log.info("DHT: Node removed {}, updating ring", removedNodeId.id());
         node.ring()

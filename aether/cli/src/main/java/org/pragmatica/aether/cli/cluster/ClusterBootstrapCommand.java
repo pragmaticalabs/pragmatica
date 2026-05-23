@@ -208,7 +208,7 @@ import static org.pragmatica.lang.Option.option;
     }
 
     static String queryClusterPhase(Function<ManagementRoute, Result<String>> fetcher) {
-        return fetcher.apply(ManagementRoute.CLUSTER_CONFIG_STATUS).flatMap(MAPPER::readTree)
+        return fetcher.apply(ManagementRoute.CLUSTER_STATUS).flatMap(MAPPER::readTree)
                             .map(node -> node.path(CLUSTER_PHASE_FIELD).asText(UNKNOWN))
                             .or(UNKNOWN);
     }

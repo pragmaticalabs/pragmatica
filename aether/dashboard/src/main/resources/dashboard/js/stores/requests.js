@@ -16,14 +16,14 @@ document.addEventListener('alpine:init', function() {
         // --- Data Fetching ---
 
         async fetchInvocations() {
-            var data = await RestClient.get('/api/invocation-metrics');
+            var data = await RestClient.get('/api/invocations/metrics');
             if (data && data.snapshots) {
                 this.invocations = data.snapshots.map(this.mapSnapshot);
             }
         },
 
         async fetchSlowInvocations() {
-            var data = await RestClient.get('/api/invocation-metrics/slow');
+            var data = await RestClient.get('/api/invocations/metrics/slow');
             if (data && data.slowInvocations) {
                 this.slowInvocations = data.slowInvocations;
             }

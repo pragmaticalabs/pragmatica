@@ -145,7 +145,7 @@ sequenceDiagram
 Management API uses API key authentication:
 
 ```
-GET /api/status
+GET /api/nodes/status
 X-Api-Key: <key>
 ```
 

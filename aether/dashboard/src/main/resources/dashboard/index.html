@@ -61,7 +61,7 @@
         submit: function(key) {
             var self = this;
             // Validate key against server before accepting
-            fetch('/api/status', { headers: { 'x-api-key': key } }).then(function(r) {
+            fetch('/api/nodes/status', { headers: { 'x-api-key': key } }).then(function(r) {
                 if (r.ok) {
                     sessionStorage.setItem('aether-api-key', key);
                     self.hide();

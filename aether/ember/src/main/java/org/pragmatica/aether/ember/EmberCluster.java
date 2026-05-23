@@ -564,7 +564,18 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                           Option.empty(),
                                           org.pragmatica.aether.config.StreamingConfig.streamingConfig(),
                                           org.pragmatica.consensus.net.ClusterFormationConfig.defaults());
-        return AetherNode.aetherNode(config).unwrap();
+        // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain
+        // phase, do NOT halt the JVM (would kill all other in-process nodes). Stop the
+        // node gracefully and remove it from the cluster's registry instead.
+        Runnable jvmExit = () -> handleSelfDrain(nodeId.id());
+        return AetherNode.aetherNode(config, jvmExit).unwrap();
+    }
+
+    private void handleSelfDrain(String nodeIdStr) {
+        var node = nodes.remove(nodeIdStr);
+        if (node == null) {return;}
+        node.stop().await(timeSpan(10).seconds())
+                   .onFailure(cause -> {});
     }
 
     public List<NodeMetrics> nodeMetrics() {

@@ -7,14 +7,20 @@ package org.pragmatica.aether.metrics;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
+import org.pragmatica.cluster.metrics.ConnectivityState;
+import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerObservationBuffer;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
 
@@ -24,6 +30,7 @@ import java.lang.management.OperatingSystemMXBean;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
@@ -72,6 +79,44 @@ public interface ClusterSyncCollector {
 
     @Contract void setPongSignalFan(ClusterSyncPongSignalFan fan);
     @Contract void setPeerObservationBuffer(PeerObservationBuffer buffer);
+    /// RC1 (S01 fix) — wire the SWIM-backed predicate that answers "is this peer
+    /// observed as ALIVE in our local SWIM membership view?". Used to verify owner-
+    /// broadcast eviction hints (`ClusterSyncPing.evictionHints`) — when SWIM says
+    /// ALIVE, the follower REFUSES the owner's hint, preserving the independent-
+    /// observers property. Default no-op (test doubles inherit; production wires
+    /// in `AetherNode` to consult `CoreSwimHealthDetector.healthOf`).
+    @Contract default void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {}
+
+    /// Emit one `PeerConnectivityObservation` per topology peer (excluding `self`)
+    /// into the wired `PeerObservationBuffer`. Peers in `connected` get state
+    /// `CONNECTED`; peers in `topology` but absent from `connected` get state
+    /// `DISCONNECTED`. Invoked periodically by `ClusterSyncScheduler` to keep
+    /// the leader-side aggregator continuously fed (eliminates the
+    /// transition-only buffer-decay race). See
+    /// `reachability-aggregator-spec.md` "Periodic Observation Mode".
+    @Contract void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs);
+
+    /// Most-recently received `AggregatedReachabilitySnapshot` from an incoming
+    /// `ClusterSyncPing`. `Option.none()` until the first ping with a non-empty
+    /// snapshot lands (cold-start window or pre-extension peers). Followers cache
+    /// this for warm-takeover when they become leader; `/api/status` reads it to
+    /// produce reader-invariant `coreCount`. See
+    /// `aether/docs/specs/reachability-aggregator-spec.md`.
+    Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot();
+
+    /// Wires the local `ReachabilityAggregator`'s snapshot supplier. On the leader,
+    /// `lastReachabilitySnapshot()` is forever `none` (the leader sends pings, never
+    /// receives them) so `MembershipView` must read the leader's OWN aggregator
+    /// output directly. The injected supplier is consulted by `bestSnapshot()` and
+    /// takes precedence when present. Followers leave this unset; `bestSnapshot()`
+    /// falls back to the cached received snapshot.
+    @Contract void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier);
+
+    /// Unified accessor: leader's local aggregator output if non-empty, else the
+    /// cached snapshot received from the prior leader. This is the value that
+    /// `MembershipView.strict` consumes via `AetherNode.membershipView()` to
+    /// resolve KV-ON_DUTY peer status when local SWIM hasn't acked HEALTHY.
+    Option<AggregatedReachabilitySnapshot> bestSnapshot();
 
     static ClusterSyncCollector clusterSyncCollector(NodeId self, ClusterNetwork network) {
         return new ClusterSyncCollectorImpl(self, network, DEFAULT_slidingWindowMs);
@@ -108,6 +153,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     private final AtomicReference<Supplier<String>> lifecycleStateSupplier = new AtomicReference<>(() -> "ON_DUTY");
 
+    private final AtomicReference<Option<AggregatedReachabilitySnapshot>> lastReachabilitySnapshot = new AtomicReference<>(Option.none());
+
+    private final AtomicReference<Supplier<Option<AggregatedReachabilitySnapshot>>> localSnapshotSupplier = new AtomicReference<>(Option::none);
+
     private final AtomicReference<Supplier<List<CommunityReport>>> communityReportSupplier = new AtomicReference<>(List::of);
 
     private final CopyOnWriteArrayList<Consumer<ClusterSyncPong>> pongListeners = new CopyOnWriteArrayList<>();
@@ -115,6 +164,14 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicReference<ClusterSyncPongSignalFan> pongSignalFan = new AtomicReference<>(_ -> {});
 
     private final AtomicReference<PeerObservationBuffer> peerObservationBuffer = new AtomicReference<>(PeerObservationBuffer.NOOP);
+
+    /// RC1 (S01 fix) — SWIM-backed predicate "is this peer observed ALIVE locally". Used
+    /// to verify owner-broadcast eviction hints (`ClusterSyncPing.evictionHints`). Default
+    /// is "always alive" (safe — refuses all hints) until the wiring layer plugs in a real
+    /// SWIM accessor. Set by `AetherNode` to `nodeId -> swimProtocol.healthOf(nodeId) ==
+    /// SwimHealth.HEALTHY`. When this predicate returns TRUE for a peer, the follower
+    /// IGNORES the owner's eviction hint for that peer — independence preserved.
+    private final AtomicReference<java.util.function.Predicate<NodeId>> peerLocallyAlive = new AtomicReference<>(_ -> true);
 
     ClusterSyncCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
@@ -174,8 +231,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override@Contract public void onMembershipDecision(MembershipDecision decision) {
         switch (decision){
-            case MembershipDecision.NodeRemoved(var removedNode, _) -> removeNode(removedNode);
-            case MembershipDecision.NodeDecommissioned(var decommissioned, _) -> removeNode(decommissioned);
+            case MembershipDecision.NodeRemoved(var removedNode, _, _, _) -> removeNode(removedNode);
+            case MembershipDecision.NodeDecommissioned(var decommissioned, _, _, _) -> removeNode(decommissioned);
             default -> {}
         }
     }
@@ -196,12 +253,50 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
         advanceObservedEpoch(incomingEpoch);
+        // Cache the leader-broadcast reachability snapshot. `/api/status` reads
+        // it to eliminate per-reader QUIC-view variance; on leader-gained, the
+        // new leader seeds its aggregator from this cache to shorten warmup.
+        // Pre-extension peers send Option.none() — leave cache unchanged so
+        // older data isn't lost during a rolling upgrade window.
+        ping.aggregatedReachability().onPresent(snapshot -> lastReachabilitySnapshot.set(Option.some(snapshot)));
+        // RC1 (S01 fix): owner's eviction hints are SUGGESTIONS — verify against local
+        // liveness evidence before acting. If we've received traffic from the peer
+        // recently (within `EVICTION_HINT_VERIFY_NANOS`), the owner's view is likely
+        // stale or wrong (asymmetric routing / NIC issue on owner side) — ignore.
+        // If silent locally too, agree with owner and disconnect the peer ourselves,
+        // which strips our REACHABLE vote from the next pong and lets the aggregator
+        // converge faster. Preserves the "independent observers" property by adding
+        // a LOCAL veto on the owner's suggestion.
+        processEvictionHints(ping);
         var pong = buildPong();
         log.debug("ClusterSync: sending PONG to {} (epoch={}:{})",
                   ping.sender(),
                   pong.observedEpochTerm(),
                   pong.observedEpochCounter());
         network.send(ping.sender(), pong);
+    }
+
+    /// RC1 (S01 fix) — when SWIM says the suggested-evicted peer is observed locally as
+    /// ALIVE, the follower REFUSES the owner's eviction hint (preserves independent-
+    /// observers property). When SWIM has no direct evidence (SUSPECT/FAULTY/UNKNOWN/
+    /// never-seen), the follower agrees with owner and disconnects locally. SWIM's
+    /// ALIVE state requires actual probe-ack within the last `suspectTimeout` window
+    /// — strong enough evidence that the peer is genuinely reachable.
+    private void processEvictionHints(ClusterSyncPing ping) {
+        var hints = ping.evictionHints();
+        if (hints.isEmpty()) {return;}
+        var aliveCheck = peerLocallyAlive.get();
+        for (var peer : hints) {
+            if (peer.equals(self)) {continue;}
+            if (aliveCheck.test(peer)) {
+                log.debug("ClusterSync: ignored eviction hint for {} from {} — SWIM says ALIVE",
+                          peer, ping.sender());
+                continue;
+            }
+            log.info("ClusterSync: acting on eviction hint for {} from {} (SWIM not ALIVE)",
+                     peer, ping.sender());
+            network.disconnect(new NetworkServiceMessage.DisconnectNode(peer));
+        }
     }
 
     @Override@Contract public void onClusterSyncPong(ClusterSyncPong pong) {
@@ -225,6 +320,29 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         peerObservationBuffer.set(buffer == null
                                   ? PeerObservationBuffer.NOOP
                                   : buffer);
+    }
+
+    @Override@Contract public void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {
+        peerLocallyAlive.set(predicate == null
+                             ? _ -> true
+                             : predicate);
+    }
+
+    @Override@Contract public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {
+        var buffer = peerObservationBuffer.get();
+        var epoch = observedEpoch.get();
+        var epochTerm = epoch.rabiaTerm();
+        var epochCounter = epoch.localCounter();
+        topology.stream()
+                .filter(peer -> !peer.equals(self))
+                .map(peer -> new PeerConnectivityObservation(peer,
+                                                             connected.contains(peer)
+                                                                 ? ConnectivityState.CONNECTED
+                                                                 : ConnectivityState.DISCONNECTED,
+                                                             epochTerm,
+                                                             epochCounter,
+                                                             nowMs))
+                .forEach(buffer::pushConnectivity);
     }
 
     @Override public long observedRabiaTerm() {
@@ -255,9 +373,22 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         pongListeners.add(listener);
     }
 
+    @Override public Option<AggregatedReachabilitySnapshot> lastReachabilitySnapshot() {
+        return lastReachabilitySnapshot.get();
+    }
+
+    @Override@Contract public void setLocalSnapshotSupplier(Supplier<Option<AggregatedReachabilitySnapshot>> supplier) {
+        localSnapshotSupplier.set(supplier == null ? Option::none : supplier);
+    }
+
+    @Override public Option<AggregatedReachabilitySnapshot> bestSnapshot() {
+        var local = localSnapshotSupplier.get().get();
+        return local.isPresent() ? local : lastReachabilitySnapshot.get();
+    }
+
     private boolean acceptPingFencing(ClusterSyncPing ping) {
         var currentTerm = observedRabiaTerm.get();
-        if (ping.rabiaTerm() <currentTerm) {return false;}
+        if (ping.rabiaTerm() < currentTerm) {return false;}
         if (ping.rabiaTerm() > currentTerm) {observedRabiaTerm.set(ping.rabiaTerm());}
         return true;
     }

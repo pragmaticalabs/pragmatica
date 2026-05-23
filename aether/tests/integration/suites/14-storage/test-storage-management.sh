@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     log_pass "Cluster ready"
 }
 
@@ -60,7 +60,7 @@ test_storage_instance_detail() {
 
     # Extract the first instance name from the list
     local first_name
-    first_name=$(echo "$result" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    first_name=$(echo "$result" | (grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' || true) | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
     if [ -z "$first_name" ]; then
         skip_test "Instance detail" "No storage instances configured"
@@ -84,7 +84,7 @@ test_storage_snapshot() {
     fi
 
     local first_name
-    first_name=$(echo "$result" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    first_name=$(echo "$result" | (grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' || true) | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
     if [ -z "$first_name" ]; then
         skip_test "Snapshot trigger" "No storage instances configured"
@@ -121,7 +121,7 @@ test_cluster_storage_detail() {
     fi
 
     local first_name
-    first_name=$(echo "$list_result" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    first_name=$(echo "$list_result" | (grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' || true) | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 
     if [ -z "$first_name" ]; then
         skip_test "Cluster storage detail" "No storage instances configured"

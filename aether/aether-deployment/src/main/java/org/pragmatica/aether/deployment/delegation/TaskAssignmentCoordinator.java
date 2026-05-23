@@ -216,12 +216,18 @@ public sealed interface TaskAssignmentCoordinator {
             switch (event){
                 case ClusterFsmEvent.LeaderChange lc when!lc.localIsLeader() -> tx.transitionTo(ctx.dormant);
                 case ClusterFsmEvent.NodeGone _ -> handleNodeDeparture();
+                case ClusterFsmEvent.NodeAdded _ -> handleNodeArrival();
                 default -> tx.ignore();
             }
         }
 
         private void handleNodeDeparture() {
             log.info("Node departed; checking for orphaned task assignments");
+            reconcile();
+        }
+
+        private void handleNodeArrival() {
+            log.info("Node joined; checking for unassigned task groups");
             reconcile();
         }
 
@@ -389,9 +395,11 @@ public sealed interface TaskAssignmentCoordinator {
 
         @Contract@Override public void onMembershipDecision(MembershipDecision decision) {
             switch (decision){
-                case NodeRemoved(NodeId node, var topology) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node, topology));
-                case NodeDecommissioned(NodeId node, var topology) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
-                                                                                                                topology));
+                case NodeRemoved(NodeId node, var topology, _, _) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node, topology));
+                case NodeDecommissioned(NodeId node, var topology, _, _) -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
+                                                                                                                      topology));
+                case MembershipDecision.NodeJoined(NodeId node, var topology, _, _) -> fsm.dispatch(new ClusterFsmEvent.NodeAdded(node,
+                                                                                                                                   topology));
                 default -> {}
             }
         }

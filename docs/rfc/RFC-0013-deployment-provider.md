@@ -958,7 +958,7 @@ Orchestrated by the caller (CDM or CLI). Per-node:
  │  1. DeploymentProvider.status(instanceId)                       │
  │     → Verify current deployment is HEALTHY                      │
  │                                                                 │
- │  2. NodeLifecycleRoutes: POST /api/node/drain/{nodeId}          │
+ │  2. NodeLifecycleRoutes: POST /api/nodes/drain/{id}             │
  │     → Transition: ON_DUTY → DRAINING                            │
  │     → Wait for slices to migrate off                            │
  │                                                                 │

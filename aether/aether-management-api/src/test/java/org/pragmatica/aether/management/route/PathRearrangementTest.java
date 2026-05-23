@@ -31,49 +31,49 @@ class PathRearrangementTest {
     @Test
     void deployPromote_paramAtTail() {
         assertThat(DEPLOY_PROMOTE.prefix()).isEqualTo("/api/deploy/promote");
-        assertThat(DEPLOY_PROMOTE.paramNames()).containsExactly("deploymentId");
+        assertThat(DEPLOY_PROMOTE.paramNames()).containsExactly("id");
     }
 
     @Test
     void deployRollback_paramAtTail() {
         assertThat(DEPLOY_ROLLBACK.prefix()).isEqualTo("/api/deploy/rollback");
-        assertThat(DEPLOY_ROLLBACK.paramNames()).containsExactly("deploymentId");
+        assertThat(DEPLOY_ROLLBACK.paramNames()).containsExactly("id");
     }
 
     @Test
     void deployComplete_paramAtTail() {
         assertThat(DEPLOY_COMPLETE.prefix()).isEqualTo("/api/deploy/complete");
-        assertThat(DEPLOY_COMPLETE.paramNames()).containsExactly("deploymentId");
+        assertThat(DEPLOY_COMPLETE.paramNames()).containsExactly("id");
     }
 
     @Test
     void abTestMetrics_paramAtTail() {
-        assertThat(AB_TEST_METRICS.prefix()).isEqualTo("/api/ab-test/metrics");
-        assertThat(AB_TEST_METRICS.paramNames()).containsExactly("testId");
+        assertThat(AB_TEST_METRICS.prefix()).isEqualTo("/api/ab-tests/metrics");
+        assertThat(AB_TEST_METRICS.paramNames()).containsExactly("id");
     }
 
     @Test
     void abTestConclude_paramAtTail() {
-        assertThat(AB_TEST_CONCLUDE.prefix()).isEqualTo("/api/ab-test/conclude");
-        assertThat(AB_TEST_CONCLUDE.paramNames()).containsExactly("testId");
+        assertThat(AB_TEST_CONCLUDE.prefix()).isEqualTo("/api/ab-tests/conclude");
+        assertThat(AB_TEST_CONCLUDE.paramNames()).containsExactly("id");
     }
 
     @Test
     void blueprintStatus_paramAtTail() {
-        assertThat(BLUEPRINT_STATUS.prefix()).isEqualTo("/api/blueprint/status");
-        assertThat(BLUEPRINT_STATUS.paramNames()).containsExactly("blueprintId");
+        assertThat(BLUEPRINT_STATUS.prefix()).isEqualTo("/api/blueprints/status");
+        assertThat(BLUEPRINT_STATUS.paramNames()).containsExactly("id");
     }
 
     @Test
     void streamPublish_paramAtTail() {
         assertThat(STREAM_PUBLISH.prefix()).isEqualTo("/api/streams/publish");
-        assertThat(STREAM_PUBLISH.paramNames()).containsExactly("streamName");
+        assertThat(STREAM_PUBLISH.paramNames()).containsExactly("name");
     }
 
     @Test
     void streamRead_paramsAtTail() {
         assertThat(STREAM_READ.prefix()).isEqualTo("/api/streams/read");
-        assertThat(STREAM_READ.paramNames()).containsExactly("streamName", "partition");
+        assertThat(STREAM_READ.paramNames()).containsExactly("name", "partition");
     }
 
     @Test

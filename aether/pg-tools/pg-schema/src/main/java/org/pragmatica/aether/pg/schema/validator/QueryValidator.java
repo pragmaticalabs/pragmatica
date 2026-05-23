@@ -12,6 +12,7 @@ import org.pragmatica.aether.pg.schema.model.Column;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
 import org.pragmatica.aether.pg.schema.model.Table;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
@@ -312,15 +313,15 @@ public final class QueryValidator {
             this.parent = Option.present(parent);
         }
 
-        void registerTable(String nameOrAlias, Table table) {
+        @Contract void registerTable(String nameOrAlias, Table table) {
             tables.put(nameOrAlias, table);
         }
 
-        void registerPermissive(String cteName) {
+        @Contract void registerPermissive(String cteName) {
             permissiveNames.add(cteName);
         }
 
-        void registerFromCte(String aliasOrName, String cteName) {
+        @Contract void registerFromCte(String aliasOrName, String cteName) {
             var resolved = lookupKnownCteTable(cteName);
             if (resolved.isPresent()) {tables.put(aliasOrName, resolved.unwrap());}
             if (isPermissiveCte(cteName)) {permissiveNames.add(aliasOrName);}

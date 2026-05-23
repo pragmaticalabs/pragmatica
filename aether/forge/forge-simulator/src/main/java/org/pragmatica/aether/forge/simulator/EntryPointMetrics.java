@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.simulator;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
@@ -98,7 +99,7 @@ public final class EntryPointMetrics {
                                                hist));
         }
 
-        void recordSuccess(long latencyNanos) {
+        @Contract void recordSuccess(long latencyNanos) {
             totalCount.incrementAndGet();
             successCount.incrementAndGet();
             totalLatencyNanos.addAndGet(latencyNanos);
@@ -107,7 +108,7 @@ public final class EntryPointMetrics {
             recordLatency(latencyNanos);
         }
 
-        void recordFailure(long latencyNanos) {
+        @Contract void recordFailure(long latencyNanos) {
             totalCount.incrementAndGet();
             failureCount.incrementAndGet();
             totalLatencyNanos.addAndGet(latencyNanos);
@@ -203,7 +204,7 @@ public final class EntryPointMetrics {
                   : 10000.0;
         }
 
-        void reset() {
+        @Contract void reset() {
             totalCount.set(0);
             successCount.set(0);
             failureCount.set(0);

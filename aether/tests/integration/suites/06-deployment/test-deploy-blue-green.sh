@@ -10,7 +10,7 @@ BLUEPRINT_V1="org.pragmatica.aether.example:url-shortener:1.0.0"
 BLUEPRINT_V2="org.pragmatica.aether.example:url-shortener:1.0.1"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     log_pass "Cluster ready"
 }

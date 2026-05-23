@@ -29,7 +29,7 @@ public final class TopologyRoutes implements RouteSource {
     }
 
     @Override public Stream<Route<?>> routes() {
-        return Stream.of(Route.<TopologyResponse>get("/api/topology").toJson(this::buildTopology));
+        return Stream.of(Route.<TopologyResponse>get("/api/slices/topology").toJson(this::buildTopology));
     }
 
     @SuppressWarnings("JBCT-PAT-01") private TopologyResponse buildTopology() {

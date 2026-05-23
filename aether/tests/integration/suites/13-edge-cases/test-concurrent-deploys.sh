@@ -15,7 +15,7 @@ BLUEPRINT="org.pragmatica.aether.test:test-echo:1.0.0"
 BLUEPRINT_2="org.pragmatica.aether.test:test-persistence:1.0.0"
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     wait_for_all_tasks_active 60 || log_warn "task groups not fully ACTIVE within 60s"
     # ClusterGeneration barrier: any churn inherited from a destructive predecessor
     # suite is committed to a stable generation. No rescale fallback needed.

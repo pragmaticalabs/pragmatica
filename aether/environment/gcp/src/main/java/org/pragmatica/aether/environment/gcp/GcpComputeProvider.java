@@ -141,12 +141,19 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     private static Map<String, String> labelsFor(ProvisionContext ctx) {
         var labels = new java.util.HashMap<String, String>();
         labels.put(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
-        if (!ctx.clusterName().isEmpty()) {labels.put("aether-cluster", ctx.clusterName());}
+        var clusterName = resolveClusterName(ctx);
+        if (!clusterName.isEmpty()) {labels.put("aether-cluster", clusterName);}
         if (!ctx.role().isEmpty()) {labels.put("aether-role", ctx.role());}
         if (!ctx.sourceName().isEmpty()) {labels.put("aether-source", ctx.sourceName());}
         ctx.nodeId().onPresent(value -> labels.put("aether-node-id", value));
         labels.putAll(ctx.extraTags());
         return Map.copyOf(labels);
+    }
+
+    private static String resolveClusterName(ProvisionContext ctx) {
+        if (!ctx.clusterName().isEmpty()) {return ctx.clusterName();}
+        var fromEnv = System.getenv("AETHER_CLUSTER_NAME");
+        return fromEnv != null && !fromEnv.isEmpty() ? fromEnv : "";
     }
 
     private static Option<String> extractZone(Option<PlacementHint> placement) {

@@ -28,6 +28,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimObservation.HealthyObserved;
 import org.pragmatica.swim.SwimObservation.SuspectObserved;
@@ -54,6 +55,10 @@ class MembershipFsmTest {
     private static final long T1 = 2_000L;
 
     private static final long T2 = 3_000L;
+
+    /// RC1 Step 4 — HLC equivalent of `T1` for events that now carry `HlcTimestamp`.
+    /// State assertions continue using the `long` form; KV-mint helpers use the `long` form.
+    private static final HlcTimestamp T1_HLC = new HlcTimestamp(HlcTimestamp.pack(T1 * 1000L, 0), "test");
 
     private FakeLifecycleSnapshot lifecycleSnapshot;
 
@@ -223,7 +228,7 @@ class MembershipFsmTest {
             // SlotClaimed is NOT a leader-writing event (no consensus write proposed), so it
             // flows through the shadow path even on the NEVER_LEADER read-only factory.
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new SlotClaimed(PEER_A, SLOT_A, T1));
+            fsm.enqueueOperatorEvent(new SlotClaimed(PEER_A, SLOT_A, T1_HLC));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Joining.class);
         }
 
@@ -233,7 +238,7 @@ class MembershipFsmTest {
             // SwimHealthy(JOINING) → ON_DUTY is covered in MembershipFsmSwimWriteTest.
             lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.JOINING, T0));
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new SwimHealthy(PEER_A, 1L, T1));
+            fsm.enqueueOperatorEvent(new SwimHealthy(PEER_A, 1L, T1_HLC));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(Joining.class);
         }
 
@@ -244,7 +249,7 @@ class MembershipFsmTest {
             // MembershipFsmSwimWriteTest.swimFaulty_onDuty_leader_writesDecommissioned.
             lifecycleSnapshot.put(PEER_A, lifecycleValue(NodeLifecycleState.ON_DUTY, T0));
             var fsm = startedFsm();
-            fsm.enqueueOperatorEvent(new SwimFaulty(PEER_A, 7L, T1));
+            fsm.enqueueOperatorEvent(new SwimFaulty(PEER_A, 7L, T1_HLC));
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
         }
     }

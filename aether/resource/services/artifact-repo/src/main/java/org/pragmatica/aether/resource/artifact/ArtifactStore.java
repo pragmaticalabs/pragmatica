@@ -8,6 +8,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.dht.DHTError;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.dht.DHTClient;
@@ -17,6 +18,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -59,6 +64,13 @@ public interface ArtifactStore {
     }
 
     Promise<Boolean> exists(Artifact artifact);
+    /// Fetch persisted metadata for an artifact WITHOUT reading or integrity-verifying
+    /// the underlying block contents. Returns `Option.none()` when no metadata key is
+    /// present in the DHT (artifact absent). Used by the idempotent PUT path where the
+    /// caller only needs size/hashes for the response body — paying the full
+    /// `resolveWithMetadata` cost (block fan-out + SHA1 verification) would defeat the
+    /// purpose of returning early on a duplicate upload.
+    Promise<Option<ArtifactMetadata>> metadata(Artifact artifact);
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
     Promise<Unit> delete(Artifact artifact);
     Metrics metrics();
@@ -146,6 +158,33 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private static final int CHUNK_SIZE = 64 * 1024;
 
+    /// Aggregate timeout for `deploy()` chunk fan-out. `DistributedDHTClient.put` has its
+    /// own 10s per-chunk timeout; this caps the worst-case dominator chunk of `Promise.allOf`
+    /// plus the downstream metadata/versions writes so the HTTP request returns rather than
+    /// stacking 30s+ of tail latency. Calibrated for ~16-chunk 1MB artifacts.
+    private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(30).seconds();
+
+    /// Bounded retry for transient DHT-resilience failures inside `deploy`. The
+    /// DHT-resilience layer (`dht-resilience-spec.md`) converts a transient QUIC
+    /// backpressure refusal into a synchronous `QuorumCollector.onFailure`, which is
+    /// correct for Rabia/consensus (built-in retransmit) but wrong for one-shot
+    /// `ArtifactStore.deploy` — the deploy path has no retransmit cycle of its own.
+    /// Without this retry, a single backpressured replica on ANY chunk or on the
+    /// metadata key surfaces as HTTP 500 on the client's PUT. The probability of
+    /// hitting backpressure scales with chunk count, so multi-chunk artifacts (≥1MB)
+    /// are especially vulnerable without per-chunk retry.
+    ///
+    /// Applied to both: (a) metadata/versions-list DHT writes (`dhtPutWithRetry`)
+    /// and (b) chunk fan-out via `storage.put` (`storagePutWithRetry`) — the
+    /// storage tier's durable layer is the DHT, so the same transient class applies.
+    ///
+    /// Selective retry: only retries on `DHTError.PeerUnreachable` and
+    /// `DHTError.QuorumNotReached`. Other causes (NO_AVAILABLE_NODES, corruption)
+    /// propagate immediately so genuine failures aren't masked.
+    private static final int MAX_DHT_PUT_ATTEMPTS = 3;
+
+    private static final long[] DHT_PUT_BACKOFF_MS = {100L, 250L, 500L};
+
     private final DHTClient dht;
     private final StorageInstance storage;
 
@@ -167,16 +206,25 @@ class ArtifactStoreImpl implements ArtifactStore {
         var md5 = computeHash(content, "MD5");
         var sha1 = computeHash(content, "SHA-1");
         var chunks = splitIntoChunks(content);
-        var blockIdPromises = chunks.stream().map(storage::put)
+        var blockIdPromises = chunks.stream().map(this::storagePutWithRetry)
                                            .toList();
-        return Promise.allOf(blockIdPromises).map(results -> results.stream().map(Result::unwrap)
-                                                                           .toList())
+        // Aggregate timeout on the FULL deploy pipeline (chunk fan-out + metadata + versions
+        // list writes — the latter two each issue their own DHT puts). The previous timeout
+        // placement only bound the local `storage::put` fan-out, which is fast and never
+        // stalls; the actual DHT operations happen inside `storeMetadataAndVersions`. A
+        // single failing-to-quorum DHT write (e.g. when a peer's QUIC channel is unwritable
+        // due to backpressure and `writeIfWritable` silently drops) blocks the chain
+        // indefinitely. The 30s bound at the outer level guarantees the HTTP handler
+        // resolves with success or failure before the test harness's curl times out.
+        return Promise.allOf(blockIdPromises)
+                            .flatMap(ArtifactStoreImpl::firstFailureOrAll)
                             .flatMap(blockIds -> storeMetadataAndVersions(artifact,
                                                                           blockIds,
                                                                           chunks.size(),
                                                                           md5,
                                                                           sha1,
-                                                                          content.length));
+                                                                          content.length))
+                            .timeout(DEPLOY_TIMEOUT);
     }
 
     @Override public Promise<byte[]> resolve(Artifact artifact) {
@@ -192,6 +240,11 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     @Override public Promise<Boolean> exists(Artifact artifact) {
         return dht.exists(metaKey(artifact));
+    }
+
+    @Override public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+        return dht.get(metaKey(artifact))
+                      .map(opt -> opt.flatMap(ArtifactMetadata::fromBytes));
     }
 
     @Override public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
@@ -216,8 +269,8 @@ class ArtifactStoreImpl implements ArtifactStore {
         var hexIds = blockIds.stream().map(BlockId::hexString)
                                     .toList();
         var metadata = new ArtifactMetadata(contentLength, chunkCount, md5, sha1, System.currentTimeMillis(), hexIds);
-        return dht.put(metaKey(artifact),
-                       metadata.toBytes()).flatMap(_ -> updateVersionsList(artifact))
+        return dhtPutWithRetry(metaKey(artifact),
+                               metadata.toBytes()).flatMap(_ -> updateVersionsList(artifact))
                       .map(_ -> recordDeployMetrics(artifact, contentLength, chunkCount, md5, sha1));
     }
 
@@ -226,9 +279,9 @@ class ArtifactStoreImpl implements ArtifactStore {
         var fetchPromises = meta.blockIds().stream()
                                          .map(hex -> fetchSingleBlock(hex, corruptedError))
                                          .toList();
-        return Promise.allOf(fetchPromises).map(results -> reassembleChunks(results.stream().map(Result::unwrap)
-                                                                                          .toList(),
-                                                                            (int) meta.size()))
+        return Promise.allOf(fetchPromises)
+                            .flatMap(ArtifactStoreImpl::firstFailureOrAll)
+                            .map(blocks -> reassembleChunks(blocks, (int) meta.size()))
                             .flatMap(content -> verifyIntegrity(artifact, content, meta));
     }
 
@@ -259,8 +312,87 @@ class ArtifactStoreImpl implements ArtifactStore {
         var versionsKey = versionsKey(artifact.groupId(), artifact.artifactId());
         return dht.get(versionsKey).map(opt -> addVersionIfAbsent(opt,
                                                                   artifact.version()))
-                      .flatMap(versions -> dht.put(versionsKey,
-                                                   serializeVersionsList(versions)));
+                      .flatMap(versions -> dhtPutWithRetry(versionsKey,
+                                                           serializeVersionsList(versions)));
+    }
+
+    private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value) {
+        return dhtPutWithRetry(key, value, 0);
+    }
+
+    private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value, int attempt) {
+        var result = Promise.<Unit>promise();
+        dht.put(key, value).onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                                            .onFailure(cause -> handlePutFailure(key, value, attempt, cause, result)));
+        return result;
+    }
+
+    private void handlePutFailure(byte[] key, byte[] value, int attempt, Cause cause, Promise<Unit> result) {
+        var nextAttempt = attempt + 1;
+        if (!isTransientDhtFailure(cause) || nextAttempt >= MAX_DHT_PUT_ATTEMPTS) {
+            result.fail(cause);
+            return;
+        }
+        var backoffMs = DHT_PUT_BACKOFF_MS[Math.min(attempt, DHT_PUT_BACKOFF_MS.length - 1)];
+        log.warn("DHT put attempt {} of {} failed (transient): {}; retrying after {}ms",
+                 nextAttempt,
+                 MAX_DHT_PUT_ATTEMPTS,
+                 cause.message(),
+                 backoffMs);
+        SharedScheduler.schedule(() -> dhtPutWithRetry(key, value, nextAttempt).onResult(result::resolve),
+                                 timeSpan(backoffMs).millis());
+    }
+
+    private static boolean isTransientDhtFailure(Cause cause) {
+        return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached;
+    }
+
+    /// Aggregate a `List<Result<T>>` into a `Promise<List<T>>` that fails with the
+    /// **first** chunk's cause rather than a composite. The composite from
+    /// `Result.allOf` hides the chunk-level cause type from operators and breaks
+    /// `instanceof` dispatch — a transient `DHTError.PeerUnreachable` should
+    /// propagate as such, not as a wrapper.
+    private static <T> Promise<List<T>> firstFailureOrAll(List<Result<T>> results) {
+        var values = new ArrayList<T>(results.size());
+        for (var result : results) {
+            switch (result) {
+                case Result.Success<T> success -> values.add(success.value());
+                case Result.Failure<T> failure -> { return failure.cause().promise(); }
+            }
+        }
+        return Promise.success(values);
+    }
+
+    /// Per-chunk variant of `dhtPutWithRetry` for the deploy fan-out. The artifact
+    /// `storage` instance's durable tier is the DHT (see `StorageFactory.defaultArtifactStorage`),
+    /// so `storage.put` propagates the same transient `PeerUnreachable`/`QuorumNotReached`
+    /// failures as direct `dht.put`. Chunk writes are content-addressed (BlockId is
+    /// the chunk's hash), so retrying is idempotent at the storage layer.
+    private Promise<BlockId> storagePutWithRetry(byte[] chunk) {
+        return storagePutWithRetry(chunk, 0);
+    }
+
+    private Promise<BlockId> storagePutWithRetry(byte[] chunk, int attempt) {
+        var result = Promise.<BlockId>promise();
+        storage.put(chunk).onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                                            .onFailure(cause -> handleStoragePutFailure(chunk, attempt, cause, result)));
+        return result;
+    }
+
+    private void handleStoragePutFailure(byte[] chunk, int attempt, Cause cause, Promise<BlockId> result) {
+        var nextAttempt = attempt + 1;
+        if (!isTransientDhtFailure(cause) || nextAttempt >= MAX_DHT_PUT_ATTEMPTS) {
+            result.fail(cause);
+            return;
+        }
+        var backoffMs = DHT_PUT_BACKOFF_MS[Math.min(attempt, DHT_PUT_BACKOFF_MS.length - 1)];
+        log.warn("Storage chunk put attempt {} of {} failed (transient): {}; retrying after {}ms",
+                 nextAttempt,
+                 MAX_DHT_PUT_ATTEMPTS,
+                 cause.message(),
+                 backoffMs);
+        SharedScheduler.schedule(() -> storagePutWithRetry(chunk, nextAttempt).onResult(result::resolve),
+                                 timeSpan(backoffMs).millis());
     }
 
     private List<Version> addVersionIfAbsent(Option<byte[]> existingData, Version version) {

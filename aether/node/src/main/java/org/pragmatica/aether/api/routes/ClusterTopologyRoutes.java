@@ -12,6 +12,9 @@ import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyNodeDetail;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.aether.deployment.membership.view.MembershipView.MemberStatus;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -35,6 +38,7 @@ import org.pragmatica.lang.Promise;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -134,17 +138,31 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var topologyConfig = node.topologyConfig();
         var topologyManager = node.topologyManager();
         var connectedPeers = node.connectedPeerIds();
+        var selfId = node.self();
         var allNodeIds = topologyManager.topology();
+        var membershipView = node.membershipView();
+        // Filter out DECOMMISSIONED / UNTRACKED / FAILED_DRAIN entries — these are peers
+        // whose containers no longer exist but whose KV topology entry hasn't been GC'd
+        // yet. Without this filter, killed-then-replaced peers leak into the topology
+        // response as ACTIVE/HEALTHY, breaking `pick_non_leader` and any consumer that
+        // counts on-duty cores from the topology projection (12-network, 02-chaos).
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
                                            .filter(id -> isHealthy(topologyManager, id))
+                                           .filter(id -> isLiveLifecycle(membershipView, id))
                                            .map(NodeId::id)
                                            .toList();
-        // H.2 (spec §H): coreCount derives from MembershipView (SWIM ∪ KV-overrides). The
-        // legacy `coreNodeIds.size()` counted topology-observer entries with HEALTHY status
-        // — which is similar but the view is the canonical source post-H.
-        var coreCount = node.membershipView().onDutyPeers().size();
+        // H.2 (spec §H): coreCount derives from MembershipView (SWIM ∪ KV-overrides).
+        // RC1 reachability-aggregator landing: replace per-reader local QUIC view
+        // (network.connectedPeers()) with the leader-broadcast cluster-canonical
+        // snapshot. Cold-start fallback: when no snapshot is cached yet, use the
+        // KV-only ON_DUTY count (no transport filter). See
+        // aether/docs/specs/reachability-aggregator-spec.md Layer 5.
+        var coreCount = reachableOnDutyCount(node.membershipView(),
+                                             node.metricsCollector().lastReachabilitySnapshot(),
+                                             selfId);
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
-        var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
+        var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id))
+                                           .map(id -> buildNodeDetail(topologyManager,
                                                                         id,
                                                                         connectedPeers.contains(id)))
                                            .toList();
@@ -165,20 +183,27 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var topologyConfig = node.topologyConfig();
         var topologyManager = node.topologyManager();
         var connectedPeers = node.connectedPeerIds();
+        var selfId = node.self();
         var allNodeIds = topologyManager.topology();
+        var membershipView = node.membershipView();
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id))
                                            .filter(id -> isHealthy(topologyManager, id))
+                                           .filter(id -> isLiveLifecycle(membershipView, id))
                                            .map(NodeId::id)
                                            .toList();
         // H.2 (spec §H): prefer the MembershipView-derived count; fall back to the snapshot
         // helper if the view is empty (e.g., during very-early bootstrap before SWIM has
         // admitted self). The snapshot helper also now honours SWIM-derived ON_DUTY via the
         // healthHint check (no KV ON_DUTY required) so both paths converge.
-        var viewCount = node.membershipView().onDutyPeers().size();
+        // RC1 reachability-aggregator landing: see assembleFromTopologyManager.
+        var viewCount = reachableOnDutyCount(node.membershipView(),
+                                             node.metricsCollector().lastReachabilitySnapshot(),
+                                             selfId);
         var coreCount = viewCount > 0 ? viewCount : snapshotCoreCount(snapshot);
         var epoch = Option.some(snapshot.epoch().toString());
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
-        var nodeDetails = allNodeIds.stream().map(id -> buildNodeDetail(topologyManager,
+        var nodeDetails = allNodeIds.stream().filter(id -> isLiveLifecycle(membershipView, id))
+                                           .map(id -> buildNodeDetail(topologyManager,
                                                                         id,
                                                                         connectedPeers.contains(id)))
                                            .toList();
@@ -192,6 +217,33 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  nodeDetails,
                                                  epoch,
                                                  topologyMode(topologyManager));
+    }
+
+    /// Cluster-canonical reachable-and-on-duty count.
+    ///
+    /// Reads `MembershipView.onDutyPeers()` (KV-canonical) intersected with the
+    /// leader-broadcast `AggregatedReachabilitySnapshot` (cluster-canonical
+    /// transport reachability). When the snapshot is `Option.none()` (cold-start
+    /// window or pre-extension peers), falls back to KV-only counting — accepting
+    /// that a recently-killed peer may briefly count until SWIM detection +
+    /// HealthReconciler write catch up (~10-30s worst case during cluster
+    /// formation; bounded by ping-pong cadence at steady state).
+    ///
+    /// Self is always counted (SWIM does not observe self locally).
+    private static int reachableOnDutyCount(MembershipView view,
+                                            Option<AggregatedReachabilitySnapshot> snapshot,
+                                            NodeId selfId) {
+        int count = 0;
+        for (NodeId peer : view.onDutyPeers()) {
+            if (peer.equals(selfId) || isReachable(snapshot, peer)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean isReachable(Option<AggregatedReachabilitySnapshot> snapshot, NodeId peer) {
+        return snapshot.fold(() -> true, s -> s.isReachable(peer));
     }
 
     private static String topologyMode(TopologyManager tm) {
@@ -225,6 +277,18 @@ public final class ClusterTopologyRoutes implements RouteSource {
     private static boolean isHealthy(TopologyManager tm, NodeId id) {
         return tm.getState(id).map(state -> state.health() == NodeHealth.HEALTHY)
                           .or(false);
+    }
+
+    /// True when the peer's effective lifecycle keeps it in the operational topology.
+    /// Excludes DECOMMISSIONED / FAILED_DRAIN / UNTRACKED — KV entries for peers whose
+    /// containers no longer exist but whose topology row hasn't yet been GC'd.
+    /// JOINING / ON_DUTY / DRAINING all count as "live" — they remain valid `pick_non_leader`
+    /// targets, valid CTM provisioning slots, and valid `/api/cluster/topology` rows.
+    private static boolean isLiveLifecycle(MembershipView membershipView, NodeId id) {
+        var status = membershipView.statusOf(id);
+        return status == MemberStatus.JOINING
+            || status == MemberStatus.ON_DUTY
+            || status == MemberStatus.DRAINING;
     }
 
     private static TopologyNodeDetail buildNodeDetail(TopologyManager tm, NodeId nodeId, boolean connected) {

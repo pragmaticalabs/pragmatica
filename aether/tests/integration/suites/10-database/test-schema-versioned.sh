@@ -18,7 +18,7 @@ discover_tracked_datasource() {
 }
 
 test_cluster_ready() {
-    wait_for_cluster 60
+    wait_for_cluster_ready 60
     push_blueprint "$BLUEPRINT"
     deploy_blueprint "$BLUEPRINT"
     if ! wait_for "tracked datasource discovered from blueprint deploy" \

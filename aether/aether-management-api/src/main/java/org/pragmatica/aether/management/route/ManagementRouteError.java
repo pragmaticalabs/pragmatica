@@ -46,6 +46,14 @@ public sealed interface ManagementRouteError extends Cause {
         return new NotLeader();
     }
 
+    static NotLocalTarget notLocalTarget(String nodeId) {
+        return new NotLocalTarget(nodeId);
+    }
+
+    static TargetDisconnected targetDisconnected(String nodeId) {
+        return new TargetDisconnected(nodeId);
+    }
+
     record NoMatch(HttpMethod method, String path) implements ManagementRouteError {
         @Override public String message() {
             return "No management route matches " + method + " " + path;
@@ -97,6 +105,18 @@ public sealed interface ManagementRouteError extends Cause {
     record NotLeader() implements ManagementRouteError {
         @Override public String message() {
             return "Target handler requires the cluster leader";
+        }
+    }
+
+    record NotLocalTarget(String nodeId) implements ManagementRouteError {
+        @Override public String message() {
+            return "Per-node forward target " + nodeId + " is the local node; signal to handle locally";
+        }
+    }
+
+    record TargetDisconnected(String nodeId) implements ManagementRouteError {
+        @Override public String message() {
+            return "Per-node forward target " + nodeId + " is not connected";
         }
     }
 }

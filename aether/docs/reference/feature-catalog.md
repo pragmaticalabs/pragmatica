@@ -190,7 +190,7 @@ Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 | 55 | JBCT compliance | Complete | Format linting, return type validation, pattern checking, factory naming conventions. Maven plugin |
 | 56 | Envelope format versioning | Complete | `ENVELOPE_FORMAT_VERSION` in ManifestGenerator with runtime compatibility check |
 | 57 | Forge simulator | Battle-tested | Standalone cluster simulator with load generation (constant/ramp/spike), chaos injection, visual dashboard, REST API |
-| 77 | Topology graph | Complete | Compile-time topology extraction (envelope v6): HTTP routes, resources, pub-sub topics from `.manifest` files. REST `GET /api/topology`, WebSocket `INITIAL_STATE`. Swim-lane SVG layout with Manhattan routing, HSL color-coded topic groups, hover highlighting, search filtering |
+| 77 | Topology graph | Complete | Compile-time topology extraction (envelope v6): HTTP routes, resources, pub-sub topics from `.manifest` files. REST `GET /api/slices/topology`, WebSocket `INITIAL_STATE`. Swim-lane SVG layout with Manhattan routing, HSL color-coded topic groups, hover highlighting, search filtering |
 | 78 | `jbct add-slice` command | Complete | Scaffolds a new slice into an existing project: creates interface, test, routes.toml, config, and dependency manifest |
 | 79 | IDE plugins | Planned | Slice development plugins for IntelliJ IDEA (native), VS Code, Eclipse, NetBeans. Shared LSP backend for routes.toml support, JBCT diagnostics, TOML schema validation |
 | 205 | Core value objects | Complete | Reusable validated value objects in `org.pragmatica.lang.vo`: Email, Url, NonBlankString, Uuid, IsoDateTime |
@@ -302,7 +302,7 @@ Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 | 185 | Consumer cursor persistence | Complete | `CursorStore` persists consumer group cursors in AHSE via named references (`aether-stream/segment/CursorStore.java`) |
 | 186 | Node metadata labels | Complete | `NodeInfo.labels` (hostname, zone, instance-type, pool) propagated via Hello handshake. Bootstrap from environment |
 | 187 | PlacementHint provisioning | Complete | `ZoneHint`, `HostGroupHint`, `AffinityHint`, `AntiAffinityHint` in `ProvisionSpec`. Cloud providers respect zone placement |
-| 188 | Same-version deploy rejection | Complete | Strategy deploys rejected when oldVersion == newVersion. `/api/blueprint/publish` for register-without-deploy |
+| 188 | Same-version deploy rejection | Complete | Strategy deploys rejected when oldVersion == newVersion. `/api/blueprints/publish` for register-without-deploy |
 | 189 | Disruption budget enforcement | Complete | Drain endpoint checks quorum-based minAvailable before allowing transition to DRAINING |
 | 190 | Tiered stream reader | Complete | `TieredStreamReader` reads across in-memory ring buffer and sealed storage tiers. Async prefetch of next segment when reading near tail. `aether-stream/segment/TieredStreamReader.java`, test `TieredStreamReaderTest.java` |
 | 191 | PostgreSQL stream backend | Complete | `PgStreamStore`, `PgSegmentSink`, `PgCursorStore` provide cold-tier storage and persistent cursor commits for streams. Phase 3 backend. `aether-stream/pg/`, tests `PgStreamStoreTest`, `PgSegmentSinkTest`, `PgCursorStoreTest` |

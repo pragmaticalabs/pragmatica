@@ -17,6 +17,7 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -191,10 +192,30 @@ public final class DistributedDHTClient implements DHTClient {
 
     // --- Private helpers ---
     private List<NodeId> targetNodes(byte[] key) {
-        return node.ring()
-                   .nodesFor(key,
-                             config.effectiveReplicationFactor(node.ring()
-                                                                   .nodeCount()));
+        var ringTargets = node.ring()
+                              .nodesFor(key,
+                                        config.effectiveReplicationFactor(node.ring()
+                                                                              .nodeCount()));
+        return filterByLiveness(ringTargets);
+    }
+
+    /// Filter the static consistent-hash target list to peers currently reachable from
+    /// this node. The ring describes ownership (which replicas are responsible for the
+    /// key); reachability is decided at runtime by the transport. Pre-filtering targets
+    /// avoids stalling the `QuorumCollector` on replicas that have no chance of
+    /// responding within the per-op timeout.
+    ///
+    /// When `network.livePeers()` returns the empty set (default impl, no
+    /// connectivity-introspection adapter), the ring targets are returned unchanged —
+    /// preserving the pre-RC1 behaviour for non-cluster paths (e.g. worker DHT).
+    ///
+    /// See `aether/docs/specs/dht-resilience-spec.md` Layer 2.
+    private List<NodeId> filterByLiveness(List<NodeId> ringTargets) {
+        var live = network.livePeers();
+        if (live.isEmpty()) {return ringTargets;}
+        return ringTargets.stream()
+                          .filter(live::contains)
+                          .toList();
     }
 
     private Option<PendingOperation<?>> removePending(String correlationId) {
@@ -234,31 +255,61 @@ public final class DistributedDHTClient implements DHTClient {
         var correlationId = KSUID.ksuid()
                                  .toString();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target,
-                     new DHTMessage.GetRequest(correlationId, node.nodeId(), key));
+        dispatchTracked(target, new DHTMessage.GetRequest(correlationId, node.nodeId(), key), correlationId, collector);
     }
 
     private void sendRemotePut(NodeId target, byte[] key, byte[] value, long version, QuorumCollector<Unit> collector) {
         var correlationId = KSUID.ksuid()
                                  .toString();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target,
-                     new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value, version));
+        dispatchTracked(target, new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value, version), correlationId, collector);
     }
 
     private void sendRemoteRemove(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {
         var correlationId = KSUID.ksuid()
                                  .toString();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target,
-                     new DHTMessage.RemoveRequest(correlationId, node.nodeId(), key));
+        dispatchTracked(target, new DHTMessage.RemoveRequest(correlationId, node.nodeId(), key), correlationId, collector);
     }
 
     private void sendRemoteExists(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {
         var correlationId = KSUID.ksuid()
                                  .toString();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target,
-                     new DHTMessage.ExistsRequest(correlationId, node.nodeId(), key));
+        dispatchTracked(target, new DHTMessage.ExistsRequest(correlationId, node.nodeId(), key), correlationId, collector);
+    }
+
+    /// Fan a request to a remote target via `sendOutcome`, and short-circuit the per-op
+    /// quorum waiting when the transport refuses synchronously.
+    ///
+    /// On `Sent` outcome: nothing else to do — the response will arrive via the regular
+    /// message-routing path and resolve the collector through `handleRemote*Response`.
+    /// On any refusal outcome: remove the pending op and call `collector.onFailure` with
+    /// an appropriate `Cause` so the `QuorumCollector` fast-fail logic (`failures > total
+    /// - quorum` → `promise.fail`) fires immediately, rather than waiting the full
+    /// per-op `operationTimeout`. This is the architectural answer to the 1MB-push hang
+    /// and 08-resources/Deploy_SQL_app slowdown — see
+    /// `aether/docs/specs/dht-resilience-spec.md` Layer 3.
+    private <T> void dispatchTracked(NodeId target, org.pragmatica.consensus.ProtocolMessage message, String correlationId, QuorumCollector<T> collector) {
+        var _ = network.sendOutcome(target, message)
+                       .onSuccess(outcome -> {
+                           if (!outcome.isSent()) {
+                               pendingOps.remove(correlationId);
+                               collector.onFailure(toCause(outcome));
+                           }
+                       })
+                       .onFailure(cause -> {
+                           pendingOps.remove(correlationId);
+                           collector.onFailure(cause);
+                       });
+    }
+
+    private static org.pragmatica.lang.Cause toCause(WriteOutcome outcome) {
+        return switch (outcome) {
+            case WriteOutcome.Sent ignored -> DHTError.OPERATION_TIMEOUT; // unreachable; defensive default
+            case WriteOutcome.BackpressureRefused refused -> DHTError.peerUnreachable(refused.peerId(), "backpressure");
+            case WriteOutcome.ConnectionDead dead -> DHTError.peerUnreachable(dead.peerId(), "connection dead");
+            case WriteOutcome.NoPeerState nope -> DHTError.peerUnreachable(nope.peerId(), "no peer state");
+        };
     }
 }

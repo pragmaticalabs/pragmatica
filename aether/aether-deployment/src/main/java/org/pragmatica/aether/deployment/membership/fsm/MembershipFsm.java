@@ -21,18 +21,24 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SlotCl
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimDeparted;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimFaulty;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimHealthy;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportReachable;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.TransportUnreachable;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
+import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot.ReachabilityKind;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -44,6 +50,7 @@ import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimObservation.DepartedObserved;
 import org.pragmatica.swim.SwimObservation.FaultyObserved;
 import org.pragmatica.swim.SwimObservation.HealthyObserved;
+import org.pragmatica.swim.SwimObservation.JoinAnnounced;
 import org.pragmatica.swim.SwimObservation.SuspectObserved;
 import org.pragmatica.swim.SwimObservation.UnknownObserved;
 
@@ -56,7 +63,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
-import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -112,14 +119,19 @@ public final class MembershipFsm {
 
     private final BooleanSupplier isLeader;
 
-    /// F.4 (2026-05-12) — Predicate gating the QUIC `PeerConnected` synthesis bridge. Returns
-    /// `true` iff `peer` is BOTH (a) a real cluster peer (present in static topology config —
-    /// i.e. not an auto-provisioned dynamic peer) AND (b) currently in SWIM's alive member
-    /// set. Composed by the wiring layer over `TopologyConfig.coreNodes()` and
-    /// `SwimProtocol.currentHealth()`. Tests inject controllable predicates. Default in
-    /// test-only factories is **reject-all** so that synthetic `onPeerConnected` calls
-    /// require explicit opt-in; this prevents silent test-side races.
-    private final Predicate<NodeId> isKnownAliveClusterPeer;
+    /// RC1 Step 4 — per-node Hybrid Logical Clock. Used at every event-creation site to stamp
+    /// the event's `at` field, and to merge cross-node HLC values that arrive via KV-put
+    /// notifications carrying remote `transitionedAt`. See `mergeRemoteHlcOrDrop` for the
+    /// drift policy.
+    private final HlcClock hlcClock;
+
+    /// Topology-observation refactor Step 4 — aggregator-snapshot supplier. Consulted at every
+    /// `reducer.apply(...)` call site to build a per-event `ReachabilityGate`. The supplier is
+    /// expected to be cheap (the aggregator returns a pre-built snapshot reference); the gate
+    /// itself reads `snapshot.states().get(peer)` once per consultation. Cold-start fallback:
+    /// when the supplier returns `Option.none()`, the gate returns `true` (permissive) so the
+    /// pre-Step-4 behavior is preserved before the first snapshot is produced.
+    private final Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier;
 
     private final ReentrantLock fsmLock = new ReentrantLock();
 
@@ -132,6 +144,17 @@ public final class MembershipFsm {
     /// rewrites the value before consensus apply.
     private final Map<NodeId, NodeLifecycleValue> priorLifecycle = new ConcurrentHashMap<>();
 
+    /// RC1 Step 3 — per-peer monotone-incarnation gate (topology-rc1-spec §3.2; closes
+    /// N10 stale-arrival, SM2 ordering inversion, same-NodeId restart class). The map
+    /// is leader-local and rebuilds on takeover — incarnation is a property of the
+    /// SWIM event stream, not the FSM state, so cold-start reads KV → reconstructs FSM
+    /// → map starts empty and reseeds on the first accepted event. A stale event during
+    /// the cold window cannot damage state because the FSM has not yet started
+    /// accepting work. NOT carried in `MembershipFsmState` (avoids a snapshot schema
+    /// change for cluster-decision-stream state). Pruned on `(*, DECOMMISSIONED)` peer
+    /// transitions (terminal cell) to bound growth.
+    private final Map<NodeId, Long> latestObservedIncarnation = new ConcurrentHashMap<>();
+
     private final Map<String, NodeId> slotIdToPeer = new ConcurrentHashMap<>();
 
     // H.4 (spec §H): `swimDecommissionTombstones` map removed. The chaos-revival-storm
@@ -143,6 +166,8 @@ public final class MembershipFsm {
 
     private final AtomicBoolean started = new AtomicBoolean();
 
+    private volatile Function<NodeId, Boolean> swimHealthGate = ignored -> false;
+
     private MembershipFsm(NodeId self,
                           MembershipFsmConfig config,
                           ClusterMembershipReducer reducer,
@@ -152,7 +177,8 @@ public final class MembershipFsm {
                           DrainCoordinator drainCoordinator,
                           TimerScheduler scheduler,
                           BooleanSupplier isLeader,
-                          Predicate<NodeId> isKnownAliveClusterPeer) {
+                          HlcClock hlcClock,
+                          Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier) {
         this.self = self;
         this.config = config;
         this.reducer = reducer;
@@ -162,7 +188,8 @@ public final class MembershipFsm {
         this.drainCoordinator = drainCoordinator;
         this.scheduler = scheduler;
         this.isLeader = isLeader;
-        this.isKnownAliveClusterPeer = isKnownAliveClusterPeer;
+        this.hlcClock = hlcClock;
+        this.aggregatorSnapshotSupplier = aggregatorSnapshotSupplier;
     }
 
     /// Read-only factory (no-op writes). Useful for tests that only exercise the reducer +
@@ -178,17 +205,14 @@ public final class MembershipFsm {
                              NO_OP_COMMAND_APPLIER,
                              NO_OP_DRAIN_COORDINATOR,
                              defaultScheduler(),
-                             NEVER_LEADER);
+                             NEVER_LEADER,
+                             defaultHlcClock(self),
+                             NO_AGGREGATOR_SNAPSHOT);
     }
 
     /// Write-capable factory. When `isLeader.getAsBoolean()` returns `true`, operator events
     /// route through the FSM: proposed via `commandApplier`, drain effects dispatched to
     /// `drainCoordinator`, timers scheduled via `scheduler`.
-    ///
-    /// **F.4 (2026-05-12) overload.** Defaults `isKnownAliveClusterPeer` to **reject-all** so
-    /// that `onPeerConnected` (the QUIC PeerConnected → SwimHealthy synthesis bridge) is
-    /// inert unless callers explicitly opt in via the 9-arg overload below. Production
-    /// wiring (`AetherNode.buildMembershipFsm`) must use the 9-arg form.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -205,12 +229,15 @@ public final class MembershipFsm {
                              drainCoordinator,
                              scheduler,
                              isLeader,
-                             REJECT_ALL_PEERS);
+                             defaultHlcClock(self),
+                             NO_AGGREGATOR_SNAPSHOT);
     }
 
-    /// F.4 (2026-05-12) — full production factory. `isKnownAliveClusterPeer` predicate gates
-    /// the QUIC `PeerConnected` synthesis bridge (`onPeerConnected`). See field doc on
-    /// `isKnownAliveClusterPeer` for semantics.
+    /// RC1 Step 4 — production factory with explicit `HlcClock`. The FSM shares the node-wide
+    /// HLC instance with other subsystems (generation snapshots, governor announcer, etc.) —
+    /// every emitted FSM event is causally ordered against every other HLC-stamped action of
+    /// this node. Defaults the aggregator-snapshot supplier to a cold-start (`Option.none()`)
+    /// stub — call the supplier-accepting overload from production wiring.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,
@@ -219,7 +246,33 @@ public final class MembershipFsm {
                                               DrainCoordinator drainCoordinator,
                                               TimerScheduler scheduler,
                                               BooleanSupplier isLeader,
-                                              Predicate<NodeId> isKnownAliveClusterPeer) {
+                                              HlcClock hlcClock) {
+        return membershipFsm(self,
+                             config,
+                             lifecycleSnapshotReader,
+                             slotSnapshotReader,
+                             commandApplier,
+                             drainCoordinator,
+                             scheduler,
+                             isLeader,
+                             hlcClock,
+                             NO_AGGREGATOR_SNAPSHOT);
+    }
+
+    /// Topology-observation refactor Step 4 — full production factory accepting an aggregator-
+    /// snapshot supplier. Each reducer call site builds a per-event `ReachabilityGate` from the
+    /// current snapshot (cold-start fallback returns a permissive gate). Production wiring
+    /// (`AetherNode.buildMembershipFsm`) passes `reachabilityAggregator::snapshot`.
+    public static MembershipFsm membershipFsm(NodeId self,
+                                              MembershipFsmConfig config,
+                                              LifecycleSnapshotReader lifecycleSnapshotReader,
+                                              SlotSnapshotReader slotSnapshotReader,
+                                              Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                              DrainCoordinator drainCoordinator,
+                                              TimerScheduler scheduler,
+                                              BooleanSupplier isLeader,
+                                              HlcClock hlcClock,
+                                              Supplier<Option<AggregatedReachabilitySnapshot>> aggregatorSnapshotSupplier) {
         var reducer = ClusterMembershipReducer.clusterMembershipReducer(config);
         return new MembershipFsm(self,
                                  config,
@@ -230,7 +283,8 @@ public final class MembershipFsm {
                                  drainCoordinator,
                                  scheduler,
                                  isLeader,
-                                 isKnownAliveClusterPeer);
+                                 hlcClock,
+                                 aggregatorSnapshotSupplier);
     }
 
     /// Custom-reducer factory (test-only — lets callers inject a reducer with deterministic
@@ -249,7 +303,29 @@ public final class MembershipFsm {
                                  NO_OP_DRAIN_COORDINATOR,
                                  defaultScheduler(),
                                  NEVER_LEADER,
-                                 REJECT_ALL_PEERS);
+                                 defaultHlcClock(self),
+                                 NO_AGGREGATOR_SNAPSHOT);
+    }
+
+    /// Custom-reducer + custom-clock factory (test-only — lets adversarial tests inject a
+    /// `HlcClock` over a fake physical clock to exercise monotonicity and drift policy).
+    public static MembershipFsm membershipFsm(NodeId self,
+                                              MembershipFsmConfig config,
+                                              ClusterMembershipReducer reducer,
+                                              LifecycleSnapshotReader lifecycleSnapshotReader,
+                                              SlotSnapshotReader slotSnapshotReader,
+                                              HlcClock hlcClock) {
+        return new MembershipFsm(self,
+                                 config,
+                                 reducer,
+                                 lifecycleSnapshotReader,
+                                 slotSnapshotReader,
+                                 NO_OP_COMMAND_APPLIER,
+                                 NO_OP_DRAIN_COORDINATOR,
+                                 defaultScheduler(),
+                                 NEVER_LEADER,
+                                 hlcClock,
+                                 NO_AGGREGATOR_SNAPSHOT);
     }
 
     public Promise<Unit> start() {
@@ -308,7 +384,92 @@ public final class MembershipFsm {
             logSwimDropOnFollower(observation);
             return;
         }
+        if (!admitIncarnationOrDrop(observation)) {
+            return;
+        }
         translate(observation).onPresent(this::processOperatorOrFsmEvent);
+    }
+
+    /// Topology-observation refactor Step 3: ingest a `ReachabilityAggregator` snapshot and
+    /// fan it out as per-peer `TransportReachable` / `TransportUnreachable` events.
+    ///
+    /// **Idempotence.** No edge-dedup cache is maintained here. Duplicate snapshots produce
+    /// duplicate events; the reducer absorbs them as nop cells (see Step 2 reducer for the
+    /// 14 transport cells — most are explicit `nop`, ON_DUTY+TransportUnreachable produces
+    /// the same `DECOMMISSIONED` write each time but consensus is naturally idempotent on
+    /// an already-DECOMMISSIONED lifecycle).
+    ///
+    /// **Leader gate (single-writer rule).** Only the leader's FSM dispatches transport
+    /// events; followers drop the snapshot (TRACE log) — they receive the resulting
+    /// lifecycle transitions via the `NodeLifecycleKey` KV notification path. This mirrors
+    /// `onSwimObservation`'s leader gate.
+    ///
+    /// **UNKNOWN suppression.** Peers with `ReachabilityKind.UNKNOWN` are intentionally not
+    /// translated to events — UNKNOWN means "no quorum either way" and must not produce a
+    /// state transition. Step 4 will refine REACHABLE/UNREACHABLE gating with aggregator-
+    /// quorum semantics; Step 3 fires the events unconditionally on quorum-derived kinds.
+    @Contract public void onTransportSnapshot(AggregatedReachabilitySnapshot snapshot) {
+        if (!started.get()) {
+            return;
+        }
+        if (!isLeader.getAsBoolean()) {
+            logTransportDropOnFollower(snapshot);
+            return;
+        }
+        var now = hlcClock.now();
+        snapshot.states().forEach((peer, state) -> dispatchTransportEvent(peer, state.kind(), now));
+    }
+
+    private void dispatchTransportEvent(NodeId peer, ReachabilityKind kind, HlcTimestamp now) {
+        switch (kind) {
+            case REACHABLE -> enqueueOperatorEvent(new TransportReachable(peer, now));
+            case UNREACHABLE -> enqueueOperatorEvent(new TransportUnreachable(peer, now));
+            case UNKNOWN -> { /* suppress — quorum-undecided, no event */ }
+        }
+    }
+
+    /// RC1 Step 3 — monotone-incarnation gate (topology-rc1-spec §3.2). Returns `true`
+    /// to admit, `false` to drop the observation.
+    ///
+    /// **Admit:** `incarnation > stored`. Updates the map.
+    ///
+    /// **Restart-reset:** `incarnation == 0` is treated as a legitimate peer-restart
+    /// reset (SWIM-protocol semantics — a process that restarts with a cleared counter
+    /// emits incarnation 0). Resets the map entry to 0 so the next observation from
+    /// the restarted peer's fresh stream is accepted from the beginning.
+    ///
+    /// **Drop:** `incarnation < stored` is stale (event-ordering inversion from a
+    /// slower observer). Logged at DEBUG.
+    ///
+    /// **Tie:** `incarnation == stored && stored != 0` is admitted (re-confirmation
+    /// of the same generation — harmless; the reducer cell handles idempotence).
+    ///
+    /// Suspect/Unknown observations are not gated — they translate to `Option.none()`
+    /// in `translate()` and never reach the reducer.
+    private boolean admitIncarnationOrDrop(SwimObservation observation) {
+        if (!(observation instanceof HealthyObserved || observation instanceof FaultyObserved || observation instanceof DepartedObserved)) {
+            return true;
+        }
+        var peer = observation.peer();
+        var incoming = observation.incarnation();
+        var stored = latestObservedIncarnation.getOrDefault(peer, 0L);
+        if (incoming == 0L) {
+            latestObservedIncarnation.put(peer, 0L);
+            log.debug("MembershipFsm: incarnation==0 restart-reset for peer={} (prior stored={}) — admitted, map reset",
+                      peer.id(),
+                      stored);
+            return true;
+        }
+        if (incoming < stored) {
+            log.debug("MembershipFsm: dropping stale SWIM observation {} for peer={} (incoming={} < stored={})",
+                      observation.getClass().getSimpleName(),
+                      peer.id(),
+                      incoming,
+                      stored);
+            return false;
+        }
+        latestObservedIncarnation.put(peer, incoming);
+        return true;
     }
 
     /// Leader-change entry point (spec §6.2 step 7 — Bootstrap-correction 2026-05-12, second
@@ -344,61 +505,20 @@ public final class MembershipFsm {
         onSwimObservation(new HealthyObserved(self, 0L));
     }
 
-    /// QUIC PeerConnected → SwimHealthy synthesis bridge (F.4, 2026-05-12; spec §4 +
-    /// §6.2 step 7). The QUIC handshake completes deterministically within ~100ms of cluster
-    /// boot, while SWIM probe Ack landing is jittered (first probe ~8s, then ~1s with random
-    /// target selection) and may miss peers entirely on small clusters within bounded time.
-    /// QUIC `PeerConnected` is a stronger liveness signal than SWIM probe Ack: handshake
-    /// completed implies authenticated + reachable + serving. When the wiring layer routes a
-    /// QUIC PeerConnected event here, we synthesize a `HealthyObserved(peer, 0L)` into the
-    /// local FSM via `onSwimObservation`, which fires `(UNTRACKED, SwimHealthy) → ON_DUTY` on
-    /// the leader (consensus-replicated `Put(L=ON_DUTY)`).
-    ///
-    /// **Precondition filters (in order).**
-    ///
-    /// 1. **Already-started gate.** Mirrors all other entry points — pre-`start()` calls drop.
-    ///
-    /// 2. **Self filter.** Self bootstrap goes through the existing
-    ///    `NodeLifecycle.ACTIVE` and `LeaderChange-to-self` paths (spec §6.2 step 7); the
-    ///    QUIC bridge ignores `peer == self`. (SWIM does not observe self either.)
-    ///
-    /// 3. **Static-config + SWIM-alive gate** (`isKnownAliveClusterPeer.test(peer)`). The
-    ///    bridge fires ONLY for peers that are (a) members of the static topology config
-    ///    (`TopologyConfig.coreNodes()` — i.e., real cluster peers, not auto-provisioned
-    ///    dynamic peers with fresh NodeIds) AND (b) currently in SWIM's alive member set.
-    ///    Dynamic / auto-provisioned peers legitimately need the SWIM probe-Ack path to
-    ///    confirm them. The SWIM-alive sub-check avoids races where QUIC connects to a peer
-    ///    SWIM has not yet admitted (e.g., stale handshake before re-join), preventing
-    ///    premature `ON_DUTY` writes.
-    ///
-    /// **Single-writer preservation.** The synthesized event flows through
-    /// `onSwimObservation` which enforces the leader-write gate (spec §6.1). On followers
-    /// the synthetic observation is silently dropped (TRACE log) — the leader writes the
-    /// follower's own `NodeLifecycleKey` via consensus, and the follower learns via KV
-    /// notification.
-    ///
-    /// **Idempotence.** Multiple PeerConnected events for the same peer (e.g., transient
-    /// reconnect) are harmless: the reducer's `(ON_DUTY, SwimHealthy) → nop` cell short-
-    /// circuits the second write. Belt-and-suspenders convergence between this bridge and
-    /// the SWIM probe-Ack path is similarly safe — whichever signal arrives first wins; the
-    /// second is a no-op.
-    @Contract public void onPeerConnected(NodeId peer) {
-        if (!started.get()) {
-            return;
+    @Contract public void setSwimHealthGate(Function<NodeId, Boolean> gate) {
+        this.swimHealthGate = gate;
+        // Re-evaluate JOINING peers immediately — handles the common wiring order where
+        // AetherNode calls setSwimHealthGate after start(), so resumeJoinDeadline already
+        // ran with the default false-gate and skipped synthesis for SWIM-healthy peers.
+        if (started.get() && isLeader.getAsBoolean()) {
+            fsmStates.forEach((peer, state) -> {
+                if (state instanceof MembershipFsmState.Joining && gate.apply(peer)) {
+                    log.info("MembershipFsm: setSwimHealthGate — SWIM already healthy for JOINING peer={}, synthesizing SwimHealthy",
+                             peer.id());
+                    onSwimObservation(new HealthyObserved(peer, 0L));
+                }
+            });
         }
-        if (peer.equals(self)) {
-            return;
-        }
-        if (!isKnownAliveClusterPeer.test(peer)) {
-            if (log.isTraceEnabled()) {
-                log.trace("MembershipFsm: onPeerConnected({}) dropped — peer not in static config or not SWIM-alive (F.4 filter)",
-                          peer.id());
-            }
-            return;
-        }
-        log.debug("MembershipFsm: onPeerConnected({}) — synthesizing SwimHealthy via QUIC bridge (F.4)",
-                  peer.id());
-        onSwimObservation(new HealthyObserved(peer, 0L));
     }
 
     private boolean isSelfAlreadyOnDuty() {
@@ -406,10 +526,44 @@ public final class MembershipFsm {
         return current instanceof MembershipFsmState.OnDuty;
     }
 
+    /// RC1 Step 4 — HLC drift policy site. Cross-node KV-put notifications carry the
+    /// originator's HLC in `NodeLifecycleValue.transitionedAt`; merging that into the local
+    /// clock both advances local causal time and detects pathological drift. Policy:
+    /// `HlcClock.update` fails when `remote.physicalMicros - localPhysicalMicros > 500ms`;
+    /// on failure we WARN-log peer + remote + local timestamps and DROP the event. We do
+    /// NOT silently accept (would poison local ordering) and we do NOT throw (would crash
+    /// the KV-notification dispatcher). Sentinel `HlcTimestamp.ZERO` means the value was
+    /// minted by a pre-RC1 path or a writer that did not stamp the HLC — skip the merge
+    /// and admit the put unchanged.
+    private boolean mergeRemoteHlcOrDrop(NodeId peer, HlcTimestamp remote) {
+        if (HlcTimestamp.ZERO.equals(remote)) {
+            return true;
+        }
+        var merge = hlcClock.update(remote);
+        if (merge.isFailure()) {
+            merge.onFailure(cause -> log.warn(
+                    "MembershipFsm: dropping NodeLifecyclePut from peer={} — HLC drift exceeds threshold: {} (remote={}, local={})",
+                    peer.id(),
+                    cause.message(),
+                    remote,
+                    hlcClock.peek()));
+            return false;
+        }
+        return true;
+    }
+
     private void logSwimDropOnFollower(SwimObservation observation) {
         if (log.isTraceEnabled()) {
             log.trace("MembershipFsm: SWIM observation {} dropped on follower {} (spec §6.1 — followers learn via KV notifications)",
                       observation.getClass().getSimpleName(),
+                      self.id());
+        }
+    }
+
+    private void logTransportDropOnFollower(AggregatedReachabilitySnapshot snapshot) {
+        if (log.isTraceEnabled()) {
+            log.trace("MembershipFsm: transport snapshot (states={}) dropped on follower {} (spec §6.1 — single-writer; followers learn via KV notifications)",
+                      snapshot.states().size(),
                       self.id());
         }
     }
@@ -441,11 +595,24 @@ public final class MembershipFsm {
     /// KV-notification handler for `NodeLifecycleKey` puts. Updates the FSM state from the
     /// externally-written lifecycle value WITHOUT emitting any reducer effects (the value
     /// already reflects the production write — the FSM derives its state, it doesn't re-act).
+    ///
+    /// **RC1 Step 4 — HLC drift gate.** The KV value carries the originating node's HLC in
+    /// `transitionedAt`. Before applying the update, the local clock is advanced via
+    /// `mergeRemoteHlcOrDrop`. If the remote HLC exceeds the configured drift threshold
+    /// (default 500ms), the put is DROPPED and a WARN is logged — preventing a drifting peer
+    /// from polluting local causal ordering. Sentinel `HlcTimestamp.ZERO` (pre-RC1 entries,
+    /// or values minted by a path that hasn't been migrated yet) is treated as "no remote HLC"
+    /// and the put is admitted without a clock merge.
     @Contract public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> put) {
         if (!started.get()) {
             return;
         }
-        applyExternalLifecyclePut(put.cause().key().nodeId(), put.cause().value());
+        var peer = put.cause().key().nodeId();
+        var value = put.cause().value();
+        if (!mergeRemoteHlcOrDrop(peer, value.transitionedAt())) {
+            return;
+        }
+        applyExternalLifecyclePut(peer, value);
     }
 
     /// KV-notification handler for `NodeLifecycleKey` removes. Returns the peer to `UNTRACKED`
@@ -498,6 +665,14 @@ public final class MembershipFsm {
     /// re-confirmation) flow through this path; the reducer returns an empty `writes` list
     /// and `proposeWritesAndApply` short-circuits without proposing anything.
     ///
+    /// **Topology-observation refactor Step 3 (transport events):** `TransportUnreachable`
+    /// can produce consensus writes (`(JOINING, TransportUnreachable) → DECOMMISSIONED`,
+    /// `(ON_DUTY, TransportUnreachable) → DECOMMISSIONED`) so it MUST flow through the
+    /// leader-writing path. `TransportReachable` is intentionally absent — all of its 7
+    /// reducer cells are `Outcome.nop` in Step 2, so it requires no leader gate and is
+    /// classified as shadow-only. If Step 4/5 introduces a `TransportReachable` write cell,
+    /// add it here.
+    ///
     /// `SlotClaimed` remains a shadow-only event (no consensus write — the slot key was
     /// already written by another actor; this event drives a derived JOINING transition).
     private static boolean isLeaderWritingEvent(MembershipFsmEvent event) {
@@ -507,7 +682,8 @@ public final class MembershipFsm {
                || event instanceof JoinDeadlineExpired
                || event instanceof SwimFaulty
                || event instanceof SwimDeparted
-               || event instanceof SwimHealthy;
+               || event instanceof SwimHealthy
+               || event instanceof TransportUnreachable;
     }
 
     private void applyExternalLifecyclePut(NodeId peer, NodeLifecycleValue value) {
@@ -516,9 +692,26 @@ public final class MembershipFsm {
             priorLifecycle.put(peer, value);
             var newState = deriveStateFromLifecycle(peer, value, slotIdForPeer(peer));
             var previous = fsmStates.put(peer, newState);
+            pruneIncarnationIfDecommissioned(peer, newState);
             logExternalLifecycleChange(peer, previous, newState, value.state());
         } finally {
             fsmLock.unlock();
+        }
+    }
+
+    /// RC1 Step 3 — prune the incarnation map entry on terminal `Decommissioned`
+    /// transitions to bound map growth across long-running clusters with churning
+    /// peer IDs. Called from both consensus-write success and KV-notification paths
+    /// so leader-takeover and follower-side observation converge to the same pruned
+    /// state.
+    private void pruneIncarnationIfDecommissioned(NodeId peer, MembershipFsmState newState) {
+        if (newState instanceof MembershipFsmState.Decommissioned) {
+            var removed = latestObservedIncarnation.remove(peer);
+            if (removed != null && log.isDebugEnabled()) {
+                log.debug("MembershipFsm: pruned incarnation entry for decommissioned peer={} (stored was {})",
+                          peer.id(),
+                          removed);
+            }
         }
     }
 
@@ -566,7 +759,7 @@ public final class MembershipFsm {
         fsmLock.lock();
         try {
             ensureProvisioningTracked(peer, slotId);
-            processFsmEventLocked(new SlotClaimed(peer, slotId, value.spawnedAtMs()));
+            processFsmEventLocked(new SlotClaimed(peer, slotId, hlcClock.now()));
         } finally {
             fsmLock.unlock();
         }
@@ -595,7 +788,7 @@ public final class MembershipFsm {
     private void processFsmEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
         var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
-        var outcome = reducer.apply(current, event);
+        var outcome = reducer.apply(current, event, currentReachabilityGate());
         fsmStates.put(peer, outcome.newState());
         logFsmOutcome(event, current, outcome);
     }
@@ -619,7 +812,7 @@ public final class MembershipFsm {
     private void processOperatorEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
         var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
-        var outcome = reducer.apply(current, event);
+        var outcome = reducer.apply(current, event, currentReachabilityGate());
         if (outcome.writes().isEmpty()) {
             applyEffectsLocked(outcome.effects());
             logOperatorOutcome(event, current, outcome, true);
@@ -652,7 +845,9 @@ public final class MembershipFsm {
                                                        List<KVCommand<AetherKey>> resolvedWrites) {
         fsmLock.lock();
         try {
-            fsmStates.put(outcome.newState().peer(), outcome.newState());
+            var newState = outcome.newState();
+            fsmStates.put(newState.peer(), newState);
+            pruneIncarnationIfDecommissioned(newState.peer(), newState);
             recordResolvedLifecycleWrites(resolvedWrites);
             applyEffectsLocked(outcome.effects());
             logOperatorOutcome(event, prior, outcome, true);
@@ -753,7 +948,7 @@ public final class MembershipFsm {
         pendingTimers.remove(handle);
         log.debug("MembershipFsm: timer {} fired for {}", handle.kind(), handle.peer().id());
         if (handle.kind() == TimerKind.JOIN_DEADLINE) {
-            enqueueOperatorEvent(new JoinDeadlineExpired(handle.peer(), System.currentTimeMillis()));
+            enqueueOperatorEvent(new JoinDeadlineExpired(handle.peer(), hlcClock.now()));
         }
     }
 
@@ -768,7 +963,7 @@ public final class MembershipFsm {
         log.warn("MembershipFsm: prepareDrain failed for {}: {} — feeding DrainOutcome(false)",
                  peer.id(),
                  cause.message());
-        enqueueOperatorEvent(new DrainOutcome(peer, false, System.currentTimeMillis()));
+        enqueueOperatorEvent(new DrainOutcome(peer, false, hlcClock.now()));
     }
 
     /// Chains `DrainCoordinator.awaitDrainAck(peer, timeout)` and translates its resolution
@@ -778,7 +973,7 @@ public final class MembershipFsm {
     @Contract private void awaitDrainAndFeedback(NodeId peer, TimeSpan timeout) {
         log.debug("MembershipFsm: awaiting drain ack for {} (timeout={}ms)", peer.id(), timeout.millis());
         drainCoordinator.awaitDrainAck(peer, timeout)
-                         .onSuccess(_ -> enqueueOperatorEvent(new DrainOutcome(peer, true, System.currentTimeMillis())))
+                         .onSuccess(_ -> enqueueOperatorEvent(new DrainOutcome(peer, true, hlcClock.now())))
                          .onFailure(cause -> onAwaitDrainAckFailure(peer, cause));
     }
 
@@ -786,7 +981,7 @@ public final class MembershipFsm {
         log.warn("MembershipFsm: awaitDrainAck failed for {}: {} — feeding DrainOutcome(false)",
                  peer.id(),
                  cause.message());
-        enqueueOperatorEvent(new DrainOutcome(peer, false, System.currentTimeMillis()));
+        enqueueOperatorEvent(new DrainOutcome(peer, false, hlcClock.now()));
     }
 
     private void replayFromKv() {
@@ -823,6 +1018,7 @@ public final class MembershipFsm {
         fsmStates.clear();
         slotIdToPeer.clear();
         priorLifecycle.clear();
+        latestObservedIncarnation.clear();
     }
 
     /// Leader-takeover step 4+5 (spec §6.2, F7/F8). After KV replay, the new leader resumes
@@ -852,7 +1048,7 @@ public final class MembershipFsm {
         if (remainingMs <= 0L) {
             log.info("MembershipFsm: resumeDrain peer={} hard-deadline elapsed (drainStarted={}, elapsed={}ms) → DrainOutcome(false) immediate",
                      peer.id(), value.updatedAt(), elapsed);
-            enqueueOperatorEvent(new DrainOutcome(peer, false, nowMs));
+            enqueueOperatorEvent(new DrainOutcome(peer, false, hlcClock.now()));
             return;
         }
         log.info("MembershipFsm: resumeDrain peer={} remaining={}ms — re-attaching awaitDrainAck",
@@ -866,7 +1062,7 @@ public final class MembershipFsm {
         if (remainingMs <= 0L) {
             log.info("MembershipFsm: resumeJoinDeadline peer={} deadline elapsed (joinedAt={}, elapsed={}ms) → JoinDeadlineExpired immediate",
                      peer.id(), value.updatedAt(), elapsed);
-            enqueueOperatorEvent(new JoinDeadlineExpired(peer, nowMs));
+            enqueueOperatorEvent(new JoinDeadlineExpired(peer, hlcClock.now()));
             return;
         }
         log.info("MembershipFsm: resumeJoinDeadline peer={} remaining={}ms — scheduling timer",
@@ -875,6 +1071,11 @@ public final class MembershipFsm {
         cancelTimer(peer, TimerKind.JOIN_DEADLINE);
         var future = scheduler.schedule(() -> onTimerFired(handle), TimeSpan.timeSpan(remainingMs).millis());
         pendingTimers.put(handle, future);
+        if (swimHealthGate.apply(peer)) {
+            log.info("MembershipFsm: resumeJoinDeadline peer={} — SWIM already healthy on leader takeover, synthesizing SwimHealthy",
+                     peer.id());
+            onSwimObservation(new HealthyObserved(peer, 0L));
+        }
     }
 
     private Option<String> slotIdForPeer(NodeId peer) {
@@ -899,14 +1100,21 @@ public final class MembershipFsm {
         };
     }
 
-    private static Option<MembershipFsmEvent> translate(SwimObservation observation) {
-        var nowMs = System.currentTimeMillis();
+    /// RC1 Step 4 — translates SWIM observations into FSM events stamped with the local HLC.
+    /// `SwimObservation` does not currently carry a wire-side HLC (Step 6 future work), so the
+    /// observation is treated as a local event and the clock advances via `hlcClock.now()`.
+    /// When `SwimObservation` gains an `at` field, this site will switch to
+    /// `mergeRemoteHlcOrDrop(observation.at())` so cross-node SWIM gossip advances the local
+    /// clock and is gated by the drift policy.
+    private Option<MembershipFsmEvent> translate(SwimObservation observation) {
+        var at = hlcClock.now();
         return switch (observation) {
-            case HealthyObserved h -> some(new SwimHealthy(h.peer(), h.incarnation(), nowMs));
-            case FaultyObserved f -> some(new SwimFaulty(f.peer(), f.incarnation(), nowMs));
-            case DepartedObserved d -> some(new SwimDeparted(d.peer(), d.incarnation(), nowMs));
+            case HealthyObserved h -> some(new SwimHealthy(h.peer(), h.incarnation(), at));
+            case FaultyObserved f -> some(new SwimFaulty(f.peer(), f.incarnation(), at));
+            case DepartedObserved d -> some(new SwimDeparted(d.peer(), d.incarnation(), at));
             case SuspectObserved _ -> none();
             case UnknownObserved _ -> none();
+            case JoinAnnounced _ -> none();
         };
     }
 
@@ -1008,8 +1216,31 @@ public final class MembershipFsm {
 
     private static final BooleanSupplier NEVER_LEADER = () -> false;
 
-    /// F.4 default predicate for test-only factories. Returns `false` for every peer so that
-    /// `onPeerConnected` is inert unless callers explicitly opt in via the production
-    /// 9-arg factory. See `isKnownAliveClusterPeer` field doc.
-    private static final Predicate<NodeId> REJECT_ALL_PEERS = _ -> false;
+    /// Cold-start default for test factories: no aggregator snapshot available. The reducer's
+    /// `(ON_DUTY, SwimFaulty)` and `(ON_DUTY, TransportUnreachable)` cells fall back to the
+    /// permissive (pre-Step-4) behavior when the supplier returns `Option.none()`.
+    private static final Supplier<Option<AggregatedReachabilitySnapshot>> NO_AGGREGATOR_SNAPSHOT = Option::none;
+
+    /// Topology-observation refactor Step 4 — build a per-event `ReachabilityGate` from the
+    /// current aggregator snapshot. Returns a permissive gate (always `true`) when the supplier
+    /// reports `Option.none()` (cold start, no snapshot yet — preserves pre-Step-4 behavior).
+    /// Otherwise returns `true` only when the snapshot entry for `peer` is UNREACHABLE; REACHABLE
+    /// and UNKNOWN both gate to `false` (a confirmed cluster-wide failure is required).
+    private ReachabilityGate currentReachabilityGate() {
+        var snapshotOpt = aggregatorSnapshotSupplier.get();
+        return snapshotOpt.fold(() -> ReachabilityGate.ALWAYS_CONFIRMED,
+                                 snapshot -> peer -> isUnreachableInSnapshot(snapshot, peer));
+    }
+
+    private static boolean isUnreachableInSnapshot(AggregatedReachabilitySnapshot snapshot, NodeId peer) {
+        var entry = snapshot.states().get(peer);
+        return entry != null && entry.kind() == ReachabilityKind.UNREACHABLE;
+    }
+
+    /// RC1 Step 4 — default per-node `HlcClock` for test-only factories that do not accept an
+    /// explicit clock. Production wiring (`AetherNode.buildMembershipFsm`) MUST pass the node's
+    /// canonical clock instance so HLC values are shared across subsystems.
+    private static HlcClock defaultHlcClock(NodeId self) {
+        return HlcClock.hlcClock(self.id()).unwrap();
+    }
 }

@@ -95,7 +95,7 @@ authorization_role = "VIEWER"
 |------|-----------|
 | **ADMIN** | All commands |
 | **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
-| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `node-slices`, `routes`, `node-routes`, `metrics`, `events`, `health` |
+| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `nodes slices`, `routes`, `nodes routes`, `metrics`, `events`, `health` |
 
 When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
 
@@ -141,6 +141,12 @@ Show all slices across the cluster with per-node instances, target counts, and v
 aether slices
 ```
 
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--state <STATE>` | Filter to slices/instances in this state (case-insensitive, e.g. `ACTIVE`, `LOADED`). When supplied, the response restricts each slice's `instances[]` to entries whose state matches, and drops slices with no matching instances. |
+
 Output:
 ```
 Slices (cluster-wide):
@@ -153,12 +159,24 @@ Slices (cluster-wide):
     node-2  ACTIVE
 ```
 
-#### node-slices
-
-Show slices loaded on the connected node (flat list of artifact names):
+Filtered example — only ACTIVE instances:
 
 ```bash
-aether node-slices
+aether slices --state ACTIVE
+```
+
+Multi-state union via `+`:
+
+```bash
+aether slices --state LOADED+ACTIVE
+```
+
+#### nodes slices
+
+Show slices loaded on the connected node (flat list of artifact names). Pass `[id]` for a specific node:
+
+```bash
+aether nodes slices
 ```
 
 Output:
@@ -183,12 +201,12 @@ Routes (cluster-wide):
   POST /orders   [node-1, node-2]  security: api-key
 ```
 
-#### node-routes
+#### nodes routes
 
-Show HTTP routes on the connected node:
+Show HTTP routes on the connected node. Pass `[id]` for a specific node:
 
 ```bash
-aether node-routes
+aether nodes routes
 ```
 
 Output:
@@ -253,6 +271,25 @@ Health check:
 aether health
 ```
 
+#### nodes health
+
+Per-node readiness/liveness check. Defaults to the connected node; pass `[id]` to query a specific
+node (the request is forwarded by the management plane to that node and the response carries that
+node's per-component readiness breakdown). Use `--liveness` to query `/health/live` instead of the
+default `/health/ready`.
+
+```bash
+# Readiness on the connected node
+aether nodes health
+
+# Readiness on a specific node
+aether nodes health node-2
+
+# Liveness on a specific node
+aether nodes health node-2 --liveness
+```
+
+Output mirrors the JSON shape of `GET /health/ready` (or `/health/live` with `--liveness`).
 #### scale
 
 Scale a blueprint-deployed slice. The slice must be part of an active blueprint.
@@ -280,25 +317,25 @@ Artifact repository operations:
 
 ```bash
 # Deploy JAR to repository
-aether artifact deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
+aether artifacts deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
 
 # Push blueprint and all its slices from local Maven repository to cluster
-aether artifact push <group:artifact:version>
+aether artifacts push <group:artifact:version>
 
 # List artifacts
-aether artifact list
+aether artifacts list
 
 # List versions
-aether artifact versions <group:artifact>
+aether artifacts versions <group:artifact>
 
 # Show artifact metadata
-aether artifact info <group:artifact:version>
+aether artifacts info <group:artifact:version>
 
 # Delete an artifact
-aether artifact delete <group:artifact:version>
+aether artifacts delete <group:artifact:version>
 
 # Show artifact storage metrics
-aether artifact metrics
+aether artifacts metrics
 ```
 
 The `push` command takes blueprint coordinates and automatically pushes the blueprint JAR
@@ -309,10 +346,10 @@ to discover slice references, then pushes each artifact to the cluster repositor
 Examples:
 ```bash
 # Deploy a JAR file directly
-aether artifact deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
+aether artifacts deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
 
 # Push blueprint + all slices from local Maven repository
-aether artifact push org.pragmatica.aether.example:url-shortener:1.0.0-rc1
+aether artifacts push org.pragmatica.aether.example:url-shortener:1.0.0-rc1
 
 # Example output:
 # Pushing url-shortener blueprint (3 artifacts):
@@ -322,10 +359,10 @@ aether artifact push org.pragmatica.aether.example:url-shortener:1.0.0-rc1
 # All artifacts pushed successfully.
 
 # View artifact details
-aether artifact info com.example:my-slice:1.0.0
+aether artifacts info com.example:my-slice:1.0.0
 
 # Remove an artifact
-aether artifact delete com.example:my-slice:1.0.0
+aether artifacts delete com.example:my-slice:1.0.0
 ```
 
 #### blueprint
@@ -334,28 +371,28 @@ Blueprint management:
 
 ```bash
 # Apply a blueprint file
-aether blueprint apply <file.toml>
+aether blueprints apply <file.toml>
 
 # List all deployed blueprints
-aether blueprint list [--format table|json]
+aether blueprints list [--format table|json]
 
 # Get blueprint details
-aether blueprint get <blueprintId> [--format table|json]
+aether blueprints get <blueprintId> [--format table|json]
 
 # Show deployment status of a blueprint
-aether blueprint status <blueprintId> [--format table|json]
+aether blueprints status <blueprintId> [--format table|json]
 
 # Validate a blueprint file without deploying
-aether blueprint validate <file.toml>
+aether blueprints validate <file.toml>
 
 # Delete a blueprint
-aether blueprint delete <blueprintId> [-f|--force]
+aether blueprints delete <blueprintId> [-f|--force]
 
 # Deploy a blueprint from an artifact in the cluster repository
-aether blueprint deploy <coords>
+aether blueprints deploy <coords>
 
 # Upload a blueprint JAR file and deploy it
-aether blueprint upload <file> -g <groupId> -a <artifactId> -v <version>
+aether blueprints upload <file> -g <groupId> -a <artifactId> -v <version>
 ```
 
 Example blueprint file (`order-system.toml`):
@@ -374,28 +411,28 @@ instances = 2
 Example workflow:
 ```bash
 # Validate before deploying
-aether blueprint validate order-system.toml
+aether blueprints validate order-system.toml
 
 # Apply the blueprint
-aether blueprint apply order-system.toml
+aether blueprints apply order-system.toml
 
 # Check deployment status
-aether blueprint status order-system:1.0.0
+aether blueprints status order-system:1.0.0
 
 # List all blueprints
-aether blueprint list
+aether blueprints list
 
 # Get details for a specific blueprint
-aether blueprint get order-system:1.0.0
+aether blueprints get order-system:1.0.0
 
 # Delete a blueprint (with force to skip confirmation)
-aether blueprint delete order-system:1.0.0 -f
+aether blueprints delete order-system:1.0.0 -f
 
 # Deploy from artifact coordinates
-aether blueprint deploy org.example:my-app:1.0.0
+aether blueprints deploy org.example:my-app:1.0.0
 
 # Upload a blueprint JAR and deploy it
-aether blueprint upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
+aether blueprints upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
 
 #### deploy
@@ -507,19 +544,19 @@ A/B testing management:
 
 ```bash
 # Create an A/B test with variant definitions
-aether ab-test create -a <artifact> --variants <v1=ver1,v2=ver2>
+aether ab-tests create -a <artifact> --variants <v1=ver1,v2=ver2>
 
 # List active A/B tests
-aether ab-test list
+aether ab-tests list
 
 # Show test status
-aether ab-test status <testId>
+aether ab-tests status <testId>
 
 # Show per-variant metrics
-aether ab-test metrics <testId>
+aether ab-tests metrics <testId>
 
 # Conclude test and promote winner
-aether ab-test conclude <testId> --winner <variant>
+aether ab-tests conclude <testId> --winner <variant>
 ```
 
 | Subcommand | Description |
@@ -533,13 +570,13 @@ aether ab-test conclude <testId> --winner <variant>
 Example workflow:
 ```bash
 # Create A/B test: 50/50 split between v1.0.0 and v2.0.0
-aether ab-test create -a org.example:my-service --variants control=1.0.0,experiment=2.0.0
+aether ab-tests create -a org.example:my-service --variants control=1.0.0,experiment=2.0.0
 
 # Monitor per-variant metrics
-aether ab-test metrics ab-001
+aether ab-tests metrics ab-001
 
 # Conclude test and promote winner
-aether ab-test conclude ab-001 --winner experiment
+aether ab-tests conclude ab-001 --winner experiment
 ```
 
 #### invocation-metrics
@@ -943,37 +980,43 @@ Manage node lifecycle states:
 
 ```bash
 # List all node lifecycle states
-aether node lifecycle
+aether nodes lifecycle
 
-# Get lifecycle state for a specific node
-aether node lifecycle <nodeId>
+# Filter the list to a single state (case-insensitive)
+aether nodes lifecycle --state ON_DUTY
+
+# Multi-state union via `+`
+aether nodes lifecycle --state ON_DUTY+JOINING
+
+# Get lifecycle state for a specific node (--state ignored when [id] is supplied)
+aether nodes lifecycle <nodeId>
 
 # Drain a node (ON_DUTY → DRAINING, CDM evacuates slices respecting budget)
-aether node drain <nodeId>
+aether nodes drain <nodeId>
 
 # Activate a node (DRAINING/DECOMMISSIONED → ON_DUTY)
-aether node activate <nodeId>
+aether nodes activate <nodeId>
 
 # Shut down a node (any → SHUTTING_DOWN)
-aether node shutdown <nodeId>
+aether nodes shutdown <nodeId>
 ```
 
 Example workflow:
 ```bash
 # Check current lifecycle states
-aether node lifecycle
+aether nodes lifecycle
 
 # Drain a node before maintenance
-aether node drain node-2
+aether nodes drain node-2
 
 # Verify it's draining
-aether node lifecycle node-2
+aether nodes lifecycle node-2
 
 # Cancel drain and return to active duty
-aether node activate node-2
+aether nodes activate node-2
 
 # Initiate shutdown
-aether node shutdown node-3
+aether nodes shutdown node-3
 ```
 
 #### workers
@@ -1051,13 +1094,13 @@ Manage cluster backups.
 
 ```bash
 # Trigger a manual backup
-aether backup trigger
+aether backups trigger
 
 # List available backups
-aether backup list
+aether backups list
 
 # Restore from a specific backup commit
-aether backup restore <commit-id>
+aether backups restore <commit-id>
 ```
 
 | Subcommand | Description |
@@ -1125,46 +1168,79 @@ aether schema baseline orders_db -v 3
 
 ## Stream Management
 
-### `aether stream list`
+### `aether streams list`
 
 List all event streams with metadata.
 
 ```bash
-aether stream list
+aether streams list
 ```
 
-### `aether stream status <name>`
+### `aether streams status <name>`
 
 Show detailed stream info including per-partition details.
 
 ```bash
-aether stream status my-events
+aether streams status my-events
 ```
 
-### `aether stream publish <name> <message>`
+### `aether streams publish <name> <message>`
 
 Publish a text message to a stream. The message is base64-encoded automatically.
 
 ```bash
-aether stream publish my-events "Hello, world!"
+aether streams publish my-events "Hello, world!"
 ```
 
 ### Examples
 
 ```bash
 # List all streams
-aether stream list
+aether streams list
 
 # Check stream details
-aether stream status user-events
+aether streams status user-events
 
 # Publish a message
-aether stream publish user-events "order_created:12345"
+aether streams publish user-events "order_created:12345"
 ```
 
 ---
 
 ## Cluster Management
+
+### `aether cluster scaffold`
+
+Emit a deployment-manifest template with `aether.cluster` and `aether.node-id` labels pre-set. Operators get a working starting point that's correct-by-construction — no chance of forgetting to label containers, which would otherwise leave cross-cluster tooling unable to distinguish two clusters sharing infrastructure.
+
+```bash
+aether cluster scaffold --name <cluster-name> --format docker-compose [--nodes N] [--image IMG] \
+                        [--mgmt-port-base 5150] [--app-port-base 8070] [--cluster-port 6000] > compose.yml
+```
+
+| Option | Description |
+|--------|-------------|
+| `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
+| `--format` | Output format. Currently `docker-compose` |
+| `--nodes` | Compose-fixed node count (default 5) |
+| `--image` | Container image (default `aether-node:local`) |
+| `--mgmt-port-base` | Host port base for management API (default 5150) |
+| `--app-port-base` | Host port base for application HTTP (default 8070) |
+| `--cluster-port` | QUIC cluster transport port (default 6000) |
+
+Example:
+```bash
+aether cluster scaffold --name us-prod --format docker-compose --nodes 5 > compose.yml
+docker compose -f compose.yml up -d
+```
+
+The generated manifest:
+- Sets `aether.cluster=<name>` on every service (matches what `DockerComputeProvider.buildRunCommand` sets on CTM-provisioned replacements)
+- Sets `aether.node-id=node-N` on each compose-fixed service
+- Uses `restart: "no"` per the CTM auto-heal contract (see `aether/docs/operator/deployment-recovery.md`)
+- Provisions a per-cluster bridge network `aether-<name>-network`
+
+See `aether/docs/operator/multi-cluster-deployment.md` for the full labeling model.
 
 ### `aether cluster scale`
 
@@ -1218,12 +1294,12 @@ aether cluster topology
 # lb-passive        PASSIVE     HEALTHY       aether-lb                             0.0.0.0:7000
 ```
 
-### `aether topology circuit-breaker status`
+### `aether cluster topology circuit-breaker status`
 
 Show the CTM (Cluster Topology Manager) provisioning circuit breaker state. The breaker trips after 3 consecutive provisioning failures and halts auto-heal until reset.
 
 ```bash
-aether topology circuit-breaker status
+aether cluster topology circuit-breaker status
 ```
 
 Example output:
@@ -1231,12 +1307,12 @@ Example output:
 {"consecutiveFailures": 0, "trippedAt": 3, "nextAllowedMs": 0, "tripped": false}
 ```
 
-### `aether topology circuit-breaker reset`
+### `aether cluster topology circuit-breaker reset`
 
 Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixing the underlying provisioning issue (provider credentials, network connectivity, capacity quota) when none of the auto-recovery triggers (`scale`, node-ready, phase NORMAL, leader handoff) have fired. Returns the prior consecutive-failure count.
 
 ```bash
-aether topology circuit-breaker reset
+aether cluster topology circuit-breaker reset
 ```
 
 Example output:
@@ -1244,12 +1320,12 @@ Example output:
 {"status": "reset", "priorFailureCount": 3}
 ```
 
-### `aether topology auto-heal status`
+### `aether cluster topology auto-heal status`
 
 Show whether CTM auto-heal (deficit-driven replacement provisioning) is currently enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker.
 
 ```bash
-aether topology auto-heal status
+aether cluster topology auto-heal status
 ```
 
 Example output:
@@ -1257,12 +1333,12 @@ Example output:
 {"enabled": true}
 ```
 
-### `aether topology auto-heal disable`
+### `aether cluster topology auto-heal disable`
 
 Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion.
 
 ```bash
-aether topology auto-heal disable
+aether cluster topology auto-heal disable
 ```
 
 Example output:
@@ -1270,18 +1346,54 @@ Example output:
 {"enabled": false, "previousState": true}
 ```
 
-### `aether topology auto-heal enable`
+### `aether cluster topology auto-heal enable`
 
 Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately.
 
 ```bash
-aether topology auto-heal enable
+aether cluster topology auto-heal enable
 ```
 
 Example output:
 ```json
 {"enabled": true, "previousState": false}
 ```
+
+### `aether cluster tasks`
+
+Inspect and reassign task group delegation. Without a subcommand, lists all assignments (same as `list`).
+
+```bash
+aether cluster tasks                          # list (legacy default)
+aether cluster tasks list                     # explicit list form
+aether cluster tasks status <group>           # single-group view
+aether cluster tasks reassign --group <g> --target <node-id>
+```
+
+Subcommands:
+
+| Subcommand | Purpose |
+|------------|---------|
+| `list` | List all task group assignments. Mirrors the bare `aether cluster tasks` default. |
+| `status <group>` | Show the assignment for a single task group. `<group>` is case-insensitive; common values: `METRICS`, `SCALING`, `STRATEGIES`, `DEPLOYMENT`, `STORAGE`, `STREAMING`. Returns exit code ERROR with `Error: task group '<input>' not found` on stderr when the group is absent. |
+| `reassign` | Move a task group to a specific node (`--group <name> --target <node-id>`). |
+
+Examples:
+
+```bash
+# Inspect a single group's status field via --format value
+aether cluster tasks status METRICS --format value --field assignments.0.status
+# -> ACTIVE
+
+# Inspect which node currently owns a group
+aether cluster tasks status SCALING --format value --field assignments.0.assignedTo
+# -> node-3
+
+# Reassign STORAGE to node-4
+aether cluster tasks reassign --group STORAGE --target node-4
+```
+
+The output JSON shape mirrors `GET /api/cluster/tasks` — see [`management-api.md`](management-api.md) for the per-record fields (`group`, `assignedTo`, `assignedAt`, `status`, `failureReason`).
 
 ### `aether cluster generation`
 
