@@ -173,7 +173,6 @@ import static org.pragmatica.lang.Result.success;
             case ClusterPhaseKey _ -> "cluster-phase";
             case BlueprintStreamBindingsKey _ -> "blueprint-stream-bindings";
             case StreamRegistryKey _ -> "stream-registry";
-            case ClusterEventLogKey _ -> "cluster-event-log";
         };
     }
 
@@ -245,7 +244,6 @@ import static org.pragmatica.lang.Result.success;
             case ClusterPhaseValue v -> v.phase().name();
             case BlueprintStreamBindingsValue v -> serializeBlueprintStreamBindings(v);
             case StreamRegistryValue v -> serializeStreamRegistry(v);
-            case ClusterEventValue _ -> "";
         };
     }
 

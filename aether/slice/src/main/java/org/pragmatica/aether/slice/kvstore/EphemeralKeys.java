@@ -27,8 +27,7 @@ import java.util.Set;
                                                                  SpokesmanKey.class,
                                                                  ProvisioningSlotKey.class,
                                                                  GenerationSnapshotKey.class,
-                                                                 ClusterPhaseKey.class,
-                                                                 ClusterEventLogKey.class);
+                                                                 ClusterPhaseKey.class);
 
     Set<String> EPHEMERAL_SECTIONS = Set.of("node-artifact",
                                             "node-routes",

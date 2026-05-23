@@ -41,6 +41,8 @@ import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -87,7 +89,7 @@ public final class ClusterEventAggregator {
 
     private final Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier;
     private final Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier;
-    private final EventIdAllocator eventIdAllocator;
+    private final HlcClock hlcClock;
     private final NodeId selfNode;
 
     private final AtomicLong quorumSequence = new AtomicLong();
@@ -103,28 +105,28 @@ public final class ClusterEventAggregator {
     private ClusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                    Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                    NodeId selfNode,
-                                   EventIdAllocator eventIdAllocator,
+                                   HlcClock hlcClock,
                                    IntSupplier clusterSizeSupplier) {
         this.publisherSupplier = publisherSupplier;
         this.consumerSupplier = consumerSupplier;
         this.selfNode = selfNode;
-        this.eventIdAllocator = eventIdAllocator;
+        this.hlcClock = hlcClock;
         this.clusterSizeSupplier = clusterSizeSupplier;
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                                                 Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 NodeId selfNode,
-                                                                EventIdAllocator eventIdAllocator) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, selfNode, eventIdAllocator, UNKNOWN_CLUSTER_SIZE);
+                                                                HlcClock hlcClock) {
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, selfNode, hlcClock, UNKNOWN_CLUSTER_SIZE);
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                                                 Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                                                 NodeId selfNode,
-                                                                EventIdAllocator eventIdAllocator,
+                                                                HlcClock hlcClock,
                                                                 IntSupplier clusterSizeSupplier) {
-        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, selfNode, eventIdAllocator, clusterSizeSupplier);
+        return new ClusterEventAggregator(publisherSupplier, consumerSupplier, selfNode, hlcClock, clusterSizeSupplier);
     }
 
     /// Read all events currently buffered in the system stream's local partition.
@@ -145,7 +147,7 @@ public final class ClusterEventAggregator {
     }
 
     private static List<ClusterEvent> filterSince(List<ClusterEvent> events, Instant since) {
-        return events.stream().filter(e -> e.timestamp().isAfter(since)).toList();
+        long sinceMicros = since.getEpochSecond() * 1_000_000L + since.getNano() / 1000L; return events.stream().filter(e -> e.at().physicalMicros() > sinceMicros).toList();
     }
 
     private static List<ClusterEvent> extractPayloads(List<StreamEvent<ClusterEvent>> raw) {
@@ -166,7 +168,7 @@ public final class ClusterEventAggregator {
     /// philosophy as spec §13.3. `@Contract` covers the unobserved `Promise<Unit>` here: aggregator
     /// is a sink with no upstream caller; the `on*` handlers are MessageRouter callbacks whose
     /// contract is `void`.
-    @Contract private void emit(ClusterEvent event) {
+    @Contract public void emit(ClusterEvent event) {
         var publisher = publisherSupplier.get();
         if (publisher == null) {
             LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)", event);
@@ -188,9 +190,7 @@ public final class ClusterEventAggregator {
     @Contract public void onPeerJoined(TransportObservation.PeerJoined event) {
         nodeJoinTimes.put(event.nodeId().id(),
                           System.currentTimeMillis());
-        emit(new NodeJoined(eventIdAllocator.next(),
-                            Instant.now(),
-                            selfNode,
+        emit(new NodeJoined(hlcClock.now(),
                             Severity.INFO,
                             "Node " + event.nodeId().id() + " joined cluster (now " + event.topology().size() + " nodes)",
                             Map.of("nodeId",
@@ -232,9 +232,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract private void bufferNodeLeftEvent(String nodeId, int clusterSize, String source) {
-        emit(new NodeLeft(eventIdAllocator.next(),
-                          Instant.now(),
-                          selfNode,
+        emit(new NodeLeft(hlcClock.now(),
                           Severity.INFO,
                           "Node " + nodeId + " left cluster (now " + clusterSize + " nodes)",
                           Map.of("nodeId", nodeId,
@@ -243,9 +241,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract private void bufferNodeFailedEvent(String nodeId, int clusterSize, String source) {
-        emit(new NodeFailed(eventIdAllocator.next(),
-                            Instant.now(),
-                            selfNode,
+        emit(new NodeFailed(hlcClock.now(),
                             Severity.CRITICAL,
                             "Node " + nodeId + " failed (cluster size " + clusterSize + ")",
                             Map.of("nodeId", nodeId,
@@ -259,9 +255,7 @@ public final class ClusterEventAggregator {
         var transition = (prior == null
                           ? "NONE"
                           : prior.name()) + "->" + next.name();
-        emit(new NodeLifecycleChanged(eventIdAllocator.next(),
-                                      Instant.now(),
-                                      selfNode,
+        emit(new NodeLifecycleChanged(hlcClock.now(),
                                       Severity.INFO,
                                       "Node " + nodeId + " lifecycle: " + transition,
                                       Map.of("nodeId",
@@ -273,15 +267,11 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onLeaderChange(LeaderNotification.LeaderChange event) {
-        event.leaderId().onPresent(leaderId -> emit(new LeaderElected(eventIdAllocator.next(),
-                                                                      Instant.now(),
-                                                                      selfNode,
+        event.leaderId().onPresent(leaderId -> emit(new LeaderElected(hlcClock.now(),
                                                                       Severity.INFO,
                                                                       "Node " + leaderId.id() + " elected as leader",
                                                                       Map.of("leaderId", leaderId.id()))))
-                      .onEmpty(() -> emit(new LeaderLost(eventIdAllocator.next(),
-                                                         Instant.now(),
-                                                         selfNode,
+                      .onEmpty(() -> emit(new LeaderLost(hlcClock.now(),
                                                          Severity.WARNING,
                                                          "Leadership lost, election in progress",
                                                          Map.of())));
@@ -290,15 +280,11 @@ public final class ClusterEventAggregator {
     @Contract public void onQuorumStateChange(QuorumStateNotification event) {
         if (!event.advanceSequence(quorumSequence)) {return;}
         switch (event.state()){
-            case ESTABLISHED -> emit(new QuorumEstablished(eventIdAllocator.next(),
-                                                           Instant.now(),
-                                                           selfNode,
+            case ESTABLISHED -> emit(new QuorumEstablished(hlcClock.now(),
                                                            Severity.INFO,
                                                            "Quorum established",
                                                            Map.of()));
-            case DISAPPEARED -> emit(new QuorumLost(eventIdAllocator.next(),
-                                                    Instant.now(),
-                                                    selfNode,
+            case DISAPPEARED -> emit(new QuorumLost(hlcClock.now(),
                                                     Severity.CRITICAL,
                                                     "Quorum lost",
                                                     Map.of()));
@@ -322,9 +308,7 @@ public final class ClusterEventAggregator {
 
     @Contract private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
         deploymentStartTimes.put(trackingKey, System.currentTimeMillis());
-        emit(new DeploymentStarted(eventIdAllocator.next(),
-                                   Instant.now(),
-                                   selfNode,
+        emit(new DeploymentStarted(hlcClock.now(),
                                    Severity.INFO,
                                    "Deploying " + artifact + " to " + nodeId,
                                    Map.of("artifact", artifact, "nodeId", nodeId)));
@@ -334,9 +318,7 @@ public final class ClusterEventAggregator {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms)).or("");
         var nodeReadySuffix = buildNodeReadySuffix(nodeId);
-        emit(new DeploymentCompleted(eventIdAllocator.next(),
-                                     Instant.now(),
-                                     selfNode,
+        emit(new DeploymentCompleted(hlcClock.now(),
                                      Severity.INFO,
                                      "Deployed " + artifact + " on " + nodeId + durationSuffix + nodeReadySuffix,
                                      buildCompletedMetadata(artifact, nodeId, durationMs)));
@@ -346,18 +328,14 @@ public final class ClusterEventAggregator {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
         var reason = value.failureReason().or("unknown");
-        emit(new DeploymentFailed(eventIdAllocator.next(),
-                                  Instant.now(),
-                                  selfNode,
+        emit(new DeploymentFailed(hlcClock.now(),
                                   Severity.WARNING,
                                   "Deployment of " + artifact + " failed on " + nodeId + durationSuffix + ": " + reason,
                                   buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
     @Contract public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
-        emit(new SliceFailure(eventIdAllocator.next(),
-                              Instant.now(),
-                              selfNode,
+        emit(new SliceFailure(hlcClock.now(),
                               Severity.CRITICAL,
                               "All instances of " + event.artifact().asString() + ":" + event.method().name() + " failed",
                               Map.of("artifact",
@@ -369,9 +347,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onScaledUp(ScalingEvent.ScaledUp event) {
-        emit(new ScaleUp(eventIdAllocator.next(),
-                         Instant.now(),
-                         selfNode,
+        emit(new ScaleUp(hlcClock.now(),
                          Severity.INFO,
                          event.artifact().asString() + " scaled up from " + event.previousInstances() + " to " + event.newInstances() + " instances",
                          Map.of("artifact",
@@ -383,9 +359,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onScaledDown(ScalingEvent.ScaledDown event) {
-        emit(new ScaleDown(eventIdAllocator.next(),
-                           Instant.now(),
-                           selfNode,
+        emit(new ScaleDown(hlcClock.now(),
                            Severity.INFO,
                            event.artifact().asString() + " scaled down from " + event.previousInstances() + " to " + event.newInstances() + " instances",
                            Map.of("artifact",
@@ -411,24 +385,20 @@ public final class ClusterEventAggregator {
                              "trigger",
                              "reconciliation");
         var event2 = event.currentInstances() < event.desiredInstances()
-                     ? new ScaleUp(eventIdAllocator.next(), Instant.now(), selfNode, Severity.INFO, summary, details)
-                     : (ClusterEvent) new ScaleDown(eventIdAllocator.next(), Instant.now(), selfNode, Severity.INFO, summary, details);
+                     ? new ScaleUp(hlcClock.now(), Severity.INFO, summary, details)
+                     : (ClusterEvent) new ScaleDown(hlcClock.now(), Severity.INFO, summary, details);
         emit(event2);
     }
 
     @Contract public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
-        emit(new ConnectionEstablished(eventIdAllocator.next(),
-                                       Instant.now(),
-                                       selfNode,
+        emit(new ConnectionEstablished(hlcClock.now(),
                                        Severity.INFO,
                                        "Connected to node " + event.nodeId().id(),
                                        Map.of("nodeId", event.nodeId().id())));
     }
 
     @Contract public void onAccessDenied(OperationalEvent.AccessDenied event) {
-        emit(new AccessDenied(eventIdAllocator.next(),
-                              Instant.now(),
-                              selfNode,
+        emit(new AccessDenied(hlcClock.now(),
                               Severity.WARNING,
                               "Access denied for " + event.principal() + " on " + event.method() + " " + event.path(),
                               Map.of("principal",
@@ -444,9 +414,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
-        emit(new NodeLifecycleChanged(eventIdAllocator.next(),
-                                      Instant.now(),
-                                      selfNode,
+        emit(new NodeLifecycleChanged(hlcClock.now(),
                                       Severity.INFO,
                                       "Node " + event.nodeId() + " lifecycle: " + event.transition(),
                                       Map.of("nodeId",
@@ -458,9 +426,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onConfigChanged(OperationalEvent.ConfigChanged event) {
-        emit(new ConfigChanged(eventIdAllocator.next(),
-                               Instant.now(),
-                               selfNode,
+        emit(new ConfigChanged(hlcClock.now(),
                                Severity.INFO,
                                "Config " + event.action() + ": " + event.key() + " (" + event.scope() + ")",
                                Map.of("key",
@@ -474,27 +440,21 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onBackupCreated(OperationalEvent.BackupCreated event) {
-        emit(new BackupCreated(eventIdAllocator.next(),
-                               Instant.now(),
-                               selfNode,
+        emit(new BackupCreated(hlcClock.now(),
                                Severity.INFO,
                                "Backup created: " + event.commitId(),
                                Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
     @Contract public void onBackupRestored(OperationalEvent.BackupRestored event) {
-        emit(new BackupRestored(eventIdAllocator.next(),
-                                Instant.now(),
-                                selfNode,
+        emit(new BackupRestored(hlcClock.now(),
                                 Severity.WARNING,
                                 "Backup restored: " + event.commitId(),
                                 Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
     @Contract public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
-        emit(new BlueprintDeployed(eventIdAllocator.next(),
-                                   Instant.now(),
-                                   selfNode,
+        emit(new BlueprintDeployed(hlcClock.now(),
                                    Severity.INFO,
                                    "Blueprint deployed: " + event.artifactCoords(),
                                    Map.of("artifactCoords",
@@ -504,18 +464,14 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onBlueprintDeleted(OperationalEvent.BlueprintDeleted event) {
-        emit(new BlueprintDeleted(eventIdAllocator.next(),
-                                  Instant.now(),
-                                  selfNode,
+        emit(new BlueprintDeleted(hlcClock.now(),
                                   Severity.INFO,
                                   "Blueprint deleted: " + event.artifactId(),
                                   Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
     }
 
     @Contract public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
-        emit(new GenerationChanged(eventIdAllocator.next(),
-                                   Instant.now(),
-                                   selfNode,
+        emit(new GenerationChanged(hlcClock.now(),
                                    Severity.INFO,
                                    "Generation epoch advanced " + event.oldEpoch() + " -> " + event.newEpoch() + " (" + event.reason() + ")",
                                    Map.of("oldEpoch",
@@ -527,9 +483,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
-        emit(new ConnectionFailed(eventIdAllocator.next(),
-                                  Instant.now(),
-                                  selfNode,
+        emit(new ConnectionFailed(hlcClock.now(),
                                   Severity.WARNING,
                                   "Connection to node " + event.nodeId().id() + " failed: " + event.cause().message(),
                                   Map.of("nodeId",

@@ -288,13 +288,11 @@ class SelfDrainCoordinatorTest {
         void selfDrainInitiated_eventPublished_onActiveToDrainingTransition() {
             var exits = exitCounter();
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
-            var captured = new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.EventType>();
-            var capturedSeverity = new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.Severity>();
+            var capturedReason = new java.util.concurrent.atomic.AtomicReference<String>();
             var capturedDetails = new java.util.concurrent.atomic.AtomicReference<java.util.Map<String, String>>();
             var publishCount = new AtomicInteger(0);
-            SelfDrainEventPublisher publisher = (type, severity, message, details) -> {
-                captured.set(type);
-                capturedSeverity.set(severity);
+            SelfDrainEventPublisher publisher = (reason, details) -> {
+                capturedReason.set(reason);
                 capturedDetails.set(details);
                 publishCount.incrementAndGet();
             };
@@ -306,8 +304,7 @@ class SelfDrainCoordinatorTest {
             coord.onQuorumDisappeared();
 
             await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(publishCount.get()).isEqualTo(1));
-            assertThat(captured.get()).isEqualTo(org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.EventType.SELF_DRAIN_INITIATED);
-            assertThat(capturedSeverity.get()).isEqualTo(org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.Severity.WARNING);
+            assertThat(capturedReason.get()).isEqualTo("quorum-disappeared");
             assertThat(capturedDetails.get()).containsEntry("nodeId", SELF.id());
             assertThat(capturedDetails.get()).containsEntry("reason", "quorum-disappeared");
             assertThat(capturedDetails.get()).containsKey("graceMs");
@@ -317,7 +314,7 @@ class SelfDrainCoordinatorTest {
         void publisherThrows_drainStillProceeds() {
             var exits = exitCounter();
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
-            SelfDrainEventPublisher throwingPublisher = (type, severity, message, details) -> {
+            SelfDrainEventPublisher throwingPublisher = (reason, details) -> {
                 throw new RuntimeException("publisher unavailable");
             };
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
@@ -336,7 +333,7 @@ class SelfDrainCoordinatorTest {
             var exits = exitCounter();
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             var publishCount = new AtomicInteger(0);
-            SelfDrainEventPublisher publisher = (type, severity, message, details) -> publishCount.incrementAndGet();
+            SelfDrainEventPublisher publisher = (reason, details) -> publishCount.incrementAndGet();
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
                                                                   tracker, tightGrace(),
                                                                   exits::incrementAndGet, publisher);

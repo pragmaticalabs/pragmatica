@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.drain;
 
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -224,9 +223,7 @@ public final class SelfDrainCoordinator {
     /// spec.md §16.1).
     private void publishSelfDrainEvent(String reason) {
         try {
-            eventPublisher.publish(ClusterEventValue.EventType.SELF_DRAIN_INITIATED,
-                                   ClusterEventValue.Severity.WARNING,
-                                   "Self-drain initiated on " + self.id() + " (reason=" + reason + ")",
+            eventPublisher.publish(reason,
                                    Map.of("nodeId",
                                           self.id(),
                                           "reason",

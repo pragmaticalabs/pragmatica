@@ -20,19 +20,12 @@ public final class RouteAssembler {
                                                                                               values.size())
         .result();}
         var sb = new StringBuilder(route.prefix());
-        var paramIndex = 0;
-        for (var segment : route.segments()) {
-            sb.append('/');
-            if (segment.isParam()) {
-                var value = values.get(paramIndex);
-                if (value == null) {return ManagementRouteError.missingParam(route.name(),
-                                                                             route.paramNames().get(paramIndex))
-                .result();}
-                sb.append(encodeSegment(value));
-                paramIndex++;
-            } else {
-                sb.append(segment.text());
-            }
+        for (int i = 0;i <values.size();i++) {
+            var value = values.get(i);
+            if (value == null) {return ManagementRouteError.missingParam(route.name(),
+                                                                         route.paramNames().get(i))
+            .result();}
+            sb.append('/').append(encodeSegment(value));
         }
         return Result.success(sb.toString());
     }

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
+import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
@@ -12,13 +14,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AlertThresholdValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -54,27 +56,27 @@ public class AlertManager {
 
     private final AtomicLong injectionSequence = new AtomicLong();
 
-    /// Narrow publisher shape so tests and alternative producers can bind without depending on
-    /// `ClusterEventLogPublisher`'s rate-cap / HLC machinery. Production wiring adapts via
-    /// `publisher::publish`.
+    /// Narrow event-sink shape for publishing operator-injected alerts as
+    /// `ClusterEvent.AlertInjected` variants through the framework events stream. Tests can bind
+    /// a no-op or recording sink; production binds `ClusterEventAggregator::emit`.
     @FunctionalInterface
-    public interface EventLogPublisher {
-        Promise<Unit> publish(ClusterEventValue.EventType type,
-                              ClusterEventValue.Severity severity,
-                              String message,
-                              Map<String, String> metadata);
+    public interface EventSink {
+        void emit(ClusterEvent event);
     }
 
-    /// Optional publisher for the cluster-scoped replicated event log. Bound post-construction
-    /// because the publisher is constructed AFTER `AlertManager` in `AetherNode` wiring
-    /// (publisher depends on `hlcClock` + `clusterCommandApplier` resolved later in the bring-up
-    /// sequence). When unbound (`readOnly` factory, unit tests without consensus), inject paths
-    /// fall back to the legacy node-local map only — preserving the prior contract.
-    private volatile Option<EventLogPublisher> eventLogPublisher = Option.none();
+    /// Optional sink for emitting `AlertInjected` events into the cluster-wide events stream.
+    /// Bound post-construction because the aggregator's publisher is wired after `AlertManager`
+    /// in `AetherNode`. When unbound (`readOnly` factory, unit tests without consensus), inject
+    /// paths fall back to the legacy node-local map only — preserving the prior contract.
+    private volatile Option<EventSink> eventSink = Option.none();
+
+    /// Optional HLC clock for stamping emitted events. Bound alongside `eventSink`. When
+    /// `eventSink` is unbound, this is unused.
+    private volatile Option<HlcClock> hlcClock = Option.none();
 
     /// Optional cluster-wide read source for cross-node visibility on `/api/alerts`. When
     /// bound, `activeAlertsAsList()` UNIONs the local `injectedAlerts` map with any
-    /// `ALERT_INJECTED` cluster events originating from peer nodes — dedup by `alertId`.
+    /// `AlertInjected` cluster events originating from peer nodes — dedup by `alertId`.
     private volatile Option<Supplier<List<ClusterEvent>>> clusterEventsSource = Option.none();
 
     private AlertManager(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
@@ -82,16 +84,16 @@ public class AlertManager {
         this.kvStore = kvStore;
     }
 
-    /// Bind the replicated event-log publisher. Idempotent: re-binding replaces the prior
-    /// reference. Called from `AetherNode` once the publisher exists (after `eventLogPublisher`
-    /// construction at the ~1024 lifecycle slot).
-    public void bindEventLogPublisher(EventLogPublisher publisher) {
-        this.eventLogPublisher = Option.option(publisher);
+    /// Bind the events-stream sink + HLC clock for emitting `AlertInjected` variants. Idempotent.
+    /// Called from `AetherNode` once `ClusterEventAggregator` is wired.
+    public void bindEventSink(EventSink sink, HlcClock clock) {
+        this.eventSink = Option.option(sink);
+        this.hlcClock = Option.option(clock);
     }
 
     /// Bind the cross-node cluster events reader. The supplier should expose the full,
-    /// up-to-date materialised view (typically `ClusterEventAggregator::events`). Filtering by
-    /// `EventType.ALERT_INJECTED` happens in `activeAlertsAsList()` to keep the binding
+    /// up-to-date events stream (typically `ClusterEventAggregator::events`). Filtering by
+    /// `AlertInjected` variant happens in `activeAlertsAsList()` to keep the binding
     /// projection-agnostic.
     public void bindClusterEventsSource(Supplier<List<ClusterEvent>> source) {
         this.clusterEventsSource = Option.option(source);
@@ -222,25 +224,23 @@ public class AlertManager {
         return new AlertInjectResponse(alertId, name, severity, message, timestamp);
     }
 
-    /// Replicate the injected alert via the cluster-scoped event log so peer nodes can return
-    /// it on their `/api/alerts` reads. Failures are logged and swallowed — the local map
-    /// already holds the injection, so the originating node remains correct even if Rabia
-    /// apply is briefly unavailable (e.g., minority partition, mid-leader-transfer).
+    /// Replicate the injected alert via the cluster-wide events stream so peer nodes can return
+    /// it on their `/api/alerts` reads. Failures are swallowed — the local map already holds
+    /// the injection, so the originating node remains correct even if the stream publisher is
+    /// briefly unavailable.
     private void publishInjectionToClusterLog(InjectedAlert alert) {
-        eventLogPublisher.onPresent(publisher -> publisher.publish(ClusterEventValue.EventType.ALERT_INJECTED,
-                                                                   severityFor(alert.severity),
-                                                                   alert.message,
-                                                                   buildAlertInjectMetadata(alert))
-                                                          .onFailure(cause -> log.warn("Failed to replicate injected alert id={}: {}",
-                                                                                       alert.alertId,
-                                                                                       cause.message())));
+        eventSink.onPresent(sink -> hlcClock.onPresent(clock -> sink.emit(new AlertInjected(
+                clock.now(),
+                severityFor(alert.severity),
+                alert.message,
+                buildAlertInjectMetadata(alert)))));
     }
 
-    private static ClusterEventValue.Severity severityFor(String severity) {
+    private static Severity severityFor(String severity) {
         return switch (severity) {
-            case "CRITICAL" -> ClusterEventValue.Severity.CRITICAL;
-            case "WARNING" -> ClusterEventValue.Severity.WARNING;
-            default -> ClusterEventValue.Severity.INFO;
+            case "CRITICAL" -> Severity.CRITICAL;
+            case "WARNING" -> Severity.WARNING;
+            default -> Severity.INFO;
         };
     }
 
@@ -493,7 +493,7 @@ public class AlertManager {
     private void appendClusterWideInjectedAlerts(java.util.List<AlertView> sink, java.util.Set<String> seenIds) {
         clusterEventsSource.onPresent(source -> {
                                           for (var event : source.get()) {
-                                          if (event.type() != ClusterEventValue.EventType.ALERT_INJECTED) {
+                                          if (!(event instanceof AlertInjected)) {
                                           continue;
                                       }
                                           var view = projectClusterEventToAlertView(event);
@@ -634,7 +634,7 @@ public class AlertManager {
         var list = new java.util.ArrayList<AlertView>();
         clusterEventsSource.onPresent(source -> {
                                           for (var event : source.get()) {
-                                          if (event.type() != ClusterEventValue.EventType.ALERT_INJECTED) {
+                                          if (!(event instanceof AlertInjected)) {
                                           continue;
                                       }
                                           var view = projectClusterEventToAlertView(event);

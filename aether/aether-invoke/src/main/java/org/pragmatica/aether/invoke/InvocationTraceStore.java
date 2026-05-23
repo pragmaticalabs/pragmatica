@@ -4,13 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -32,15 +29,12 @@ public final class InvocationTraceStore {
 
     private static final String INJECTED_CALLER = "@injected";
 
-    /// Narrow publisher shape so this module (`aether-invoke`) can replicate injected traces
-    /// without taking a hard dependency on `aether/node`'s `ClusterEventLogPublisher`. The
-    /// production publisher is adapted to this shape from `AetherNode` via
-    /// `publisher::publish`.
-    @FunctionalInterface public interface EventLogPublisher {
-        Promise<Unit> publish(ClusterEventValue.EventType type,
-                              ClusterEventValue.Severity severity,
-                              String message,
-                              Map<String, String> metadata);
+    /// Narrow sink for emitting an injected-trace event into the cluster-wide events stream.
+    /// Decouples this module (`aether-invoke`) from `aether/node`'s `ClusterEvent` /
+    /// `ClusterEventAggregator`. Production wiring adapts via a lambda in `AetherNode` that
+    /// constructs the `TraceInjected` variant and calls `aggregator.emit(...)`.
+    @FunctionalInterface public interface TraceEventSink {
+        void emitInjectedTrace(String operation, String requestId, int depth, long durationMs, Map<String, String> metadata);
     }
 
     private final InvocationNode[] buffer;
@@ -52,11 +46,11 @@ public final class InvocationTraceStore {
 
     private int size = 0;
 
-    /// Optional publisher for the cluster-scoped replicated event log. Bound post-construction
-    /// because `InvocationTraceStore` is created (line ~781 in AetherNode) BEFORE the
-    /// publisher (line ~1024). Unbound: inject paths remain node-local, matching prior
-    /// behaviour for tests and non-cluster harnesses.
-    private volatile Option<EventLogPublisher> eventLogPublisher = Option.none();
+    /// Optional sink for emitting the injected-trace event into the cluster-wide events stream.
+    /// Bound post-construction because `InvocationTraceStore` is created BEFORE
+    /// `ClusterEventAggregator` in `AetherNode`. Unbound: inject paths remain node-local,
+    /// matching prior behaviour for tests and non-cluster harnesses.
+    private volatile Option<TraceEventSink> traceEventSink = Option.none();
 
     /// Optional cluster-wide read source for cross-node visibility on `/api/traces`. When
     /// bound, `all()` UNIONs the local ring with peer-originated `TRACE_INJECTED` entries.
@@ -78,10 +72,10 @@ public final class InvocationTraceStore {
         this.buffer = new InvocationNode[capacity];
     }
 
-    /// Bind the replicated event-log publisher. Idempotent; replaces any prior binding.
+    /// Bind the cluster-events sink. Idempotent; replaces any prior binding.
     @Contract
-    public void bindEventLogPublisher(EventLogPublisher publisher) {
-        this.eventLogPublisher = Option.option(publisher);
+    public void bindTraceEventSink(TraceEventSink sink) {
+        this.traceEventSink = Option.option(sink);
     }
 
     /// Bind the cross-node injected-trace reader. Supplier returns the latest view of the
@@ -153,18 +147,18 @@ public final class InvocationTraceStore {
         return node;
     }
 
-    /// Replicate the injected trace via the cluster-scoped event log so peer nodes can return
-    /// it on their `/api/traces` reads. Failures are logged-by-publisher and swallowed — the
-    /// local ring already holds the entry, so the originating node remains correct even if
-    /// Rabia apply is briefly unavailable.
+    /// Emit a TraceInjected event into the cluster-wide events stream so peer nodes can return
+    /// this injection on their `/api/traces` reads. Failures are absorbed by the sink — the
+    /// local ring already holds the entry, so the originating node remains correct.
     private void publishInjectionToClusterLog(String operation, String requestId, int depth, long durationMs) {
-        eventLogPublisher.onPresent(publisher -> publisher.publish(ClusterEventValue.EventType.TRACE_INJECTED,
-                                                                    ClusterEventValue.Severity.INFO,
-                                                                    "Injected trace: " + operation,
-                                                                    buildTraceInjectMetadata(operation,
-                                                                                              requestId,
-                                                                                              depth,
-                                                                                              durationMs)));
+        traceEventSink.onPresent(sink -> sink.emitInjectedTrace(operation,
+                                                                 requestId,
+                                                                 depth,
+                                                                 durationMs,
+                                                                 buildTraceInjectMetadata(operation,
+                                                                                          requestId,
+                                                                                          depth,
+                                                                                          durationMs)));
     }
 
     private static Map<String, String> buildTraceInjectMetadata(String operation,

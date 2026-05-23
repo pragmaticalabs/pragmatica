@@ -7,9 +7,6 @@ package org.pragmatica.aether.node;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
-import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
-import org.pragmatica.aether.api.ClusterEventLogPublisher;
-import org.pragmatica.aether.api.ClusterEventLogSweeper;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
@@ -1167,11 +1164,17 @@ public interface AetherNode extends ManageableNode {
         // the ref is always populated. NOT leader-gated: the draining node itself is the only
         // authoritative source for "I'm self-draining" — a partition victim cannot rely on the
         // leader to surface this on its behalf.
-        var eventLogPublisherForDrainRef = new AtomicReference<ClusterEventLogPublisher>();
-        org.pragmatica.aether.deployment.drain.SelfDrainEventPublisher selfDrainEventSink = (type, severity, message, details) -> {
-            var publisher = eventLogPublisherForDrainRef.get();
-            if (publisher == null) {return;}
-            publisher.publish(type, severity, message, details);
+        var selfDrainAggregatorRef = new AtomicReference<ClusterEventAggregator>();
+        var selfDrainHlcRef = new AtomicReference<org.pragmatica.hlc.HlcClock>();
+        org.pragmatica.aether.deployment.drain.SelfDrainEventPublisher selfDrainEventSink = (reason, details) -> {
+            var aggregator = selfDrainAggregatorRef.get();
+            var hlc = selfDrainHlcRef.get();
+            if (aggregator == null || hlc == null) {return;}
+            aggregator.emit(new org.pragmatica.aether.api.ClusterEvent.SelfDrainInitiated(
+                    hlc.now(),
+                    org.pragmatica.aether.api.ClusterEvent.Severity.WARNING,
+                    "Self-drain initiated on " + config.self().id() + " (reason=" + reason + ")",
+                    details));
         };
         var selfDrainCoordinator = SelfDrainCoordinator.selfDrainCoordinator(config.self(),
                                                                              () -> clusterNode.network()
@@ -1349,41 +1352,36 @@ public interface AetherNode extends ManageableNode {
                                                                                               invocationMetrics,
                                                                                               minuteAggregator);
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
-        // RC1 Step 1 — cluster-scoped replicated event log wiring.
-        //
-        // `eventLogPublisher` writes each producer-emitted event into the replicated KV
-        // `(ClusterEventLogKey, ClusterEventValue)` family. Rabia commit order is the
-        // canonical total order. `eventLogSweeper` GCs old events on the leader, gated on
-        // `TopologyObserver.inQuorum()` so a minority-side leader cannot delete events the
-        // majority retains.
-        var eventLogPublisher = ClusterEventLogPublisher.clusterEventLogPublisher(config.self(),
-                                                                                  hlcClock,
-                                                                                  rabiaTermSupplier::get,
-                                                                                  clusterCommandApplier);
-        // T3.1: surface the publisher to the SelfDrainCoordinator's lazy-resolving lambda
-        // forward-declared upstream. By this point the publisher is fully wired; the
-        // coordinator's lambda will resolve the ref on the first ACTIVE→DRAINING transition.
-        eventLogPublisherForDrainRef.set(eventLogPublisher);
-        var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig(),
-                                                                            clusterTopologyManager.observer()::clusterSize,
-                                                                            eventLogPublisher,
-                                                                            isLeaderSupplier);
-        // OB1 (investigator round 2): operator-driven inject endpoints must replicate via the
-        // cluster-scoped event log so peer nodes return injected items on cross-node reads.
-        // Bind publisher + cluster-event reader to both inject surfaces (AlertManager,
-        // InvocationTraceStore). Local node-local maps remain authoritative for the originator;
-        // peers UNION via the projected `ALERT_INJECTED` / `TRACE_INJECTED` events, dedup by id.
-        alertManager.bindEventLogPublisher(eventLogPublisher::publish);
+        var clusterEventsHlcClock = org.pragmatica.hlc.HlcClock.hlcClock(config.self());
+        // Spec §6.2 / Wave 5B-ii: aggregator publishes into system:cluster-events:1.0.0. Publisher
+        // and consumer are bound deferred (after streamPartitionManager is constructed below) via
+        // these AtomicReferences. During the bootstrap window the aggregator falls back to log-only
+        // emission. The self-referential STREAM_REGISTERED loop for `system:cluster-events` itself
+        // is prevented by StreamLifecycleEventPolicy.shouldEmit (Wave 3) — no ordering guard here.
+        var clusterEventsPublisherRef =
+                new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamPublisher<org.pragmatica.aether.api.ClusterEvent>>();
+        var clusterEventsConsumerRef =
+                new java.util.concurrent.atomic.AtomicReference<org.pragmatica.aether.slice.stream.FrameworkStreamConsumer<org.pragmatica.aether.api.ClusterEvent>>();
+        var eventAggregator = ClusterEventAggregator.clusterEventAggregator(clusterEventsPublisherRef::get,
+                                                                            clusterEventsConsumerRef::get,
+                                                                            config.self(),
+                                                                            clusterEventsHlcClock,
+                                                                            clusterTopologyManager.observer()::clusterSize);
+        selfDrainAggregatorRef.set(eventAggregator);
+        selfDrainHlcRef.set(clusterEventsHlcClock);
+        alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
-        traceStore.bindEventLogPublisher(eventLogPublisher::publish);
+        traceStore.bindTraceEventSink((operation, requestId, depth, durationMs, metadata) ->
+            eventAggregator.emit(new org.pragmatica.aether.api.ClusterEvent.TraceInjected(
+                    clusterEventsHlcClock.now(),
+                    org.pragmatica.aether.api.ClusterEvent.Severity.INFO,
+                    "Injected trace: " + operation,
+                    metadata)));
         traceStore.bindClusterEventsSource(() -> projectClusterTraceInjections(eventAggregator.events()));
-        var eventLogSweeper = ClusterEventLogSweeper.clusterEventLogSweeper(kvStore::snapshot,
-                                                                            isLeaderSupplier,
-                                                                            ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
-                                                                            rabiaTermSupplier::get,
-                                                                            clusterCommandApplier);
-        eventLogSweeper.start();
-        var ttmManager = TTMManager.ttmManager(config.ttm(), minuteAggregator, controller::configuration).or(TTMManager.noOp(config.ttm()));
+        var ttmManager = TTMManager.ttmManager(config.ttm(),
+                                               minuteAggregator,
+                                               controller::configuration)
+        .or(TTMManager.noOp(config.ttm()));
         ClusterController effectiveController = ttmManager.isEnabled()
                                                 ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
                                                 : controller;
@@ -2869,12 +2867,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            appHttpServer::onNodeRoutesPut).onRemove(AetherKey.NodeRoutesKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     httpRouteRegistry::onNodeRoutesRemove).onRemove(AetherKey.NodeRoutesKey.class,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     appHttpServer::onNodeRoutesRemove);
-        // RC1 Step 1 — materialised view subscriber. Every Rabia-committed `ClusterEventLogKey`
-        // put — whether it arrives via fresh consensus or cold-boot snapshot replay — flows
-        // through `onClusterEventLogPut` and into the local RingBuffer projection that
-        // `/api/events` reads. The `isReplay` flag inside the aggregator suppresses downstream
-        // sink fan-out during the snapshot-replay window.
-        kvRouterBuilder.onPut(AetherKey.ClusterEventLogKey.class, eventAggregator::onClusterEventLogPut);
+        // ClusterEventLogKey materialised-view subscription removed — event distribution now flows
+        // through the `system:cluster-events:1.0.0` namespace stream (spec §6.2), bound via the
+        // ClusterEventAggregator publisher/consumer suppliers earlier in this method.
         loadBalancerManager.onPresent(lbm -> kvRouterBuilder.onPut(AetherKey.NodeRoutesKey.class, lbm::onNodeRoutesPut)
                                                             .onRemove(AetherKey.NodeRoutesKey.class,
                                                                       lbm::onNodeRoutesRemove));
@@ -3277,7 +3272,7 @@ public interface AetherNode extends ManageableNode {
         var list = new java.util.ArrayList<InvocationTraceStore.ClusterTraceEvent>();
 
         for (var event : events) {
-            if (event.type() != org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue.EventType.TRACE_INJECTED) {continue;}
+            if (!(event instanceof org.pragmatica.aether.api.ClusterEvent.TraceInjected)) {continue;}
 
             var details = event.details();
             var requestId = details.get("requestId");
@@ -3288,7 +3283,7 @@ public interface AetherNode extends ManageableNode {
             var durationMs = parseLongDetail(details.get("durationMs"), 0L);
             var depth = (int) parseLongDetail(details.get("depth"), 0L);
             var timestamp = parseLongDetail(details.get("timestamp"), 0L);
-            var nodeId = details.getOrDefault("originNodeId", "");
+            var nodeId = event.sourceNode().id();
             list.add(new InvocationTraceStore.ClusterTraceEvent(requestId,
                                                                 operation,
                                                                 durationMs,

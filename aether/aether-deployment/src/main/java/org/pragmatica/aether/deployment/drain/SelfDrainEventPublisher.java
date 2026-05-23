@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.drain;
 
-import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterEventValue;
 import org.pragmatica.lang.Contract;
 
 import java.util.Map;
@@ -12,10 +11,10 @@ import java.util.Map;
 
 /// Narrow sink the `SelfDrainCoordinator` uses to surface the `SELF_DRAIN_INITIATED`
 /// cluster event when it flips from `ACTIVE` to `DRAINING`. Kept here (in the deployment
-/// module's `drain` package) rather than referencing `ClusterEventLogPublisher` directly
-/// because `aether-deployment` does NOT depend on `aether-node` — only the reverse. The
-/// production wiring in `AetherNode` adapts `ClusterEventLogPublisher::publish` to this
-/// shape; tests pass `NO_OP` to avoid pulling in a publisher harness.
+/// module's `drain` package) rather than referencing `ClusterEvent` / `ClusterEventAggregator`
+/// directly because `aether-deployment` does NOT depend on `aether-node` — only the reverse.
+/// The production wiring in `AetherNode` adapts `aggregator::emit` to this shape; tests pass
+/// `NO_OP` to avoid pulling in an aggregator harness.
 ///
 /// **Fire-and-forget contract.** The coordinator is about to halt the JVM; it does NOT
 /// await the publish result. The implementation should never throw — at this point the
@@ -24,11 +23,8 @@ import java.util.Map;
 @FunctionalInterface
 public interface SelfDrainEventPublisher {
     @Contract
-    void publish(ClusterEventValue.EventType type,
-                 ClusterEventValue.Severity severity,
-                 String message,
-                 Map<String, String> details);
+    void publish(String reason, Map<String, String> details);
 
-    /// No-op publisher for tests and contexts where the cluster-event log is not wired.
-    SelfDrainEventPublisher NO_OP = (type, severity, message, details) -> {};
+    /// No-op publisher for tests and contexts where the events stream is not wired.
+    SelfDrainEventPublisher NO_OP = (reason, details) -> {};
 }
