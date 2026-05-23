@@ -15,6 +15,7 @@ import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDra
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RequestReJoin;
+import org.pragmatica.aether.deployment.reconciler.LifecycleReconciler;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -95,6 +96,30 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                     String nodeId,
                                     String audit) {}
 
+    /// Phase 4 PR-D — single rule entry in the reconciler status response.
+    record ReconcilerRuleStatus(String name,
+                                boolean enabled,
+                                boolean enforce,
+                                Long lastFiredAt,
+                                long fireCount) {}
+
+    /// Phase 4 PR-D — single decision entry in the reconciler status response.
+    record ReconcilerDecision(String ruleName,
+                              String peer,
+                              String commandType,
+                              String reasonTag,
+                              String justification,
+                              boolean enforced,
+                              long at) {}
+
+    /// Phase 4 PR-D — top-level body of `GET /api/nodes/lifecycle/reconciler`.
+    record ReconcilerStatusResponse(boolean active,
+                                    String phase,
+                                    Long lastTickAt,
+                                    Long lastActionAt,
+                                    List<ReconcilerRuleStatus> rules,
+                                    List<ReconcilerDecision> recentDecisions) {}
+
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<List<LifecycleEntry>> route(ManagementRoute.NODE_LIFECYCLE_LIST)
@@ -124,6 +149,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
                          ManagementRoutes.<LifecycleCommandResponse> route(ManagementRoute.NODE_LIFECYCLE_COMMANDS)
                                          .withBody(LifecycleCommandRequest.class)
                                          .toJson(this::handleLifecycleCommand),
+                         ManagementRoutes.<ReconcilerStatusResponse> route(ManagementRoute.NODE_LIFECYCLE_RECONCILER_STATUS)
+                                         .toJson(this::reconcilerStatus),
                          ManagementRoutes.<InFlightResponse> route(ManagementRoute.NODE_INFLIGHT).toJson(this::getInFlightCount),
                          ManagementRoutes.<InFlightResponse> route(ManagementRoute.NODE_INFLIGHT_GET)
                                          .withPath(aString())
@@ -133,6 +160,63 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private InFlightResponse getInFlightCount() {
         return new InFlightResponse(nodeSupplier.get().inFlightRequestTracker().count());
+    }
+
+    /// Phase 4 PR-D — observability accessor for the leader-only `LifecycleReconciler`.
+    /// Reports active/inactive (only the current leader's reconciler is active), the
+    /// most recent tick/action wall-clock, per-rule enable/enforce flags, and the
+    /// ring-buffered recent decisions. Returns inactive defaults when the reconciler
+    /// is dormant (followers, or leader during phase != NORMAL).
+    private ReconcilerStatusResponse reconcilerStatus() {
+        return nodeSupplier.get()
+                           .lifecycleReconciler()
+                           .map(NodeLifecycleRoutes::buildReconcilerStatusResponse)
+                           .or(NodeLifecycleRoutes::inactiveReconcilerStatusResponse);
+    }
+
+    private static ReconcilerStatusResponse buildReconcilerStatusResponse(LifecycleReconciler reconciler) {
+        return new ReconcilerStatusResponse(reconciler.active(),
+                                            reconciler.observedPhase().name(),
+                                            reconciler.lastTickAt().fold(() -> null, x -> x),
+                                            reconciler.lastActionAt().fold(() -> null, x -> x),
+                                            buildRuleStatuses(reconciler),
+                                            buildRecentDecisions(reconciler));
+    }
+
+    private static ReconcilerStatusResponse inactiveReconcilerStatusResponse() {
+        return new ReconcilerStatusResponse(false, "UNKNOWN", null, null, List.of(), List.of());
+    }
+
+    private static List<ReconcilerRuleStatus> buildRuleStatuses(LifecycleReconciler reconciler) {
+        return reconciler.ruleStatuses()
+                         .stream()
+                         .map(NodeLifecycleRoutes::toReconcilerRuleStatus)
+                         .toList();
+    }
+
+    private static ReconcilerRuleStatus toReconcilerRuleStatus(LifecycleReconciler.RuleStatus status) {
+        return new ReconcilerRuleStatus(status.name(),
+                                        status.enabled(),
+                                        status.enforce(),
+                                        status.lastFiredAtMs().fold(() -> null, x -> x),
+                                        status.fireCount());
+    }
+
+    private static List<ReconcilerDecision> buildRecentDecisions(LifecycleReconciler reconciler) {
+        return reconciler.recentDecisions()
+                         .stream()
+                         .map(NodeLifecycleRoutes::toReconcilerDecision)
+                         .toList();
+    }
+
+    private static ReconcilerDecision toReconcilerDecision(LifecycleReconciler.RuleDecision decision) {
+        return new ReconcilerDecision(decision.ruleName(),
+                                       decision.peer(),
+                                       decision.commandType(),
+                                       decision.reasonTag(),
+                                       decision.justification(),
+                                       decision.enforced(),
+                                       decision.atMs());
     }
 
     /// H.2 (spec §H): derived from `MembershipView` (SWIM ∪ KV override) instead of raw

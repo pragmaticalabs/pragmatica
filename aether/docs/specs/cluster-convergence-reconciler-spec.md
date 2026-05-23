@@ -312,10 +312,52 @@ CLI updates:
 | **1** | `NodeLifecycleState` collapsed to 4 values + `StopReason` sidecar. `LifecycleCommand` types + reducer extension. `applyCommand` on `lifecycleWriter`. Migration of kind-2 call sites. Unit tests for each command on each state. | Medium — touches many files (kind-2 migration). |
 | **2** | SYNCING node-local sub-phase. `readyCandidate` field on `ClusterSyncPong` + codec extension. Leader-side `activeSyncHolds`. Integration test: node restart → sync → ON_DUTY via candidate field. | Medium — protocol change, but well-isolated to cluster-sync layer. |
 | **3** | API endpoint + CLI for `ForceDecommission`. Integration test: operator can manually decommission a stuck ON_DUTY entry. | Low — single command path. |
-| **4** | `LifecycleReconciler` with rules enabled CONSERVATIVELY (large budgets, dry-run mode emitting audit entries only). Run on cluster B integration tests for a week. | Medium — false positives could cause cascading decommissions. Dry-run gate first. |
+| **4** ✅ | `LifecycleReconciler` with rules enabled CONSERVATIVELY (large budgets, dry-run mode emitting audit entries only). Run on cluster B integration tests for a week. | Medium — false positives could cause cascading decommissions. Dry-run gate first. |
 | **5** | Switch reconciler to enforcing mode. Audit-log query API surfaces transitions. | Low after Phase 4 verifies dry-run quiet. |
 
 Phase 1+3 unblocks the immediate 02-chaos issue: tests can manually clean up stuck states using a documented operator API. Phase 4+5 makes the cluster self-healing.
+
+### 9.1 Phase 4 PR-D — concrete implementation defaults
+
+Landed `[reconciler]` section in `aether-config`. Default values when no operator config
+is present:
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | Global on/off; `false` keeps the periodic tick unscheduled even when the node is leader. |
+| `tickInterval` | `10s` | Spec §7 bound `[5s, 60s]`. |
+| `recentDecisionsCapacity` | `50` | Per-rule ring buffer feeding the status endpoint. |
+| `rules.joiningTimeout` | `{enabled=true, enforce=false}` | Phase 5 flips to `enforce=true`. |
+| `rules.joiningStuckAlert` | `{enabled=true, enforce=false}` | Spec §7.1 — stays audit-only forever. |
+| `rules.onDutyFaulty` | `{enabled=true, enforce=false}` | Phase 5 flips. |
+| `rules.drainTimeout` | `{enabled=true, enforce=false}` | Phase 5 flips. |
+| `rules.generationLifecycleGap` | `{enabled=true, enforce=false}` | Phase 5 flips. |
+| `rules.swimLifecycleGap` | `{enabled=true, enforce=false}` | Phase 5 may flip; lookback guard required first. |
+| `rules.stoppedZombie` | `{enabled=true, enforce=false}` | Spec §7.1 — stays audit-only forever. |
+
+Component wiring (per `aether/node/.../AetherNode.java`):
+- Leader gating: activated on `LeaderNotification.LeaderChange` via
+  `toggleReconcilerOnLeaderChange` alongside the symmetric CTM toggle.
+- Phase gate: pulls `effectivePhaseSupplier` (the same `ClusterPhaseView.compute()` the
+  CTM consults); ticks no-op when phase ≠ `NORMAL`.
+- SWIM input: `CoreSwimHealthDetector.currentHealth()` projected to `Map<NodeId, SwimHealth>`
+  per tick. The reconciler maintains its own per-peer "since-this-health" timestamps by
+  diffing consecutive snapshots — no external "since" feed required.
+- Sync-hold input: `SyncHoldRegistry.activeHolds()` (Phase 2 PR-B).
+- Generation input: `GenerationSnapshotSource.currentMembershipView()` from the leader-aware snapshot source.
+- Audit emission: when a rule fires with `enforce=false`, the reconciler publishes a
+  `CommandReceived(accepted=false, source=RECONCILER)` directly on the
+  `audit.lifecycle.commands` stream (also tee'd into `RecentCommandsBuffer`). When
+  `enforce=true`, the reconciler routes through `LifecycleWriter.applyCommand(...,
+  SOURCE_RECONCILER)` (which itself emits the `CommandReceived` + `CommandApplied`
+  pair). The two paths share the audit-stream schema.
+
+Observability:
+- `GET /api/nodes/lifecycle/reconciler` — new endpoint, returns
+  `{active, phase, lastTickAt, lastActionAt, rules[], recentDecisions[]}`. Documented
+  in `aether/docs/reference/management-api.md`.
+- `aether cluster audit --source reconciler` — existing CLI; surfaces the dry-run
+  would-have-fired set via the audit stream tee.
 
 ## 10. Failure modes & mitigations
 

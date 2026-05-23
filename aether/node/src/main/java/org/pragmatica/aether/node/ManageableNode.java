@@ -15,6 +15,7 @@ import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.reconciler.LifecycleReconciler;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
 import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
@@ -130,6 +131,14 @@ public interface ManageableNode {
     RecentCommandsBuffer recentCommandsBuffer();
 
     MembershipFsm membershipFsm();
+
+    /// Phase 4 PR-D (cluster-convergence-reconciler) — leader-only periodic
+    /// `LifecycleReconciler` (cluster-convergence-reconciler-spec §7). `Option.none()` on
+    /// nodes that have not been wired with a reconciler (legacy `ManageableNode`
+    /// adapters / test fixtures); on production nodes the option is always present and
+    /// the reconciler's `active()` toggle reflects whether this node currently holds
+    /// the leader lease. Backs `GET /api/nodes/lifecycle/reconciler`.
+    Option<LifecycleReconciler> lifecycleReconciler();
 
     /// RC1 Step 4 — exposes the node's canonical Hybrid Logical Clock so request-handling
     /// routes (e.g., `NodeLifecycleRoutes` constructing operator events) can stamp events

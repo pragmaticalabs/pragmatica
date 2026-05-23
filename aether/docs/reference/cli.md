@@ -1684,6 +1684,30 @@ Options:
 | `--since <when>` | Time window. Accepts epoch-millis, ISO-8601 (`2026-05-23T10:00:00Z`), or relative duration (`30s`, `5m`, `1h`, `2d`). Default: entire buffer. |
 | `--limit <N>` | Max entries to return. Default: 100. Capped by buffer capacity. |
 
+### LifecycleReconciler observability (Phase 4 PR-D)
+
+**No dedicated CLI subcommand in Phase 4.** Observability for the leader-only
+`LifecycleReconciler` (cluster-convergence-reconciler-spec §7) is exposed through two
+existing channels:
+
+1. **`aether cluster audit --source reconciler`** — surfaces the would-have-fired set
+   (Phase 4 ships every rule in audit-only / dry-run mode; rule emissions land as
+   `CommandReceived(accepted=false, source=RECONCILER)` events in the local
+   `RecentCommandsBuffer`).
+2. **`GET /api/nodes/lifecycle/reconciler`** — direct REST surface for the reconciler's
+   `active` state, last-tick / last-action timestamps, per-rule
+   `{enabled, enforce, lastFiredAt, fireCount}` toggles, and the ring-buffered
+   `recentDecisions` (default 50 entries). Use `curl` or any HTTP client; a dedicated
+   `aether cluster reconciler status` subcommand is deferred to Phase 5 PR-E.
+
+```bash
+# Inspect reconciler state on the leader
+curl -s "http://${LEADER_HOST}:8080/api/nodes/lifecycle/reconciler" | jq
+
+# Tail dry-run reconciler activity (per spec §7.3)
+aether cluster audit --source reconciler --since 5m
+```
+
 ### `aether cluster tasks`
 
 Inspect and reassign task group delegation. Without a subcommand, lists all assignments (same as `list`).

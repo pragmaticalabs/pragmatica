@@ -2920,6 +2920,7 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/nodes/lifecycle` | Node Lifecycle |
 | GET | `/api/nodes/lifecycle/{id}` | Node Lifecycle |
 | POST | `/api/nodes/lifecycle/commands` | Node Lifecycle |
+| GET | `/api/nodes/lifecycle/reconciler` | Node Lifecycle |
 | POST | `/api/nodes/drain/{id}` | Node Lifecycle |
 | POST | `/api/nodes/activate/{id}` | Node Lifecycle |
 | POST | `/api/nodes/shutdown/{id}` | Node Lifecycle |
@@ -3114,6 +3115,58 @@ curl -X POST http://localhost:8080/api/nodes/lifecycle/commands \
   -H "Content-Type: application/json" \
   -d '{"type":"FORCE_DECOMMISSION","nodeId":"node-2","reason":"stuck JOINING"}'
 ```
+
+### GET /api/nodes/lifecycle/reconciler
+
+**Phase 4 PR-D (cluster-convergence-reconciler):** observability surface for the leader-only `LifecycleReconciler` component (cluster-convergence-reconciler-spec §7). Returns the reconciler's current activation state, last-tick and last-action timestamps, per-rule enable/enforce flags, and the most-recent ring-buffered decisions (default 50 entries).
+
+**Scope note:** only the current leader's reconciler is `active=true`; followers report `active=false` and empty rule/decision sets. Phase 4 ships every rule in audit-only mode (`enforce=false`) — Phase 5 PR-E flips selected rules to enforcing.
+
+**Authorization:** READ (observability surface).
+
+**Response (`active=true` example):**
+```json
+{
+  "active": true,
+  "phase": "NORMAL",
+  "lastTickAt": 1748005400000,
+  "lastActionAt": 1748005380000,
+  "rules": [
+    {"name": "JoiningTimeout",         "enabled": true, "enforce": false, "lastFiredAt": 1748005380000, "fireCount": 3},
+    {"name": "JoiningStuckAlert",      "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
+    {"name": "OnDutyFaulty",           "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
+    {"name": "DrainTimeout",           "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
+    {"name": "GenerationLifecycleGap", "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
+    {"name": "SwimLifecycleGap",       "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0},
+    {"name": "StoppedZombie",          "enabled": true, "enforce": false, "lastFiredAt": null, "fireCount": 0}
+  ],
+  "recentDecisions": [
+    {
+      "ruleName": "JoiningTimeout",
+      "peer": "node-2",
+      "commandType": "ForceDecommission",
+      "reasonTag": "FORCED",
+      "justification": "JoiningTimeout: peer node-2 has been JOINING past JOIN_DEADLINE × 1.5 with SWIM Faulty/absent",
+      "enforced": false,
+      "at": 1748005380000
+    }
+  ]
+}
+```
+
+**Response (`active=false` example — follower or leader in non-NORMAL phase):**
+```json
+{
+  "active": false,
+  "phase": "COLD_BOOT",
+  "lastTickAt": null,
+  "lastActionAt": null,
+  "rules": [],
+  "recentDecisions": []
+}
+```
+
+**Companion observation channel.** For commands the reconciler emits in audit-only mode the operator should consult `GET /api/audit/commands?source=reconciler` — every rule emission lands as a `CommandReceived` event on that stream with `accepted=false` (Phase 4 dry-run); enforcing rules under Phase 5 will additionally emit a `CommandApplied` after the underlying KV write resolves.
 
 ---
 

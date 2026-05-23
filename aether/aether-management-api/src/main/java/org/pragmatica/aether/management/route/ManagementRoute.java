@@ -97,6 +97,7 @@ public enum ManagementRoute {
     NODE_LIFECYCLE_LIST(GET, "/api/nodes/lifecycle", List.of(), ANY),
     NODE_LIFECYCLE_GET(GET, "/api/nodes/lifecycle", List.of("id"), ANY),
     NODE_LIFECYCLE_COMMANDS(POST, "/api/nodes/lifecycle/commands", List.of(), LEADER),
+    NODE_LIFECYCLE_RECONCILER_STATUS(GET, "/api/nodes/lifecycle/reconciler", List.of(), ANY),
     AUDIT_COMMANDS_LIST(GET, "/api/audit/commands", List.of(), ANY),
     NODE_DRAIN(POST, "/api/nodes/drain", List.of("id"), taskGroup(DEPLOYMENT)),
     NODE_ACTIVATE(POST, "/api/nodes/activate", List.of("id"), taskGroup(DEPLOYMENT)),

@@ -415,6 +415,7 @@ public interface AetherNode extends ManageableNode {
                                                              hlcClock,
                                                              snapshotSource,
                                                              readinessTracker,
+                                                             syncHoldRegistry,
                                                              jvmExit));
     }
 
@@ -472,6 +473,7 @@ public interface AetherNode extends ManageableNode {
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
                                                    org.pragmatica.aether.metrics.NodeReadinessTracker readinessTracker,
+                                                   org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit) {
         // Concrete adapter (not a lambda) so we can override `sendOutcome` and forward
         // it to the QUIC transport's tracked-write API. The default DHTNetwork impl
@@ -597,6 +599,7 @@ public interface AetherNode extends ManageableNode {
                           Option<DHTNode> dhtNode,
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
                           org.pragmatica.aether.deployment.audit.RecentCommandsBuffer recentCommandsBuffer,
+                          Option<org.pragmatica.aether.deployment.reconciler.LifecycleReconciler> lifecycleReconciler,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -1302,6 +1305,26 @@ public interface AetherNode extends ManageableNode {
                                                                                    drainCoordinator,
                                                                                    ctmLifecycleWriter,
                                                                                    effectivePhaseSupplier);
+        // Phase 4 PR-D (cluster-convergence-reconciler) — leader-only periodic
+        // `LifecycleReconciler`. Dormant on construction; activated on leader gain via
+        // `toggleReconcilerOnLeaderChange` (registered alongside the CTM toggle further down
+        // in `assembleNode`). Pulls live SWIM from `swimHealthDetector` (set on quorum) and
+        // generation members from the leader-aware snapshot source. `activeSyncHolds()` is
+        // consulted to skip nodes that are legitimately syncing KV state.
+        var lifecycleReconciler = org.pragmatica.aether.deployment.reconciler.LifecycleReconciler.lifecycleReconciler(
+            effectivePhaseSupplier,
+            kvStore,
+            leaderAwareSnapshotSource::currentMembershipView,
+            () -> Option.option(swimDetectorRefForPhase.get())
+                        .flatMap(org.pragmatica.aether.node.health.CoreSwimHealthDetector::currentHealth)
+                        .map(org.pragmatica.swim.HealthSnapshot::peerHealth)
+                        .or(java.util.Map.of()),
+            syncHoldRegistry::activeHolds,
+            ctmLifecycleWriter,
+            auditLifecycleCommandPublisher,
+            org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig.defaultMembershipFsmConfig(),
+            org.pragmatica.aether.config.ReconcilerConfig.defaults(),
+            System::currentTimeMillis);
         // Post-E.8 phase-change publisher. ClusterPhaseView computes the phase on each call;
         // CTM needs the edge-triggered `onClusterPhaseChanged` callback to reset the
         // provisioning circuit + stability marker on COLD_BOOT → NORMAL. Poll the derived
@@ -1489,7 +1512,8 @@ public interface AetherNode extends ManageableNode {
                                                 selfDrainCoordinator,
                                                 managementServerRef,
                                                 config.self(),
-                                                readinessTracker);
+                                                readinessTracker,
+                                                lifecycleReconciler);
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
                                                                                         response -> dhtNetwork.send(request.sender(),
@@ -1941,6 +1965,7 @@ public interface AetherNode extends ManageableNode {
                                   Option.some(dhtNode),
                                   effectivePhaseSupplier,
                                   recentCommandsBuffer,
+                                  Option.some(lifecycleReconciler),
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(nodeLifecycle::signalReady);
@@ -2050,6 +2075,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                       Option.some(dhtNode),
                                                                                                       effectivePhaseSupplier,
                                                                                                       recentCommandsBuffer,
+                                                                                                      Option.some(lifecycleReconciler),
                                                                                                       startTimeMs);
                                                                             }
                                                                                 return node;
@@ -2428,6 +2454,16 @@ public interface AetherNode extends ManageableNode {
         if (change.localNodeIsLeader()) {ctm.activate();} else {ctm.deactivate();}
     }
 
+    /// Phase 4 PR-D (cluster-convergence-reconciler) — activate the leader-only
+    /// `LifecycleReconciler` on leader gain; deactivate on leader loss. Mirrors the CTM
+    /// activation toggle (`toggleCtmOnLeaderChange`) so the two leader-only components
+    /// share a lifecycle.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleReconcilerOnLeaderChange(LeaderNotification.LeaderChange change,
+                                                       org.pragmatica.aether.deployment.reconciler.LifecycleReconciler reconciler) {
+        if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
+    }
+
     private static void startSwimOnQuorum(QuorumStateNotification notification,
                                           CoreSwimHealthDetector swimHealthDetector,
                                           ClusterNetwork network,
@@ -2771,7 +2807,8 @@ public interface AetherNode extends ManageableNode {
                                                                     SelfDrainCoordinator selfDrainCoordinator,
                                                                     java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>> managementServerRef,
                                                                     NodeId self,
-                                                                    org.pragmatica.aether.metrics.NodeReadinessTracker readinessTracker) {
+                                                                    org.pragmatica.aether.metrics.NodeReadinessTracker readinessTracker,
+                                                                    org.pragmatica.aether.deployment.reconciler.LifecycleReconciler lifecycleReconciler) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class).onPut(AetherKey.AppBlueprintKey.class,
                                                                                                            clusterDeploymentManager::onAppBlueprintPut).onPut(AetherKey.SliceTargetKey.class,
@@ -2872,6 +2909,8 @@ public interface AetherNode extends ManageableNode {
                                               consumerGroupCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleCtmOnLeaderChange(change, clusterTopologyManager)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> toggleReconcilerOnLeaderChange(change, lifecycleReconciler)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()
