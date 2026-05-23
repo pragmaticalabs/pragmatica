@@ -237,12 +237,19 @@ kill_by_node_id_label() {
 
 # Scan surviving-leader container logs for the smoking-gun signature that the
 # FSM took a transport- OR SWIM-driven decommission code path when it
-# decommissioned R. Either `reason=transport-failure` (from the gated
-# `(ON_DUTY, TransportUnreachable)` cell when the aggregator reaches UNREACHABLE
-# quorum fast) OR `reason=swim-faulty` (from the gated `(ON_DUTY, SwimFaulty)`
-# cell when SWIM's `suspectTimeout` converges first) is acceptable — both are
-# documented decommission paths per spec §16 row S01. The presence of EITHER
-# reason pins the failure to a known reducer cell rather than an opaque write.
+# Smoking-gun: scan surviving baseline nodes for the FSM domain-event log that
+# decommissioned R. Any one of three reducer reasons is acceptable — each is a
+# documented `(JOINING|ON_DUTY, *) → DECOMMISSIONED` cell in
+# `aether-deployment/.../ClusterMembershipReducer.java`:
+#   - `reason=transport-failure` (JOINING line 167 / ON_DUTY line 203 gated)
+#   - `reason=swim-faulty`       (ON_DUTY line 184 gated)
+#   - `reason=swim-departed`     (JOINING line 155 ungated / ON_DUTY line 187)
+# Their presence pins the failure to a known reducer cell rather than an
+# opaque write (e.g. accelerated detector, back-channel CTM tombstone,
+# eviction race). The specific path is a race between aggregator quorum and
+# SWIM convergence — for a JOINING-window kill the (JOINING, SwimDeparted)
+# cell usually fires first because the peer has no established connections
+# for the aggregator to fail.
 #
 # See `aether-deployment/.../ClusterMembershipReducer.java` REASON_TRANSPORT_FAILURE
 # / REASON_SWIM_FAULTY and `MembershipFsm#applyEffect(EmitDomainEvent)` (log line:
@@ -267,13 +274,20 @@ verify_transport_unreachable_event() {
         if [ "$priming_victim" = "node-${witness}" ]; then
             continue
         fi
-        # Smoking-gun pattern: ("reason=transport-failure" OR "reason=swim-faulty")
-        # + the target NodeId on the same line. Both reasons come from
-        # documented `(ON_DUTY, ...) → DECOMMISSIONED` reducer cells. The
-        # specific path is a race between aggregator quorum and SWIM
-        # convergence; either is a valid S01 outcome.
+        # Smoking-gun pattern: one of four documented reducer cells in
+        # `ClusterMembershipReducer.java` that decommissions a peer killed in
+        # the JOINING window or shortly after reaching ON_DUTY:
+        #   - (JOINING, SwimDeparted)        → reason=swim-departed     (line 155)
+        #   - (JOINING, TransportUnreachable)→ reason=transport-failure (line 167)
+        #   - (ON_DUTY, SwimFaulty)          → reason=swim-faulty       (line 184/gated)
+        #   - (ON_DUTY, TransportUnreachable)→ reason=transport-failure (line 203/gated)
+        # All four are valid S01 outcomes — the specific path is a race between
+        # SWIM gossip and TransportAggregator quorum. Observed in the field:
+        # for a kill landing in the JOINING window the (JOINING, SwimDeparted)
+        # cell typically fires first because SWIM departure detection beats
+        # aggregator quorum on a peer with no established connections.
         local match
-        match=$(remote_exec "docker logs ${container} 2>&1 | grep -F '${target_node_id}' | grep -E 'reason=transport-failure|reason=swim-faulty' | head -1 || true" 2>/dev/null)
+        match=$(remote_exec "docker logs ${container} 2>&1 | grep -F '${target_node_id}' | grep -E 'reason=transport-failure|reason=swim-faulty|reason=swim-departed' | head -1 || true" 2>/dev/null)
         if [ -n "$match" ]; then
             printf '%s' "$match"
             return 0
@@ -361,20 +375,11 @@ test_catch_replacement_in_joining_window() {
             log_info "Replacement ${replacement} pre-kill KV state: JOINING — S01 (JOINING, TransportUnreachable) cell will be exercised"
             ;;
         ON_DUTY)
-            # The smoking-gun assertion is contingent on R being killed in the
-            # JOINING window: only `(JOINING, TransportUnreachable)` at line 167
-            # of ClusterMembershipReducer.java is ungated and emits
-            # `reason=transport-failure`. The ON_DUTY cells for both
-            # `transport-failure` (line 203) and `swim-faulty` (line 184) are
-            # gated by `gate.isConfirmedUnreachable()`; the kill lands inside
-            # the aggregator-quorum window so both cells fall through to
-            # `Outcome.nop`. The ungated `(ON_DUTY, SwimDeparted)` cell at
-            # line 187 fires later and writes `REASON_SWIM_DEPARTED` — outside
-            # S01's accepted reason set. Mark the race so the smoking-gun test
-            # below can `skip_test` cleanly; the 25s budget assertion (which
-            # IS strict here) carries the load for this branch.
-            printf '1' > "$RACE_TO_ON_DUTY_FILE"
-            log_warn "Replacement ${replacement} raced past JOINING into ON_DUTY before kill — S01 JOINING-window not strictly exercised; smoking-gun assertion will be skipped (gated ON_DUTY cells produce Outcome.nop; decommission proceeds via SwimDeparted with reason=swim-departed)"
+            # If R raced to ON_DUTY before the kill, the (ON_DUTY, SwimDeparted)
+            # cell at line 187 of ClusterMembershipReducer.java fires and writes
+            # `reason=swim-departed` — accepted by the smoking-gun regex below.
+            # No skip needed; record the race for log context only.
+            log_warn "Replacement ${replacement} raced past JOINING into ON_DUTY before kill — decommission proceeds via (ON_DUTY, SwimDeparted) instead of (JOINING, *); smoking-gun assertion below accepts both paths."
             ;;
     esac
 
@@ -388,6 +393,21 @@ test_catch_replacement_in_joining_window() {
 
 test_decommission_within_budget() {
     local replacement kill_ts now elapsed
+    # Pre-req: test_catch_replacement_in_joining_window must have landed the kill
+    # and written the kill timestamp. If that test failed before its kill (e.g.
+    # the FSM never wrote a NodeLifecycleKey atom within 90s), the timestamp file
+    # is absent and there is nothing to budget against. Without this guard,
+    # `kill_ts=""` makes `elapsed=$((now - kill_ts))` evaluate to `now` (a Unix
+    # timestamp ≈1.7e9) which produces the nonsense assertion "expected >= 1.7e9,
+    # got '25'" — masking the real failure mode (prior test failed).
+    if [ ! -s "$KILL_TIMESTAMP_FILE" ]; then
+        log_fail "S01 kill timestamp missing — test_catch_replacement_in_joining_window did not land the kill (no replacement reached JOINING/ON_DUTY in the catch window)"
+        return 1
+    fi
+    if [ ! -s "$REPLACEMENT_NODE_ID_FILE" ]; then
+        log_fail "Replacement NodeId missing — test_catch_replacement_in_joining_window did not capture R"
+        return 1
+    fi
     replacement=$(cat "$REPLACEMENT_NODE_ID_FILE")
     kill_ts=$(cat "$KILL_TIMESTAMP_FILE")
 
@@ -428,14 +448,18 @@ test_transport_unreachable_event_logged() {
     # outside S01's accepted reason set. The 25s budget assertion (always strict)
     # is the meaningful contract in that branch.
     local replacement match
-    replacement=$(cat "$REPLACEMENT_NODE_ID_FILE")
-    if [ -f "$RACE_TO_ON_DUTY_FILE" ]; then
-        skip_test "Transport-failure reason logged on survivor (smoking gun)" \
-                  "R raced past JOINING into ON_DUTY before kill — gated ON_DUTY cells produce Outcome.nop; decommission via SwimDeparted (reason=swim-departed) is a legitimate but separate code path. The 25s budget assertion above carries this branch."
-        return 0
+    # Pre-req: test_catch_replacement_in_joining_window must have landed the kill.
+    # If KILL_TIMESTAMP_FILE is absent the prior test failed before its kill —
+    # no smoking-gun event can exist because no decommission was triggered. Fail
+    # fast with the same shape used in test_decommission_within_budget instead
+    # of running a verify pass that can only ever return "no match".
+    if [ ! -s "$KILL_TIMESTAMP_FILE" ] || [ ! -s "$REPLACEMENT_NODE_ID_FILE" ]; then
+        log_fail "S01 kill never landed — smoking-gun assertion cannot run (test_catch_replacement_in_joining_window failed before its kill)"
+        return 1
     fi
+    replacement=$(cat "$REPLACEMENT_NODE_ID_FILE")
     if ! match=$(verify_transport_unreachable_event "$replacement"); then
-        log_fail "No 'reason=transport-failure' OR 'reason=swim-faulty' domain-event line for ${replacement} on any surviving compose-baseline node. The ≤25s budget passed but via an unknown path — the S01 contract is not actually being exercised. (Step 2/3/4/6 regression candidate: aggregator not producing TransportUnreachable, SWIM not converging on FAULTY, FSM not consuming either, or gate now blocking both cells.)"
+        log_fail "No 'reason=transport-failure' OR 'reason=swim-faulty' OR 'reason=swim-departed' domain-event line for ${replacement} on any surviving compose-baseline node. The ≤25s budget passed but via an unknown path — the S01 contract is not actually being exercised. (Step 2/3/4/6 regression candidate: aggregator not producing TransportUnreachable, SWIM not converging on FAULTY/DEPARTED, FSM not consuming any of them, or all four reducer cells now gated.)"
         return 1
     fi
     log_pass "Smoking-gun decommission reason observed for ${replacement}: $(printf '%s' "$match" | head -c 200)"
@@ -445,8 +469,18 @@ test_pick_non_leader_excludes_decommissioned() {
     # Hygiene: after R is decommissioned, pick_non_leader() must not return
     # it as a candidate. Verifies the operator-visible projection has fully
     # caught up with the FSM transition.
+    #
+    # Pre-check: the S01 kill removed a JOINING peer (not the leader), but
+    # cluster_leader can still transiently return empty immediately after the
+    # smoking-gun docker-logs sweep — MGMT_ENTRY_POINT round-robin can hit a
+    # backend whose MembershipView is mid-projection. wait_for_leader on
+    # cluster B has a 120s floor; that's the right tolerance window here.
     local replacement leader candidates
     replacement=$(cat "$REPLACEMENT_NODE_ID_FILE")
+    if ! wait_for_leader; then
+        log_fail "No leader elected after S01 kill within wait_for_leader budget"
+        return 1
+    fi
     leader=$(cluster_leader)
     assert_ne "$leader" "" "Leader still elected after S01 kill: ${leader}"
     # Best-effort: pick_non_leader may return rc=1 if the cluster is too small

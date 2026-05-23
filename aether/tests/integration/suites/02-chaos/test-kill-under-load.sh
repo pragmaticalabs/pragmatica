@@ -39,7 +39,13 @@ test_kill_during_load() {
     # this is not a chaos-timing sleep, so it stays.
     sleep 5
 
-    # Kill a non-leader node
+    # Kill a non-leader node — wait for a leader before capture so a transient
+    # chaos-tail flake doesn't make `leader=$(cluster_leader)` return 1 under
+    # set -e and abort the script silently.
+    if ! wait_for_leader 60; then
+        log_fail "Pre-kill: cluster has no leader within 60s"
+        return 1
+    fi
     local leader
     leader=$(cluster_leader)
     local victim
@@ -99,9 +105,16 @@ cleanup() {
         log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
 }
 
+# Run cleanup on ANY exit path — including a `return 1` from inside a test
+# function that propagates up through `set -e` and aborts the script. Without
+# this trap, a failed kill-under-load assertion left the cluster in a degraded
+# state, which then broke every subsequent test-*.sh in 02-chaos.
+trap 'cleanup' EXIT
+
 run_test "Initial 5 nodes" test_initial_state
 run_test "Kill node during active load" test_kill_during_load
 run_test "Cluster survives" test_cluster_survives
 run_test "Auto-heal restores to 5" test_auto_heal
-cleanup
+# cleanup runs via EXIT trap — guarantees baseline restore even if a run_test
+# above triggers `set -e` abort via `return 1` from inside a test function.
 print_summary

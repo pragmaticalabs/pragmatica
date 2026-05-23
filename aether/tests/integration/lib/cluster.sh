@@ -114,19 +114,58 @@ cluster_phase() {
 #
 # cluster_active_core_count — topology snapshot ON_DUTY+reachable core count.
 # See aether/docs/specs/test-readiness-contract.md §2.2.
+#
+# Returns max(coreCount, coreNodes.length) from /api/cluster/topology.
+#
+# Why max():
+#   - `coreCount` is `reachableOnDutyCount(membershipView, snapshot, self)`: counts
+#     view.onDutyPeers() filtered by reachability. STRICT — requires explicit
+#     ON_DUTY lifecycle state in the KV-backed MembershipView.
+#   - `coreNodes` array length is `allNodeIds | !passive ∧ healthy(topology) ∧
+#     liveLifecycle(view)` (ClusterTopologyRoutes:151-153). LESS STRICT — accepts
+#     any non-terminal lifecycle as long as topology hint is healthy.
+#
+#   In a stable cluster they agree. They diverge when a CTM auto-heal replacement
+#   becomes leader after the original was killed: the replacement joined SWIM
+#   late, never observed the survivors transitioning to ON_DUTY in KV, so
+#   `view.onDutyPeers()` from its perspective contains only self (coreCount=1).
+#   The survivors ARE healthy and ARE live (coreNodes lists all 4), the
+#   MembershipView projection just hasn't caught up.
+#
+#   `restore_cluster_baseline`'s "N-1 healthy cores" hard barrier is an
+#   operational invariant — coreNodes is the right signal. Falling back to
+#   coreCount alone leaves the cleanup stuck for the full 1200s budget on every
+#   suite that kills the leader (observed 2026-05-22 in 02-chaos after
+#   test-kill-leader: coreCount=1 stable, coreNodes=4 stable, timeout-then-cascade).
 cluster_active_core_count() {
-    local topology
+    local topology core_count core_nodes_count
     topology=$(api_get "/api/cluster/topology" 2>/dev/null || true)
     if [ -z "$topology" ]; then
         echo 0
         return 0
     fi
-    # Extract `coreCount` integer value — topology endpoint filters to ON_DUTY+HEALTHY cores.
-    printf '%s' "$topology" \
+    core_count=$(printf '%s' "$topology" \
         | grep -o '"coreCount"[[:space:]]*:[[:space:]]*[0-9]*' \
         | head -1 \
         | grep -o '[0-9]*$' \
-        || echo 0
+        || echo 0)
+    # Count `coreNodes` array entries by counting quoted strings inside `"coreNodes":[...]`.
+    # Single-line regex tolerates either Jackson layout (with/without spaces, with/without
+    # following fields). Falls back to 0 if the field is absent or empty.
+    core_nodes_count=$(printf '%s' "$topology" \
+        | grep -oE '"coreNodes"[[:space:]]*:[[:space:]]*\[[^]]*\]' \
+        | head -1 \
+        | grep -oE '"[^"]+"' \
+        | grep -cv '^"coreNodes"$' \
+        || echo 0)
+    # Defensive: handle any non-numeric result (sed/grep failures on empty input).
+    [ -z "$core_count" ] && core_count=0
+    [ -z "$core_nodes_count" ] && core_nodes_count=0
+    if [ "$core_nodes_count" -gt "$core_count" ] 2>/dev/null; then
+        echo "$core_nodes_count"
+    else
+        echo "$core_count"
+    fi
 }
 
 # Whether the cluster currently has quorum (leader committed AND ≥ ⌈N/2⌉+1 ON_DUTY nodes).
@@ -670,6 +709,45 @@ wait_for_leader() {
     # two calls could land on different backends during a re-election and yield
     # inconsistent reads — non-deterministic pass/fail at the predicate level.
     wait_for "leader elected" 'lid=$(cluster_leader); [ -n "$lid" ] && [ "$lid" != "none" ]' "$timeout"
+}
+
+# wait_for_leader_change: wait until cluster_leader returns a NodeId different
+# from `$1` (the prior leader), AND that view is stable across multiple
+# consecutive reads. The nginx mgmt-gateway round-robins /api/* requests across
+# all NODE_COUNT cores; under round-robin a single "lucky" backend reporting the
+# new leader makes a one-shot predicate pass while sibling backends still echo
+# the killed NodeId. The very next `cluster_leader` call from the test body
+# then races back to a stale backend and reads the old leader, tripping the
+# downstream assertion. Stability check: NODE_COUNT+1 consecutive reads must
+# all agree on the same non-old leader (probes ≥ surviving-backend-count covers
+# the round-robin cycle even when one slot is the dead leader's port).
+# Observed 2026-05-22 on test-kill-leader: wait_for_leader_change returned in
+# 0s on a one-shot predicate, immediate `cluster_leader` returned the killed
+# NodeId from a gateway round-robin sibling.
+wait_for_leader_change() {
+    local old_leader="$1"
+    local timeout="${2:-150}"
+    local probes=$((${NODE_COUNT:-5} + 1))
+    wait_for "leader changed from ${old_leader} (${probes}-stable)" \
+        "_stable_leader_change_probe \"${old_leader}\" ${probes}" \
+        "$timeout"
+}
+
+# Internal: 0 iff $probes consecutive cluster_leader reads agree on the same
+# non-empty, non-"none", non-old-leader NodeId. Used by wait_for_leader_change.
+_stable_leader_change_probe() {
+    local old_leader="$1"
+    local probes="$2"
+    local first lid i
+    first=$(cluster_leader 2>/dev/null) || return 1
+    [ -z "$first" ] && return 1
+    [ "$first" = "none" ] && return 1
+    [ "$first" = "$old_leader" ] && return 1
+    for i in $(seq 2 "$probes"); do
+        lid=$(cluster_leader 2>/dev/null) || return 1
+        [ "$lid" != "$first" ] && return 1
+    done
+    return 0
 }
 
 # Spec §4.5 / §10: a leader is "committed" once `LeaderKey` is observable in KV
@@ -1713,13 +1791,27 @@ restore_cluster_baseline() {
     log_info "Restoring cluster to baseline (semantic): ${target} ON_DUTY healthy cores"
 
     # 0. API-reachability gate. Cluster B uses `restart: "no"` so a prior failed test
-    # may have left the entry-point's reach-set without a healthy leader. The cleanup
-    # helpers below all assume the management API responds; if it doesn't, we'd burn
-    # the 600s step-5 budget waiting for nodes that will never come back. Fail-fast
-    # so the harness can decide to recreate the compose stack instead of cascading.
+    # may have left the entry-point's reach-set without a healthy leader. If the
+    # management API doesn't respond, escalate to a docker-level compose cycle
+    # (restart_all_nodes) before giving up. Prior behaviour was to log_warn and
+    # return 1, which left cluster B unrecoverable for every subsequent suite in
+    # the run -- the 2026-05-22 cascade (02-chaos 0p/6f → 03-scaling 0p/3f → ...)
+    # originated here. The escalation gives the harness one chance to bring the
+    # original five compose containers back before declaring the cluster lost.
     if ! cluster_leader >/dev/null 2>&1; then
-        log_warn "restore_cluster_baseline: no leader reachable via management API; skipping restore (cluster may need forced compose restart)"
-        return 1
+        log_warn "restore_cluster_baseline: no leader reachable via management API — escalating to docker compose cycle"
+        if ! restart_all_nodes; then
+            log_warn "restore_cluster_baseline: restart_all_nodes also failed; cluster is unrecoverable for this run"
+            return 1
+        fi
+        # restart_all_nodes already waits for node count + leader + ON_DUTY internally
+        # (see its tail). Re-check the leader gate so we don't fall through into the
+        # restore steps with a half-converged cluster.
+        if ! cluster_leader >/dev/null 2>&1; then
+            log_warn "restore_cluster_baseline: leader still unreachable after compose cycle"
+            return 1
+        fi
+        log_info "restore_cluster_baseline: docker compose cycle recovered the cluster — continuing restore"
     fi
 
     # 1. Auto-heal — tests that ran disruption-budget or manual-only-recovery

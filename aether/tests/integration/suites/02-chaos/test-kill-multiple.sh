@@ -19,6 +19,14 @@ test_initial_state() {
 }
 
 test_kill_two_nodes() {
+    # Wait for a leader before capture — chaos-tail instability can drop the
+    # leader transiently between test_initial_state and this function. A bare
+    # `leader=$(cluster_leader)` would return 1 under set -e and abort the
+    # script silently. See test-kill-leader.sh for the original observation.
+    if ! wait_for_leader 60; then
+        log_fail "Pre-kill: cluster has no leader within 60s"
+        return 1
+    fi
     local leader
     leader=$(cluster_leader)
     local victims
@@ -95,10 +103,18 @@ cleanup() {
         log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
 }
 
+# Run cleanup on ANY exit path — including a `return 1` from inside a test
+# function that propagates up through `set -e` and aborts the script. Without
+# this trap, a failed kill / quorum assertion left the cluster in a degraded
+# state, which then broke every subsequent test-*.sh in 02-chaos (observed
+# 2026-05-22: 0p/6f cascade).
+trap 'cleanup' EXIT
+
 run_test "Initial 5 nodes" test_initial_state
 run_test "Kill 2 nodes" test_kill_two_nodes
 run_test "Quorum maintained with 3" test_quorum_maintained
 run_test "Leader still active" test_leader_still_active
 run_test "Auto-heal restores to 5" test_auto_heal
-cleanup
+# cleanup runs via EXIT trap — guarantees baseline restore even if a run_test
+# above triggers `set -e` abort via `return 1` from inside a test function.
 print_summary

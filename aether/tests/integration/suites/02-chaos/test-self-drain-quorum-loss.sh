@@ -166,6 +166,14 @@ container_status() {
 
 # Poll until the named ordinal's container is in state=exited, capped at
 # $2 seconds. Returns 0 on observed exit; 1 on timeout.
+#
+# Race fix (2026-05-22): the 1s sleep can land *after* deadline expires,
+# causing the loop to exit without ever sampling the final state. If the
+# container exits during that gap, the previous `return 1` would lie even
+# when `container_status` after the loop reads "exited". Add an explicit
+# post-loop sample so the result is always tied to the most recent
+# observation — failure log already evidenced this ("Current state: exited"
+# alongside a wait_for_container_exit timeout).
 wait_for_container_exit() {
     local ordinal="$1" timeout="$2"
     local deadline=$((SECONDS + timeout))
@@ -177,6 +185,12 @@ wait_for_container_exit() {
         fi
         sleep 1
     done
+    # Final post-deadline sample — guards against the 1s sleep landing past
+    # deadline and missing a container that exited within the budget.
+    status=$(container_status "$ordinal")
+    if [ "$status" = "exited" ]; then
+        return 0
+    fi
     return 1
 }
 

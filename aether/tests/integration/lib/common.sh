@@ -700,8 +700,19 @@ run_test() {
     TEST_FAIL_COUNT=0
     local t_start t_elapsed fn_rc
     t_start=$(date +%s)
-    "$fn"
-    fn_rc=$?
+    # set -e abort guard: when the test script runs under `set -euo pipefail`, a
+    # failing command inside "$fn" (including an unhandled non-zero return from a
+    # helper like cluster_leader) propagates abort up through the function up
+    # through this caller up through the whole script — skipping cleanup() and
+    # leaving the cluster degraded for every subsequent test-*.sh in the suite.
+    # The `if/else` form makes "$fn" a condition: set -e is masked, we capture
+    # the return code, and the script keeps running so EXIT traps + explicit
+    # cleanup() at the end of the test file can still execute.
+    if "$fn"; then
+        fn_rc=0
+    else
+        fn_rc=$?
+    fi
     if [ "$fn_rc" -eq 0 ] && [ "${TEST_FAIL_COUNT:-0}" -eq 0 ]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else

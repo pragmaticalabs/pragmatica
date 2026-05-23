@@ -19,6 +19,14 @@ test_initial_state() {
 }
 
 test_kill_non_leader() {
+    # Wait for a leader before capture — chaos-tail instability from a prior
+    # destructive suite can drop the leader transiently. Without this guard,
+    # a bare `leader=$(cluster_leader)` returns 1 under set -e and aborts the
+    # script silently. See test-kill-leader.sh for the original observation.
+    if ! wait_for_leader 60; then
+        log_fail "Pre-kill: cluster has no leader within 60s"
+        return 1
+    fi
     local leader
     leader=$(cluster_leader)
     log_info "Current leader: ${leader}"
@@ -80,10 +88,17 @@ cleanup() {
         log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent suites may inherit cluster churn"
 }
 
+# Run cleanup on ANY exit path — including a `return 1` from inside a test
+# function that propagates up through `set -e` and aborts the script. Without
+# this trap, a failed kill / leader-stability assertion left the cluster in a
+# degraded state, which then broke every subsequent test-*.sh in 02-chaos.
+trap 'cleanup' EXIT
+
 run_test "Initial 5 nodes" test_initial_state
 run_test "Kill non-leader node" test_kill_non_leader
 run_test "Leader unchanged" test_leader_unchanged
 run_test "Health with 4 nodes" test_health_with_4_nodes
 run_test "Auto-heal restores to 5" test_auto_heal
-cleanup
+# cleanup runs via EXIT trap — guarantees baseline restore even if a run_test
+# above triggers `set -e` abort via `return 1` from inside a test function.
 print_summary
