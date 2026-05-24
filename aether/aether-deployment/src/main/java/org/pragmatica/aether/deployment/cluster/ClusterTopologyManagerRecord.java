@@ -9,6 +9,7 @@ import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
@@ -48,7 +49,6 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.lang.concurrent.CancellableTask;
-import org.pragmatica.utility.IdGenerator;
 
 import java.net.SocketAddress;
 import java.time.Instant;
@@ -822,12 +822,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (configured == 0) {return;}
 
         var actual = snapshotHealthyOnDutyCount();
+        var joining = view.joiningCount();
         var liveSlots = liveProvisioningSlotCount();
-        var rawDeficit = configured - actual - liveSlots;
+        var rawDeficit = configured - actual - joining - liveSlots;
         var deficit = Math.max(rawDeficit, 0);
-        log.debug("CTM reconcile: actual={} desired={} liveSlots={} deficit={} hints={}",
+        log.debug("CTM reconcile: actual={} desired={} joining={} liveSlots={} deficit={} hints={}",
                   actual,
                   configured,
+                  joining,
                   liveSlots,
                   deficit,
                   summarizeHealthHints(view));
@@ -858,9 +860,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
         if (effectiveState instanceof NodeReconcilerState.Converged) {
-            log.info("CTM deficit detected: actual={} desired={} liveSlots={} deficit={} hints={}",
+            log.info("CTM deficit detected: actual={} desired={} joining={} liveSlots={} deficit={} hints={}",
                      actual,
                      configured,
+                     joining,
                      liveSlots,
                      deficit,
                      summarizeHealthHints(view));
@@ -1282,54 +1285,62 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        var allocatedId = generateProvisioningNodeId();
-        var context = contextBase.withNodeId(allocatedId.id());
-        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", context).unwrap();
+        // Provider owns identity: the spec carries no pre-allocated nodeId, so the provider mints
+        // the real id (docker container name / cloud tag) and echoes it back via InstanceInfo.
+        // Two-phase: write the slot UNASSIGNED now (counts toward liveProvisioningSlotCount for
+        // dedup, expires cleanly with no ghost JOINING), then re-PUT it ASSIGNED to the real id
+        // once the provision resolves — only then does MembershipFsm fire SlotClaimed → JOINING.
+        var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextBase).unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
         var slotKvKey = ProvisioningSlotKey.provisioningSlotKey(java.util.UUID.randomUUID().toString());
-        writeProvisioningSlotAtom(slotKvKey, allocatedId);
-        slotKeyByNodeId.put(allocatedId, slotKvKey);
-        var promise = lifecycleManager.provisionNode(spec).onSuccess(_ -> log.info("CTM: Node provisioning succeeded for nodeId={}",
-                                                                                   allocatedId)).onFailure(cause -> recordProvisioningFailure("API rejection: " + cause.message()));
-        inFlightProvisions.put(allocatedId, promise);
-        promise.onResult(_ -> inFlightProvisions.remove(allocatedId));
+        writeProvisioningSlotAtom(slotKvKey);
+        lifecycleManager.provisionNode(spec)
+                        .onSuccess(info -> bindProvisioningSlotToRealNode(slotKvKey, info))
+                        .onFailure(cause -> recordProvisioningFailure("API rejection: " + cause.message()));
     }
 
-    /// Allocate a fresh, globally unique NodeId for an upcoming provisioning slot. The id must
-    /// match the value the new container/VM will self-report (it is passed through
-    /// `ProvisionContext.nodeId` → docker `--label aether.node-id` / `-e NODE_ID`), otherwise
-    /// tag-by-NodeId cleanup (`NodeLifecycleManager.lookupAndTerminate`) would fail to match.
-    ///
-    /// KSUIDs are collision-resistant by design; we still consult the live snapshot to skip the
-    /// vanishingly rare case where a previously-decommissioned-but-still-present NodeId would
-    /// collide.
-    private NodeId generateProvisioningNodeId() {
-        for (var attempt = 0;attempt <8;attempt++) {
-            var candidate = NodeId.nodeId(IdGenerator.generate("aether-core-node")).unwrap();
-            if (isNodeIdFree(candidate)) {return candidate;}
-        }
-        // Final fallback: trust KSUID's uniqueness even if our paranoia check kept matching.
-        return NodeId.nodeId(IdGenerator.generate("aether-core-node")).unwrap();
-    }
-
-    private boolean isNodeIdFree(NodeId candidate) {
-        if (observer.topology().contains(candidate)) {return false;}
-        if (lifecycleReader.apply(candidate).isPresent()) {return false;}
-        if (inFlightProvisions.containsKey(candidate)) {return false;}
-
-        return ! slotKeyByNodeId.containsKey(candidate);
+    /// Provider-owns-identity completion: when [#provisionSingleNode] dispatches a provision the
+    /// slot is written UNASSIGNED. On success the provider reports the canonical id it actually
+    /// used via [InstanceInfo#nodeId]; we re-PUT the slot ASSIGNED to that real id (triggering
+    /// `MembershipFsm.applySlotPutAssigned` → `SlotClaimed` → JOINING for the correct id) and
+    /// key [#slotKeyByNodeId] by it so completion / expiry cleanup matches. When the provider
+    /// reports no id (should not happen for docker/cloud) the slot is left UNASSIGNED to expire
+    /// and GC cleanly — no ghost JOINING is ever written.
+    @Contract
+    private void bindProvisioningSlotToRealNode(ProvisioningSlotKey slotKvKey, InstanceInfo info) {
+        info.nodeId()
+            .flatMap(idStr -> NodeId.nodeId(idStr).option())
+            .apply(() -> log.warn("CTM: provision for slot {} returned no node id ({}); leaving slot UNASSIGNED to expire and GC",
+                                  slotKvKey.slotId(),
+                                  info.id().value()),
+                   realId -> assignProvisioningSlot(slotKvKey, realId));
     }
 
     @Contract
-    private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey, NodeId assignedNodeId) {
+    private void assignProvisioningSlot(ProvisioningSlotKey slotKvKey, NodeId realId) {
         var nowMs = nowMs();
         var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
-        var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs, assignedNodeId);
+        var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs, realId);
+        slotKeyByNodeId.put(realId, slotKvKey);
+        commandApplier.apply(List.of(putSlotCommand(slotKvKey, value)))
+                      .onFailure(cause -> log.warn("CTM: failed to assign provisioning slot {} to real node {}: {}",
+                                                   slotKvKey.slotId(),
+                                                   realId,
+                                                   cause.message()))
+                      .onSuccess(_ -> log.info("CTM: assigned provisioning slot {} to provider-allocated node {}",
+                                               slotKvKey.slotId(),
+                                               realId));
+    }
+
+    @Contract
+    private void writeProvisioningSlotAtom(ProvisioningSlotKey slotKvKey) {
+        var nowMs = nowMs();
+        var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
+        var value = ProvisioningSlotValue.provisioningSlotValue(nowMs, deadlineMs);
         commandApplier.apply(List.of(putSlotCommand(slotKvKey, value))).onFailure(cause -> log.warn("CTM: failed to mirror provisioning slot {} to KV: {}",
                                                                                                     slotKvKey.slotId(),
-                                                                                                    cause.message())).onSuccess(_ -> log.debug("CTM: mirrored provisioning slot {} (assignedNodeId={}, deadlineMs={}) to KV",
+                                                                                                    cause.message())).onSuccess(_ -> log.debug("CTM: mirrored UNASSIGNED provisioning slot {} (deadlineMs={}) to KV",
                                                                                                                                                slotKvKey.slotId(),
-                                                                                                                                               assignedNodeId,
                                                                                                                                                deadlineMs));
     }
 

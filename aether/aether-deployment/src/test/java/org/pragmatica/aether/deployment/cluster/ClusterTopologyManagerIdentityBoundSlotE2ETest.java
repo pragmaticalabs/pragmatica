@@ -73,8 +73,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// complete flow end-to-end:
 ///
 ///  1. CTM observes a deficit and dispatches `provisionSingleNode` — the production path
-///     writes a slot atom whose `assignedNodeId` is the freshly-allocated NodeId, threaded
-///     through `ProvisionSpec.context().nodeId()`.
+///     writes the slot UNASSIGNED, then re-PUTs it ASSIGNED to the canonical NodeId the
+///     provider allocated and echoed back via `InstanceInfo.nodeId()`.
 ///  2. The slot's `deadlineMs` lapses without a healthy node arriving.
 ///  3. The expiry tick (a benign reconcile trigger) runs `deleteExpiredSlotAtoms`. The
 ///     CTM authoritatively tombstones the assigned NodeId — `NodeLifecycleKey →
@@ -175,16 +175,16 @@ class ClusterTopologyManagerIdentityBoundSlotE2ETest {
                                2L);
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
 
-        // Step 2 — capture the slot atom; assert assignedNodeId is present (identity-bound).
+        // Step 2 — capture the slot atom; assert it was re-PUT ASSIGNED to the provider id.
         assertThat(lifecycleManager.provisionCount.get())
                 .as("deficit=1 → exactly one provision dispatch")
                 .isEqualTo(1);
         var slotsBeforeExpiry = clusterStore.slots();
         assertThat(slotsBeforeExpiry).as("slot atom written via production path").hasSize(1);
         var assignedNodeId = slotsBeforeExpiry.values().iterator().next().assignedNodeId().unwrap();
-        assertThat(lifecycleManager.provisionedNodeIds)
-                .as("ProvisionContext.nodeId threaded through provisionNode = slot assignedNodeId")
-                .containsExactly(assignedNodeId.id());
+        assertThat(assignedNodeId.id())
+                .as("slot assignedNodeId equals the id the provider echoed back via InstanceInfo")
+                .isEqualTo(lifecycleManager.lastAllocatedId());
 
         // Step 3 — advance past the slot deadline without the node ever arriving healthy.
         Thread.sleep(200L);
@@ -369,8 +369,12 @@ class ClusterTopologyManagerIdentityBoundSlotE2ETest {
     private static final class RecordingLifecycleManager implements NodeLifecycleManager {
         final AtomicInteger provisionCount = new AtomicInteger();
         final AtomicInteger terminateCount = new AtomicInteger();
-        final List<String> provisionedNodeIds = Collections.synchronizedList(new ArrayList<>());
+        final List<String> allocatedIds = Collections.synchronizedList(new ArrayList<>());
         final List<NodeId> terminatedNodes = Collections.synchronizedList(new ArrayList<>());
+
+        String lastAllocatedId() {
+            return allocatedIds.getLast();
+        }
 
         @Override public Promise<ActionResult> executeAction(NodeAction action) {
             return Promise.success(new ActionResult.NodeStarted(InstanceInfo.instanceInfo(InstanceId.instanceId("stub")
@@ -381,13 +385,15 @@ class ClusterTopologyManagerIdentityBoundSlotE2ETest {
         }
 
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
-            provisionCount.incrementAndGet();
-            spec.context().nodeId().onPresent(provisionedNodeIds::add);
-            return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + provisionCount.get())
-                                                                       .unwrap(),
+            var count = provisionCount.incrementAndGet();
+            var allocated = "aether-test-node-" + count;
+            allocatedIds.add(allocated);
+            return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + count).unwrap(),
                                                              InstanceStatus.RUNNING,
                                                              List.of("127.0.0.1"),
-                                                             InstanceType.ON_DEMAND).unwrap());
+                                                             InstanceType.ON_DEMAND,
+                                                             Map.of(),
+                                                             Option.some(allocated)).unwrap());
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {

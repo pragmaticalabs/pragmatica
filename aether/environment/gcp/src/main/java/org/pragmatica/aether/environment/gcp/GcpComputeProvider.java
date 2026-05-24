@@ -28,6 +28,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,8 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     private static final String MANAGED_LABEL_KEY = "aether-managed";
 
     private static final String MANAGED_LABEL_VALUE = "true";
+
+    private static final String NODE_ID_LABEL = "aether-node-id";
 
     public static Result<GcpComputeProvider> gcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) {
         return success(new GcpComputeProvider(client, config));
@@ -135,7 +138,8 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     private static Map<String, String> defaultLabels() {
-        return Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
+        return Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE,
+                      NODE_ID_LABEL, IdGenerator.generate("aether-node"));
     }
 
     private static Map<String, String> labelsFor(ProvisionContext ctx) {
@@ -145,7 +149,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         if (!clusterName.isEmpty()) {labels.put("aether-cluster", clusterName);}
         if (!ctx.role().isEmpty()) {labels.put("aether-role", ctx.role());}
         if (!ctx.sourceName().isEmpty()) {labels.put("aether-source", ctx.sourceName());}
-        ctx.nodeId().onPresent(value -> labels.put("aether-node-id", value));
+        labels.put(NODE_ID_LABEL, ctx.resolveNodeId());
         labels.putAll(ctx.extraTags());
         return Map.copyOf(labels);
     }
@@ -194,11 +198,13 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     static InstanceInfo toInstanceInfo(Instance instance) {
+        var labels = safeLabels(instance);
         return new InstanceInfo(new InstanceId(instance.name()),
                                 mapStatus(instance.status()),
                                 collectAddresses(instance),
                                 InstanceType.ON_DEMAND,
-                                safeLabels(instance));
+                                labels,
+                                Option.option(labels.get(NODE_ID_LABEL)));
     }
 
     private static Map<String, String> safeLabels(Instance instance) {

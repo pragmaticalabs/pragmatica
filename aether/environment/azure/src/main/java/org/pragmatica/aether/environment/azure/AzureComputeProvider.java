@@ -35,6 +35,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.List;
 import java.util.Map;
@@ -50,6 +51,8 @@ import static org.pragmatica.lang.Result.success;
 
 public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig config) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(AzureComputeProvider.class);
+
+    private static final String NODE_ID_TAG = "aether-node-id";
 
     public static Result<AzureComputeProvider> azureComputeProvider(AzureClient client, AzureEnvironmentConfig config) {
         return success(new AzureComputeProvider(client, config));
@@ -126,7 +129,8 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     }
 
     private static Map<String, String> defaultTags() {
-        return Map.of("aether-managed", "true");
+        return Map.of("aether-managed", "true",
+                      NODE_ID_TAG, IdGenerator.generate("aether-node"));
     }
 
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
@@ -136,7 +140,7 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         if (!clusterName.isEmpty()) {tags.put("aether-cluster", clusterName);}
         if (!ctx.role().isEmpty()) {tags.put("aether-role", ctx.role());}
         if (!ctx.sourceName().isEmpty()) {tags.put("aether-source", ctx.sourceName());}
-        ctx.nodeId().onPresent(value -> tags.put("aether-node-id", value));
+        tags.put(NODE_ID_TAG, ctx.resolveNodeId());
         tags.putAll(ctx.extraTags());
         return Map.copyOf(tags);
     }
@@ -188,19 +192,23 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     }
 
     static InstanceInfo toInstanceInfo(VirtualMachine vm) {
+        var tags = safeTags(vm);
         return new InstanceInfo(new InstanceId(vm.name()),
                                 mapStatus(vm),
                                 List.of(),
                                 InstanceType.ON_DEMAND,
-                                safeTags(vm));
+                                tags,
+                                Option.option(tags.get(NODE_ID_TAG)));
     }
 
     static InstanceInfo toInstanceInfoFromRow(ResourceRow row) {
+        var tags = safeTags(row);
         return new InstanceInfo(new InstanceId(row.name()),
                                 InstanceStatus.RUNNING,
                                 List.of(),
                                 InstanceType.ON_DEMAND,
-                                safeTags(row));
+                                tags,
+                                Option.option(tags.get(NODE_ID_TAG)));
     }
 
     private static Map<String, String> safeTags(VirtualMachine vm) {

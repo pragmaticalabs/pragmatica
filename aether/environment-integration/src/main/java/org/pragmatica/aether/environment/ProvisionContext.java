@@ -5,6 +5,7 @@
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.Map;
 
@@ -59,6 +60,14 @@ public record ProvisionContext(String clusterName,
 
     public ProvisionContext {
         extraTags = Map.copyOf(extraTags);
+    }
+
+    /// Canonical node-id resolution: honor a caller-supplied [#nodeId] when present
+    /// (bootstrap path), otherwise self-allocate a fresh `aether-<cluster>-node-*`
+    /// id. Providers call this so identity is owned provider-side and echoed back via
+    /// [InstanceInfo#nodeId], rather than only tagging when the caller supplied one.
+    public String resolveNodeId() {
+        return nodeId.or(() -> IdGenerator.generate("aether-" + clusterName() + "-node"));
     }
 
     public static ProvisionContext provisionContext(String clusterName,

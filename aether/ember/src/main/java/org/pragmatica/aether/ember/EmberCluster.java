@@ -146,7 +146,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
                                     InstanceStatus.RUNNING,
                                     addresses,
                                     InstanceType.ON_DEMAND,
-                                    Map.of());
+                                    Map.of(),
+                                    Option.some(nodeIdStr));
         }
     }
 

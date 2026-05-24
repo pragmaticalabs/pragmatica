@@ -22,6 +22,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.HashMap;
 import java.util.List;
@@ -46,9 +47,9 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
-        var defaultLabels = buildLabels(config.clusterName().or("unknown"),
-                                        "core",
-                                        "");
+        var cluster = config.clusterName().or("unknown");
+        var defaultLabels = buildLabels(cluster, "core", "");
+        defaultLabels.put(NODE_ID_LABEL, IdGenerator.generate("aether-" + cluster + "-node"));
         return client.createServer(buildCreateRequest(config.region(),
                                                       defaultLabels,
                                                       config.userData())).map(HetznerComputeProvider::toInstanceInfo)
@@ -160,11 +161,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         var base = buildLabels(clusterLabel, role, ctx.sourceName());
         // Hetzner labels use the hyphenated `aether-node-id` (HCloud key regex disallows
         // bare dots in unprefixed keys), while the Docker provider tags with dotted
-        // `aether.node-id`. Both flow from the same ProvisionContext.nodeId() field — the
+        // `aether.node-id`. Both flow from the same ProvisionContext node-id field — the
         // dotted↔hyphenated asymmetry is encoded native-side here and at the listInstances
         // translation site (see translateKeys) so the upper layer (NodeLifecycleManager,
-        // NODE_ID_TAG = "aether.node-id") stays provider-agnostic.
-        ctx.nodeId().onPresent(id -> base.put(NODE_ID_LABEL, id));
+        // NODE_ID_TAG = "aether.node-id") stays provider-agnostic. The provider OWNS the
+        // identity: resolveNodeId() honors a caller-supplied id (bootstrap) or self-mints
+        // one (CTM auto-heal), then echoes it back into InstanceInfo.nodeId via the label.
+        base.put(NODE_ID_LABEL, ctx.resolveNodeId());
         return appendCompatible(base, ctx.extraTags());
     }
 
@@ -258,11 +261,13 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     static InstanceInfo toInstanceInfo(Server server) {
+        var labels = safeLabels(server);
         return new InstanceInfo(new InstanceId(String.valueOf(server.id())),
                                 mapStatus(server.status()),
                                 collectAddresses(server),
                                 InstanceType.ON_DEMAND,
-                                safeLabels(server));
+                                labels,
+                                Option.option(labels.get(NODE_ID_LABEL)));
     }
 
     private static Map<String, String> safeLabels(Server server) {

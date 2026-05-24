@@ -53,15 +53,18 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Structural CTM ownership fix — provisioning slots are bound to a pre-allocated NodeId from
-/// the moment they're written. This closes the ownership hole that Wave 3a (live-slot
-/// accounting) only patched at the accounting layer:
+/// Structural CTM ownership fix — provider owns identity. The provisioning slot is written
+/// UNASSIGNED at dispatch, then re-PUT ASSIGNED to the canonical NodeId the provider actually
+/// allocated (echoed back via `InstanceInfo.nodeId()`) once the provision resolves. This closes
+/// the ghost-id hole where CTM pre-allocated an `aether-core-node-*` id that no container ever
+/// claimed:
 ///
-///  - slot is written with `assignedNodeId.isPresent()` — never anonymous
+///  - slot is written UNASSIGNED at dispatch (PROVISIONING placeholder, no ghost JOINING)
+///  - on provider success the slot is re-PUT with the provider-allocated `assignedNodeId`
 ///  - on slot expiry, the assigned NodeId is authoritatively tombstoned (DECOMMISSIONED)
 ///    so a late-arriving node carrying that id cannot silently promote to ON_DUTY
 ///  - best-effort cloud-side reap via `lifecycleManager.terminateNode` reclaims the instance
-///  - each dispatch gets a fresh, unique NodeId
+///  - each dispatch yields a distinct provider-allocated NodeId
 class ClusterTopologyManagerIdentityBoundSlotTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
@@ -136,12 +139,12 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
                                term);
     }
 
-    /// Step 1 of the structural fix: production must write slots with a pre-allocated NodeId in
-    /// `assignedNodeId`, AND the same NodeId must be threaded through `ProvisionContext.nodeId`
-    /// so the compute provider tags the instance with it. Without this binding, slot expiry
-    /// cannot tombstone the owner and late-arriving nodes cannot be matched against any slot.
+    /// Step 1 of the structural fix: production writes the slot UNASSIGNED at dispatch and then
+    /// re-PUTs it ASSIGNED to the canonical id the provider allocated (echoed via
+    /// `InstanceInfo.nodeId()`). The provider — not the CTM — owns identity; `ProvisionContext.
+    /// nodeId` is left empty so the provider mints the id and reports it back.
     @Test
-    void provisionNodes_writesSlotWithAssignedNodeId() {
+    void provisionNodes_writesSlotAssignedToProviderAllocatedId() {
         var ctm = createCtm(timeSpan(60).seconds());
         publishFullCluster();
         ctm.activate();
@@ -154,12 +157,36 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
         assertThat(slots).as("exactly one slot atom written").hasSize(1);
         var slotValue = slots.values().iterator().next();
         assertThat(slotValue.assignedNodeId().isPresent())
-                .as("slot atom carries assignedNodeId — identity-bound from creation")
+                .as("slot atom re-PUT ASSIGNED to provider-allocated id after provision resolves")
                 .isTrue();
         var slotNodeId = slotValue.assignedNodeId().unwrap();
-        assertThat(lifecycleManager.provisionedNodeIds)
-                .as("ProvisionContext.nodeId matches the slot's assignedNodeId (single ownership token)")
-                .containsExactly(slotNodeId.id());
+        assertThat(slotNodeId.id())
+                .as("slot assignedNodeId equals the id the provider echoed back via InstanceInfo")
+                .isEqualTo(lifecycleManager.lastAllocatedId());
+        assertThat(lifecycleManager.provisionedContextNodeIds)
+                .as("CTM does NOT pre-allocate ProvisionContext.nodeId — provider owns identity")
+                .isEmpty();
+    }
+
+    /// Provider-owns-identity, no-id edge: when the provider reports an empty `InstanceInfo.
+    /// nodeId()` (should not happen for docker/cloud) the slot is left UNASSIGNED — no ghost
+    /// JOINING is written, and the slot expires/GCs cleanly.
+    @Test
+    void provisionNodes_leavesSlotUnassigned_whenProviderReportsNoId() {
+        lifecycleManager.echoNodeId.set(false);
+        var ctm = createCtm(timeSpan(60).seconds());
+        publishFullCluster();
+        ctm.activate();
+        publishDeficitOfOne(2L);
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("deficit=1 → exactly one provision dispatch")
+                .isEqualTo(1);
+        var slots = clusterStore.slots();
+        assertThat(slots).as("slot atom still written (UNASSIGNED)").hasSize(1);
+        assertThat(slots.values().iterator().next().assignedNodeId().isPresent())
+                .as("slot stays UNASSIGNED when provider reports no id — no ghost JOINING")
+                .isFalse();
     }
 
     /// Step 2 of the structural fix: when a slot expires unfulfilled, the assigned NodeId is
@@ -274,7 +301,7 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
                                                          .toList();
         assertThat(assignedIds).as("each slot has a distinct assignedNodeId")
                                                          .doesNotHaveDuplicates();
-        assertThat(lifecycleManager.provisionedNodeIds).as("each provision call got a distinct ProvisionContext.nodeId")
+        assertThat(lifecycleManager.allocatedIds()).as("each provision yielded a distinct provider-allocated id")
                                                                                                                 .doesNotHaveDuplicates();
     }
 
@@ -392,8 +419,18 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
     private static final class RecordingLifecycleManager implements NodeLifecycleManager {
         final AtomicInteger provisionCount = new AtomicInteger();
         final AtomicInteger terminateCount = new AtomicInteger();
-        final List<String> provisionedNodeIds = Collections.synchronizedList(new ArrayList<>());
+        final List<String> provisionedContextNodeIds = Collections.synchronizedList(new ArrayList<>());
+        final List<String> allocatedIds = Collections.synchronizedList(new ArrayList<>());
         final List<NodeId> terminatedNodes = Collections.synchronizedList(new ArrayList<>());
+        final java.util.concurrent.atomic.AtomicBoolean echoNodeId = new java.util.concurrent.atomic.AtomicBoolean(true);
+
+        List<String> allocatedIds() {
+            return List.copyOf(allocatedIds);
+        }
+
+        String lastAllocatedId() {
+            return allocatedIds.getLast();
+        }
 
         @Override public Promise<ActionResult> executeAction(NodeAction action) {
             return Promise.success(new ActionResult.NodeStarted(InstanceInfo.instanceInfo(InstanceId.instanceId("stub")
@@ -404,13 +441,19 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
         }
 
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
-            provisionCount.incrementAndGet();
-            spec.context().nodeId().onPresent(provisionedNodeIds::add);
-            return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + provisionCount.get())
-                                                                       .unwrap(),
+            var count = provisionCount.incrementAndGet();
+            spec.context().nodeId().onPresent(provisionedContextNodeIds::add);
+            var allocated = "aether-test-node-" + count;
+            allocatedIds.add(allocated);
+            var echoed = echoNodeId.get()
+                         ? Option.some(allocated)
+                         : Option.<String>none();
+            return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + count).unwrap(),
                                                              InstanceStatus.RUNNING,
                                                              List.of("127.0.0.1"),
-                                                             InstanceType.ON_DEMAND).unwrap());
+                                                             InstanceType.ON_DEMAND,
+                                                             Map.of(),
+                                                             echoed).unwrap());
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {

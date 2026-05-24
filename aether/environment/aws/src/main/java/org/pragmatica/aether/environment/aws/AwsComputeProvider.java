@@ -23,6 +23,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.List;
 import java.util.Map;
@@ -43,6 +44,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
 
     private static final String MANAGED_TAG_VALUE = "true";
 
+    private static final String NODE_ID_TAG = "aether-node-id";
+
     public static Result<AwsComputeProvider> awsComputeProvider(AwsClient client, AwsEnvironmentConfig config) {
         return success(new AwsComputeProvider(client, config));
     }
@@ -53,7 +56,6 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                                                                                                   defaultTags()))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
-
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
         var zone = extractAvailabilityZone(spec.placement());
         var userData = spec.userData().or(config.userData());
@@ -122,7 +124,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     private static Map<String, String> defaultTags() {
-        return Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE);
+        return Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE,
+                      NODE_ID_TAG, IdGenerator.generate("aether-node"));
     }
 
     private static Map<String, String> tagsFor(ProvisionContext ctx) {
@@ -132,7 +135,7 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         if (!clusterName.isEmpty()) {tags.put("aether-cluster", clusterName);}
         if (!ctx.role().isEmpty()) {tags.put("aether-role", ctx.role());}
         if (!ctx.sourceName().isEmpty()) {tags.put("aether-source", ctx.sourceName());}
-        ctx.nodeId().onPresent(value -> tags.put("aether-node-id", value));
+        tags.put(NODE_ID_TAG, ctx.resolveNodeId());
         tags.putAll(ctx.extraTags());
         return Map.copyOf(tags);
     }
@@ -179,11 +182,13 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     static InstanceInfo toInstanceInfo(Instance instance) {
+        var tags = extractTags(instance);
         return new InstanceInfo(new InstanceId(instance.instanceId()),
                                 mapStatus(instance.instanceState().name()),
                                 collectAddresses(instance),
                                 InstanceType.ON_DEMAND,
-                                extractTags(instance));
+                                tags,
+                                Option.option(tags.get(NODE_ID_TAG)));
     }
 
     private static InstanceInfo firstInstanceOrThrow(DescribeInstancesResponse response) {

@@ -435,7 +435,8 @@ import static org.pragmatica.lang.Result.success;
                                 InstanceStatus.RUNNING,
                                 addresses,
                                 spec.instanceType(),
-                                tags);
+                                tags,
+                                Option.some(containerName));
     }
 
     private static Map<String, String> buildInstanceTags(ProvisionSpec spec, String containerName) {
@@ -483,7 +484,12 @@ import static org.pragmatica.lang.Result.success;
         var role = safePart(parts, 4);
         var nodeId = safePart(parts, 5);
         var tags = Map.of("aether.cluster", cluster, "aether.role", role, "aether.node-id", nodeId);
-        return new InstanceInfo(new InstanceId(id), mapDockerState(state), List.of(), InstanceType.ON_DEMAND, tags);
+        return new InstanceInfo(new InstanceId(id),
+                                mapDockerState(state),
+                                List.of(),
+                                InstanceType.ON_DEMAND,
+                                tags,
+                                nodeId.isEmpty() ? Option.none() : Option.some(nodeId));
     }
 
     private static String safePart(String[] parts, int index) {
