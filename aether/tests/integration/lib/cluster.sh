@@ -2140,7 +2140,11 @@ reassign_task_group() {
         leader_url="http://${leader_ip}:${CLOUD_MGMT_PORT:-8080}"
     else
         local node_num
-        node_num=$(echo "$leader" | sed 's/node-//')
+        # Leader is a full NodeId post-migration (e.g. aether-a-node-1); strip everything
+        # up to and including the last "node-" to get the numeric ordinal. Plain
+        # 's/node-//' left "aether-a-1", which the arithmetic below then evaluated as a
+        # variable named "aether" → "aether: unbound variable" under set -u.
+        node_num=$(echo "$leader" | sed 's/.*node-//')
         local port=$((MGMT_PORT + node_num - 1))
         leader_url="http://${TARGET_HOST}:${port}"
     fi
