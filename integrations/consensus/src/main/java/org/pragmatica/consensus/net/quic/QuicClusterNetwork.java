@@ -445,9 +445,27 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // return RECONNECTED, which routes ConnectionEstablished upstream → SWIM markAlive.
         // Stuck-EVICTED peers are GCed to REMOVED via `expireEvicted` after TTL elapse —
         // production decommission still reaches the terminal state on its own clock.
+        //
+        // REMOVE-emission idempotency: five independent producers (SWIM departure, health
+        // reconciler, topology pruning, etc.) can call `disconnect` for the same peer in a
+        // tight window. We must emit `processViewChange(REMOVE)` only when THIS call actually
+        // changed state, otherwise a single departure floods ReachabilityAggregator/SWIM with
+        // dozens of spurious PeerDisconnected observations. `evict()` returns Some only on a
+        // real CONNECTED → EVICTED transition (Empty = already EVICTED/REMOVED no-op). A null
+        // peer is treated as a first-time authoritative departure and still emits — SWIM may
+        // confirm a peer gone before we ever held a live QUIC link, and topology projection
+        // must still prune it (see `disconnect_unknownPeer_propagatesListenerForTopologyRemoval`).
+        var emitRemove = peer == null;
         if (peer != null) {
-            peer.evict(System.nanoTime())
-                .onPresent(this::closeDroppedConnection);
+            var evicted = peer.evict(System.nanoTime());
+            evicted.onPresent(this::closeDroppedConnection);
+            // Only a real transition fires the connection-closed metric.
+            evicted.onPresent(_ -> quicMetrics.onConnectionClosed());
+            emitRemove = evicted.isPresent();
+        }
+        if (!emitRemove) {
+            log.debug("DisconnectNode for {} suppressed: peer already EVICTED/REMOVED (no transition)", nodeId);
+            return;
         }
         // Drop the per-peer ephemeral UDP socket; client opens a fresh one on reconnect.
         var clientRef = client;
@@ -455,7 +473,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
             clientRef.closeDatagramChannel(nodeId);
         }
         resetReconnectBackoff(nodeId);
-        quicMetrics.onConnectionClosed();
         processViewChange(REMOVE, nodeId);
     }
 
@@ -464,9 +481,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
     public void departurePermanent(NodeId nodeId) {
         var peer = peers.remove(nodeId);
         firstObservedMissingMs.remove(nodeId);
+        // `authoritativeRemove()` always transitions to REMOVED, so it cannot self-report
+        // whether the peer was already terminal. Read the phase before the call: emit REMOVE
+        // only when the peer existed AND was not already REMOVED. This makes repeated
+        // departurePermanent() calls for the same peer idempotent at the emission source,
+        // preventing the duplicate PeerDisconnected flood into ReachabilityAggregator/SWIM.
+        var emitRemove = peer != null && peer.phase() != PeerState.Phase.REMOVED;
         if (peer != null) {
             peer.authoritativeRemove(System.nanoTime())
                 .onPresent(this::closeDroppedConnection);
+        }
+        if (!emitRemove) {
+            log.debug("departurePermanent for {} suppressed: peer absent or already REMOVED (no transition)", nodeId);
+            return;
         }
         var clientRef = client;
         if (clientRef != null) {
@@ -1160,6 +1187,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// without sleeping. Defaults to `System::currentTimeMillis`.
     @Contract void overrideWallClockForTests(LongSupplier clock) {
         this.wallClockMs = clock == null ? System::currentTimeMillis : clock;
+    }
+
+    /// Seeds a pre-built `PeerState` directly into the connection table, bypassing the QUIC
+    /// handshake. Used only by transport-level tests that need a CONNECTED/EVICTED peer to
+    /// exercise the REMOVE-emission idempotency paths in `disconnect`/`departurePermanent`
+    /// without standing up a live datagram channel. The caller drives the supplied state to
+    /// the desired phase (via `attach`/`evict`) before injection.
+    @Contract
+    PeerState seedPeerForTests(NodeId peerId, PeerState peerState) {
+        peers.put(peerId, peerState);
+        return peerState;
     }
 
     // --- Internal: view change ---

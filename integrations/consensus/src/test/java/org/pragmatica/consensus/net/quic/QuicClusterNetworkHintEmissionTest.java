@@ -17,6 +17,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import io.netty.handler.codec.quic.QuicSslContext;
+import io.netty.handler.codec.quic.QuicChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,6 +44,7 @@ import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -50,6 +52,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 
 /// Verifies that `QuicClusterNetwork` invokes the injected `QuicDisconnectListener`
@@ -302,6 +306,67 @@ class QuicClusterNetworkHintEmissionTest {
         assertThat(disconnected)
             .as("REMOVE emits an informational PeerDisconnected observation (advisory, not authoritative)")
             .containsExactly(missing);
+    }
+
+    @Test
+    void disconnect_secondCallOnEvictedPeer_doesNotReEmitRemove() {
+        // REMOVE-emission idempotency regression: five independent producers (SWIM departure,
+        // health reconciler, topology pruning) can call disconnect() for the same peer in a
+        // tight window. Production logs showed one peer emitting 88 REMOVE observations in 11s.
+        // The FIRST disconnect on a CONNECTED peer evicts it (CONNECTED → EVICTED) and routes
+        // exactly one PeerDisconnected. The SECOND disconnect finds the peer already EVICTED —
+        // evict() is a no-op (returns Empty) — so NO second observation must be routed.
+        var disconnected = new CopyOnWriteArrayList<NodeId>();
+        var router = MessageRouter.mutable();
+        router.addRoute(TransportObservation.PeerDisconnected.class, n -> disconnected.add(n.nodeId()));
+        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), router, QuicDisconnectListener.noop());
+
+        var peerId = new NodeId("flapping-peer");
+        network.seedPeerForTests(peerId, connectedPeerState(peerId));
+
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(peerId));
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(peerId));
+        network.disconnect(new NetworkServiceMessage.DisconnectNode(peerId));
+
+        assertThat(disconnected)
+            .as("repeated disconnect() on an already-EVICTED peer must emit REMOVE only once")
+            .containsExactly(peerId);
+    }
+
+    @Test
+    void departurePermanent_secondCallOnRemovedPeer_isNoopEmission() {
+        // departurePermanent idempotency: the first call removes the peer from the table and
+        // transitions it to REMOVED, routing one PeerDisconnected. Subsequent calls find the
+        // peer absent (already removed from the map) and must route nothing — no duplicate
+        // authoritative-departure observation floods ReachabilityAggregator/SWIM.
+        var disconnected = new CopyOnWriteArrayList<NodeId>();
+        var router = MessageRouter.mutable();
+        router.addRoute(TransportObservation.PeerDisconnected.class, n -> disconnected.add(n.nodeId()));
+        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), router, QuicDisconnectListener.noop());
+
+        var peerId = new NodeId("departing-peer");
+        network.seedPeerForTests(peerId, connectedPeerState(peerId));
+
+        network.departurePermanent(peerId);
+        network.departurePermanent(peerId);
+        network.departurePermanent(peerId);
+
+        assertThat(disconnected)
+            .as("repeated departurePermanent() for the same peer must emit REMOVE only once")
+            .containsExactly(peerId);
+    }
+
+    private static PeerState connectedPeerState(NodeId peerId) {
+        var chan = mock(QuicChannel.class);
+        when(chan.isActive()).thenReturn(true);
+        // Stamp the connection well in the past so it sits outside the disconnect()
+        // protection window (helloTimeout * 3 = 15s); a freshly-attached link would be
+        // shielded by the protection early-return and never reach the evict path.
+        var past = System.nanoTime() - Duration.ofMinutes(1).toNanos();
+        var state = PeerState.peerState(peerId, past);
+        state.beginConnecting(past);
+        state.attach(QuicPeerConnection.quicPeerConnection(peerId, chan), past);
+        return state;
     }
 
     @Test
