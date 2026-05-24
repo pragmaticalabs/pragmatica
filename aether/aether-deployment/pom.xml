@@ -19,6 +19,14 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
         </dependency>
+        <!-- @Codec processor: generates the system-level codec registry for this module's
+             @Codec types (CommandLifecycleEvent). Aggregated into the node serializer via
+             NodeCodecs/WorkerCodecs so the audit StreamPublisher can serialize the events. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-codec-processor</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>utility</artifactId>
@@ -120,4 +128,18 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <compilerArgs combine.children="append">
+                        <arg>-Acodec.registry.suffix=Deployment</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
