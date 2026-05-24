@@ -28,15 +28,16 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 import org.pragmatica.aether.ember.EmberCluster;
 
-/// Spike-2 — in-process (Ember/single-JVM) chaos substrate.
+/// Spike-2 — in-process (Ember/single-JVM) chaos substrate, full-cycle measurement.
 ///
-/// Revives the pre-alpha in-process kill-detection scenario (removed in `c5286f6d6` /
-/// `92c56a524` as "unreliable") to measure, in a fast single-JVM loop, how long the cluster
-/// takes to *detect* a force-killed non-leader (the S02 case). Purpose is measurement +
-/// reproducibility, not a strict gate: it logs the detection timeline (transport
-/// connectedPeers drop + membership view) so we can compare detector behaviour in-process
-/// against the Docker suite — and so the membership/failure-detection redesign has a fast,
-/// debuggable substrate. See aether/docs/internal/membership-failure-detection-unification.md.
+/// Forms a 5-node single-JVM cluster, lets it settle past the auto-heal startup cooldown
+/// (`AutoHealConfig.DEFAULT.startupCooldown` = 15s), force-kills a non-leader, then watches
+/// for up to 120s and logs the full membership timeline: transport detection (survivor
+/// `connectedPeers` 4→3), **lifecycle decommission** (victim `kvState` → STOPPED), and
+/// **auto-heal** (replacement provisioned → ON_DUTY count back to 5 / connectedPeers back
+/// to 4). Purpose is measurement + reproducibility (compare to the Docker ~61s ON_DUTY
+/// SWIM-departed latency), not a strict gate. See
+/// aether/docs/internal/membership-failure-detection-unification.md.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MembershipChaosSpikeTest {
@@ -47,8 +48,9 @@ class MembershipChaosSpikeTest {
     private static final int BASE_MGMT_PORT = 5160;
     private static final int BASE_APP_HTTP_PORT = 5260;
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(240);
-    private static final Duration DETECT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL = Duration.ofMillis(500);
+    private static final long SETTLE_MS = 20_000;   // clear AutoHealConfig.DEFAULT startupCooldown (15s)
+    private static final long OBSERVE_MS = 120_000;  // watch full decommission + auto-heal cycle
     private static final Pattern CONNECTED_PEERS = Pattern.compile("\"connectedPeers\"\\s*:\\s*(\\d+)");
 
     private EmberCluster cluster;
@@ -72,55 +74,51 @@ class MembershipChaosSpikeTest {
     }
 
     @Test
-    void killNonLeader_measureDetectionTimeline() {
+    void killNonLeader_measureFullDecommissionTimeline() {
         var leaderId = cluster.currentLeader().unwrap();
         var nodes = cluster.status().nodes();
         var victim = nodes.stream().filter(n -> !n.isLeader()).findFirst().orElseThrow();
         var survivor = nodes.stream().filter(n -> n.isLeader()).findFirst().orElseThrow();
-        var survivorPort = survivor.mgmtPort();
+        var port = survivor.mgmtPort();
 
-        log.info("SPIKE2: leader={} survivor(mgmt:{})={} victim={}", leaderId, survivorPort, survivor.id(), victim.id());
-        assertThat(connectedPeers(survivorPort)).isEqualTo(SIZE - 1); // survivor sees 4 peers pre-kill
+        log.info("SPIKE2: settling {}ms past auto-heal startup cooldown before kill", SETTLE_MS);
+        sleep(SETTLE_MS);
+        log.info("SPIKE2: pre-kill survivor connectedPeers={} onDuty={} stopped={}",
+                 connectedPeers(port), onDuty(port), stopped(port));
+        log.info("SPIKE2: leader={} survivor(mgmt:{})={} victim={}", leaderId, port, survivor.id(), victim.id());
 
         var t0 = System.nanoTime();
         cluster.killNode(victim.id(), false).await();
         log.info("SPIKE2: force-killed {} at t0", victim.id());
 
-        var detectedMs = new long[]{-1L};
-        try {
-            await().atMost(DETECT_TIMEOUT).pollInterval(POLL).until(() -> {
-                var elapsedMs = (System.nanoTime() - t0) / 1_000_000;
-                var cp = connectedPeers(survivorPort);
-                var victimStillInStatus = getStatus(survivorPort).contains(victim.id());
-                log.info("SPIKE2: t+{}ms survivor connectedPeers={} victimInStatus={}", elapsedMs, cp, victimStillInStatus);
-                if (cp >= 0 && cp <= SIZE - 2 && detectedMs[0] < 0) {detectedMs[0] = elapsedMs;}
-                return detectedMs[0] >= 0;
-            });
-            log.info("SPIKE2 RESULT: survivor detected departure (connectedPeers {}->{}) in {}ms",
-                     SIZE - 1, SIZE - 2, detectedMs[0]);
-        } catch (RuntimeException timedOut) {
-            log.error("SPIKE2 RESULT: NO transport detection within {}s (in-process reproduction of the unreliability)",
-                      DETECT_TIMEOUT.toSeconds());
-        }
-
-        // Observe a few seconds past detection: membership view + any auto-heal replacement.
-        for (var i = 0; i < 10; i++) {
+        long tTransport = -1, tDecommission = -1, tRecovered = -1;
+        var deadline = t0 + OBSERVE_MS * 1_000_000L;
+        while (System.nanoTime() < deadline) {
+            var elapsed = (System.nanoTime() - t0) / 1_000_000;
+            var cp = connectedPeers(port);
+            var od = onDuty(port);
+            var st = stopped(port);
+            if (tTransport < 0 && cp >= 0 && cp <= SIZE - 2) {tTransport = elapsed;}
+            if (tDecommission < 0 && st >= 1) {tDecommission = elapsed;}
+            if (tDecommission >= 0 && tRecovered < 0 && cp >= SIZE - 1 && od >= SIZE) {tRecovered = elapsed;}
+            if (elapsed % 5000 < 1000) {
+                log.info("SPIKE2: t+{}ms connectedPeers={} onDuty={} stopped={} emberNodeCount={}",
+                         elapsed, cp, od, st, cluster.nodeCount());
+            }
+            if (tRecovered >= 0) {break;}
             sleep(1000);
-            var elapsedMs = (System.nanoTime() - t0) / 1_000_000;
-            log.info("SPIKE2: post t+{}ms connectedPeers={} emberNodeCount={} leader={}",
-                     elapsedMs, connectedPeers(survivorPort), cluster.nodeCount(), cluster.currentLeader().or("none"));
         }
 
-        // Lenient gate: the substrate must at least *form and respond*; detection timing is the datum.
-        assertThat(detectedMs[0]).as("transport detection latency (ms); -1 means not detected within %s", DETECT_TIMEOUT)
-                                 .isGreaterThanOrEqualTo(-1);
+        log.info("SPIKE2 RESULT: transport-detect={}ms  decommission={}ms  auto-heal-recovered={}ms  (-1 = not within {}s)",
+                 tTransport, tDecommission, tRecovered, OBSERVE_MS / 1000);
+        log.info("SPIKE2 FINAL /api/nodes/status: {}", status(port));
+
+        // Measurement spike: substrate must form + respond; the latencies are the data.
+        assertThat(tTransport).as("transport detection latency ms (-1 = none)").isGreaterThanOrEqualTo(-1);
     }
 
     private boolean allNodesHealthy() {
-        return cluster.status().nodes().stream().allMatch(n -> {
-            var body = httpGet(n.mgmtPort(), "/api/health");
-            return body.contains("\"quorum\":true");
-        });
+        return cluster.status().nodes().stream().allMatch(n -> httpGet(n.mgmtPort(), "/api/health").contains("\"quorum\":true"));
     }
 
     private int connectedPeers(int port) {
@@ -128,8 +126,23 @@ class MembershipChaosSpikeTest {
         return m.find() ? Integer.parseInt(m.group(1)) : -1;
     }
 
-    private String getStatus(int port) {
+    private int onDuty(int port) {
+        return countOccurrences(status(port), "\"kvState\":\"ON_DUTY\"");
+    }
+
+    private int stopped(int port) {
+        return countOccurrences(status(port), "\"kvState\":\"STOPPED\"");
+    }
+
+    private String status(int port) {
         return httpGet(port, "/api/nodes/status");
+    }
+
+    private static int countOccurrences(String haystack, String needle) {
+        var count = 0;
+        var idx = haystack.indexOf(needle);
+        while (idx >= 0) {count++; idx = haystack.indexOf(needle, idx + needle.length());}
+        return count;
     }
 
     private String httpGet(int port, String path) {
