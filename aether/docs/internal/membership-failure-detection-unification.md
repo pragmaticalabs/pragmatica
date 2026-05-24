@@ -154,6 +154,20 @@ Derive all lifecycle timers (join deadline, reclaim budget, GC retention, detect
 ### 5D. Deterministic simulation testing (highest ROI, highest cost)
 The reason this has cost weeks is non-determinism: every chaos run lands differently (3 runs of S01 → JOINING/45s, ON_DUTY/61s, absent/GC'd-92s) — un-debuggable by construction. **Forge is already single-JVM** — the ideal substrate to run the whole cluster on a controlled logical clock + simulated network where a **seed reproduces the exact interleaving** (FoundationDB / TigerBeetle style). Converts flaky chaos into deterministic, bisectable tests and gives cheap exhaustive coverage of S01–S20 forever. Treat as a funded spike; it changes the economics of everything after.
 
+### 5E. φ-accrual design sketch (the option-2e detector)
+
+The continuous, leaderless detector that satisfies C5C/C6/C7/C8/C9 + the anti-flap lesson simultaneously.
+
+- **Per-(observer, target) state:** sliding window of the last K pong inter-arrival intervals → running mean μ, stddev σ (K ~ 100; bounded O(K) memory per peer). Heartbeat source = the pongs the node *already* receives at 1s (C8); a pong requires the peer to run code, so this is an **app-level** liveness signal (covers S13 hung-process).
+- **Suspicion:** at time t, `elapsed = t − lastArrival`; `φ = −log₁₀(1 − F(elapsed))` where F is the CDF of the modelled inter-arrival distribution. φ ≈ 0 just after a pong, rises monotonically with silence. **No vote to corrupt** → the stale-CONNECTED-flap bug (the aggregator's raison d'être) cannot recur; silence is silence.
+- **Thresholds (decoupled consumers — the "accrual" payoff):** `Φ_evict` (e.g. 8) drives decommission; optional `Φ_degraded` (e.g. 5) feeds CTM/scaling "degraded" hints. One sensor, many readers (synergy with C8's permanent metrics consumer).
+- **Leaderless gossip:** each node piggybacks its **suspected set** `{X : φ(X) > Φ_evict}` (sparse — not the full O(N) φ vector) onto the pong it already sends. Bounds payload at O(suspected). This gives every node "how many of us can't reach X" → partition-vs-death discrimination, **subsuming SWIM indirect probing**, leaderlessly.
+- **Decision (the only CP step):** a node proposes `TransportUnreachable(X)` to the single-writer FSM when it observes ≥`(N/2)+1` distinct observers suspecting X (own + gossiped). Rabia orders + dedupes (idempotent on STOPPED). Optional: lowest-id suspecter proposes, to avoid a herd.
+- **Coverage split (important):** φ covers **established/ON_DUTY** peers (they have heartbeat history). A **never-connected JOINING** peer has *no* history → φ undefined → **JOINING reclaim stays deadline-based** (`JoiningTimeout`, the 45s path). φ complements it, does not replace it. Cold-start (S15/S16): warmup prior — never suspect a peer with `< K_min` samples.
+- **Self-drain (S19) falls out for free:** a node seeing ≥`(N/2)+1` of its peers at φ > Φ_evict concludes it is on the minority side and self-drains — same signal, local leaderless decision.
+- **Clock:** local monotonic only (arrivals measured at self) → **no cross-node clock sync** required.
+- **Distribution caveat:** classic φ-accrual assumes ~normal inter-arrivals; real RTT is often heavy-tailed → may need the exponential/heavy-tail variant or generous σ. Pick from measured data (Spike-1).
+
 ---
 
 ## 6. Proposed sequencing
@@ -167,6 +181,36 @@ The reason this has cost weeks is non-determinism: every chaos run lands differe
   - **Spike-1 (measurement):** instrument & compare detection latency + false-positive rate of SWIM vs aggregator vs QUIC-keepalive vs consensus-heartbeat on the S0x scenarios. Decides 5A direction with data, not opinion.
   - **Spike-2:** deterministic simulation harness on Forge (5D).
   - Then Pillar 2 (probe-substrate collapse) per Spike-1.
+
+### 6.1 Spike-1 plan — φ-accrual shadow-mode evaluation (built as a production seed)
+
+Goal: decide option-2e vs status quo **with data**, via a detector that ships shadow-first and can be promoted — not a throwaway. Designed so each phase is independently valuable and reversible.
+
+**Prerequisites / dependencies**
+- **Fair comparison needs Spike-2 (or at least determinism).** Flaky remote runs can't compare φ vs current fairly (3 runs of S01 landed 3 ways). Spike-2's seeded sim — or, minimally, the S01–S20 harness with per-observer logging — is a *precondition* for trustworthy Spike-1 numbers. Treat Spike-2 as the enabler, not a parallel nicety.
+- **Pre-step (zero-risk, do first): capture real inter-arrival traces.** Log per-(observer,target) pong inter-arrival intervals across S01–S20 on a live cluster *before* fixing the distribution model + Φ. This is read-only and tells us whether normal/heavy-tail, and a defensible Φ/K.
+
+**Build phases (each reversible)**
+- **A — Shadow:** compute φ on every node from existing pong arrivals; log φ + its verdict; compare to the live aggregator's verdict on identical runs. **No action taken.** Gossip the suspected-set in the pong behind a flag, **codec/`ENVELOPE_FORMAT_VERSION`-versioned and backward-compatible** (a node not emitting φ must still interoperate during rolling upgrade). Zero production risk — this is the spike's spine.
+- **B — Canary:** act on φ proposals for decommission behind a flag, on a test cluster; aggregator still runs; **kill-switch reverts to aggregator**.
+- **C — Cutover:** φ becomes the proposer; aggregator → advisory; SWIM → discovery-only. **Only after S01–S20 are green and gates pass.**
+
+**Measurement (decision gate), per scenario S01–S20**
+- Detection latency (per-observer + cluster: kill → ≥quorum φ>Φ).
+- **Detection continuity through leader-kill (S18) + warmup** — the property the current leader-gated fold *fails*; the leaderless detector *must* hold. This is the headline metric.
+- False-positive rate on S04 (5s flap) — must stay ≈0.
+- Partition/quorum (S05/S06/S17), self-drain (S19/S20), detector-disagreement (S13/S14).
+- Side-by-side φ-verdict vs aggregator-verdict from the shadow logs.
+
+**Production-readiness gates (for inclusion)**
+- **Config (CLAUDE.md rule):** `Φ_evict`, `Φ_degraded`, window `K`, `K_min`, distribution model, gossip cadence — all configurable + `TimeSpan` where temporal; defaults pass S01–S20.
+- **Observability (Pillar 3):** per-peer φ exposed via `/api/status` + metrics + the audit/event surface — a φ time-series is the debugging gold we lacked this session.
+- **Backward compat:** pong φ-field codec + envelope bump; mixed φ/no-φ rolling-upgrade interop verified.
+- **Resource bounds:** window memory O(K·N); gossip O(suspected) per pong — verify/cap at target scale (avoid O(N²) full-vector gossip).
+- **Consumer alignment:** `SelfDrainCoordinator` (S19) and CTM scaling read the new signal consistently (Φ_degraded for "degraded", Φ_evict for death).
+- **Scope guard:** do **not** remove SWIM in the spike (shadow alongside); discovery/ANNOUNCE untouched; JOINING reclaim stays deadline-based.
+
+**Success criteria (promote vs iterate):** φ-leaderless ≥ current on S02/S03 latency, ≤ current false-positives on S04/S13/S14, **maintains detection through S18** (current fails this), and correct S05/S06/S19 — then promote to canary. Otherwise iterate the distribution model / Φ, or fall back to option (i) keep-SWIM.
 
 ---
 
