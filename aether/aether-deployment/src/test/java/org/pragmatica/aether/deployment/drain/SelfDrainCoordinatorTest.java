@@ -40,7 +40,8 @@ import java.util.concurrent.TimeUnit;
 ///   * `inflightGrace` expiry exits the process even if tracker never drains.
 ///   * `onQuorumDisappeared` and `onRabiaPaused` are immediate (no debounce).
 ///   * NO consensus/KV imports in `SelfDrainCoordinator.java` (static audit).
-///   * Threshold formula `(N/2) + 1` matches the aggregator quorum.
+///   * Threshold IS the authoritative `TopologyManager.quorumSize()` supplied directly —
+///     NOT a recomputed `(N/2)+1` over the raw (inflatable) topology list.
 class SelfDrainCoordinatorTest {
     private static final NodeId SELF = nodeId("self-node").unwrap();
     private static final NodeId PEER_A = nodeId("peer-a").unwrap();
@@ -66,8 +67,8 @@ class SelfDrainCoordinatorTest {
             var exits = exitCounter();
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             Supplier<Set<NodeId>> peers = () -> Set.of(PEER_A);
-            IntSupplier size = () -> 5;
-            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, peers, size, tracker, fastConfig(),
+            IntSupplier quorum = () -> 3;
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, peers, quorum, tracker, fastConfig(),
                                                                   exits::incrementAndGet, SelfDrainEventPublisher.NO_OP);
 
             coord.onConnectivityChange();
@@ -85,8 +86,8 @@ class SelfDrainCoordinatorTest {
             var exits = exitCounter();
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             var peersRef = new AtomicReference<Set<NodeId>>(Set.of(PEER_A));
-            IntSupplier size = () -> 5;
-            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, peersRef::get, size, tracker,
+            IntSupplier quorum = () -> 3;
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, peersRef::get, quorum, tracker,
                                                                   new SelfDrainConfig(timeSpan(400).millis(), timeSpan(1).seconds()),
                                                                   exits::incrementAndGet, SelfDrainEventPublisher.NO_OP);
 
@@ -107,7 +108,7 @@ class SelfDrainCoordinatorTest {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF,
                                                                   () -> Set.of(PEER_A, PEER_B, PEER_C, PEER_D),
-                                                                  () -> 5,
+                                                                  () -> 3,
                                                                   tracker,
                                                                   fastConfig(),
                                                                   exits::incrementAndGet,
@@ -124,7 +125,7 @@ class SelfDrainCoordinatorTest {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF,
                                                                   () -> Set.of(PEER_A, PEER_B, PEER_C, PEER_D),
-                                                                  () -> 5,
+                                                                  () -> 3,
                                                                   tracker,
                                                                   fastConfig(),
                                                                   exits::incrementAndGet,
@@ -143,7 +144,7 @@ class SelfDrainCoordinatorTest {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF,
                                                                   () -> Set.of(PEER_A, PEER_B, PEER_C, PEER_D),
-                                                                  () -> 5,
+                                                                  () -> 3,
                                                                   tracker,
                                                                   tightGrace(),
                                                                   exits::incrementAndGet,
@@ -165,7 +166,7 @@ class SelfDrainCoordinatorTest {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF,
                                                                   () -> Set.of(),
-                                                                  () -> 5,
+                                                                  () -> 3,
                                                                   tracker,
                                                                   tightGrace(),
                                                                   exits::incrementAndGet,
@@ -186,7 +187,7 @@ class SelfDrainCoordinatorTest {
         void initiateDrain_closesTrackerGate() {
             var exits = exitCounter();
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
-            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 3,
                                                                   tracker, fastConfig(), exits::incrementAndGet,
                                                                   SelfDrainEventPublisher.NO_OP);
 
@@ -202,7 +203,7 @@ class SelfDrainCoordinatorTest {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             tracker.tryEnter();
             tracker.tryEnter();
-            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 3,
                                                                   tracker,
                                                                   new SelfDrainConfig(timeSpan(200).millis(), timeSpan(10).seconds()),
                                                                   exits::incrementAndGet,
@@ -224,7 +225,7 @@ class SelfDrainCoordinatorTest {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             tracker.tryEnter();
             assertThat(tracker.count()).isEqualTo(1);
-            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 3,
                                                                   tracker,
                                                                   new SelfDrainConfig(timeSpan(50).millis(), timeSpan(200).millis()),
                                                                   exits::incrementAndGet,
@@ -238,17 +239,18 @@ class SelfDrainCoordinatorTest {
         }
     }
 
-    @Nested class ThresholdFormula {
-        @ParameterizedTest(name = "topologySize={0} → threshold={1}")
-        @CsvSource({"1, 1", "3, 2", "5, 3", "7, 4", "9, 5", "10, 6"})
-        void thresholdEquals_halfPlusOne(int topologySize, int expectedThreshold) {
+    @Nested class QuorumThreshold {
+        // The supplier now provides the authoritative quorum directly (TopologyManager.quorumSize());
+        // the coordinator no longer recomputes (N/2)+1. visible = connectedPeers + 1 (self).
+        @ParameterizedTest(name = "quorum={0}, visible=quorum-1 → drains")
+        @CsvSource({"2", "3", "4", "5", "6"})
+        void belowQuorum_trips_whenVisibleOneShortOfQuorum(int quorum) {
             var exits = exitCounter();
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
-            // visibleMinusSelf = expectedThreshold - 2 forces "below quorum" by exactly one slot.
-            // If expectedThreshold = 1, no value can put us below — skip that row.
-            if (expectedThreshold <= 1) {return;}
-            var peers = peerSetOfSize(expectedThreshold - 2);
-            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> peers, () -> topologySize,
+            // visible = quorum - 1 → exactly one short of quorum → must drain.
+            // connectedPeers = visible - 1 (self counts) = quorum - 2.
+            var peers = peerSetOfSize(quorum - 2);
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> peers, () -> quorum,
                                                                   tracker, fastConfig(), exits::incrementAndGet,
                                                                   SelfDrainEventPublisher.NO_OP);
 
@@ -265,10 +267,10 @@ class SelfDrainCoordinatorTest {
         void atOrAboveQuorum_doesNotTrip() {
             var exits = exitCounter();
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
-            // 5-node topology, threshold=3, visible=self+2 peers=3 → at quorum, must NOT trip.
+            // authoritative quorum=3, visible=self+2 peers=3 → at quorum, must NOT trip.
             var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF,
                                                                   () -> Set.of(PEER_A, PEER_B),
-                                                                  () -> 5,
+                                                                  () -> 3,
                                                                   tracker,
                                                                   fastConfig(),
                                                                   exits::incrementAndGet,
@@ -280,6 +282,56 @@ class SelfDrainCoordinatorTest {
             }
             assertThat(exits.get()).isZero();
             assertThat(coord.phase()).isEqualTo(SelfDrainCoordinator.Phase.ACTIVE);
+        }
+
+        /// REGRESSION (inflated-topology collapse): a 5-node cluster's authoritative quorum is 3.
+        /// A survivor connected to 3 live peers sees visible=4 ≥ quorum=3 → must NOT drain — even
+        /// though the raw topology (inflated to ~9 by dead + CTM-replacement nodes) would have
+        /// pushed a recomputed (9/2)+1=5 threshold above 4 and collapsed the cluster on first loss.
+        @Test
+        void onConnectivityChange_fourVisibleWithQuorumThree_doesNotDrain() {
+            var exits = exitCounter();
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            // connectedPeers = 3 → visible = 4; authoritative quorum = 3.
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF,
+                                                                  () -> Set.of(PEER_A, PEER_B, PEER_C),
+                                                                  () -> 3,
+                                                                  tracker,
+                                                                  fastConfig(),
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
+
+            for (int i = 0; i < 20; i++) {
+                coord.onConnectivityChange();
+                sleep(20);
+            }
+            assertThat(exits.get()).isZero();
+            assertThat(coord.phase()).isEqualTo(SelfDrainCoordinator.Phase.ACTIVE);
+        }
+
+        /// REGRESSION (minority partition): authoritative quorum=3, survivor sees only 1 live peer
+        /// → visible=2 < 3 → drains after the debounce window. Correct minority-partition detection.
+        @Test
+        void onConnectivityChange_twoVisibleWithQuorumThree_drainsAfterDebounce() {
+            var exits = exitCounter();
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            // connectedPeers = 1 → visible = 2; authoritative quorum = 3.
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF,
+                                                                  () -> Set.of(PEER_A),
+                                                                  () -> 3,
+                                                                  tracker,
+                                                                  fastConfig(),
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
+
+            coord.onConnectivityChange();
+            await().atMost(2, TimeUnit.SECONDS)
+                   .pollInterval(50, TimeUnit.MILLISECONDS)
+                   .untilAsserted(() -> {
+                       coord.onConnectivityChange();
+                       assertThat(exits.get()).isEqualTo(1);
+                   });
+            assertThat(coord.phase()).isEqualTo(SelfDrainCoordinator.Phase.EXITED);
         }
     }
 
@@ -298,7 +350,7 @@ class SelfDrainCoordinatorTest {
                 capturedDetails.set(details);
                 publishCount.incrementAndGet();
             };
-            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 3,
                                                                   tracker,
                                                                   new SelfDrainConfig(timeSpan(50).millis(), timeSpan(200).millis()),
                                                                   exits::incrementAndGet, publisher);
@@ -320,7 +372,7 @@ class SelfDrainCoordinatorTest {
             SelfDrainEventPublisher throwingPublisher = (type, severity, message, details) -> {
                 throw new RuntimeException("publisher unavailable");
             };
-            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 3,
                                                                   tracker,
                                                                   new SelfDrainConfig(timeSpan(50).millis(), timeSpan(200).millis()),
                                                                   exits::incrementAndGet, throwingPublisher);
@@ -337,7 +389,7 @@ class SelfDrainCoordinatorTest {
             var tracker = InFlightRequestTracker.inFlightRequestTracker();
             var publishCount = new AtomicInteger(0);
             SelfDrainEventPublisher publisher = (type, severity, message, details) -> publishCount.incrementAndGet();
-            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 5,
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF, () -> Set.of(), () -> 3,
                                                                   tracker, tightGrace(),
                                                                   exits::incrementAndGet, publisher);
 

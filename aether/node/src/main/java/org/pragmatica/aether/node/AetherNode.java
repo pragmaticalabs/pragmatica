@@ -1177,8 +1177,7 @@ public interface AetherNode extends ManageableNode {
                                                                              () -> clusterNode.network()
                                                                                               .connectedPeers(),
                                                                              () -> clusterNode.topologyManager()
-                                                                                              .topology()
-                                                                                              .size(),
+                                                                                              .quorumSize(),
                                                                              inFlightTrackerForDrain,
                                                                              SelfDrainConfig.selfDrainConfig(),
                                                                              jvmExit,

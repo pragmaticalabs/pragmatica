@@ -31,9 +31,20 @@ import org.slf4j.Logger;
 ///
 /// Triggers (any one):
 ///
-///   1. Periodic 1Hz: `connectedPeers().size() + 1 < (topologySize / 2) + 1` for
-///      `triggerThreshold` consecutive seconds. Caller wires `onConnectivityChange()`
-///      to a `SharedScheduler.scheduleAtFixedRate` tick.
+///   1. Periodic 1Hz: `connectedPeers().size() + 1 < quorumSize` for `triggerThreshold`
+///      consecutive seconds, where `quorumSize` is the authoritative cluster quorum from
+///      `TopologyManager.quorumSize()` (derived from the FIXED configured `clusterSize()`,
+///      NOT the raw observed `topology()` list). Caller wires `onConnectivityChange()` to a
+///      `SharedScheduler.scheduleAtFixedRate` tick.
+///
+///      WHY the authoritative quorum and not a recomputed `(N/2)+1` over the raw topology:
+///      the raw `topology()` list includes dead / decommissioned / CTM-replacement nodes.
+///      During chaos (nodes killed, CTM provisions replacements) it inflates (e.g. 5 → 9),
+///      pushing a recomputed threshold from 3 to 5. Every surviving node connected to only
+///      4 live peers then saw `visible=4 < 5`, self-drained, and `Runtime.halt(2)` — a
+///      5-node cluster that should tolerate 2 failures collapsed on the FIRST node loss.
+///      `TopologyManager.quorumSize()` stays pinned at 3 (split-brain-safe) regardless of
+///      topology inflation; `QuicClusterNetwork.processViewChange` already relies on it.
 ///   2. `onQuorumDisappeared()` — invoked from a `QuorumStateNotification.DISAPPEARED`
 ///      route handler. Immediate; no debounce (quorum loss is the hard signal Rabia
 ///      itself emits when it can no longer make progress).
@@ -71,7 +82,7 @@ public final class SelfDrainCoordinator {
 
     private final NodeId self;
     private final Supplier<Set<NodeId>> connectedPeers;
-    private final IntSupplier topologySize;
+    private final IntSupplier quorumSize;
     private final InFlightRequestTracker tracker;
     private final SelfDrainConfig config;
     private final Runnable jvmExit;
@@ -81,14 +92,14 @@ public final class SelfDrainCoordinator {
 
     private SelfDrainCoordinator(NodeId self,
                                  Supplier<Set<NodeId>> connectedPeers,
-                                 IntSupplier topologySize,
+                                 IntSupplier quorumSize,
                                  InFlightRequestTracker tracker,
                                  SelfDrainConfig config,
                                  Runnable jvmExit,
                                  SelfDrainEventPublisher eventPublisher) {
         this.self = self;
         this.connectedPeers = connectedPeers;
-        this.topologySize = topologySize;
+        this.quorumSize = quorumSize;
         this.tracker = tracker;
         this.config = config;
         this.jvmExit = jvmExit;
@@ -108,18 +119,22 @@ public final class SelfDrainCoordinator {
     /// `SelfDrainEventPublisher.NO_OP`.
     public static SelfDrainCoordinator selfDrainCoordinator(NodeId self,
                                                             Supplier<Set<NodeId>> connectedPeers,
-                                                            IntSupplier topologySize,
+                                                            IntSupplier quorumSize,
                                                             InFlightRequestTracker tracker,
                                                             SelfDrainConfig config,
                                                             Runnable jvmExit,
                                                             SelfDrainEventPublisher eventPublisher) {
-        return new SelfDrainCoordinator(self, connectedPeers, topologySize, tracker, config, jvmExit, eventPublisher);
+        return new SelfDrainCoordinator(self, connectedPeers, quorumSize, tracker, config, jvmExit, eventPublisher);
     }
 
-    /// Periodic 1Hz check: caller schedules this. Computes
-    /// `threshold = (topologySize / 2) + 1` and `visible = connectedPeers + 1` (self
-    /// counts). When `visible < threshold` for `triggerThreshold` consecutive
-    /// observations, trips `initiateDrain()`. Resets on recovery.
+    /// Periodic 1Hz check: caller schedules this. The `threshold` is the authoritative
+    /// cluster quorum from `TopologyManager.quorumSize()` (derived from the fixed
+    /// `clusterSize()`, NOT the raw observed `topology()` which can be inflated by
+    /// dead/replacement nodes); `visible = connectedPeers + 1` (self counts). When
+    /// `visible < threshold` (the node cannot see enough live peers to form a quorum) for
+    /// `triggerThreshold` consecutive observations, trips `initiateDrain()`. Resets on
+    /// recovery. See the class-level note for why a recomputed `(N/2)+1` over the raw
+    /// topology collapsed the cluster on the first node loss.
     @Contract
     public void onConnectivityChange() {
         if (phase.get() != Phase.ACTIVE) {return;}
@@ -164,8 +179,12 @@ public final class SelfDrainCoordinator {
         return phase.get();
     }
 
+    /// The drain threshold IS the authoritative cluster quorum from
+    /// `TopologyManager.quorumSize()` — supplied directly, NOT recomputed as `(N/2)+1`
+    /// over the raw `topology()` list (which inflates with dead/replacement nodes and
+    /// previously collapsed the cluster on the first node loss — see class-level note).
     private int quorumThreshold() {
-        return (topologySize.getAsInt() / 2) + 1;
+        return quorumSize.getAsInt();
     }
 
     private void recordBelowQuorum(int visible, int threshold) {
