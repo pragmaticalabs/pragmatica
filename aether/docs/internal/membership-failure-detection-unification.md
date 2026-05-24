@@ -25,7 +25,8 @@ Loops observed in the live system:
 | Loop | Signal source | Clock / cadence | Mutates lifecycle? |
 |---|---|---|---|
 | `ReachabilityAggregator` | QUIC `connectedPeers` + follower pong observations, quorum `(N/2)+1`, TTL 15s | ping cadence + leader warmup | via FSM (leader-gated) |
-| SWIM | gossip suspicion → FAULTY → DEPARTED | own timers (~15s suspect) | via FSM |
+| **ClusterSync ping-pong** (1s) | all-cores gossip **backbone**: carries SWIM-health obs + QUIC-connectivity obs + leader reachability snapshot + metrics + readiness; 3-miss (~3s) ping-timeout → local QUIC disconnect + eviction hint | 1s | no — feeds aggregator/FSM (it is the *substrate*, not a separate decider) |
+| SWIM | gossip suspicion → FAULTY → DEPARTED; output **injected into the ping-pong** as `PeerHealthObservation` | own probe (~1s) / suspect 10s | via FSM |
 | `LifecycleReconciler` rules | KV scan (e.g. `JoiningTimeout`) | 10s tick + per-rule budgets | **direct KV write** (until the 2026-05-24 fix) |
 | `ClusterTopologyManager` (CTM) | deficit / auto-heal / provisioning | reconcile tick | yes (provisioning slots) |
 | `SelfDrainCoordinator` | local quorum view | immediate | self-`halt(2)` |
@@ -91,6 +92,27 @@ These came out of the 2026-05-24 design review (and are the reason "just delete 
 - **C4 — Consensus-liveness has a steady-state hole.** Rabia rounds happen only when there are proposals; a quiet steady-state cluster produces no consensus traffic, hence no liveness signal. Using "who's acking proposals" as the failure detector therefore needs **synthetic heartbeat rounds** in steady state — which is a ping by another name (see C5).
 - **C5 — You cannot eliminate periodic liveness probing.** SWIM gossip, QUIC keepalive-PING, aggregator ping-pong, and "Rabia heartbeats" are **the same mechanism wearing different hats**: *something* must generate periodic traffic to detect silent death. **The achievable win is collapsing to ONE probe substrate and making it authoritative — not reducing to zero.**
 - **C6 — S04 forbids trigger-happy detection.** A <5s transport flap must NOT decommission. Any faster detector must still debounce transient blips.
+- **C7 — The current detector is a *2-plane co-confirmation*, and that's intentional CFT safety.** Today decommission of an ON_DUTY peer requires BOTH planes to agree: `ReachabilityGate` only confirms `TransportUnreachable` when local SWIM is *also* non-HEALTHY (`ReachabilityGate.java:11-27`), and the aggregator additionally requires a `(N/2)+1` quorum of observers. This is deliberately CFT (not BFT): it stops a single node — or a stale CONNECTED flap — from unilaterally evicting a peer. S04 (flap), S13 (SWIM-only), S14 (transport-only) are precisely the tests of this co-confirmation. **Any collapse to one plane must replace the co-confirmation's debounce/false-positive protection** (e.g. φ-accrual suspicion), not just delete a plane.
+- **C8 — The metrics channel is permanent.** The ping-pong's `metrics` payload feeds the scaling mechanism (CTM scale-up/down decisions); it is load-bearing and stays regardless. **Therefore the 1s ping-pong backbone exists no matter what — failure detection riding it is "already paid for."** This argues for consolidating detection *onto* the ping-pong rather than maintaining a separate probe plane.
+
+---
+
+## 3.5 Refined model — it's not "N detectors", it's a 2-plane co-confirming detector over one 1s backbone
+
+The investigation (2026-05-24) corrected the naive "redundant detectors" framing. The real shape:
+
+- **One gossip backbone — the ClusterSync ping-pong (1s, all-cores).** Targets come from `MembershipDecision`/consensus topology (not `connectedPeers`, not SWIM). The **ping** carries: full metrics map, fencing terms, the *leader's* `AggregatedReachabilitySnapshot`, and `evictionHints`. The **pong** carries: `PeerConnectivityObservation`s (CONNECTED/DISCONNECTED/STALE), `PeerHealthObservation`s (HEALTHY/SUSPECTED/FAULTY), `readyCandidate`, metrics, lifecycle-state string. (`ClusterSyncMessage.java:43-49, 100-109`.)
+- **Two observation planes ride that backbone**, folded by *one* `ReachabilityAggregator` (which maps SWIM SUSPECTED/FAULTY **and** QUIC DISCONNECTED/STALE both → UNREACHABLE, `ReachabilityAggregator.java:148-149`):
+  - **Plane A — QUIC connectivity:** `PeerConnectivityReporter` (installed every node, `AetherNode.java:2368`) + a 5s self-emission from `connectedPeers()` + the ping-pong's own **3-miss (~3s) timeout** (`ClusterSyncContext.java:288-309`) which locally disconnects the peer and broadcasts an eviction hint.
+  - **Plane B — SWIM:** `CoreSwimHealthDetector` probes independently and **pushes** its HEALTHY/SUSPECTED/FAULTY into the same pong stream (`SwimHealthContext.java:231`).
+- **One fold policy:** aggregator quorum `(N/2)+1` + TTL 15s, leader/spokesman-gated ingest, then `MembershipFsm` + `ReachabilityGate` co-confirmation → KV write.
+
+**Consequences for the redesign:**
+1. The ping-pong is **not redundant and not removable** — it's the backbone, and C8 pins it permanently (metrics/scaling). The "general-purpose gossip" is really *metrics + leader-derived reachability snapshot + eviction hints* piggybacked on the metrics channel; it is **not** authoritative membership flooding (KV/Rabia remains source of truth, `AggregatedReachabilitySnapshot.java:18-21`).
+2. The ping-pong **already is a fast (~3s) detector primitive** — but deliberately *advisory*: a missed-ping strips the false-REACHABLE vote and disconnects locally; it does not itself decommission (that needs quorum + SWIM co-confirm).
+3. So **SWIM's distinct value reduces to two things the ping-pong does NOT provide:** (i) **discovery/ANNOUNCE bootstrap** — the ping-pong's targets come from already-known consensus topology, so it cannot bootstrap a node into the address book (C1/C2); (ii) **the second confirmation plane** (C7). Everything else SWIM contributes (per-peer suspicion) the ping-pong already produces.
+
+**Reframed unification target:** keep the ping-pong as the permanent 1s detection substrate; replace the fragile fold *policy* (quorum + TTL + leader-warmup) and/or the SWIM second plane with a principled debounce (**φ-accrual on per-peer ping-miss timing**) that preserves C7's false-positive protection on a single plane; and **decompose SWIM into a thin discovery-only layer** (ANNOUNCE bootstrap) so its detection role can retire without losing C1/C2.
 
 ---
 
@@ -114,8 +136,9 @@ These came out of the 2026-05-24 design review (and are the reason "just delete 
 | **2b — φ-accrual detector** | Replace binary REACHABLE/UNREACHABLE + fixed TTL/quorum with a continuous per-peer suspicion value + one threshold (Hayashibara). | One principled, self-tuning signal; natural debounce (C6); removes magic `(N/2)+1`+15s+SWIM-timer interplay. | New mechanism; still needs a probe substrate underneath (gossip or ping); doesn't by itself solve discovery (C2). | Needs C5 substrate. |
 | **2c — Consensus-liveness** | Derive liveness from Rabia participation (who acks rounds). | Most authoritative signal, "free" when traffic exists; could retire a separate detector. | **C4 steady-state hole** → needs heartbeat rounds (= a ping); doesn't solve discovery (C2); couples membership to consensus internals. | Blocked by C4 without heartbeats. |
 | **2d — QUIC active-keepalive substrate** | Enable QUIC PING keepalive; use connection state as the probe. | Reuses the transport we already maintain; point-to-point, no gossip fan-out cost. | C3: needs active keepalive added; transport-only signal can't distinguish partition/death; doesn't solve discovery (C2); per-connection (no membership dissemination). | Needs C2 discovery layer + debounce (C6). |
+| **2e — Ping-pong substrate + φ-accrual + SWIM→discovery-only** | Keep the (permanent, C8) 1s ping-pong as the detection substrate; replace the aggregator's quorum+TTL fold and the SWIM second-plane with a **φ-accrual** suspicion over per-peer ping-miss timing; reduce SWIM to a thin ANNOUNCE/discovery layer. | Reuses the substrate we pay for anyway (C8); one principled, self-tuning signal with natural debounce (C6/C7); retires the warmup-fragile quorum policy *and* the redundant probe plane; keeps discovery (C2). | Must prove φ-accrual on one plane preserves C7's false-positive protection across S04/S13/S14; biggest behavioral change to detection. | Best fit to C1–C8; the current working hypothesis. |
 
-**Working hypothesis (to validate):** the cheapest high-value move is **2a** — *not* "eliminate SWIM" but "eliminate the redundant aggregator and make SWIM sovereign," feeding QUIC connection-loss into SWIM so S14 is covered. This inverts the original instinct (delete SWIM) and is worth a measurement spike (§6).
+**Working hypothesis (to validate, post 3.5/C8):** **2e.** Because the ping-pong backbone is permanent (C8) and already a ~3s probe, the leverage is *policy*, not *substrate*: replace the fragile quorum+TTL+leader-warmup fold (and the redundant SWIM probe plane) with φ-accrual on ping-miss timing, and shrink SWIM to discovery-only (preserving C1/C2). This supersedes the earlier "2a (kill the aggregator, keep SWIM)" instinct — the aggregator is just a *policy on the ping-pong*, and SWIM's detection role is the redundant part, not its discovery role. Decide with Spike-1 data, not opinion.
 
 ### 5B. Atomic replacement (kills "got 6")
 Model replacement as an **atomic slot swap with generation fencing**: a provisioning *slot* has exactly one occupant; a replacement **supersedes** its predecessor in a single FSM transition (old occupant fenced by generation/epoch), instead of "add new + remove old" as two racing ops. Directly retires the over-count symptom (S06/S16/S20).
@@ -173,6 +196,7 @@ The reason this has cost weeks is non-determinism: every chaos run lands differe
 - The `reason=` domain-event line is emitted **only** by `MembershipFsm.applyEffect(EmitDomainEvent)` (`MembershipFsm.java:971`). Direct KV writers (pre-fix reconciler) produce no reason line — this is why FSM routing is mandatory for canonical reasons.
 - `applyJoining` reducer cells (`ClusterMembershipReducer.java:158-169`): `SwimDeparted→swim-departed` (:162), `JoinDeadlineExpired→join-timeout` (:165), `TransportUnreachable→transport-failure` (:167); `SwimFaulty→nop` (:161, SWIM-faulty alone does NOT decommission a JOINING node).
 - QUIC: `maxIdleTimeout(30s)` passive only, no active keepalive (`quic-transport-spec.md` §3.3).
+- ClusterSync ping-pong: 1s (`TimeoutsConfig.java:93-103`, `pingInterval` default `timeSpan(1).seconds()`), all-cores, targets from `MembershipDecision`/consensus topology (`ClusterSyncSchedulerAdapter.java:250-268`); ping carries metrics + leader `AggregatedReachabilitySnapshot` + eviction hints; pong carries `PeerConnectivityObservation`s + `PeerHealthObservation`s + `readyCandidate` + metrics (`ClusterSyncMessage.java:43-49,100-109`). 3-miss (~3s) timeout disconnects locally + broadcasts eviction hint but does NOT itself decommission (`ClusterSyncContext.java:288-309`). SWIM output is injected into the pong stream (`SwimHealthContext.java:231`); both planes fold in one aggregator. `metrics` payload is consumed by the scaling mechanism (permanent, C8).
 
 ---
 
