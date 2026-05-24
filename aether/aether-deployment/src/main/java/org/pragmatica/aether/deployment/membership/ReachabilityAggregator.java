@@ -64,11 +64,28 @@ public interface ReachabilityAggregator {
     @Contract
     void ingest(NodeId observer, List<PeerConnectivityObservation> connectivity, List<PeerHealthObservation> health);
 
-    /// Build the current cluster-canonical reachability snapshot. Folds the
-    /// leader's self-view from the configured suppliers at build time. Returns
-    /// `Option.none()` when the supplier surface is empty (cold-start window);
-    /// callers fall back to KV-only view in that case.
-    Option<AggregatedReachabilitySnapshot> snapshot();
+    /// Compute the current cluster-canonical reachability snapshot WITHOUT any
+    /// side effects. Folds the leader's self-view from the configured suppliers at
+    /// build time. Returns `Option.none()` when the supplier surface is empty
+    /// (cold-start window); callers fall back to KV-only view in that case.
+    ///
+    /// This is the PURE read path. It does NOT invoke snapshot listeners. Use it
+    /// for any reader (status endpoints, `bestSnapshot`, FSM reachability gate,
+    /// Tier-2 redistributors) so a snapshot READ never triggers dispatch — which
+    /// would otherwise re-enter the FSM and recurse. Exactly one canonical caller
+    /// (the Tier-1 ping-tick producer) must use `produceAndDispatch()` instead.
+    Option<AggregatedReachabilitySnapshot> currentSnapshot();
+
+    /// Compute the current snapshot via `currentSnapshot()` and, when present,
+    /// dispatch it to all registered snapshot listeners before returning it. This
+    /// is the SINGLE canonical once-per-round produce/redistribute entry point —
+    /// it must be invoked from exactly one place (the Tier-1 ClusterSync ping-tick
+    /// producer) so each aggregation round dispatches at most once.
+    ///
+    /// Listeners are invoked synchronously in registration order; a throwing
+    /// listener does not interrupt the others (see `addSnapshotListener`). Returns
+    /// `Option.none()` (and dispatches nothing) on an empty snapshot.
+    Option<AggregatedReachabilitySnapshot> produceAndDispatch();
 
     /// Drop all accumulated state. Called on leader-loss; the next leader rebuilds
     /// from incoming observations.
@@ -82,10 +99,11 @@ public interface ReachabilityAggregator {
     void seedFromCache(AggregatedReachabilitySnapshot cached);
 
     /// Topology-observation refactor Step 3: register a listener invoked synchronously
-    /// from the snapshot-builder thread after each successful `snapshot()` build (i.e.
-    /// when `snapshot()` returns `Option.some(...)`). Used to feed the aggregated
+    /// from the snapshot-builder thread after each successful `produceAndDispatch()` build
+    /// (i.e. when it returns `Option.some(...)`). Used to feed the aggregated
     /// snapshot into downstream consumers (currently `MembershipFsm.onTransportSnapshot`
-    /// for `TransportReachable` / `TransportUnreachable` event derivation).
+    /// for `TransportReachable` / `TransportUnreachable` event derivation). Listeners are
+    /// NEVER invoked from the pure `currentSnapshot()` read path.
     ///
     /// Listeners are invoked in registration order. A listener that throws does NOT
     /// interrupt subsequent listeners — the exception is logged and other listeners
@@ -180,7 +198,7 @@ record ReachabilityAggregatorRecord(NodeId self,
     }
 
     @Override
-    public Option<AggregatedReachabilitySnapshot> snapshot() {
+    public Option<AggregatedReachabilitySnapshot> currentSnapshot() {
         var now = clockMs.getAsLong();
         foldSelfObservations(now);
         var quorumThreshold = quorumThreshold(onDutyCountSupplier.getAsInt());
@@ -195,10 +213,12 @@ record ReachabilityAggregatorRecord(NodeId self,
 
         if (states.isEmpty()) {return Option.none();}
 
-        var snapshot = new AggregatedReachabilitySnapshot(now, states);
-        dispatchSnapshotToListeners(snapshot);
+        return Option.some(new AggregatedReachabilitySnapshot(now, states));
+    }
 
-        return Option.some(snapshot);
+    @Override
+    public Option<AggregatedReachabilitySnapshot> produceAndDispatch() {
+        return currentSnapshot().onPresent(this::dispatchSnapshotToListeners);
     }
 
     private void dispatchSnapshotToListeners(AggregatedReachabilitySnapshot snapshot) {

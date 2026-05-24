@@ -250,7 +250,9 @@ public final class MembershipFsm {
     /// Topology-observation refactor Step 4 — full production factory accepting an aggregator-
     /// snapshot supplier. Each reducer call site builds a per-event `ReachabilityGate` from the
     /// current snapshot (cold-start fallback returns a permissive gate). Production wiring
-    /// (`AetherNode.buildMembershipFsm`) passes `reachabilityAggregator::snapshot`.
+    /// (`AetherNode.buildMembershipFsm`) passes `reachabilityAggregator::currentSnapshot` — the
+    /// PURE read path, so re-entrant gate evaluation during event processing never dispatches
+    /// snapshot listeners back into this FSM.
     public static MembershipFsm membershipFsm(NodeId self,
                                               MembershipFsmConfig config,
                                               LifecycleSnapshotReader lifecycleSnapshotReader,

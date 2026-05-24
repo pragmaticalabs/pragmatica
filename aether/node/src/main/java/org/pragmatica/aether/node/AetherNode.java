@@ -1063,7 +1063,7 @@ public interface AetherNode extends ManageableNode {
         // leaders/spokesmen ingest), so returning its self-fold-only snapshot would
         // mislead the consumer — fall back to the cached received snapshot instead.
         metricsCollector.setLocalSnapshotSupplier(() -> isLeaderSupplier.getAsBoolean()
-                                                        ? reachabilityAggregator.snapshot()
+                                                        ? reachabilityAggregator.currentSnapshot()
                                                         : Option.none());
         // Phase 2 PR-B (cluster-convergence-reconciler) — readyCandidate signal routing.
         // `metricsCollector` reads the candidate from `readinessTracker` when building outgoing
@@ -1098,7 +1098,7 @@ public interface AetherNode extends ManageableNode {
                                                                          ClusterSyncScheduler.DEFAULT_PING_TIMEOUT_THRESHOLD,
                                                                          leaderEpochSupplier,
                                                                          peerObservationStore,
-                                                                         reachabilityAggregator::snapshot,
+                                                                         reachabilityAggregator::produceAndDispatch,
                                                                          periodicConfig);
         // Step 1 (Periodic Observation Mode): cap supplier honored externally so
         // the buffer absorbs one full emission cycle (N-1 observations per 5s tick)
@@ -1274,7 +1274,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                           inFlightProbe);
         // MembershipFsm wiring (spec §9 — post-E.8 always active). Constructed AFTER
         // drainCoordinator so the FSM can route InvokeDrain effects through the real coordinator.
-        // Step 4: also wired with `reachabilityAggregator::snapshot` so the reducer can apply
+        // Step 4: also wired with `reachabilityAggregator::currentSnapshot` (the PURE read
+        // path — no listener dispatch) so the reducer can apply
         // the aggregator-quorum gate at the two ON_DUTY decommission cells (S04/S05/S13/S17).
         var membershipFsm = buildMembershipFsm(config.self(),
                                                kvStore,
@@ -1286,7 +1287,8 @@ public interface AetherNode extends ManageableNode {
         membershipFsm.start();
         // Topology-observation refactor Step 3: wire the leader-side aggregator's snapshot
         // stream into the FSM. The aggregator invokes this listener synchronously after each
-        // non-empty `snapshot()` build (driven by the periodic ping-build path). MembershipFsm
+        // non-empty `produceAndDispatch()` build (driven by the Tier-1 ping-build path, the
+        // single canonical dispatcher). MembershipFsm
         // re-leader-gates internally and translates the snapshot into per-peer
         // TransportReachable / TransportUnreachable events. Registered AFTER both the
         // aggregator and FSM are constructed (and the FSM started) so the wiring is complete
@@ -1827,7 +1829,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                          communityId -> lookupGovernor(kvStore,
                                                                                                                                        communityId),
                                                                                                          org.pragmatica.aether.worker.metrics.SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode),
-                                                                                                         reachabilityAggregator::snapshot);
+                                                                                                         reachabilityAggregator::currentSnapshot);
         spokesmanPingLoop.start();
         // Wire the spokesman-active flag into the reachability-aggregator's
         // ingest gate so Tier-2 governor pongs feed the same aggregator. See
@@ -2100,8 +2102,9 @@ public interface AetherNode extends ManageableNode {
     /// **Topology-observation refactor Step 4.** The aggregator snapshot supplier is passed
     /// to the FSM so the reducer can apply the aggregator-quorum gate at the two ON_DUTY
     /// decommission cells (`SwimFaulty`, `TransportUnreachable`). Cold-start fallback: when
-    /// `reachabilityAggregator.snapshot()` returns `Option.none()`, the gate is permissive
-    /// (pre-Step-4 behavior).
+    /// `reachabilityAggregator.currentSnapshot()` returns `Option.none()`, the gate is permissive
+    /// (pre-Step-4 behavior). The gate uses the PURE read path so re-entrant gate evaluation
+    /// during FSM event processing never dispatches snapshot listeners (would recurse).
     private static MembershipFsm buildMembershipFsm(NodeId self,
                                                     KVStore<AetherKey, AetherValue> kvStore,
                                                     java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
@@ -2127,7 +2130,7 @@ public interface AetherNode extends ManageableNode {
                                            scheduler,
                                            isLeaderSupplier,
                                            hlcClock,
-                                           reachabilityAggregator::snapshot);
+                                           reachabilityAggregator::currentSnapshot);
     }
 
     /// Self-bootstrap (Bootstrap-correction 2026-05-12; spec §6 step 7). SWIM does not observe

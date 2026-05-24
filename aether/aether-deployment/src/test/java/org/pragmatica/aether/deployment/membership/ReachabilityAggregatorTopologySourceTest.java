@@ -61,7 +61,7 @@ class ReachabilityAggregatorTopologySourceTest {
             clock::get,
             TTL_MS);
 
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         assertThat(snapshot.states().keySet()).containsExactlyInAnyOrder(A, B, C, D);
     }
 
@@ -90,7 +90,7 @@ class ReachabilityAggregatorTopologySourceTest {
             TTL_MS);
 
         // Pre-kill snapshot establishes baseline.
-        aggregator.snapshot().unwrap();
+        aggregator.currentSnapshot().unwrap();
 
         // Simulate docker kill of D: QUIC drops D from `connected`, but consensus
         // has NOT yet written D's NodeLifecycleKey to DECOMMISSIONED — that's what
@@ -98,7 +98,7 @@ class ReachabilityAggregatorTopologySourceTest {
         connected.set(Set.of(A, B, C));
         clock.addAndGet(1_000L);
 
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         var d = snapshot.states().get(D);
         assertThat(d).as("D must remain in snapshot after kill — decision plane is KV not QUIC").isNotNull();
         // Self is sole live observer; quorum=3 not met → UNKNOWN. But the observation
@@ -112,7 +112,7 @@ class ReachabilityAggregatorTopologySourceTest {
         ingestUnreachable(aggregator, B, D, clock.get());
         ingestUnreachable(aggregator, C, D, clock.get());
 
-        var quorumSnapshot = aggregator.snapshot().unwrap();
+        var quorumSnapshot = aggregator.currentSnapshot().unwrap();
         var dQuorum = quorumSnapshot.states().get(D);
         // Self UNREACHABLE + 3 peer UNREACHABLE = 4 observers. Quorum threshold for
         // N=5 is ⌈5/2⌉+1 = 3 → met.
@@ -144,7 +144,7 @@ class ReachabilityAggregatorTopologySourceTest {
         // D would disappear from the snapshot.
         for (var step = 0; step < 35; step++) {
             clock.addAndGet(1_000L);
-            var snapshot = aggregator.snapshot().unwrap();
+            var snapshot = aggregator.currentSnapshot().unwrap();
             var d = snapshot.states().get(D);
             assertThat(d)
                 .as("D must remain after %d seconds — self-fold must refresh observation each snapshot",

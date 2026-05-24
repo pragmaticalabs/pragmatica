@@ -21,7 +21,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// Topology-observation refactor Step 3: snapshot-listener contract on
 /// [`ReachabilityAggregator`]. Listeners are invoked synchronously from the
-/// snapshot-builder thread after each successful (non-empty) snapshot build.
+/// snapshot-builder thread after each successful (non-empty) `produceAndDispatch()`
+/// build. The pure `currentSnapshot()` read path NEVER dispatches — pinned by
+/// `currentSnapshot_doesNotDispatch_listenersNeverInvoked`. This split breaks the
+/// FSM reachability-gate recursion (Finding B): a snapshot READ under `fsmLock`
+/// must not re-enter `onTransportSnapshot` → `enqueueOperatorEvent` → gate → READ.
 class ReachabilityAggregatorListenerTest {
     private static final NodeId SELF = new NodeId("self");
 
@@ -47,10 +51,43 @@ class ReachabilityAggregatorListenerTest {
         var received = new ArrayList<AggregatedReachabilitySnapshot>();
         aggregator.addSnapshotListener(received::add);
 
-        var produced = aggregator.snapshot().unwrap();
+        var produced = aggregator.produceAndDispatch().unwrap();
 
         assertThat(received).hasSize(1);
         assertThat(received.get(0)).isSameAs(produced);
+    }
+
+    @Test
+    void currentSnapshot_doesNotDispatch_listenersNeverInvoked() {
+        // Finding B regression: the PURE read path must NOT invoke snapshot listeners.
+        // The FSM reachability gate reads via currentSnapshot() under fsmLock while
+        // processing an operator event; if currentSnapshot() dispatched, it would
+        // re-enter MembershipFsm.onTransportSnapshot → enqueueOperatorEvent →
+        // processOperatorEventLocked → gate → currentSnapshot() → ∞ (StackOverflowError).
+        var clock = new AtomicLong(1_000L);
+        var aggregator = ReachabilityAggregator.reachabilityAggregator(
+            SELF,
+            () -> 3,
+            () -> Set.of(N1, N2),
+            () -> Set.of(SELF, N1, N2),
+            clock::get,
+            TTL_MS);
+        var received = new ArrayList<AggregatedReachabilitySnapshot>();
+        aggregator.addSnapshotListener(received::add);
+
+        // currentSnapshot() produces a non-empty snapshot but must NOT dispatch.
+        var pureRead = aggregator.currentSnapshot();
+        assertThat(pureRead.isPresent()).isTrue();
+        assertThat(received).isEmpty();
+
+        // produceAndDispatch() over the same state DOES dispatch exactly once.
+        var dispatched = aggregator.produceAndDispatch().unwrap();
+        assertThat(received).hasSize(1);
+        assertThat(received.get(0)).isSameAs(dispatched);
+
+        // A second pure read still does not dispatch.
+        aggregator.currentSnapshot();
+        assertThat(received).hasSize(1);
     }
 
     @Test
@@ -68,7 +105,7 @@ class ReachabilityAggregatorListenerTest {
         aggregator.addSnapshotListener(_ -> order.add(2));
         aggregator.addSnapshotListener(_ -> order.add(3));
 
-        aggregator.snapshot();
+        aggregator.produceAndDispatch();
 
         assertThat(order).containsExactly(1, 2, 3);
     }
@@ -88,7 +125,7 @@ class ReachabilityAggregatorListenerTest {
         aggregator.addSnapshotListener(ReachabilityAggregatorListenerTest::failingListener);
         aggregator.addSnapshotListener(_ -> invocations.add("after"));
 
-        var produced = aggregator.snapshot();
+        var produced = aggregator.produceAndDispatch();
 
         assertThat(produced.isPresent()).isTrue();
         assertThat(invocations).containsExactly("before", "after");
@@ -100,7 +137,7 @@ class ReachabilityAggregatorListenerTest {
 
     @Test
     void emptySnapshot_listenerNotInvoked() {
-        // Cold-start: no observations, no topology — snapshot() returns Option.none() and
+        // Cold-start: no observations, no topology — produceAndDispatch() returns Option.none() and
         // listeners must NOT fire. Documents the contract: listeners receive only non-empty
         // snapshots.
         var clock = new AtomicLong(1_000L);
@@ -114,7 +151,7 @@ class ReachabilityAggregatorListenerTest {
         var invocations = new ArrayList<AggregatedReachabilitySnapshot>();
         aggregator.addSnapshotListener(invocations::add);
 
-        var produced = aggregator.snapshot();
+        var produced = aggregator.produceAndDispatch();
 
         assertThat(produced.isPresent()).isFalse();
         assertThat(invocations).isEmpty();
@@ -140,7 +177,7 @@ class ReachabilityAggregatorListenerTest {
                           List.of(new PeerConnectivityObservation(N1, ConnectivityState.CONNECTED, 0L, 0L, 1_000L)),
                           List.of());
 
-        aggregator.snapshot();
+        aggregator.produceAndDispatch();
 
         assertThat(received).hasSize(1);
         var n1State = received.get(0).states().get(N1);

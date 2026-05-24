@@ -49,7 +49,7 @@ class ReachabilityAggregatorTest {
             Set::of,
             clock::get,
             TTL_MS);
-        assertThat(aggregator.snapshot()).isEqualTo(Option.none());
+        assertThat(aggregator.currentSnapshot()).isEqualTo(Option.none());
     }
 
     @Test
@@ -68,7 +68,7 @@ class ReachabilityAggregatorTest {
             () -> Set.of(SELF, N1, N2, N3, N4),
             clock::get,
             TTL_MS);
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
 
         var n1 = snapshot.states().get(N1);
         var n3 = snapshot.states().get(N3);
@@ -94,7 +94,7 @@ class ReachabilityAggregatorTest {
         aggregator.ingest(N1, List.of(conn(N3, ConnectivityState.CONNECTED, 1_000L)), List.of());
         aggregator.ingest(N2, List.of(conn(N3, ConnectivityState.CONNECTED, 1_000L)), List.of());
 
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         var n3 = snapshot.states().get(N3);
         assertThat(n3.kind()).isEqualTo(ReachabilityKind.REACHABLE);
         assertThat(n3.observerCount()).isEqualTo(3);
@@ -115,7 +115,7 @@ class ReachabilityAggregatorTest {
         aggregator.ingest(N1, List.of(conn(N3, ConnectivityState.DISCONNECTED, 1_000L)), List.of());
         aggregator.ingest(N2, List.of(conn(N3, ConnectivityState.DISCONNECTED, 1_000L)), List.of());
 
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         assertThat(snapshot.states().get(N3).kind()).isEqualTo(ReachabilityKind.UNREACHABLE);
     }
 
@@ -134,7 +134,7 @@ class ReachabilityAggregatorTest {
         aggregator.ingest(N2, List.of(conn(N3, ConnectivityState.CONNECTED, 1_000L)), List.of());
         // Advance past TTL — observations should be evicted.
         clock.set(1_000L + TTL_MS + 1);
-        var snapshot = aggregator.snapshot();
+        var snapshot = aggregator.currentSnapshot();
         // Self-fold runs every snapshot — at t=clock now, self contributes
         // UNREACHABLE for N3 (not in empty connectedPeers). Empty cluster
         // observations after TTL → only self contributes → below quorum.
@@ -155,7 +155,7 @@ class ReachabilityAggregatorTest {
             TTL_MS);
         // N1 reports N2 as FAULTY via SWIM health observation — UNREACHABLE.
         aggregator.ingest(N1, List.of(), List.of(health(N2, HealthHintWire.FAULTY, 1_000L)));
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         // Self contributes UNREACHABLE for N2 (not in connected). N1 contributes
         // UNREACHABLE via FAULTY. Two observers → quorum=2 reached.
         assertThat(snapshot.states().get(N2).kind()).isEqualTo(ReachabilityKind.UNREACHABLE);
@@ -175,7 +175,7 @@ class ReachabilityAggregatorTest {
         // N1 first reports N2 as CONNECTED at t=1000, then DISCONNECTED at t=2000.
         aggregator.ingest(N1, List.of(conn(N2, ConnectivityState.CONNECTED, 1_000L)), List.of());
         aggregator.ingest(N1, List.of(conn(N2, ConnectivityState.DISCONNECTED, 2_000L)), List.of());
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         // Self UNREACHABLE + N1 latest UNREACHABLE → quorum=2 reached.
         assertThat(snapshot.states().get(N2).kind()).isEqualTo(ReachabilityKind.UNREACHABLE);
         assertThat(snapshot.states().get(N2).observerCount()).isEqualTo(2);
@@ -195,7 +195,7 @@ class ReachabilityAggregatorTest {
             Map.of(N1, new ReachabilityState(N1, ReachabilityKind.REACHABLE, 4, 4_500L),
                    N2, new ReachabilityState(N2, ReachabilityKind.UNREACHABLE, 3, 4_500L)));
         aggregator.seedFromCache(cached);
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         // Self contributes UNREACHABLE for N1, N2, N3 (none in connected).
         // Seed contributes prior leader's per-target kind for N1, N2 (as self-observed
         // entries by design — see ReachabilityAggregator.seedFromCache).
@@ -218,7 +218,7 @@ class ReachabilityAggregatorTest {
         aggregator.ingest(N1, List.of(conn(N2, ConnectivityState.CONNECTED, 1_000L)), List.of());
         aggregator.reset();
         // After reset, only self-fold contributes. Self sees N1 only → N2 UNREACHABLE.
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         var n2 = snapshot.states().get(N2);
         assertThat(n2.observerCount()).isEqualTo(1);
         assertThat(n2.kind()).isEqualTo(ReachabilityKind.UNKNOWN);
@@ -235,7 +235,7 @@ class ReachabilityAggregatorTest {
             () -> Set.of(SELF, N1),
             clock::get,
             TTL_MS);
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         assertThat(snapshot.states().get(N1).kind()).isEqualTo(ReachabilityKind.REACHABLE);
     }
 
@@ -252,7 +252,7 @@ class ReachabilityAggregatorTest {
             TTL_MS);
         // SELF observing SELF as DISCONNECTED — should be ignored.
         aggregator.ingest(SELF, List.of(conn(SELF, ConnectivityState.DISCONNECTED, 1_000L)), List.of());
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         // No state for SELF should be in the snapshot (self-targeting filtered + self-fold
         // skips self).
         assertThat(snapshot.states().containsKey(SELF)).isFalse();
@@ -281,7 +281,7 @@ class ReachabilityAggregatorTest {
         aggregator.ingest(N2, List.of(conn(N4, ConnectivityState.DISCONNECTED, 10_000L)), List.of());
         aggregator.ingest(N3, List.of(conn(N4, ConnectivityState.CONNECTED, 9_500L)), List.of());
 
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         var n4 = snapshot.states().get(N4);
         // Under asymmetric rule this would have been REACHABLE (1 positive, unreachable=3
         // didn't matter because the asymmetric branch fired first). Under symmetric rule
@@ -307,7 +307,7 @@ class ReachabilityAggregatorTest {
         aggregator.ingest(N2, List.of(conn(N4, ConnectivityState.CONNECTED, 1_000L)), List.of());
         aggregator.ingest(N3, List.of(conn(N4, ConnectivityState.DISCONNECTED, 1_000L)), List.of());
 
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         var n4 = snapshot.states().get(N4);
         // 3 REACHABLE >= threshold=3, but unreachable=1 != 0 → no REACHABLE upgrade.
         // 1 UNREACHABLE < threshold=3 → no UNREACHABLE upgrade. → UNKNOWN.
@@ -338,7 +338,7 @@ class ReachabilityAggregatorTest {
         aggregator.ingest(N2, List.of(conn(N4, ConnectivityState.DISCONNECTED, 7_000L)), List.of());
         aggregator.ingest(N3, List.of(conn(N4, ConnectivityState.DISCONNECTED, 7_000L)), List.of());
 
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         var n4 = snapshot.states().get(N4);
         // The original CONNECTED from N2 at t=1000 is past TTL and replaced by N2's later
         // DISCONNECTED at t=7000 (latest-wins overwrites in-place). Self + N1 + N2 + N3

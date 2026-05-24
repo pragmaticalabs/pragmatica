@@ -52,7 +52,7 @@ class ReachabilityAggregatorSelfTransitionTest {
             TTL_MS);
         aggregator.ingest(N1, List.of(conn(N2, ConnectivityState.CONNECTED, 1_000L)), List.of());
         aggregator.ingest(N3, List.of(conn(N2, ConnectivityState.CONNECTED, 1_000L)), List.of());
-        var before = aggregator.snapshot().unwrap();
+        var before = aggregator.currentSnapshot().unwrap();
         assertThat(before.states().get(N2).kind()).isEqualTo(ReachabilityKind.REACHABLE);
 
         // QUIC drop: peer leaves connected set AND fires onPeerDisconnected at the
@@ -61,7 +61,7 @@ class ReachabilityAggregatorSelfTransitionTest {
         connectedPeers.set(Set.of(N1, N3, N4));
         aggregator.ingestSelfTransition(N2, ReachabilityKind.UNREACHABLE, 2_000L);
 
-        var after = aggregator.snapshot().unwrap();
+        var after = aggregator.currentSnapshot().unwrap();
         // Self's UNREACHABLE observation blocks REACHABLE upgrade (single dissent rule).
         // Without ⌈N/2⌉+1=3 UNREACHABLE observers, the kind degrades to UNKNOWN.
         assertThat(after.states().get(N2).kind()).isEqualTo(ReachabilityKind.UNKNOWN);
@@ -87,7 +87,7 @@ class ReachabilityAggregatorSelfTransitionTest {
         clock.set(2_000L);
         aggregator.ingestSelfTransition(N1, ReachabilityKind.UNREACHABLE, 2_000L);
 
-        var after = aggregator.snapshot().unwrap();
+        var after = aggregator.currentSnapshot().unwrap();
         var n1 = after.states().get(N1);
         assertThat(n1.kind()).isEqualTo(ReachabilityKind.UNREACHABLE);
         assertThat(n1.observerCount()).isEqualTo(3);
@@ -106,21 +106,21 @@ class ReachabilityAggregatorSelfTransitionTest {
             clock::get,
             TTL_MS);
         // Pre-warm self entry via fold.
-        aggregator.snapshot();
+        aggregator.currentSnapshot();
 
         clock.set(2_000L);
         // Older timestamp must be ignored (latest-wins keyed on producedAtMs).
         aggregator.ingestSelfTransition(N1, ReachabilityKind.UNREACHABLE, 500L);
         // The self-fold from the next snapshot at clock=2_000L will write
         // REACHABLE at observedAtMs=2_000L, eclipsing the stale 500L entry.
-        var afterStale = aggregator.snapshot().unwrap();
+        var afterStale = aggregator.currentSnapshot().unwrap();
         assertThat(afterStale.states().get(N1).kind()).isNotEqualTo(ReachabilityKind.UNREACHABLE);
 
         // Newer timestamp wins over the self-fold entry.
         clock.set(3_000L);
         aggregator.ingestSelfTransition(N1, ReachabilityKind.UNREACHABLE, 4_000L);
-        var afterFresh = aggregator.snapshot().unwrap();
-        // The self-fold at 3_000L runs first inside snapshot(); ingestSelfTransition
+        var afterFresh = aggregator.currentSnapshot().unwrap();
+        // The self-fold at 3_000L runs first inside currentSnapshot(); ingestSelfTransition
         // happened BEFORE the snapshot call, so the latest-wins check at the fold
         // (now=3_000L vs existing=4_000L) preserves the UNREACHABLE entry.
         assertThat(afterFresh.states().get(N1).kind()).isEqualTo(ReachabilityKind.UNKNOWN);
@@ -146,7 +146,7 @@ class ReachabilityAggregatorSelfTransitionTest {
         aggregator.ingestSelfTransition(N1, ReachabilityKind.UNREACHABLE, 2_000L);
 
         clock.set(2_000L);
-        var snapshot = aggregator.snapshot().unwrap();
+        var snapshot = aggregator.currentSnapshot().unwrap();
         // Self contributes one observer; quorum=3 not reached → UNKNOWN with count=1.
         var n1 = snapshot.states().get(N1);
         assertThat(n1.observerCount()).isEqualTo(1);
