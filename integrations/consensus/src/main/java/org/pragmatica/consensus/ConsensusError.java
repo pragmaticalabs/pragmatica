@@ -72,4 +72,16 @@ public sealed interface ConsensusError extends Cause {
             return "Node " + nodeId.id() + " is paused: quorum unavailable";
         }
     }
+
+    /// Returned when [org.pragmatica.consensus.rabia.RabiaEngine#apply] does not receive a
+    /// consensus answer for its submitted batch within the configured
+    /// `ProtocolConfig.applyTimeout`. Replaces the generic `CoreError.Timeout` produced by
+    /// `Promise.timeout` with a domain-specific cause so callers (e.g. the deploy pipeline)
+    /// can distinguish a consensus stall from other timeouts.
+    record ApplyTimeout(long timeoutMillis) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Consensus apply timed out after " + timeoutMillis + "ms";
+        }
+    }
 }

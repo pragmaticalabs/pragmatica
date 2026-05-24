@@ -28,6 +28,8 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.concurrent.AtomicHolder;
 import org.pragmatica.lang.Promise;
@@ -504,7 +506,16 @@ public class RabiaEngine<C extends Command> {
                               batch -> correlationMap.put(batch.correlationIds()
                                                                .getFirst(),
                                                           pendingAnswer)).async()
-                             .flatMap(_ -> pendingAnswer);
+                             .flatMap(_ -> pendingAnswer.timeout(config.applyTimeout())
+                                                        .mapError(this::toApplyTimeout));
+    }
+
+    /// Replaces the generic `CoreError.Timeout` produced by `Promise.timeout` with the
+    /// domain-specific `ConsensusError.ApplyTimeout`, leaving every other cause untouched.
+    private Cause toApplyTimeout(Cause cause) {
+        return cause instanceof CoreError.Timeout
+               ? new ConsensusError.ApplyTimeout(config.applyTimeout().millis())
+               : cause;
     }
 
     @MessageReceiver

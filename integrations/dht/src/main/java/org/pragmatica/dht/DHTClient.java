@@ -94,4 +94,12 @@ public interface DHTClient {
     default DHTClient scoped(DHTConfig config) {
         return this;
     }
+
+    /// The configuration backing this client. Exposes quorum/timeout settings and the
+    /// bounded `DhtRetryPolicy` so consumers (e.g. `ArtifactStore`) inherit the configured
+    /// retry attempts and `TimeSpan` backoff without a separate wiring path.
+    /// Defaults to [DHTConfig#DEFAULT] for lightweight test doubles.
+    default DHTConfig config() {
+        return DHTConfig.DEFAULT;
+    }
 }

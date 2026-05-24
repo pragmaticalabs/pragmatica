@@ -8,6 +8,8 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.dht.DHTConfig;
+import org.pragmatica.dht.DHTConfig.DhtRetryPolicy;
 import org.pragmatica.dht.DHTError;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
@@ -151,6 +153,13 @@ public interface ArtifactStore {
     static ArtifactStore artifactStore(DHTClient dht, StorageInstance storage) {
         return new ArtifactStoreImpl(dht, storage);
     }
+
+    /// Variant that overrides the bounded retry policy explicitly instead of inheriting it
+    /// from `dht.config()`. Used by tests that drive transient-failure scenarios with a
+    /// deterministic attempt count and short `TimeSpan` backoff.
+    static ArtifactStore artifactStore(DHTClient dht, StorageInstance storage, DHTConfig.DhtRetryPolicy retryPolicy) {
+        return new ArtifactStoreImpl(dht, storage, retryPolicy);
+    }
 }
 
 class ArtifactStoreImpl implements ArtifactStore {
@@ -164,26 +173,28 @@ class ArtifactStoreImpl implements ArtifactStore {
     /// stacking 30s+ of tail latency. Calibrated for ~16-chunk 1MB artifacts.
     private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(30).seconds();
 
-    /// Bounded retry for transient DHT-resilience failures inside `deploy`. The
-    /// DHT-resilience layer (`dht-resilience-spec.md`) converts a transient QUIC
-    /// backpressure refusal into a synchronous `QuorumCollector.onFailure`, which is
-    /// correct for Rabia/consensus (built-in retransmit) but wrong for one-shot
-    /// `ArtifactStore.deploy` — the deploy path has no retransmit cycle of its own.
-    /// Without this retry, a single backpressured replica on ANY chunk or on the
-    /// metadata key surfaces as HTTP 500 on the client's PUT. The probability of
-    /// hitting backpressure scales with chunk count, so multi-chunk artifacts (≥1MB)
-    /// are especially vulnerable without per-chunk retry.
+    /// Bounded retry for transient DHT-resilience failures inside `deploy` AND `resolve`.
+    /// The DHT-resilience layer (`dht-resilience-spec.md`) converts a transient QUIC
+    /// backpressure refusal — or a read that targets a still-JOINING peer — into a
+    /// synchronous `QuorumCollector.onFailure`, which is correct for Rabia/consensus
+    /// (built-in retransmit) but wrong for one-shot `ArtifactStore` operations, which have
+    /// no retransmit cycle of their own. Without this retry, a single backpressured or
+    /// unreachable replica on ANY chunk, on the metadata key, or on the resolve read
+    /// surfaces as HTTP 500 (write) or a 30s `operationTimeout` hang (read) on the client's
+    /// request. The probability of hitting this scales with chunk count, so multi-chunk
+    /// artifacts (≥1MB) are especially vulnerable.
     ///
-    /// Applied to both: (a) metadata/versions-list DHT writes (`dhtPutWithRetry`)
-    /// and (b) chunk fan-out via `storage.put` (`storagePutWithRetry`) — the
-    /// storage tier's durable layer is the DHT, so the same transient class applies.
+    /// Applied to writes (`dhtPutWithRetry`, `storagePutWithRetry`) and reads
+    /// (`dhtGetWithRetry`, `storageGetWithRetry`). Attempts and `TimeSpan` backoff come
+    /// from `DHTConfig.DhtRetryPolicy` (default 3 attempts, 100/250/500ms) — no hardcoded
+    /// millis literals here.
     ///
     /// Selective retry: only retries on `DHTError.PeerUnreachable` and
     /// `DHTError.QuorumNotReached`. Other causes (NO_AVAILABLE_NODES, corruption)
-    /// propagate immediately so genuine failures aren't masked.
-    private static final int MAX_DHT_PUT_ATTEMPTS = 3;
-
-    private static final long[] DHT_PUT_BACKOFF_MS = {100L, 250L, 500L};
+    /// propagate immediately so genuine failures aren't masked. On the read path an
+    /// `Option.empty()` (legitimate "not found") is NEVER retried — only a transient
+    /// FAILURE triggers a retry.
+    private final DhtRetryPolicy retryPolicy;
 
     private final DHTClient dht;
     private final StorageInstance storage;
@@ -193,8 +204,13 @@ class ArtifactStoreImpl implements ArtifactStore {
     private final AtomicInteger chunkCount = new AtomicInteger(0);
 
     ArtifactStoreImpl(DHTClient dht, StorageInstance storage) {
+        this(dht, storage, dht.config().retryPolicy());
+    }
+
+    ArtifactStoreImpl(DHTClient dht, StorageInstance storage, DhtRetryPolicy retryPolicy) {
         this.dht = dht;
         this.storage = storage;
+        this.retryPolicy = retryPolicy;
     }
 
     @Override public Metrics metrics() {
@@ -233,7 +249,7 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     @Override public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
         log.debug("Resolving artifact: {}", artifact.asString());
-        return dht.get(metaKey(artifact))
+        return dhtGetWithRetry(metaKey(artifact))
                       .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes).async(new ArtifactStoreError.NotFound(artifact))
                                                          .flatMap(meta -> resolveChunksFromStorage(artifact, meta)));
     }
@@ -287,7 +303,7 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private Promise<byte[]> fetchSingleBlock(String hex, ArtifactStoreError.CorruptedArtifact error) {
         return BlockId.fromHex(hex).async()
-                              .flatMap(storage::get)
+                              .flatMap(this::storageGetWithRetry)
                               .flatMap(opt -> opt.async(error));
     }
 
@@ -329,22 +345,87 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private void handlePutFailure(byte[] key, byte[] value, int attempt, Cause cause, Promise<Unit> result) {
         var nextAttempt = attempt + 1;
-        if (!isTransientDhtFailure(cause) || nextAttempt >= MAX_DHT_PUT_ATTEMPTS) {
+        if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
             result.fail(cause);
             return;
         }
-        var backoffMs = DHT_PUT_BACKOFF_MS[Math.min(attempt, DHT_PUT_BACKOFF_MS.length - 1)];
+        var backoff = retryPolicy.backoffFor(attempt);
         log.warn("DHT put attempt {} of {} failed (transient): {}; retrying after {}ms",
                  nextAttempt,
-                 MAX_DHT_PUT_ATTEMPTS,
+                 retryPolicy.maxAttempts(),
                  cause.message(),
-                 backoffMs);
+                 backoff.millis());
         SharedScheduler.schedule(() -> dhtPutWithRetry(key, value, nextAttempt).onResult(result::resolve),
-                                 timeSpan(backoffMs).millis());
+                                 backoff);
     }
 
     private static boolean isTransientDhtFailure(Cause cause) {
         return cause instanceof DHTError.PeerUnreachable || cause instanceof DHTError.QuorumNotReached;
+    }
+
+    /// Bounded retry for the DHT READ/resolve path. Mirrors `dhtPutWithRetry` but guards
+    /// the quorum-read that `DistributedDHTClient.get` performs: a read targeting a
+    /// still-JOINING peer surfaces as a transient `QuorumNotReached`/`PeerUnreachable`
+    /// that otherwise hangs until the 30s `operationTimeout`, manifesting as an HTTP 500
+    /// on `/api/blueprints/deploy`. CRITICAL: a successful `Option.empty()` is a legitimate
+    /// "not found" and is NEVER retried — only a transient FAILURE triggers a retry.
+    private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key) {
+        return dhtGetWithRetry(key, 0);
+    }
+
+    private Promise<Option<byte[]>> dhtGetWithRetry(byte[] key, int attempt) {
+        var result = Promise.<Option<byte[]>>promise();
+        dht.get(key).onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                                    .onFailure(cause -> handleGetFailure(key, attempt, cause, result)));
+        return result;
+    }
+
+    private void handleGetFailure(byte[] key, int attempt, Cause cause, Promise<Option<byte[]>> result) {
+        var nextAttempt = attempt + 1;
+        if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
+            result.fail(cause);
+            return;
+        }
+        var backoff = retryPolicy.backoffFor(attempt);
+        log.warn("DHT get attempt {} of {} failed (transient): {}; retrying after {}ms",
+                 nextAttempt,
+                 retryPolicy.maxAttempts(),
+                 cause.message(),
+                 backoff.millis());
+        SharedScheduler.schedule(() -> dhtGetWithRetry(key, nextAttempt).onResult(result::resolve),
+                                 backoff);
+    }
+
+    /// Per-chunk read variant of `dhtGetWithRetry` for the resolve fan-out. The artifact
+    /// `storage` instance's durable tier is the DHT, so `storage.get` propagates the same
+    /// transient `PeerUnreachable`/`QuorumNotReached` failures as direct `dht.get`. A
+    /// successful `Option.empty()` (chunk genuinely absent) is treated by the caller as a
+    /// corruption signal and is NEVER retried here — only transient FAILURE retries.
+    private Promise<Option<byte[]>> storageGetWithRetry(BlockId id) {
+        return storageGetWithRetry(id, 0);
+    }
+
+    private Promise<Option<byte[]>> storageGetWithRetry(BlockId id, int attempt) {
+        var result = Promise.<Option<byte[]>>promise();
+        storage.get(id).onResult(r -> r.onSuccess(_ -> result.resolve(r))
+                                       .onFailure(cause -> handleStorageGetFailure(id, attempt, cause, result)));
+        return result;
+    }
+
+    private void handleStorageGetFailure(BlockId id, int attempt, Cause cause, Promise<Option<byte[]>> result) {
+        var nextAttempt = attempt + 1;
+        if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
+            result.fail(cause);
+            return;
+        }
+        var backoff = retryPolicy.backoffFor(attempt);
+        log.warn("Storage chunk get attempt {} of {} failed (transient): {}; retrying after {}ms",
+                 nextAttempt,
+                 retryPolicy.maxAttempts(),
+                 cause.message(),
+                 backoff.millis());
+        SharedScheduler.schedule(() -> storageGetWithRetry(id, nextAttempt).onResult(result::resolve),
+                                 backoff);
     }
 
     /// Per-chunk variant of `dhtPutWithRetry` for the deploy fan-out. The artifact
@@ -365,18 +446,18 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private void handleStoragePutFailure(byte[] chunk, int attempt, Cause cause, Promise<BlockId> result) {
         var nextAttempt = attempt + 1;
-        if (!isTransientDhtFailure(cause) || nextAttempt >= MAX_DHT_PUT_ATTEMPTS) {
+        if (!isTransientDhtFailure(cause) || nextAttempt >= retryPolicy.maxAttempts()) {
             result.fail(cause);
             return;
         }
-        var backoffMs = DHT_PUT_BACKOFF_MS[Math.min(attempt, DHT_PUT_BACKOFF_MS.length - 1)];
+        var backoff = retryPolicy.backoffFor(attempt);
         log.warn("Storage chunk put attempt {} of {} failed (transient): {}; retrying after {}ms",
                  nextAttempt,
-                 MAX_DHT_PUT_ATTEMPTS,
+                 retryPolicy.maxAttempts(),
                  cause.message(),
-                 backoffMs);
+                 backoff.millis());
         SharedScheduler.schedule(() -> storagePutWithRetry(chunk, nextAttempt).onResult(result::resolve),
-                                 timeSpan(backoffMs).millis());
+                                 backoff);
     }
 
     private List<Version> addVersionIfAbsent(Option<byte[]> existingData, Version version) {

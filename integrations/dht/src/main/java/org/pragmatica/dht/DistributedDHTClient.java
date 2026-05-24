@@ -64,6 +64,11 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     @Override
+    public DHTConfig config() {
+        return config;
+    }
+
+    @Override
     public Promise<Option<byte[]>> get(byte[] key) {
         var targets = targetNodes(key);
         if (targets.isEmpty()) {

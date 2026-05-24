@@ -111,6 +111,76 @@ class RabiaEngineTest {
                 assertThat(cause).isInstanceOf(ConsensusError.CommandBatchIsEmpty.class)
             );
         }
+
+        @Test
+        void apply_fails_with_ApplyTimeout_when_batch_never_answered() throws InterruptedException {
+            // The test network records broadcasts but never drives consensus to completion,
+            // so the submitted batch is never answered. Before the fix, apply()'s returned
+            // promise had no timeout and hung forever. With a short applyTimeout the engine
+            // converts the stuck batch into a domain ConsensusError.ApplyTimeout.
+            var shortTimeout = new RabiaEngine<>(topologyManager,
+                                                 network,
+                                                 stateMachine,
+                                                 shortApplyTimeoutConfig());
+            activate(shortTimeout);
+
+            var result = shortTimeout.apply(List.of(new TestCommand("never-answered"))).await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause ->
+                assertThat(cause).isInstanceOf(ConsensusError.ApplyTimeout.class)
+            );
+            shortTimeout.stop().await();
+        }
+
+        @Test
+        void apply_succeeds_when_batch_is_answered_by_v1_decision() throws InterruptedException {
+            // A normally-answered apply must still succeed through the new
+            // timeout().mapError() wrapping. Submit via apply(), capture the broadcast
+            // batch (with its real correlation IDs), then drive a full V1 decision for it.
+            activateEngine();
+            network.clearMessages();
+
+            var pending = engine.<Unit>apply(List.of(new TestCommand("answered")));
+            Thread.sleep(50);
+
+            var batch = network.getMessages().stream()
+                               .filter(m -> m instanceof RabiaProtocolMessage.Asynchronous.NewBatch<?>)
+                               .map(m -> ((RabiaProtocolMessage.Asynchronous.NewBatch<TestCommand>) m).batch())
+                               .findFirst()
+                               .orElseThrow();
+
+            engine.processPropose(new Propose<>(NODE_2, Phase.ZERO, batch));
+            Thread.sleep(50);
+            engine.processVoteRound1(new VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
+            engine.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
+            Thread.sleep(50);
+            engine.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
+            engine.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
+
+            var result = pending.await(timeSpan(5).seconds());
+
+            assertThat(result.isSuccess())
+                    .as("answered apply must succeed, not time out")
+                    .isTrue();
+        }
+
+        private ProtocolConfig shortApplyTimeoutConfig() {
+            return ProtocolConfig.protocolConfig(timeSpan(60).seconds(),
+                                                 timeSpan(100).millis(),
+                                                 100,
+                                                 ProtocolConfig.DEFAULT_MAX_PENDING_BATCHES,
+                                                 timeSpan(200).millis())
+                                 .unwrap();
+        }
+
+        private void activate(RabiaEngine<TestCommand> target) throws InterruptedException {
+            target.quorumState(QuorumStateNotification.established());
+            Thread.sleep(150);
+            target.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
+            target.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            Thread.sleep(50);
+        }
     }
 
     @Nested

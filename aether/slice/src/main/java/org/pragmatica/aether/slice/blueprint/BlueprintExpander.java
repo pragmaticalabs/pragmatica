@@ -52,47 +52,69 @@ import static org.pragmatica.lang.Option.option;
                                                                              DependencyLoader loader) {
         var processed = new HashSet<Artifact>();
         var dependencies = new HashMap<Artifact, Set<Artifact>>();
-        return resolveDependenciesRecursive(explicitSlices.keySet(), loader, processed, dependencies).map(_ -> Collections.unmodifiableMap(dependencies));
+        return resolveLevel(explicitSlices.keySet(), loader, processed, dependencies)
+                .map(_ -> Collections.unmodifiableMap(dependencies));
     }
 
-    private static Promise<Unit> resolveDependenciesRecursive(Set<Artifact> artifacts,
-                                                              DependencyLoader loader,
-                                                              Set<Artifact> processed,
-                                                              Map<Artifact, Set<Artifact>> dependencies) {
-        var toProcess = artifacts.stream().filter(artifact -> !processed.contains(artifact))
-                                        .peek(processed::add)
-                                        .toList();
-        if (toProcess.isEmpty()) {return Promise.success(Unit.unit());}
-        return processArtifactsSequentially(toProcess, loader, processed, dependencies, 0);
+    /// Resolves all artifacts at the current topological LEVEL concurrently, then recurses
+    /// into the union of their dependencies as the next level. Concurrency is confined to
+    /// dependency DISCOVERY: `loadDependencies` for every artifact at a level runs in
+    /// parallel via `Promise.allOf`, collapsing N serial 30s-bounded DHT reads into one
+    /// wide fan-out. Correctness is preserved because:
+    ///   - `processed` / `dependencies` are mutated ONLY on the single thread that runs
+    ///     `mergeLevel` after the fan-out completes (the `Promise` callbacks merely produce
+    ///     `(artifact, deps)` values; no shared-map mutation happens off-thread), so no
+    ///     `ConcurrentHashMap` is required.
+    ///   - artifacts already in `processed` are filtered out before each level and marked
+    ///     processed atomically for this single-threaded accumulation, so shared
+    ///     dependencies are loaded exactly once.
+    ///   - the full `dependencies` map is complete before `buildLoadOrder`/`topologicalSort`
+    ///     runs (it runs only after this promise resolves), so topological ordering holds.
+    private static Promise<Unit> resolveLevel(Set<Artifact> artifacts,
+                                              DependencyLoader loader,
+                                              Set<Artifact> processed,
+                                              Map<Artifact, Set<Artifact>> dependencies) {
+        var toProcess = artifacts.stream()
+                                 .filter(artifact -> !processed.contains(artifact))
+                                 .peek(processed::add)
+                                 .toList();
+        if (toProcess.isEmpty()) {
+            return Promise.success(Unit.unit());
+        }
+        var levelLoads = toProcess.stream()
+                                  .map(artifact -> loadArtifactDeps(artifact, loader))
+                                  .toList();
+        return Promise.allOf(levelLoads)
+                      .flatMap(results -> Result.firstFailureOf(results).async())
+                      .flatMap(loaded -> recurseIntoNextLevel(loaded, loader, processed, dependencies));
     }
 
-    private static Promise<Unit> processArtifactsSequentially(List<Artifact> artifacts,
-                                                              DependencyLoader loader,
-                                                              Set<Artifact> processed,
-                                                              Map<Artifact, Set<Artifact>> dependencies,
-                                                              int index) {
-        if (index >= artifacts.size()) {return Promise.success(Unit.unit());}
-        var artifact = artifacts.get(index);
-        return loader.loadDependencies(artifact).flatMap(deps -> storeDepsAndRecurse(artifact,
-                                                                                     deps,
-                                                                                     loader,
-                                                                                     processed,
-                                                                                     dependencies))
-                                      .flatMap(_ -> processArtifactsSequentially(artifacts,
-                                                                                 loader,
-                                                                                 processed,
-                                                                                 dependencies,
-                                                                                 index + 1));
+    private static Promise<ArtifactDeps> loadArtifactDeps(Artifact artifact, DependencyLoader loader) {
+        return loader.loadDependencies(artifact).map(deps -> new ArtifactDeps(artifact, deps));
     }
 
-    private static Promise<Unit> storeDepsAndRecurse(Artifact artifact,
-                                                     Set<Artifact> deps,
-                                                     DependencyLoader loader,
-                                                     Set<Artifact> processed,
-                                                     Map<Artifact, Set<Artifact>> dependencies) {
-        dependencies.put(artifact, deps);
-        return resolveDependenciesRecursive(deps, loader, processed, dependencies);
+    private static Promise<Unit> recurseIntoNextLevel(List<ArtifactDeps> loaded,
+                                                      DependencyLoader loader,
+                                                      Set<Artifact> processed,
+                                                      Map<Artifact, Set<Artifact>> dependencies) {
+        var nextLevel = mergeLevel(loaded, dependencies);
+        return resolveLevel(nextLevel, loader, processed, dependencies);
     }
+
+    /// Single-threaded merge of one level's `(artifact, deps)` results into the shared
+    /// `dependencies` map, returning the union of all discovered deps as the next level.
+    /// Runs on the thread completing the `Promise.allOf` fan-out — never concurrently.
+    private static Set<Artifact> mergeLevel(List<ArtifactDeps> loaded, Map<Artifact, Set<Artifact>> dependencies) {
+        var nextLevel = new HashSet<Artifact>();
+        for (var entry : loaded) {
+            dependencies.put(entry.artifact(), entry.deps());
+            nextLevel.addAll(entry.deps());
+        }
+        return nextLevel;
+    }
+
+    record ArtifactDeps(Artifact artifact, Set<Artifact> deps) {}
+
 
     private static Map<String, List<String>> buildDependencyGraph(Map<Artifact, Set<Artifact>> dependencies) {
         return dependencies.entrySet().stream()

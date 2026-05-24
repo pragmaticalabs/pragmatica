@@ -18,6 +18,7 @@ import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageInstance.TierInfo;
 import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTError;
 import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
@@ -30,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class ArtifactStoreTest {
     private static final int CHUNK_SIZE = 64 * 1024;
@@ -303,6 +305,66 @@ class ArtifactStoreTest {
         }
     }
 
+    @Nested
+    class ResolveRetryTests {
+        /// Regression for the DHT READ/resolve path. The write path already had bounded retry
+        /// (`dhtPutWithRetry`/`storagePutWithRetry`), but `resolveWithMetadata` issued a bare
+        /// `dht.get(metaKey)`. A quorum read targeting a still-JOINING peer surfaces a transient
+        /// `QuorumNotReached` that hung until the 30s `operationTimeout`, manifesting as HTTP 500
+        /// on `/api/blueprints/deploy`. `dhtGetWithRetry` now retries the transient failure.
+        ///
+        /// Uses a tight test policy (3 attempts, 1ms backoff) so the test is fast and
+        /// deterministic.
+        private static final DHTConfig.DhtRetryPolicy FAST_RETRY =
+                new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis()));
+
+        @Test
+        void resolveWithMetadata_transientGetFailureThenSuccess_retriesAndSucceeds() {
+            var artifact = Artifact.artifact("org.example:transient-get:1.0.0").unwrap();
+            var content = "resolve after transient failure".getBytes(StandardCharsets.UTF_8);
+
+            var flakyGetDht = new FlakyGetDht(dhtStorage, 0);  // clean during deploy, arm before resolve
+            var storageInstance = StorageInstance.storageInstance("retry-artifacts",
+                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
+            var flakyStore = ArtifactStore.artifactStore(flakyGetDht, storageInstance, FAST_RETRY);
+
+            // Deploy cleanly (no injected failures), then arm a single transient failure that
+            // the resolve path's metaKey get must retry past.
+            flakyStore.deploy(artifact, content)
+                      .await()
+                      .onFailureRun(Assertions::fail);
+
+            flakyGetDht.armFailures(1);
+
+            flakyStore.resolveWithMetadata(artifact)
+                      .await()
+                      .onFailureRun(Assertions::fail)
+                      .onSuccess(resolved -> assertThat(resolved.content()).isEqualTo(content));
+
+            assertThat(flakyGetDht.transientFailuresInjected()).isGreaterThanOrEqualTo(1);
+        }
+
+        @Test
+        void resolveWithMetadata_emptyMetadata_doesNotRetryAndReturnsNotFound() {
+            var artifact = Artifact.artifact("org.example:never-deployed:1.0.0").unwrap();
+
+            var flakyGetDht = new FlakyGetDht(dhtStorage, 0);  // never inject failures
+            var storageInstance = StorageInstance.storageInstance("empty-artifacts",
+                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
+            var flakyStore = ArtifactStore.artifactStore(flakyGetDht, storageInstance, FAST_RETRY);
+
+            flakyStore.resolveWithMetadata(artifact)
+                      .await()
+                      .onSuccessRun(Assertions::fail)
+                      .onFailure(cause -> assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class));
+
+            // Option.empty() is a legitimate not-found: each get is a single quorum read,
+            // NEVER retried. With one resolve get against a missing key, exactly one get
+            // is issued (no retry burst).
+            assertThat(flakyGetDht.getsAfterArm()).isEqualTo(1);
+        }
+    }
+
     private static void fillWithPattern(byte[] content) {
         for (int i = 0; i < content.length; i++) {
             content[i] = (byte) (i % 256);
@@ -436,4 +498,65 @@ class ArtifactStoreTest {
     }
 
     private record NonTransientCause(String message) implements org.pragmatica.lang.Cause {}
+
+    /// DHT mock backed by a shared map that can inject a configurable number of transient
+    /// `get` failures (`DHTError.QuorumNotReached`) before serving reads normally. Used to
+    /// exercise the bounded retry on the resolve path. `armFailures`/`getsAfterArm` let a
+    /// test re-arm the injection window after the deploy phase and observe how many gets
+    /// the resolve path issued (proving empty results are not retried).
+    private static final class FlakyGetDht implements DHTClient {
+        private final ConcurrentHashMap<String, byte[]> backing;
+        private final AtomicInteger failuresToInject = new AtomicInteger();
+        private final AtomicInteger transientFailuresInjected = new AtomicInteger();
+        private final AtomicInteger getsAfterArm = new AtomicInteger();
+
+        FlakyGetDht(ConcurrentHashMap<String, byte[]> backing, int initialFailures) {
+            this.backing = backing;
+            this.failuresToInject.set(initialFailures);
+        }
+
+        void armFailures(int count) {
+            failuresToInject.set(count);
+            getsAfterArm.set(0);
+        }
+
+        int transientFailuresInjected() {
+            return transientFailuresInjected.get();
+        }
+
+        int getsAfterArm() {
+            return getsAfterArm.get();
+        }
+
+        @Override
+        public Promise<Unit> put(byte[] key, byte[] value) {
+            backing.put(new String(key, StandardCharsets.UTF_8), value);
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(byte[] key) {
+            getsAfterArm.incrementAndGet();
+            if (failuresToInject.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0) {
+                transientFailuresInjected.incrementAndGet();
+                return DHTError.quorumNotReached(2, 1).promise();
+            }
+            return Promise.success(Option.option(backing.get(new String(key, StandardCharsets.UTF_8))));
+        }
+
+        @Override
+        public Promise<Boolean> exists(byte[] key) {
+            return Promise.success(backing.containsKey(new String(key, StandardCharsets.UTF_8)));
+        }
+
+        @Override
+        public Promise<Boolean> remove(byte[] key) {
+            return Promise.success(backing.remove(new String(key, StandardCharsets.UTF_8)) != null);
+        }
+
+        @Override
+        public Partition partitionFor(byte[] key) {
+            return Partition.partition(Math.abs(new String(key, StandardCharsets.UTF_8).hashCode()) % 1024).unwrap();
+        }
+    }
 }
