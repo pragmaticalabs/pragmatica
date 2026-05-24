@@ -1,0 +1,183 @@
+<!--
+SPDX-License-Identifier: BUSL-1.1
+Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+-->
+
+# Membership & Failure-Detection — Structural Research & Decision Log
+
+**Status:** Living research doc (open). Started 2026-05-24.
+**Branch target:** `release-1.0.0-rc1` and beyond.
+**Owners:** (membership/consensus)
+**Related specs:** [`membership-architecture-spec.md`](../specs/membership-architecture-spec.md) (§16 scenario oracle), [`swim-driven-topology-spec.md`](../specs/swim-driven-topology-spec.md), [`reachability-aggregator-spec.md`](../specs/reachability-aggregator-spec.md), [`quic-transport-spec.md`](../specs/quic-transport-spec.md), [`cluster-convergence-reconciler-spec.md`](../specs/cluster-convergence-reconciler-spec.md).
+
+> Purpose: track *all* considerations, options, constraints, and decisions for the membership / failure-detection redesign in one place, so we stop rediscovering the same tradeoffs. This is a decision log, not a spec — when a decision lands and stabilizes, fold it into the relevant spec and link back here.
+
+---
+
+## 1. Why this doc exists — the structural diagnosis
+
+Cluster-B chaos stabilization has cost weeks of whack-a-mole: dead reconciler (codec), self-drain cascade (quorum source), QUIC backpressure drops, detection timing, reason-vocabulary fragmentation, topology over-counts, GC-vs-poll test races. Each fix was real; they keep coming. **That pattern is the signal: these are symptoms of one structural condition, not independent bugs.**
+
+**Root condition:** membership/failure handling is **N independent control loops, each with its own clock, its own authority, and its own vocabulary, all mutating the same lifecycle state — with no single source of truth.**
+
+Loops observed in the live system:
+
+| Loop | Signal source | Clock / cadence | Mutates lifecycle? |
+|---|---|---|---|
+| `ReachabilityAggregator` | QUIC `connectedPeers` + follower pong observations, quorum `(N/2)+1`, TTL 15s | ping cadence + leader warmup | via FSM (leader-gated) |
+| SWIM | gossip suspicion → FAULTY → DEPARTED | own timers (~15s suspect) | via FSM |
+| `LifecycleReconciler` rules | KV scan (e.g. `JoiningTimeout`) | 10s tick + per-rule budgets | **direct KV write** (until the 2026-05-24 fix) |
+| `ClusterTopologyManager` (CTM) | deficit / auto-heal / provisioning | reconcile tick | yes (provisioning slots) |
+| `SelfDrainCoordinator` | local quorum view | immediate | self-`halt(2)` |
+| `DecommissionedAtomGc` | retention | 1-min | removes STOPPED atoms |
+| `MembershipFsm` | **intended** convergence point (reducer per `(state,event)`) | event-driven (HLC) | yes — but not sovereign |
+
+There are also **three distinct "topology" notions** that are easy to conflate:
+- **Decision plane** — KV `NodeLifecycleKey` entries (`kvTrackedPeersSupplier`, `AetherNode.java:1030-1042`): "who we track."
+- **Observation plane** — QUIC `connectedPeers` (`AetherNode.java:1054`): "who we can reach right now."
+- **Consensus quorum** — fixed configured `clusterSize` (`TopologyManager.java:44-49`, read by `SelfDrainCoordinator`): "how many votes split-brain-safe."
+
+And **four reason vocabularies** for the same terminal transition: `transport-failure`, `swim-faulty`, `swim-departed`, `join-timeout` (canonical, in `ClusterMembershipReducer`), plus `operator-forced` (what the reconciler stamped when it bypassed the FSM).
+
+### Symptoms → which loop interaction produced them
+- **"got 6" over-count** — provision-replacement races decommission-of-dead; *add new + remove old* is not atomic.
+- **GC-vs-poll `<absent>`** — `DecommissionedAtomGc` (1-min) reclaims a STOPPED atom before a test/operator polls it; mutable state is the contract surface.
+- **Budget misses by 1–2s** — *which* detector wins is nondeterministic; the fallbacks (45s JoiningTimeout / ~61s ON_DUTY SwimDeparted / 90s) sit right at contract edges.
+- **Reason fragmentation** — each loop stamps its own vocabulary; the reconciler bypassed the one reducer that assigns canonical reasons (`MembershipFsm.applyEffect(EmitDomainEvent)`, `MembershipFsm.java:971`).
+- **Leader-warmup / `LocalDisconnect` fragility** — the aggregator loop has startup transients SWIM doesn't; they disagree during exactly the churn window that matters.
+
+**The deepest tell:** `MembershipFsm` was *designed* to be the convergence point (a reducer cell for every `(state,event)` — `ClusterMembershipReducer.applyJoining/applyOnDuty/...`). But it is **not sovereign**: detectors bypass it, it's leader-gated and warmup-fragile, and CTM / self-drain / GC mutate state on their own. We keep strengthening it one bypass at a time. **The structural move is to make it sovereign.**
+
+---
+
+## 2. The scenario oracle (acceptance criteria)
+
+Any structural change must satisfy **all 20 scenarios** in [`membership-architecture-spec.md` §16](../specs/membership-architecture-spec.md) (S01–S20). This is the test oracle — a redesign is only "done" when it covers these, and they are exactly what cluster-B integration exercises.
+
+| ID | Scenario | Stresses |
+|---|---|---|
+| S01 | JOINING-window kill (before SWIM HEALTHY) | join-deadline reclaim, reason tagging |
+| S02 | ON_DUTY single non-leader kill | steady-state detection |
+| S03 | Two simultaneous non-leader kills (<1s) | multi-failure quorum |
+| S04 | Brief transport flap < 5s (reconnects) | **no false decommission** |
+| S05 | 2-vs-3 partition (majority side) | partition handling |
+| S06 | Partition heal (before minority exits) | reconvergence, no over-count |
+| S07 | Graceful operator drain | drain path |
+| S08 | Drain timeout (hard deadline) | failed-drain path |
+| S09 | Drain during partition | drain × partition |
+| S10 | Operator force-decommission | operator authority |
+| S11 | Restart inside revival TTL (same NodeId) | identity revival |
+| S12 | Restart outside revival TTL (post-GC) | GC retention boundary |
+| S13 | SWIM-only failure (QUIC OK) | detector disagreement |
+| S14 | Transport-only failure (SWIM HEALTHY) | detector disagreement |
+| S15 | Cold-start formation (5 simultaneous) | bootstrap |
+| S16 | Cold-start + simultaneous kill | bootstrap × failure |
+| S17 | Aggregator quorum lost (UNKNOWN / no snapshot) | detector degradation |
+| S18 | Leader kill + re-election | leadership transfer |
+| S19 | Quorum-loss → self-drain (≥(N/2)+1 unreachable ≥8s) | self-drain |
+| S20 | Self-drain → restart → rejoin | recovery |
+
+**Note S13 vs S14** explicitly encode *detector disagreement* as required behavior — the system is *specced* to have two detectors (SWIM and transport) that can disagree. Any "collapse to one detector" proposal must re-express what S13/S14 are testing, or argue they fold away.
+
+---
+
+## 3. Hard constraints (what any redesign must respect)
+
+These came out of the 2026-05-24 design review (and are the reason "just delete SWIM" is not free):
+
+- **C1 — Transport precedes consensus.** Rabia cannot start without transport. *Some* bootstrap advertising mechanism must exist before consensus/membership is up. Today: a joining node broadcasts SWIM **ANNOUNCE** datagrams at 1 Hz to the static `PEERS` list until quorum connectivity (`swim-driven-topology-spec.md` §5.2). That ANNOUNCE is the **only** path a NodeId enters QUIC's address book — KV/PEERS-direct dialing was deliberately removed (§"What Was Removed", lines 217-225).
+- **C2 — SWIM has TWO jobs, not one.** (1) **Discovery/advertising** — ANNOUNCE-based bootstrap + telling QUIC whom to dial (`JoinAnnounced→connect`, `FaultyObserved→disconnect`, `swim-driven-topology-spec.md` §6). (2) **Failure detection** — suspicion→FAULTY→DEPARTED. **Eliminating SWIM requires replacing BOTH.** This is the crux: the failure-detection conversation keeps forgetting the discovery role.
+- **C3 — QUIC as-configured is NOT a sufficient detector.** Only `maxIdleTimeout(30s)`, **passive** (`quic-transport-spec.md` §3.3:139-141). No active keepalive/PING: a silently-dead peer (hung process, no FIN) isn't noticed until a send is attempted + 30s. Slower than SWIM's ~15s, and a bare transport signal can't distinguish **partition from death** on its own (the same limitation the aggregator has). QUIC *could* be configured with active PING keepalive — but that just makes QUIC *a* probe, see C5.
+- **C4 — Consensus-liveness has a steady-state hole.** Rabia rounds happen only when there are proposals; a quiet steady-state cluster produces no consensus traffic, hence no liveness signal. Using "who's acking proposals" as the failure detector therefore needs **synthetic heartbeat rounds** in steady state — which is a ping by another name (see C5).
+- **C5 — You cannot eliminate periodic liveness probing.** SWIM gossip, QUIC keepalive-PING, aggregator ping-pong, and "Rabia heartbeats" are **the same mechanism wearing different hats**: *something* must generate periodic traffic to detect silent death. **The achievable win is collapsing to ONE probe substrate and making it authoritative — not reducing to zero.**
+- **C6 — S04 forbids trigger-happy detection.** A <5s transport flap must NOT decommission. Any faster detector must still debounce transient blips.
+
+---
+
+## 4. Pillars of a structural fix
+
+**Pillar 1 — One writer (FSM sovereignty).** Every detector (aggregator, SWIM, reconciler, CTM, self-drain *intent*) becomes a pure **event producer**; `MembershipFsm` is the **sole** mutator of lifecycle KV state, under one HLC clock. The 2026-05-24 `JoiningTimeout` fix is the first brick (reconciler now `enqueueOperatorEvent` instead of writing KV). *Finish it:* audit every lifecycle `Put`/`Remove` and route through the FSM. This dissolves bypass races and unifies the reason vocabulary by construction (reasons exist only in the reducer). **Highest-leverage, RC1-sized.**
+
+**Pillar 2 — One probe substrate (collapse the detectors).** SWIM and the ReachabilityAggregator are two overlapping liveness detectors that disagree during churn. Pick/forge one authoritative substrate (see §5 options). Must respect C1–C6, and must re-express S13/S14.
+
+**Pillar 3 — Event stream is the contract (not mutable state).** The GC-vs-poll flake and budget-poll races exist because observers read *transient mutable KV*. Evidence in miniature: the smoking-gun test (asserts on the `NODE_FAILED` *domain event*) passed reliably twice; the budget test (polls KV state) flaked three different ways. Make the **append-only lifecycle event log the observability contract** (we already have `audit.lifecycle.commands` + `RecentCommandsBuffer` — promote it to *the* surface) and make chaos tests assert on **events + convergence invariants** ("eventually exactly N ON_DUTY, quiesced"), not wall-clock state polls.
+
+---
+
+## 5. Design options (with tradeoffs)
+
+### 5A. The "one probe substrate" question (Pillar 2)
+
+| Option | Idea | Pros | Cons / risks | C-constraints |
+|---|---|---|---|---|
+| **2a — SWIM sovereign, aggregator demoted** | Keep SWIM as the single liveness + discovery authority; make `ReachabilityAggregator` purely **advisory/diagnostic** (or delete it). | Least disruptive; SWIM already does discovery (C2) + detection + debounce; removes the warmup-fragile, quorum-brittle second loop that caused most timing disagreements. | Must prove SWIM alone covers S14 (transport-only failure where SWIM still HEALTHY) — possibly by feeding QUIC connection-loss as a SWIM input. | Satisfies C1/C2 natively. |
+| **2b — φ-accrual detector** | Replace binary REACHABLE/UNREACHABLE + fixed TTL/quorum with a continuous per-peer suspicion value + one threshold (Hayashibara). | One principled, self-tuning signal; natural debounce (C6); removes magic `(N/2)+1`+15s+SWIM-timer interplay. | New mechanism; still needs a probe substrate underneath (gossip or ping); doesn't by itself solve discovery (C2). | Needs C5 substrate. |
+| **2c — Consensus-liveness** | Derive liveness from Rabia participation (who acks rounds). | Most authoritative signal, "free" when traffic exists; could retire a separate detector. | **C4 steady-state hole** → needs heartbeat rounds (= a ping); doesn't solve discovery (C2); couples membership to consensus internals. | Blocked by C4 without heartbeats. |
+| **2d — QUIC active-keepalive substrate** | Enable QUIC PING keepalive; use connection state as the probe. | Reuses the transport we already maintain; point-to-point, no gossip fan-out cost. | C3: needs active keepalive added; transport-only signal can't distinguish partition/death; doesn't solve discovery (C2); per-connection (no membership dissemination). | Needs C2 discovery layer + debounce (C6). |
+
+**Working hypothesis (to validate):** the cheapest high-value move is **2a** — *not* "eliminate SWIM" but "eliminate the redundant aggregator and make SWIM sovereign," feeding QUIC connection-loss into SWIM so S14 is covered. This inverts the original instinct (delete SWIM) and is worth a measurement spike (§6).
+
+### 5B. Atomic replacement (kills "got 6")
+Model replacement as an **atomic slot swap with generation fencing**: a provisioning *slot* has exactly one occupant; a replacement **supersedes** its predecessor in a single FSM transition (old occupant fenced by generation/epoch), instead of "add new + remove old" as two racing ops. Directly retires the over-count symptom (S06/S16/S20).
+
+### 5C. Timing-invariant composition
+Derive all lifecycle timers (join deadline, reclaim budget, GC retention, detector window, aggregator TTL) from a small base parameter set with a **composition invariant**: `GC_retention > max_detection_budget > propagation`. Makes GC-can't-race-a-poll and reclaim-can't-undercut-its-deadline true *by construction* rather than by tuning. (We currently hand-tune: reclaim 45s, FSM join deadline 60s, GC 60s, test budget 90s — these were aligned manually and remain fragile.)
+
+### 5D. Deterministic simulation testing (highest ROI, highest cost)
+The reason this has cost weeks is non-determinism: every chaos run lands differently (3 runs of S01 → JOINING/45s, ON_DUTY/61s, absent/GC'd-92s) — un-debuggable by construction. **Forge is already single-JVM** — the ideal substrate to run the whole cluster on a controlled logical clock + simulated network where a **seed reproduces the exact interleaving** (FoundationDB / TigerBeetle style). Converts flaky chaos into deterministic, bisectable tests and gives cheap exhaustive coverage of S01–S20 forever. Treat as a funded spike; it changes the economics of everything after.
+
+---
+
+## 6. Proposed sequencing
+
+- **RC1 (finish the foundation, bounded):**
+  - Pillar 1 — FSM single-writer: audit & route every lifecycle mutation through the FSM (extend the `JoiningTimeout` pattern to CTM scale-down, self-drain, drain-coordinator, bootstrap).
+  - Pillar 3-lite — convert cluster-B chaos assertions from KV-state polls to event + invariant assertions (retire GC-vs-poll/edge-budget flakiness).
+  - 5B — atomic slot-swap for replacements (kills over-count).
+  - 5C — timing-invariant cleanup.
+- **RC2 / research spikes:**
+  - **Spike-1 (measurement):** instrument & compare detection latency + false-positive rate of SWIM vs aggregator vs QUIC-keepalive vs consensus-heartbeat on the S0x scenarios. Decides 5A direction with data, not opinion.
+  - **Spike-2:** deterministic simulation harness on Forge (5D).
+  - Then Pillar 2 (probe-substrate collapse) per Spike-1.
+
+---
+
+## 7. Open questions
+
+1. **5A vs status quo:** can SWIM (fed QUIC connection-loss) cover S14 alone, letting us delete the aggregator? Or is the aggregator's quorum-vote genuinely needed for partition cases (S05/S17)?
+2. **C4 mitigation cost:** if we ever want consensus-liveness, how cheap are Rabia steady-state heartbeats, and do they perturb the leaderless protocol?
+3. **Discovery (C2) decoupling:** can bootstrap/advertising (ANNOUNCE) be separated from the failure detector so the two SWIM jobs can evolve independently? A thin "membership gossip / address book" layer + a separate "liveness probe."
+4. **Generation fencing scope:** does slot-swap need a new epoch field on `NodeLifecycleValue`, or can `observedCoreEpoch` carry it?
+5. **S04 debounce budget** vs **S01/S19 fast-reclaim** — what's the principled single knob (φ threshold?) that serves both "don't react to 5s flaps" and "reclaim a dead JOINING node fast"?
+
+---
+
+## 8. Decision log
+
+| Date | Decision | Rationale | Refs |
+|---|---|---|---|
+| 2026-05-24 | **Register `CommandLifecycleEvent` codec at system level** (`NodeCodecs`/`WorkerCodecs`), not slice-DI. | Deployment module isn't a slice; the dead reconciler tick was the root of "cleanup never happens." | commit `a2dfeb0f7` |
+| 2026-05-24 | **Do NOT catch the serializer "no codec" exception.** | `Serializer` exceptions are by-design fatal dev/test guards (missing registration); catching would hide regressions. Registration is the fix. | `Serializer.java` design note |
+| 2026-05-24 | **Drop Fix C** (excluding JOINING from the aggregator quorum denominator). | "Nodes need to include JOINING to start syncing" — JOINING must stay in the tracked set; reducing the denominator works against the join/sync inclusion. Detection handled via Pillar-1 routing instead. | this doc §3 C2 |
+| 2026-05-24 | **B — reconciler `JoiningTimeout` routes through the FSM** (`enqueueOperatorEvent` → `SwimDeparted`), emitting `reason=swim-departed`, not `operator-forced`. | Honest reason (SWIM-driven trigger); first brick of Pillar 1 (FSM single-writer). Validated: smoking-gun passed twice. | commit `247a55fa4` |
+| 2026-05-24 | **Reclaim budget 90s→45s** (`JoiningTimeout.BUDGET_MULTIPLIER` 1.5→0.75); FSM join deadline kept 60s. | Faster reclaim of demonstrably-gone (SWIM-faulty/absent) JOINING peers without shortening the healthy-node join window. | commit `247a55fa4` |
+| 2026-05-24 | **S01 test budget 25s→90s.** | The budget is racy by construction (JOINING/45s vs ON_DUTY-SwimDeparted/~61s vs GC-reclaim); 90s covers both fallback paths. Test now asserts on the domain event (robust), budget on state (racy) — see Pillar 3. | `test-joining-window-kill.sh` |
+| 2026-05-24 | **Adopt FSM sovereignty (Pillar 1) as the RC1 structural direction; fund Spike-1 (detector measurement) + Spike-2 (deterministic sim) for RC2.** | Dissolves the race class rather than re-timing it; matches the single-writer principle. *(pending confirmation)* | this doc §6 |
+
+---
+
+## 9. Validated facts (anchors for future readers)
+
+- `ReachabilityAggregator.foldSelfObservations` marks any `topologySupplier` peer not in `connectedPeers` as UNREACHABLE — **no prior-connection edge required** (`ReachabilityAggregator.java:220-232`). But `derive` needs `unreachable >= (N/2)+1` *observers* (`:289-298`); a single self-fold = 1 observer → degrades to UNKNOWN. Quorum is assembled at the leader from follower pongs (leader-gated, `AetherNode.java:1065-1067, 1113+`).
+- Aggregator quorum denominator = `kvTrackedPeersSupplier.size()` (all non-STOPPED incl JOINING) — **separate object** from the consensus quorum (`TopologyManager.quorumSize()` over fixed `clusterSize`). Widening/narrowing one does not touch the other.
+- The `reason=` domain-event line is emitted **only** by `MembershipFsm.applyEffect(EmitDomainEvent)` (`MembershipFsm.java:971`). Direct KV writers (pre-fix reconciler) produce no reason line — this is why FSM routing is mandatory for canonical reasons.
+- `applyJoining` reducer cells (`ClusterMembershipReducer.java:158-169`): `SwimDeparted→swim-departed` (:162), `JoinDeadlineExpired→join-timeout` (:165), `TransportUnreachable→transport-failure` (:167); `SwimFaulty→nop` (:161, SWIM-faulty alone does NOT decommission a JOINING node).
+- QUIC: `maxIdleTimeout(30s)` passive only, no active keepalive (`quic-transport-spec.md` §3.3).
+
+---
+
+## 10. References
+- Specs: membership-architecture-spec.md (§16 S01–S20), swim-driven-topology-spec.md (§5.2 ANNOUNCE, §6 SWIM→QUIC), reachability-aggregator-spec.md, quic-transport-spec.md (§3.3), cluster-convergence-reconciler-spec.md.
+- Session handover: `progress/session-handover-2026-05-24.md` (codec/DHT/backpressure/self-drain chain).
+- Commits: `a2dfeb0f7` (codec revival), `247a55fa4` (FSM-routed reason + reclaim budget).
+</content>
