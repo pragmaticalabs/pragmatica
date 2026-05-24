@@ -22,8 +22,8 @@ public sealed interface AuditLifecycleStreams {
     String TOPIC_AUDIT_LIFECYCLE_COMMANDS = "audit.lifecycle.commands";
     int AUDIT_PARTITIONS = 4;
     long AUDIT_MAX_EVENT_SIZE_BYTES = 16L * 1024L;
-    long AUDIT_RETENTION_MAX_COUNT = 1_000_000L;
-    long AUDIT_RETENTION_MAX_BYTES = 64L * 1024L * 1024L;
+    long AUDIT_RETENTION_MAX_COUNT = 50_000L;
+    long AUDIT_RETENTION_MAX_BYTES = 8L * 1024L * 1024L;
     long AUDIT_RETENTION_MAX_AGE_MS = 7L * 24L * 60L * 60L * 1000L;
 
     StreamConfig AUDIT_LIFECYCLE_COMMANDS = StreamConfig.streamConfig(TOPIC_AUDIT_LIFECYCLE_COMMANDS,
