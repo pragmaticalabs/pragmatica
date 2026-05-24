@@ -296,6 +296,21 @@ public final class ClusterSyncContext {
     @Contract public void emitPingTimeoutIfExceeded(NodeId peer, int missed) {
         if (missed <pingTimeoutThreshold) {return;}
         signalSink.emit(new HealthSignal.PingTimeout(peer, missed, epochSupplier.get()));
+        // RC1 (S01 fix, owner-side SWIM symmetry): the follower-side `processEvictionHints`
+        // already refuses to act on an eviction hint when SWIM reports the peer ALIVE; the
+        // owner-side ping-timeout path must apply the SAME guard. Pong delivery is leader-
+        // coupled, so during a leader-loss / re-election window a LIVE SWIM-HEALTHY peer can
+        // transiently miss `pingTimeoutThreshold` pongs. Without this guard the owner would
+        // soft-evict it (REMOVE → ~1s flap), feeding the self-drain cascade. Skip BOTH the
+        // disconnect AND the eviction-hint broadcast for a SWIM-HEALTHY peer. The
+        // `PingTimeout` signal above is still emitted — it is advisory liveness telemetry
+        // that the SWIM-gated FSM arbitrates independently; only the disconnect + hint are
+        // harmful for a peer SWIM still considers reachable.
+        if (collector.peerLocallyAlive(peer)) {
+            log.debug("ClusterSync: skipping ping-timeout eviction for {} — SWIM says ALIVE (missed={})",
+                      peer, missed);
+            return;
+        }
         // RC1 (S01 fix): app-level liveness detection. QUIC's MAX_IDLE_TIMEOUT is
         // intentionally disabled (cluster connections are persistent per QUIC RFC 9000
         // §10.1), so the QUIC layer has no autonomous dead-peer detection — UDP sends

@@ -97,6 +97,15 @@ public interface ClusterSyncCollector {
     /// in `AetherNode` to consult `CoreSwimHealthDetector.healthOf`).
     @Contract default void setPeerLocallyAlive(java.util.function.Predicate<NodeId> predicate) {}
 
+    /// RC1 (S01 fix, owner-side symmetry) — query the SWIM-backed predicate wired via
+    /// [setPeerLocallyAlive]. Returns whether `peer` is observed ALIVE (SWIM HEALTHY) in
+    /// the local membership view. Default `true` (no SWIM info → behave as before).
+    /// `ClusterSyncContext.emitPingTimeoutIfExceeded` consults this BEFORE soft-evicting a
+    /// peer on ping-timeout, so the owner refuses to evict a SWIM-HEALTHY peer — the same
+    /// guard `processEvictionHints` already applies follower-side. Reuses the single
+    /// predicate wired in `AetherNode` (no second wiring path).
+    default boolean peerLocallyAlive(NodeId peer) {return true;}
+
     /// Emit one `PeerConnectivityObservation` per topology peer (excluding `self`)
     /// into the wired `PeerObservationBuffer`. Peers in `connected` get state
     /// `CONNECTED`; peers in `topology` but absent from `connected` get state
@@ -354,6 +363,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         peerLocallyAlive.set(predicate == null
                              ? _ -> true
                              : predicate);
+    }
+
+    @Override public boolean peerLocallyAlive(NodeId peer) {
+        return peerLocallyAlive.get().test(peer);
     }
 
     @Override@Contract public void setReadinessTracker(NodeReadinessTracker tracker) {
