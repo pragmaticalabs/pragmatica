@@ -175,7 +175,10 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
                                  ? onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED)
                                  : Outcome.nop(state);
             case SwimDeparted e -> onDutyToStopped(state, e.at(), REASON_SWIM_DEPARTED, StopReason.FORCED);
-            case SlotClaimed _ -> illegal(state, event);
+            // A late/duplicate SlotClaimed for an already-ON_DUTY peer is benign (auto-heal
+            // replacement re-claim / event re-delivery): nop rather than illegal() — a
+            // throwing reducer cell aborts the FSM tick (found via Spike-2, 2026-05-24).
+            case SlotClaimed _ -> Outcome.nop(state);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
             case TransportReachable _ -> Outcome.nop(state);

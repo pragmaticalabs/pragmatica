@@ -290,8 +290,11 @@ class ClusterMembershipReducerTest {
             assertDecommissioned(outcome, T1, "swim-departed");
         }
 
-        @Test void onDuty_slotClaimed_isErr() {
-            assertIllegal(state, new SlotClaimed(PEER, SLOT_ID, T1));
+        @Test void onDuty_slotClaimed_isNop_idempotentReDelivery() {
+            // Auto-heal replacement re-claim / late SlotClaimed re-delivery against an
+            // already-ON_DUTY peer is benign — nop, not illegal (found via Spike-2, 2026-05-24:
+            // the prior illegal() threw on the normal auto-heal path, aborting the FSM tick).
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void onDuty_forceDrain_entersDraining() {
