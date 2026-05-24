@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import io.netty.channel.WriteBufferWaterMark;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.pragmatica.consensus.NodeId;
@@ -33,16 +34,36 @@ public final class QuicPeerConnection {
     private final NodeId peerId;
     private final QuicChannel connection;
     private final QuicStreamChannel[] longLivedStreams;
+    private final int consensusWatermarkLowBytes;
+    private final int consensusWatermarkHighBytes;
 
-    private QuicPeerConnection(NodeId peerId, QuicChannel connection) {
+    private QuicPeerConnection(NodeId peerId,
+                               QuicChannel connection,
+                               int consensusWatermarkLowBytes,
+                               int consensusWatermarkHighBytes) {
         this.peerId = peerId;
         this.connection = connection;
         this.longLivedStreams = new QuicStreamChannel[StreamType.values().length];
+        this.consensusWatermarkLowBytes = consensusWatermarkLowBytes;
+        this.consensusWatermarkHighBytes = consensusWatermarkHighBytes;
     }
 
-    /// Create a new peer connection wrapping a QUIC channel.
+    /// Create a new peer connection wrapping a QUIC channel, using the default CONSENSUS
+    /// stream write-buffer watermarks ([QuicTransportTuning] defaults).
     public static QuicPeerConnection quicPeerConnection(NodeId peerId, QuicChannel connection) {
-        return new QuicPeerConnection(peerId, connection);
+        return new QuicPeerConnection(peerId,
+                                      connection,
+                                      QuicTransportTuning.DEFAULT_WATERMARK_LOW_BYTES,
+                                      QuicTransportTuning.DEFAULT_WATERMARK_HIGH_BYTES);
+    }
+
+    /// Create a new peer connection wrapping a QUIC channel with explicit CONSENSUS stream
+    /// write-buffer watermarks. Used when the enclosing transport carries non-default tuning.
+    public static QuicPeerConnection quicPeerConnection(NodeId peerId,
+                                                        QuicChannel connection,
+                                                        int consensusWatermarkLowBytes,
+                                                        int consensusWatermarkHighBytes) {
+        return new QuicPeerConnection(peerId, connection, consensusWatermarkLowBytes, consensusWatermarkHighBytes);
     }
 
     public NodeId peerId() {
@@ -59,7 +80,19 @@ public final class QuicPeerConnection {
     }
 
     /// Register a long-lived stream for the given type.
+    ///
+    /// For [StreamType#CONSENSUS] the stream's write-buffer high-watermark is raised
+    /// (default 256KB low / 1MB high — see [QuicTransportTuning]) so that bursts of
+    /// consensus commands fit in the write buffer before `isWritable()` flips false. This
+    /// is the first line of defence against the consensus-send backpressure defect; the
+    /// async retry wrap in `QuicClusterNetwork.writeIfWritable` is the safety net for the
+    /// pathological case. `WriteBufferWaterMark` is a Netty `ChannelConfig` facility and is
+    /// supported by the incubator `QuicStreamChannel`'s config.
     public void registerStream(StreamType type, QuicStreamChannel channel) {
+        if (type == StreamType.CONSENSUS) {
+            channel.config()
+                   .setWriteBufferWaterMark(new WriteBufferWaterMark(consensusWatermarkLowBytes, consensusWatermarkHighBytes));
+        }
         longLivedStreams[type.streamIndex()] = channel;
     }
 

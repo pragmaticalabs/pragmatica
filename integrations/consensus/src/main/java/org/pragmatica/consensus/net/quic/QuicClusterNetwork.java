@@ -54,7 +54,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.JitterUtil;
+import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.lang.Promise;
@@ -149,6 +151,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("unused")
     private final ClusterFormationConfig formationConfig;
     private volatile QuicDisconnectListener disconnectListener;
+
+    /// QUIC consensus-stream resilience tunables (retry attempts/backoff + CONSENSUS stream
+    /// write-buffer watermarks). Defaults cover the observed deploy-burst backpressure window
+    /// while staying well under the 30s `cluster.apply` deadline. See [QuicTransportTuning].
+    private final QuicTransportTuning tuning;
+
+    /// Async, non-blocking retry for CONSENSUS sends. On backpressure (`!isWritable()`) the
+    /// send is handed to this retry instead of being silently dropped. Retry delays are
+    /// scheduled via `SharedScheduler` (NOT blocking the Netty event loop or submit thread).
+    /// Stateless and thread-safe — a single instance serves all peers concurrently.
+    private final Retry consensusRetry;
 
     /// Late-bound listener for QUIC peer-state changes (join / reconnect / leave).
     /// Higher layers (e.g. `ClusterTopologyManager`) consume these to keep stability
@@ -248,6 +261,23 @@ public class QuicClusterNetwork implements ClusterNetwork {
                               BooleanSupplier isLeaderSupplier,
                               PeerConnectivityReporter connectivityReporter,
                               ObservedEpochSupplier observedEpochSupplier) {
+        this(topologyManager, serializer, deserializer, router, serverSslContext, clientSslContext,
+             formationConfig, disconnectListener, isLeaderSupplier, connectivityReporter, observedEpochSupplier,
+             QuicTransportTuning.defaults());
+    }
+
+    public QuicClusterNetwork(TopologyObserver topologyManager,
+                              Serializer serializer,
+                              Deserializer deserializer,
+                              MessageRouter router,
+                              QuicSslContext serverSslContext,
+                              QuicSslContext clientSslContext,
+                              ClusterFormationConfig formationConfig,
+                              QuicDisconnectListener disconnectListener,
+                              BooleanSupplier isLeaderSupplier,
+                              PeerConnectivityReporter connectivityReporter,
+                              ObservedEpochSupplier observedEpochSupplier,
+                              QuicTransportTuning tuning) {
         this.self = topologyManager.self();
         this.topologyManager = topologyManager;
         this.serializer = serializer;
@@ -260,6 +290,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.isLeaderSupplier = isLeaderSupplier == null ? () -> true : isLeaderSupplier;
         this.connectivityReporter = connectivityReporter == null ? PeerConnectivityReporter.noop() : connectivityReporter;
         this.observedEpochSupplier = observedEpochSupplier == null ? ObservedEpochSupplier.zero() : observedEpochSupplier;
+        this.tuning = tuning == null ? QuicTransportTuning.defaults() : tuning;
+        this.consensusRetry = this.tuning.consensusRetry();
     }
 
     /// Late-bound leader gate + connectivity reporter. Follower REMOVE view-changes
@@ -840,24 +872,76 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private WriteOutcome writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
-        if (!ch.isWritable()) {
-            // Backpressure refusal — channel is at netty's high-watermark. Previously silently
-            // dropped, which masked the failure from upstream callers (DHT quorum stalls on
-            // unreachable replicas waiting for their per-op 10s timeout instead of failing
-            // fast). The DHT path now consumes this outcome via `ClusterNetwork.sendOutcome`
-            // and calls its `QuorumCollector.onFailure` immediately, allowing fast-fail when
-            // quorum becomes unreachable. Non-tracked callers (`send`) still observe the same
-            // effect because the message is not enqueued — they will retry through their own
-            // retransmit cycle (Rabia, SWIM gossip) without the silent-drop log being load-
-            // bearing for failure detection. See aether/docs/specs/dht-resilience-spec.md.
-            quicMetrics.onBackpressureDrop();
-            log.warn("Channel to peer {} not writable on stream {} — refusing message (backpressure)", peerId, streamType);
-            return new WriteOutcome.BackpressureRefused(peerId);
+        if (ch.isWritable()) {
+            quicMetrics.onMessageSent();
+            ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
+              .addListener(future -> handleWriteResult(future, peerId, streamType));
+            return new WriteOutcome.Sent(peerId);
         }
-        quicMetrics.onMessageSent();
-        ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
-          .addListener(future -> handleWriteResult(future, peerId, streamType));
+        // Backpressure: channel is at netty's high-watermark. Two divergent policies by stream:
+        //
+        //  - CONSENSUS: NEVER silently drop. A burst of consensus commands (deploy → ACTIVATE)
+        //    backpressures the consensus stream; the old silent-drop relied on "Rabia/SWIM will
+        //    retransmit", but retransmits hit the same backpressure and ALSO dropped, denying
+        //    quorum until the 30s cluster.apply timeout. We now hand the send to an async,
+        //    non-blocking Retry (delays scheduled via SharedScheduler — never blocks the event
+        //    loop or submit thread) and report Sent optimistically (mirrors the offline-buffer
+        //    Queued→Sent pattern; consensus callers send/broadcast are fire-and-forget).
+        //  - Everything else (KV_STORE / HTTP_FORWARD / DHT_RELAY): UNCHANGED fast-fail. The DHT
+        //    quorum path (sendOutcome → dispatchPayloadWithOutcome) RELIES on BackpressureRefused
+        //    to fail-fast against unreachable replicas instead of stalling on its per-op timeout.
+        //    See aether/docs/specs/dht-resilience-spec.md.
+        return streamType == StreamType.CONSENSUS
+               ? retryConsensusWrite(ch, bytes, peerId)
+               : refuseBackpressured(peerId, streamType);
+    }
+
+    /// Package-private test seam — drives `writeIfWritable` directly so regression tests can
+    /// assert the per-stream backpressure branch (CONSENSUS retry vs. fast-fail refusal)
+    /// without standing up a full QUIC handshake.
+    WriteOutcome writeIfWritableForTest(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
+        return writeIfWritable(ch, bytes, peerId, streamType);
+    }
+
+    /// Package-private test seam — exposes the single async-write attempt so tests can assert
+    /// it fails cleanly (a `Cause`, never a throw) on a backpressured/inactive channel.
+    Promise<Unit> rawConsensusWriteForTest(QuicStreamChannel ch, byte[] bytes, NodeId peerId) {
+        return rawConsensusWrite(ch, bytes, peerId);
+    }
+
+    private WriteOutcome refuseBackpressured(NodeId peerId, StreamType streamType) {
+        quicMetrics.onBackpressureDrop();
+        log.warn("Channel to peer {} not writable on stream {} — refusing message (backpressure)", peerId, streamType);
+        return new WriteOutcome.BackpressureRefused(peerId);
+    }
+
+    /// Fire-and-forget async retry of a backpressured CONSENSUS send. The Retry re-invokes
+    /// `rawConsensusWrite` after a `SharedScheduler`-scheduled delay, so nothing blocks here.
+    /// Reports `Sent` optimistically — consensus callers ignore the synchronous outcome and
+    /// the retry (plus Rabia's own retransmit as ultimate backstop) owns eventual delivery.
+    private WriteOutcome retryConsensusWrite(QuicStreamChannel ch, byte[] bytes, NodeId peerId) {
+        quicMetrics.onBackpressureRetry();
+        log.debug("CONSENSUS channel to {} not writable — retrying via async backoff (not dropping)", peerId);
+        var _ = consensusRetry.execute(() -> rawConsensusWrite(ch, bytes, peerId))
+                              .onFailure(cause -> log.debug(
+                                  "CONSENSUS send to {} gave up after retries — relying on Rabia retransmit: {}",
+                                  peerId, cause.message()));
         return new WriteOutcome.Sent(peerId);
+    }
+
+    /// One write attempt against the captured CONSENSUS stream. Re-validated every attempt:
+    /// if the channel went inactive or is still backpressured this fails (a `Cause`, never a
+    /// throw) and the enclosing Retry either reschedules or gives up. A peer disconnecting
+    /// mid-retry therefore fails cleanly — the offline buffer handles reconnect delivery.
+    /// This is the atomic unit the Retry re-invokes, so it performs NO retry itself.
+    private Promise<Unit> rawConsensusWrite(QuicStreamChannel ch, byte[] bytes, NodeId peerId) {
+        if (ch.isActive() && ch.isWritable()) {
+            quicMetrics.onMessageSent();
+            ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
+              .addListener(future -> handleWriteResult(future, peerId, StreamType.CONSENSUS));
+            return Promise.success(unit());
+        }
+        return Causes.cause("CONSENSUS stream backpressured or inactive for " + peerId).promise();
     }
 
     private void handleWriteResult(Future<? super Void> future, NodeId peerId, StreamType streamType) {

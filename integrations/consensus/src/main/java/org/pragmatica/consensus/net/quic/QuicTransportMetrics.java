@@ -34,6 +34,7 @@ public final class QuicTransportMetrics {
     private final LongAdder writeFailures = new LongAdder();
     private final LongAdder backpressureDrops = new LongAdder();
     private final LongAdder backpressureQueued = new LongAdder();
+    private final LongAdder backpressureRetries = new LongAdder();
     private final AtomicInteger backpressureQueueDepth = new AtomicInteger(0);
 
     private QuicTransportMetrics() {}
@@ -73,6 +74,13 @@ public final class QuicTransportMetrics {
         backpressureDrops.increment();
     }
 
+    /// Records that a CONSENSUS send hit the write high-watermark and was handed to the
+    /// async retry path (instead of being silently dropped). One increment per backpressured
+    /// CONSENSUS send that enters retry — not per retry attempt.
+    public void onBackpressureRetry() {
+        backpressureRetries.increment();
+    }
+
     public void onBackpressureQueued() {
         backpressureQueued.increment();
         backpressureQueueDepth.incrementAndGet();
@@ -101,6 +109,7 @@ public final class QuicTransportMetrics {
         metrics.put("quic_write_failures_total", writeFailures.sum());
         metrics.put("quic_backpressure_drops_total", backpressureDrops.sum());
         metrics.put("quic_backpressure_queued_total", backpressureQueued.sum());
+        metrics.put("quic_backpressure_retries_total", backpressureRetries.sum());
         metrics.put("quic_backpressure_queue_depth", backpressureQueueDepth.get());
         return Map.copyOf(metrics);
     }
@@ -135,6 +144,10 @@ public final class QuicTransportMetrics {
 
     public long backpressureQueuedCount() {
         return backpressureQueued.sum();
+    }
+
+    public long backpressureRetryCount() {
+        return backpressureRetries.sum();
     }
 
     public int backpressureQueueDepth() {
