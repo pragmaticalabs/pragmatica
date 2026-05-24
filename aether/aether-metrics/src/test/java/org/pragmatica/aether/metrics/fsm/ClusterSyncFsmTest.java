@@ -21,6 +21,7 @@ import org.pragmatica.statemachine.Fsm;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
@@ -126,6 +127,34 @@ class ClusterSyncFsmTest {
     }
 
     @Nested
+    class UnseededTopologyFallback {
+        @Test
+        void pingTick_emptyTopologyButConnectedPeers_dispatchesToConnectedPeers() {
+            var network = new ConfigurableConnectedNetwork(Set.of(PEER_A, PEER_B));
+            var harness = buildFsmHarness(network, HealthSignalSink.noop());
+            // Topology is never seeded (no MembershipDecision/NodeJoined deltas) — Spike-1 scenario.
+            harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
+
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
+
+            assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
+            assertThat(network.sent()).containsExactlyInAnyOrder(PEER_A, PEER_B);
+        }
+
+        @Test
+        void pingTick_emptyTopologyAndNoConnectedPeers_isIgnored() {
+            var network = new ConfigurableConnectedNetwork(Set.of());
+            var harness = buildFsmHarness(network, HealthSignalSink.noop());
+            harness.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
+
+            harness.fsm().dispatch(new ClusterSyncEvents.PingTick(Epoch.epoch(7L, 0L)));
+
+            assertThat(harness.fsm().current()).isInstanceOf(ClusterSyncState.Pinging.class);
+            assertThat(network.sent()).isEmpty();
+        }
+    }
+
+    @Nested
     class CounterBehaviour {
         @Test
         void twoPingTicks_withoutPong_incrementCounterPastThreshold_emitsTimeout() {
@@ -221,7 +250,7 @@ class ClusterSyncFsmTest {
     /// `ClusterNetwork` stub that records per-target sends without doing any wire I/O. Only the
     /// methods the scheduler uses (`send`) are meaningful; the rest inherit the Noop contract via
     /// explicit overrides to satisfy the interface.
-    private static final class CountingClusterNetwork extends NoopNetwork {
+    private static class CountingClusterNetwork extends NoopNetwork {
         private final CopyOnWriteArrayList<NodeId> sent = new CopyOnWriteArrayList<>();
 
         @Override
@@ -231,5 +260,18 @@ class ClusterSyncFsmTest {
         }
 
         List<NodeId> sent() { return List.copyOf(sent); }
+    }
+
+    /// `CountingClusterNetwork` variant with a fixed `connectedPeers()` set. Exercises the
+    /// Spike-1 fallback: topology unseeded but transport peers present.
+    private static final class ConfigurableConnectedNetwork extends CountingClusterNetwork {
+        private final Set<NodeId> connected;
+
+        ConfigurableConnectedNetwork(Set<NodeId> connected) {
+            this.connected = Set.copyOf(connected);
+        }
+
+        @Override
+        public Set<NodeId> connectedPeers() { return connected; }
     }
 }

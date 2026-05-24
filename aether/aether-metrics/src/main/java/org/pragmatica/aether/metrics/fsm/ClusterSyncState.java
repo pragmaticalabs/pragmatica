@@ -123,8 +123,12 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
         }
 
         private void handlePingTick(PingTick event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
-            var topology = ctx.topology();
-            if (topology.isEmpty()) {
+            // Effective ping-target set: prefer the membership-seeded topology (unchanged
+            // behavior), but when it is still empty fall back to the live transport peers
+            // (same source the periodic emission reads). Spike-1 finding: entering Pinging on
+            // QuorumEstablished while topology() is unseeded left ping/pong silently dormant.
+            var targets = effectiveTargets();
+            if (targets.isEmpty()) {
                 tx.ignore();
                 return;
             }
@@ -132,13 +136,20 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             var rabiaTerm = ctx.currentRabiaTerm();
             var nextLastSent = new HashMap<>(lastSentEpoch);
             var nextMissed = new HashMap<>(missedPings);
-            for (var peer : topology) {
+            for (var peer : targets) {
                 if (peer.equals(ctx.self())) {continue;}
                 nextLastSent.put(peer, currentEpoch);
                 nextMissed.put(peer, nextMissed.getOrDefault(peer, 0) + 1);
             }
             tx.transitionToOrDrop(with(ctx, Map.copyOf(nextLastSent), Map.copyOf(nextMissed)),
-                                  () -> dispatchPings(topology, currentEpoch, rabiaTerm, nextMissed));
+                                  () -> dispatchPings(targets, currentEpoch, rabiaTerm, nextMissed));
+        }
+
+        private List<NodeId> effectiveTargets() {
+            var topology = ctx.topology();
+            return topology.isEmpty()
+                  ? List.copyOf(ctx.connectedPeers())
+                  : topology;
         }
 
         private void dispatchPings(List<NodeId> topology,

@@ -192,6 +192,14 @@ public final class ClusterSyncContext {
         return topology.get();
     }
 
+    /// Live set of peers this node currently has a transport connection to. Same source the
+    /// periodic connectivity emission reads (`emitPeriodicConnectivityNow`). Used by the ping
+    /// tick as a fallback ping-target set when the membership-seeded `topology()` is still empty
+    /// (Spike-1 finding: Pinging-but-unseeded → silently dormant ping/pong).
+    public Set<NodeId> connectedPeers() {
+        return network.connectedPeers();
+    }
+
     @Contract public void setTopology(List<NodeId> newTopology) {
         topology.set(newTopology);
     }
