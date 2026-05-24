@@ -16,6 +16,7 @@ import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -48,6 +49,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -62,6 +64,7 @@ class LifecycleReconcilerRecordTest {
     private List<LifecycleCommand> dispatchedCommands;
     private List<String> dispatchedSources;
     private List<CommandLifecycleEvent> auditEvents;
+    private List<MembershipFsmEvent> fsmEvents;
     private AtomicLong clockMs;
     private MembershipFsmConfig fsmConfig;
     private AtomicReference<Option<MembershipView>> generationSnapshotRef;
@@ -77,6 +80,7 @@ class LifecycleReconcilerRecordTest {
         dispatchedCommands = new ArrayList<>();
         dispatchedSources = new ArrayList<>();
         auditEvents = new ArrayList<>();
+        fsmEvents = new ArrayList<>();
         clockMs = new AtomicLong(0L);
         fsmConfig = MembershipFsmConfig.defaultMembershipFsmConfig();
         generationSnapshotRef = new AtomicReference<>(Option.none());
@@ -297,6 +301,53 @@ class LifecycleReconcilerRecordTest {
         }
     }
 
+    @Nested
+    class FsmEventRouting {
+        @Test
+        void joiningTimeout_withFsmSink_dispatchesSwimDepartedNotCommand() {
+            // FIX B: when an FSM event sink is wired, a JoiningTimeout-triggered cleanup of a
+            // killed JOINING peer routes through the MembershipFsm reducer's (JOINING,
+            // SwimDeparted) cell — which emits reason=swim-departed — instead of a direct
+            // ForceDecommission KV write (which would emit no domain event and tag the entry
+            // operator-forced). The reconciler MUST NOT call lifecycleWriter.applyCommand for
+            // this rule when the sink is present.
+            phaseRef.set(ClusterPhase.NORMAL);
+            seedDecommissionableJoiner();
+            var node = NodeId.nodeId("node-2").unwrap();
+
+            var reconciler = (LifecycleReconcilerRecord) buildReconcilerWithFsmSink(enforcingConfig());
+            reconciler.activate();
+            invokeReconcileDirectly(reconciler);
+
+            assertEquals(0, dispatchedCommands.size(),
+                         "JoiningTimeout must NOT use the direct command path when an FSM sink is wired");
+            assertEquals(1, fsmEvents.size(), "JoiningTimeout must dispatch exactly one FSM event");
+            var event = fsmEvents.get(0);
+            assertInstanceOf(MembershipFsmEvent.SwimDeparted.class, event,
+                             "JoiningTimeout must route through the (JOINING, SwimDeparted) cell");
+            assertEquals(node, event.peer(), "FSM event must target the timed-out JOINING peer");
+            reconciler.deactivate();
+        }
+
+        @Test
+        void joiningTimeout_withFsmSink_carriesNonZeroHlcStamp() {
+            // The dispatched SwimDeparted event must carry the reconciler's per-tick HLC stamp
+            // so the resulting NodeLifecycleValue.transitionedAt is causally ordered — not the
+            // pre-RC1 HlcTimestamp.ZERO placeholder.
+            phaseRef.set(ClusterPhase.NORMAL);
+            seedDecommissionableJoiner();
+
+            var reconciler = (LifecycleReconcilerRecord) buildReconcilerWithFsmSink(enforcingConfig());
+            reconciler.activate();
+            invokeReconcileDirectly(reconciler);
+
+            assertEquals(1, fsmEvents.size());
+            assertFalse(HlcTimestamp.ZERO.equals(fsmEvents.get(0).at()),
+                        "Dispatched FSM event MUST carry a non-zero HLC stamp");
+            reconciler.deactivate();
+        }
+    }
+
     private static ReconcilerConfig enforcingConfigWithWarmup(long warmupMs) {
         var enforce = RuleSpec.enforcing();
         var rules = new ReconcilerRulesConfig(enforce, enforce, enforce, enforce, enforce, enforce, enforce);
@@ -354,6 +405,27 @@ class LifecycleReconcilerRecordTest {
                                                        config,
                                                        HlcClock.hlcClock(NodeId.nodeId("test-node").unwrap()),
                                                        clockMs::get);
+    }
+
+    private LifecycleReconciler buildReconcilerWithFsmSink(ReconcilerConfig config) {
+        LifecycleWriter writer = new CapturingLifecycleWriter();
+        StreamPublisher<CommandLifecycleEvent> auditPublisher = event -> {
+            auditEvents.add(event);
+            return Promise.unitPromise();
+        };
+        LifecycleReconciler.FsmEventSink sink = fsmEvents::add;
+        return LifecycleReconciler.lifecycleReconciler(phaseRef::get,
+                                                       kvStore,
+                                                       generationSnapshotRef::get,
+                                                       swimHealthRef::get,
+                                                       activeSyncHoldsRef::get,
+                                                       writer,
+                                                       auditPublisher,
+                                                       fsmConfig,
+                                                       config,
+                                                       HlcClock.hlcClock(NodeId.nodeId("test-node").unwrap()),
+                                                       clockMs::get,
+                                                       sink);
     }
 
     /// Bypass the scheduler — invoke `doReconcile` synchronously via the public tick that

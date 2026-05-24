@@ -1324,7 +1324,15 @@ public interface AetherNode extends ManageableNode {
             org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig.defaultMembershipFsmConfig(),
             org.pragmatica.aether.config.ReconcilerConfig.defaults(),
             hlcClock,
-            System::currentTimeMillis);
+            System::currentTimeMillis,
+            // Route JoiningTimeout-triggered cleanup of a killed JOINING peer through the
+            // MembershipFsm reducer's (JOINING, SwimDeparted) cell — the leader-only reducer
+            // writes STOPPED and emits the NODE_FAILED domain event with reason=swim-departed
+            // (the honest SWIM-driven failure reason for a JOINING peer that is SWIM
+            // faulty/absent), instead of a direct operator-forced KV write that emits no
+            // domain event. enqueueOperatorEvent leader-gates SwimDeparted, matching the
+            // reconciler's leader-only activation.
+            membershipFsm::enqueueOperatorEvent);
         // Post-E.8 phase-change publisher. ClusterPhaseView computes the phase on each call;
         // CTM needs the edge-triggered `onClusterPhaseChanged` callback to reset the
         // provisioning circuit + stability marker on COLD_BOOT → NORMAL. Poll the derived

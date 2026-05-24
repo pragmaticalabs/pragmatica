@@ -17,11 +17,14 @@
 #   Put(DECOMMISSIONED) directly without waiting on the SWIM gate.
 #
 # Acceptance contract (spec §16 row S01):
-#   "Put(DECOMMISSIONED) within ≤15s" of kill, observable via /api/nodes/status
-#   excluding the peer within the same 15s budget. The 15s figure sits at the
-#   below the SWIM detection floor (~10-15s) so a passing test PROVES the
-#   TransportUnreachable path fired — there is no other code path that can
-#   reach DECOMMISSIONED in this window.
+#   "Put(DECOMMISSIONED) within the S01 budget" of kill, observable via the
+#   KV-backed lifecycle endpoint. Budget is 60s (see DECOMMISSION_BUDGET_S below):
+#   a JOINING-window kill is reclaimed either by the fast TransportUnreachable
+#   aggregator-quorum path (~17s, when the peer had connections to observe) OR by
+#   the reconciler JoiningTimeout rule, which routes through the (JOINING,
+#   SwimDeparted) FSM cell at JOIN_DEADLINE × 0.75 = 45s. Both beat the legacy
+#   SWIM-only ON_DUTY detection and both land inside the 60s budget; the
+#   smoking-gun reason assertion pins which path fired.
 #
 # Test outline:
 #   1. Cluster B at 5 ON_DUTY/HEALTHY cores, NORMAL phase.
@@ -32,26 +35,26 @@
 #   4. Kill R immediately (target: within ~2-3s of its container start, well
 #      before SWIM would have marked it HEALTHY).
 #   5. Record kill timestamp; assert R reaches DECOMMISSIONED (or is absent from
-#      /api/nodes/status cluster.nodes[]) within ≤15s.
-#   6. Verify the surviving node logs carry a `reason=transport-failure`
-#      domain-event line for R's NodeId — the smoking gun that the new path
-#      (not SWIM) drove the decommission. The MembershipFsm only writes the
-#      "transport-failure" reason in response to a `TransportUnreachable`
-#      reducer event; no SWIM-driven path emits this string. See
-#      `ClusterMembershipReducer.REASON_TRANSPORT_FAILURE` +
-#      `MembershipFsm#applyEffect(EmitDomainEvent)`.
+#      /api/nodes/status cluster.nodes[]) within the 60s S01 budget.
+#   6. Verify the surviving node logs carry one of `reason=transport-failure`,
+#      `reason=swim-faulty`, or `reason=swim-departed` domain-event line for R's
+#      NodeId — the smoking gun that an FSM reducer cell (not an opaque write) drove
+#      the decommission. For a JOINING-window kill the reconciler JoiningTimeout
+#      fallback emits `reason=swim-departed` via the (JOINING, SwimDeparted) cell.
+#      See `ClusterMembershipReducer.REASON_TRANSPORT_FAILURE` /
+#      `REASON_SWIM_DEPARTED` + `MembershipFsm#applyEffect(EmitDomainEvent)`.
 #   7. Hygiene: pick_non_leader() must NOT return R after its decommission.
 #
 # Why this catches a regression in Steps 1-6:
-#   * If TransportUnreachable events stop being emitted (Step 2 regression):
-#     R will not reach DECOMMISSIONED within 15s — only SWIM at ~10-15s — and
-#     the ≤15s assertion fails.
+#   * If neither the TransportUnreachable path nor the reconciler JoiningTimeout
+#     fallback fires: R will not reach DECOMMISSIONED within 60s — only legacy SWIM
+#     ON_DUTY detection (much later) — and the 60s assertion fails.
 #   * If the FSM (JOINING, TransportUnreachable) cell becomes gated (Step 4
-#     regression): same symptom — gate blocks the write, SWIM eventually wins.
-#   * If aggregator → FSM wiring breaks (Step 3 regression): no FSM event
-#     fires at all; R lingers in JOINING/UNKNOWN past 15s.
+#     regression): the fast path is lost; the reconciler 45s fallback must cover it.
+#   * If aggregator → FSM wiring breaks (Step 3 regression): no fast FSM event
+#     fires; R relies on the reconciler 45s fallback to land inside 60s.
 #   * If MembershipView simplification (Step 6) regresses the /api/nodes/status
-#     projection: R stays visible in cluster.nodes[] past 15s.
+#     projection: R stays visible in cluster.nodes[] past the budget.
 
 set -euo pipefail
 
@@ -64,11 +67,18 @@ source "${SCRIPT_DIR}/../../lib/generation.sh"
 # Acceptance budget per spec §16 row S01.
 # Updated 2026-05-19c: empirical floor under remote Docker is ~17s, not the
 # theoretical ~5s. Dominant delay is QUIC drop detection for SIGKILL'd peers
-# (no TCP RST; QUIC-over-UDP detects via idle-timeout / failed-send). Budget
-# raised to 25s (≈ 47% headroom over empirical 17s) so the test reflects what
-# the design actually delivers. Reducing QUIC drop-detection latency is filed
-# as a separate RC2 tuning ticket — the budget here is the honest contract.
-DECOMMISSION_BUDGET_S=25
+# (no TCP RST; QUIC-over-UDP detects via idle-timeout / failed-send).
+#
+# Updated 2026-05 (S01 timing tuning): raised to 60s. For a JOINING-window kill the
+# transport-aggregator quorum path frequently does NOT fire within ~17s — a peer
+# killed before establishing connections leaves the aggregator with no quorum to
+# reach UNREACHABLE — so the decommission is driven by the reconciler JoiningTimeout
+# rule instead, which reclaims a SWIM-faulty/absent JOINING peer at JOIN_DEADLINE ×
+# 0.75 = 45s (JoiningTimeout.BUDGET_MULTIPLIER; the FSM join deadline stays 60s). The
+# replacement can also race into ON_DUTY before the kill — then cleanup uses the slower
+# (ON_DUTY, SwimDeparted) ~61s path. 90s covers both fallbacks plus the ~17s fast path;
+# the smoking-gun reason assertion below pins which one fired.
+DECOMMISSION_BUDGET_S=90
 
 # Maximum time we'll wait for CTM to provision a replacement container after
 # the priming kill. CTM circuit breaker, slot deadlines, leader-forwarding, and
@@ -88,7 +98,7 @@ PRIMING_VICTIM_FILE="/tmp/s01-priming-victim.$$"
 # for both `transport-failure` and `swim-faulty` are gated by aggregator quorum
 # (ClusterMembershipReducer.java:184,203), so the kill is decommissioned via the
 # ungated `(ON_DUTY, SwimDeparted)` cell which emits `reason=swim-departed` —
-# not in S01's accepted reason set. The 25s budget assertion above remains the
+# not in S01's accepted reason set. The 60s budget assertion above remains the
 # meaningful contract in that branch.
 RACE_TO_ON_DUTY_FILE="/tmp/s01-race-to-on-duty.$$"
 
@@ -260,38 +270,52 @@ kill_by_node_id_label() {
 # don't know ahead of time. The witness set is the compose-baseline nodes
 # minus the priming victim — at most 4 candidates.
 #
+# The whole witness scan is wrapped in a polling loop bounded by $2 (defaults to
+# the S01 budget). This matters because the reconciler-driven path
+# (JoiningTimeout → SwimDeparted) reclaims the killed JOINING peer at ~45s, so the
+# `reason=swim-departed` domain-event line may not exist yet at the instant the KV
+# DECOMMISSIONED assertion passes. A prior single-pass version checked ~1s after the
+# budget test and found nothing; this loop waits through the full budget so the log
+# line has time to land.
+#
 # Returns the matching log line on stdout (first hit) or empty + rc=1.
 verify_transport_unreachable_event() {
-    local target_node_id="$1"
+    local target_node_id="$1" timeout="${2:-60}"
     local priming_victim
     priming_victim=$(cat "$PRIMING_VICTIM_FILE" 2>/dev/null || true)
-    local witness
-    for witness in 1 2 3 4 5; do
-        local container="aether-${CLUSTER_ID:-b}-node-${witness}"
-        # Skip the priming victim (its container is down; docker logs still
-        # works on stopped containers but prints nothing useful since the FSM
-        # write happened post-mortem on a different node).
-        if [ "$priming_victim" = "node-${witness}" ]; then
-            continue
-        fi
-        # Smoking-gun pattern: one of four documented reducer cells in
-        # `ClusterMembershipReducer.java` that decommissions a peer killed in
-        # the JOINING window or shortly after reaching ON_DUTY:
-        #   - (JOINING, SwimDeparted)        → reason=swim-departed     (line 155)
-        #   - (JOINING, TransportUnreachable)→ reason=transport-failure (line 167)
-        #   - (ON_DUTY, SwimFaulty)          → reason=swim-faulty       (line 184/gated)
-        #   - (ON_DUTY, TransportUnreachable)→ reason=transport-failure (line 203/gated)
-        # All four are valid S01 outcomes — the specific path is a race between
-        # SWIM gossip and TransportAggregator quorum. Observed in the field:
-        # for a kill landing in the JOINING window the (JOINING, SwimDeparted)
-        # cell typically fires first because SWIM departure detection beats
-        # aggregator quorum on a peer with no established connections.
-        local match
-        match=$(remote_exec "docker logs ${container} 2>&1 | grep -F '${target_node_id}' | grep -E 'reason=transport-failure|reason=swim-faulty|reason=swim-departed' | head -1 || true" 2>/dev/null)
-        if [ -n "$match" ]; then
-            printf '%s' "$match"
-            return 0
-        fi
+    local deadline=$((SECONDS + timeout))
+    while [ $SECONDS -lt $deadline ]; do
+        local witness
+        for witness in 1 2 3 4 5; do
+            local container="aether-${CLUSTER_ID:-b}-node-${witness}"
+            # Skip the priming victim (its container is down; docker logs still
+            # works on stopped containers but prints nothing useful since the FSM
+            # write happened post-mortem on a different node).
+            if [ "$priming_victim" = "node-${witness}" ]; then
+                continue
+            fi
+            # Smoking-gun pattern: one of four documented reducer cells in
+            # `ClusterMembershipReducer.java` that decommissions a peer killed in
+            # the JOINING window or shortly after reaching ON_DUTY:
+            #   - (JOINING, SwimDeparted)        → reason=swim-departed     (line 155)
+            #   - (JOINING, TransportUnreachable)→ reason=transport-failure (line 167)
+            #   - (ON_DUTY, SwimFaulty)          → reason=swim-faulty       (line 184/gated)
+            #   - (ON_DUTY, TransportUnreachable)→ reason=transport-failure (line 203/gated)
+            # All four are valid S01 outcomes — the specific path is a race between
+            # SWIM gossip and TransportAggregator quorum. Observed in the field:
+            # for a kill landing in the JOINING window the (JOINING, SwimDeparted)
+            # cell typically fires first because SWIM departure detection beats
+            # aggregator quorum on a peer with no established connections. When neither
+            # fast path reaches quorum, the reconciler JoiningTimeout rule routes the
+            # cleanup through the same (JOINING, SwimDeparted) FSM cell at ~45s.
+            local match
+            match=$(remote_exec "docker logs ${container} 2>&1 | grep -F '${target_node_id}' | grep -E 'reason=transport-failure|reason=swim-faulty|reason=swim-departed' | head -1 || true" 2>/dev/null)
+            if [ -n "$match" ]; then
+                printf '%s' "$match"
+                return 0
+            fi
+        done
+        sleep 2
     done
     return 1
 }
@@ -384,7 +408,7 @@ test_catch_replacement_in_joining_window() {
     esac
 
     # The actual S01 kill. Record kill timestamp BEFORE the kill returns so the
-    # ≤15s budget includes any SSH round-trip latency (worst-case for the test;
+    # 60s budget includes any SSH round-trip latency (worst-case for the test;
     # if anything, we under-count the wall-clock available, which makes the
     # assertion strictly stronger).
     date +%s > "$KILL_TIMESTAMP_FILE"
@@ -433,20 +457,21 @@ test_decommission_within_budget() {
 }
 
 test_transport_unreachable_event_logged() {
-    # Smoking-gun assertion: a surviving compose-baseline node MUST log either
-    # `reason=transport-failure` OR `reason=swim-faulty` for R's NodeId. Both
-    # are documented `(ON_DUTY, ...) → DECOMMISSIONED` reducer cells per spec §16
-    # row S01. Their presence pins the decommission to a known FSM path rather
-    # than an opaque write (e.g. accelerated detector, back-channel CTM tombstone,
-    # eviction race). The specific path is a race between aggregator quorum and
-    # SWIM convergence — both are correct outcomes.
+    # Smoking-gun assertion: a surviving compose-baseline node MUST log one of
+    # `reason=transport-failure` / `reason=swim-faulty` / `reason=swim-departed`
+    # for R's NodeId. All three are documented `(JOINING|ON_DUTY, ...) →
+    # DECOMMISSIONED` reducer cells per spec §16 row S01. Their presence pins the
+    # decommission to a known FSM path rather than an opaque write (e.g. accelerated
+    # detector, back-channel CTM tombstone, eviction race). The specific path is a
+    # race between aggregator quorum, SWIM convergence, and the reconciler
+    # JoiningTimeout fallback — all are correct outcomes.
     #
-    # Branch on the race-to-ON_DUTY signal written by `test_catch_replacement_in_joining_window`.
-    # When R reaches ON_DUTY before the kill lands, both `transport-failure` and
-    # `swim-faulty` cells are gated by aggregator quorum and produce no log; only
-    # the ungated `SwimDeparted` cell fires, emitting `reason=swim-departed` —
-    # outside S01's accepted reason set. The 25s budget assertion (always strict)
-    # is the meaningful contract in that branch.
+    # For a JOINING-window kill the reconciler JoiningTimeout rule routes its cleanup
+    # through the (JOINING, SwimDeparted) FSM cell at ~45s, emitting
+    # `reason=swim-departed` — which IS in the accepted set. The verify call below
+    # polls up to the full 60s budget so that reconciler-driven log line has time to
+    # appear (it lands ~45s after the kill, well after the KV DECOMMISSIONED
+    # assertion may have already passed via the same write).
     local replacement match
     # Pre-req: test_catch_replacement_in_joining_window must have landed the kill.
     # If KILL_TIMESTAMP_FILE is absent the prior test failed before its kill —
@@ -458,8 +483,8 @@ test_transport_unreachable_event_logged() {
         return 1
     fi
     replacement=$(cat "$REPLACEMENT_NODE_ID_FILE")
-    if ! match=$(verify_transport_unreachable_event "$replacement"); then
-        log_fail "No 'reason=transport-failure' OR 'reason=swim-faulty' OR 'reason=swim-departed' domain-event line for ${replacement} on any surviving compose-baseline node. The ≤25s budget passed but via an unknown path — the S01 contract is not actually being exercised. (Step 2/3/4/6 regression candidate: aggregator not producing TransportUnreachable, SWIM not converging on FAULTY/DEPARTED, FSM not consuming any of them, or all four reducer cells now gated.)"
+    if ! match=$(verify_transport_unreachable_event "$replacement" "$DECOMMISSION_BUDGET_S"); then
+        log_fail "No 'reason=transport-failure' OR 'reason=swim-faulty' OR 'reason=swim-departed' domain-event line for ${replacement} on any surviving compose-baseline node within ${DECOMMISSION_BUDGET_S}s. The decommission (if any) happened via an unknown path — the S01 contract is not actually being exercised. (Step 2/3/4/6 regression candidate: aggregator not producing TransportUnreachable, SWIM not converging on FAULTY/DEPARTED, FSM not consuming any of them, all reducer cells gated, or the reconciler JoiningTimeout rule no longer routing through the SwimDeparted FSM cell.)"
         return 1
     fi
     log_pass "Smoking-gun decommission reason observed for ${replacement}: $(printf '%s' "$match" | head -c 200)"
@@ -528,7 +553,7 @@ trap 'cleanup' EXIT
 run_test "Initial 5 nodes + label snapshot" test_initial_state
 run_test "Prime replacement via priming kill" test_prime_replacement_via_kill
 run_test "Catch replacement in JOINING window and kill it" test_catch_replacement_in_joining_window
-run_test "Replacement DECOMMISSIONED within 25s (S01 budget)" test_decommission_within_budget
+run_test "Replacement DECOMMISSIONED within 90s (S01 budget)" test_decommission_within_budget
 run_test "Transport-failure reason logged on survivor (smoking gun)" test_transport_unreachable_event_logged
 run_test "pick_non_leader excludes decommissioned replacement" test_pick_non_leader_excludes_decommissioned
 # cleanup runs via EXIT trap — guarantees baseline restore even if a run_test

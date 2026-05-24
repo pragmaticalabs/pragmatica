@@ -24,11 +24,11 @@
 [R1] aether/tests/integration/suites/13-edge-cases/test-stale-route-cleanup.sh:21 — warn-then-pass-demotion (preceding log_warn at line 20)
 [R1] aether/tests/integration/suites/13-edge-cases/test-stale-route-cleanup.sh:80 — warn-then-pass-demotion (preceding log_warn at line 79)
 [R2] aether/tests/integration/suites/01-stability/test-soak-4h.sh:95 — wait "$pid" 2>/dev/null || true
-[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:105 — 2>/dev/null || true
-[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:127 — body=$(api_get "/api/nodes/lifecycle/${target}" 2>/dev/null || true)
-[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:223 — name=$(remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true)
-[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:267 — priming_victim=$(cat "$PRIMING_VICTIM_FILE" 2>/dev/null || true)
-[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:491 — candidates=$(pick_non_leader "$leader" 3 2>/dev/null || true)
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:115 — 2>/dev/null || true
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:137 — body=$(api_get "/api/nodes/lifecycle/${target}" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:233 — name=$(remote_exec "docker ps --filter 'label=aether.node-id=${node_id}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:285 — priming_victim=$(cat "$PRIMING_VICTIM_FILE" 2>/dev/null || true)
+[R2] aether/tests/integration/suites/02-chaos/test-joining-window-kill.sh:516 — candidates=$(pick_non_leader "$leader" 3 2>/dev/null || true)
 [R2] aether/tests/integration/suites/02-chaos/test-kill-under-load.sh:75 — wait "$pid" 2>/dev/null || true
 [R2] aether/tests/integration/suites/03-scaling/test-03-scale-down.sh:99 — wait "$pid" 2>/dev/null || true
 [R2] aether/tests/integration/suites/06-deployment/test-schema-migration.sh:111 — body=$(api_post "/api/schema/retry/${DATASOURCE}" "{}" 2>/dev/null || true)

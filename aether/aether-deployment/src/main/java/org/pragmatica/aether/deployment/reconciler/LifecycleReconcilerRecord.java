@@ -16,6 +16,7 @@ import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnD
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RequestReJoin;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent.SwimDeparted;
 import org.pragmatica.aether.deployment.reconciler.LifecycleReconciler.RuleDecision;
 import org.pragmatica.aether.deployment.reconciler.LifecycleReconciler.RuleStatus;
 import org.pragmatica.aether.deployment.reconciler.rules.DrainTimeout;
@@ -118,7 +119,8 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                  ConcurrentHashMap<String, AtomicLong> ruleFireCountMs,
                                  Deque<RuleDecision> recentDecisionsBuffer,
                                  Object decisionsLock,
-                                 ConcurrentHashMap<NodeId, SwimSinceEntry> swimSinceTracker) implements LifecycleReconciler {
+                                 ConcurrentHashMap<NodeId, SwimSinceEntry> swimSinceTracker,
+                                 FsmEventSink fsmEventSink) implements LifecycleReconciler {
     private static final Logger log = LoggerFactory.getLogger(LifecycleReconcilerRecord.class);
     private static final long UNINITIALIZED = -1L;
 
@@ -136,7 +138,8 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                                                MembershipFsmConfig fsmConfig,
                                                                ReconcilerConfig config,
                                                                HlcClock hlcClock,
-                                                               LongSupplier clock) {
+                                                               LongSupplier clock,
+                                                               FsmEventSink fsmEventSink) {
         var rules = List.<ReconciliationRule>of(JoiningTimeout.joiningTimeout(),
                                                 JoiningStuckAlert.joiningStuckAlert(),
                                                 OnDutyFaulty.onDutyFaulty(),
@@ -166,7 +169,8 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                              initRuleCounters(rules),
                                              new ArrayDeque<>(),
                                              new Object(),
-                                             new ConcurrentHashMap<>());
+                                             new ConcurrentHashMap<>(),
+                                             fsmEventSink);
     }
 
     private static ConcurrentHashMap<String, AtomicLong> initRuleCounters(List<ReconciliationRule> rules) {
@@ -314,13 +318,35 @@ record LifecycleReconcilerRecord(Supplier<ClusterPhase> phaseSupplier,
                                           long nowMs) {
         recordDecision(rule, ruleSpec.enforce(), action, nowMs);
         if (ruleSpec.enforce()) {
-            applyEnforcing(action);
+            applyEnforcing(rule, action);
         } else {
             publishAuditOnly(action);
         }
     }
 
-    @Contract private void applyEnforcing(ReconciliationAction action) {
+    /// Enforcing dispatch. `JoiningTimeout` is special-cased: its trigger is "JOINING peer
+    /// with SWIM Faulty/absent past deadline" — semantically a swim-departed node. Routing
+    /// it through the `MembershipFsm` reducer's `(JOINING, SwimDeparted)` cell (rather than
+    /// a direct `ForceDecommission` KV write) makes the cleanup emit the `NODE_FAILED`
+    /// domain event with `reason=swim-departed` — the honest failure-detection reason and
+    /// the S01 acceptance signature. A direct `ForceDecommission` write produces no domain
+    /// event and would tag the entry `operator-forced`. All other rules dispatch their
+    /// `LifecycleCommand` via `lifecycleWriter` unchanged. When the FSM event sink is the
+    /// no-op default (tests/fixtures without an FSM), `JoiningTimeout` falls back to the
+    /// command path so the orphaned entry is still cleaned up.
+    @Contract private void applyEnforcing(ReconciliationRule rule, ReconciliationAction action) {
+        if (JoiningTimeout.NAME.equals(rule.name()) && fsmEventSink != FsmEventSink.NO_OP) {
+            dispatchJoiningSwimDeparted(action);
+        } else {
+            applyCommandEnforcing(action);
+        }
+    }
+
+    @Contract private void dispatchJoiningSwimDeparted(ReconciliationAction action) {
+        fsmEventSink.dispatch(new SwimDeparted(action.peer(), 0L, action.command().at()));
+    }
+
+    @Contract private void applyCommandEnforcing(ReconciliationAction action) {
         lifecycleWriter.applyCommand(action.command(), CommandLifecycleEvent.SOURCE_RECONCILER)
                        .onFailure(cause -> log.warn("Reconciler: enforce failed for {} on {}: {}",
                                                     commandType(action.command()),

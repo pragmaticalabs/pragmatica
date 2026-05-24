@@ -8,6 +8,7 @@ import org.pragmatica.aether.config.ReconcilerConfig;
 import org.pragmatica.aether.deployment.audit.CommandLifecycleEvent;
 import org.pragmatica.aether.deployment.cluster.LifecycleWriter;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmConfig;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmEvent;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -72,6 +73,21 @@ public interface LifecycleReconciler {
                         boolean enforced,
                         long atMs) {}
 
+    /// FSM membership-event ingress used for rules whose honest decommission path runs
+    /// through the `MembershipFsm` reducer rather than a direct KV write. `JoiningTimeout`
+    /// uses this to feed a `SwimDeparted` event for a killed JOINING peer: the reducer's
+    /// `(JOINING, SwimDeparted)` cell writes STOPPED and emits the `NODE_FAILED`
+    /// domain-event with `reason=swim-departed` (the S01 smoking-gun signature), whereas a
+    /// direct `ForceDecommission` KV write produces no domain event and tags the entry
+    /// `operator-forced`. Wired to `MembershipFsm::enqueueOperatorEvent` in production; the
+    /// default is a no-op so the legacy command-only path still works for tests/fixtures.
+    @FunctionalInterface
+    interface FsmEventSink {
+        @Contract void dispatch(MembershipFsmEvent event);
+
+        FsmEventSink NO_OP = event -> {};
+    }
+
     /// Build a leader-only reconciler bound to the supplied collaborators. The instance
     /// returned is dormant — `activate()` must be called when this node acquires the
     /// leader lease (typically from `AetherNode.toggleReconcilerOnLeaderChange`).
@@ -95,6 +111,38 @@ public interface LifecycleReconciler {
                                                    ReconcilerConfig config,
                                                    HlcClock hlcClock,
                                                    LongSupplier clock) {
+        return lifecycleReconciler(phaseSupplier,
+                                   kvStore,
+                                   generationSnapshot,
+                                   swimHealthSnapshot,
+                                   activeSyncHolds,
+                                   lifecycleWriter,
+                                   auditPublisher,
+                                   fsmConfig,
+                                   config,
+                                   hlcClock,
+                                   clock,
+                                   FsmEventSink.NO_OP);
+    }
+
+    /// FSM-event-aware variant. `fsmEventSink` routes `JoiningTimeout`-triggered
+    /// decommissions through the `MembershipFsm` reducer (`SwimDeparted` event) so the
+    /// resulting `NODE_FAILED` domain event carries `reason=swim-departed` — the honest
+    /// failure-detection reason for a killed JOINING peer, and the signature the S01
+    /// acceptance test greps for. All other rules continue to dispatch their
+    /// `LifecycleCommand` via `lifecycleWriter`.
+    static LifecycleReconciler lifecycleReconciler(Supplier<ClusterPhase> phaseSupplier,
+                                                   KVStore<AetherKey, AetherValue> kvStore,
+                                                   Supplier<Option<MembershipView>> generationSnapshot,
+                                                   Supplier<Map<NodeId, SwimHealth>> swimHealthSnapshot,
+                                                   Supplier<Set<NodeId>> activeSyncHolds,
+                                                   LifecycleWriter lifecycleWriter,
+                                                   StreamPublisher<CommandLifecycleEvent> auditPublisher,
+                                                   MembershipFsmConfig fsmConfig,
+                                                   ReconcilerConfig config,
+                                                   HlcClock hlcClock,
+                                                   LongSupplier clock,
+                                                   FsmEventSink fsmEventSink) {
         return LifecycleReconcilerRecord.lifecycleReconcilerRecord(phaseSupplier,
                                                                    kvStore,
                                                                    generationSnapshot,
@@ -105,6 +153,7 @@ public interface LifecycleReconciler {
                                                                    fsmConfig,
                                                                    config,
                                                                    hlcClock,
-                                                                   clock);
+                                                                   clock,
+                                                                   fsmEventSink);
     }
 }
