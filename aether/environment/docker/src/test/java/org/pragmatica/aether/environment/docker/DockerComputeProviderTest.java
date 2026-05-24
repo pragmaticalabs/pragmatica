@@ -55,7 +55,7 @@ class DockerComputeProviderTest {
         }
 
         @Test
-        void buildRunCommand_exposeHostPortsTrue_addsManagementPortMapping() {
+        void buildRunCommand_exposeHostPortsTrue_publishesEphemeralManagementPort() {
             var exposingConfig = DockerConfig.dockerConfig("aether-node:local",
                                                             "aether-network",
                                                             5160,
@@ -74,36 +74,28 @@ class DockerComputeProviderTest {
                             .await()
                             .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
-            // Slot allocator seeds an empty `docker ps` response → slot 1 (max(0+1, 0+1)).
-            // Port mapping: portBase (5160) + slot (1) = 5161.
-            assertThat(exposingRunner.lastCommand).containsSequence("-p", "5161:8080");
+            // KSUID-minted replacements have no numeric slot, so the management port is
+            // published to an ephemeral host port (`-p 8080`) rather than `base + slot`.
+            assertThat(exposingRunner.lastCommand).containsSequence("-p", "8080");
         }
 
         @Test
-        void buildRunCommand_exposeHostPortsTrue_secondNodeUsesNextPort() {
-            var exposingConfig = DockerConfig.dockerConfig("aether-node:local",
-                                                            "aether-network",
-                                                            5160,
-                                                            8080,
-                                                            6000,
-                                                            "/var/run/docker.sock",
-                                                            "",
-                                                            "",
-                                                            true)
-                                              .unwrap();
+        void buildRunCommand_twoProvisions_mintDistinctKsuidNames() {
             var exposingRunner = new TestDockerCommandRunner();
-            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, exposingConfig).unwrap();
+            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, CONFIG).unwrap();
 
             exposingRunner.nextResponse = Promise.success("container-id-0");
             exposingProvider.provision(InstanceType.ON_DEMAND).await();
+            var firstName = nameArg(exposingRunner.lastCommand);
 
             exposingRunner.nextResponse = Promise.success("container-id-1");
             exposingProvider.provision(InstanceType.ON_DEMAND).await();
+            var secondName = nameArg(exposingRunner.lastCommand);
 
-            // First provision uses slot 1, second provision: probe still returns ""
-            // (TestDockerCommandRunner doesn't track created containers), so observedMax=0;
-            // counterFloor advances to 2 → slot 2. Port = 5160 + 2 = 5162.
-            assertThat(exposingRunner.lastCommand).containsSequence("-p", "5162:8080");
+            // Each provision mints a fresh KSUID identity — no slot reuse, always distinct.
+            assertThat(firstName).startsWith("aether-default-node-");
+            assertThat(secondName).startsWith("aether-default-node-");
+            assertThat(firstName).isNotEqualTo(secondName);
         }
     }
 
@@ -148,9 +140,8 @@ class DockerComputeProviderTest {
 
         @Test
         void provisionFailure_dockerRunFails_rollbackInvokedByContainerName() {
-            // Queue: 1) slot-probe (docker ps), 2) docker run fails (port bind),
-            // 3) docker rm -f succeeds (rollback)
-            testRunner.queuedResponses.add(Promise.success(""));
+            // Queue: 1) docker run fails (port bind), 2) docker rm -f succeeds (rollback).
+            // No slot-probe is issued any more — the identity is minted in-process via KSUID.
             testRunner.queuedResponses.add(new DockerError.CommandExecutionFailed(
                 new RuntimeException("driver failed programming external connectivity")).promise());
             testRunner.queuedResponses.add(Promise.success("removed-container-name"));
@@ -159,20 +150,18 @@ class DockerComputeProviderTest {
                     .await()
                     .onSuccess(info -> fail("Expected provision failure but got: " + info));
 
-            assertThat(testRunner.allCommands).hasSize(3);
-            var rollbackCmd = testRunner.allCommands.get(2);
+            assertThat(testRunner.allCommands).hasSize(2);
+            var rollbackCmd = testRunner.allCommands.get(1);
             assertThat(rollbackCmd.subList(0, 3)).containsExactly("docker", "rm", "-f");
-            // The 4th arg is the slot-allocated container name. provision(InstanceType)
-            // uses ProvisionContext.provisionContext("default", "core", "default", ...).
-            // Post-migration name shape: `aether-<cluster>-node-<slot>` — no pool segment,
-            // no hex suffix. First provision on an empty host gets slot 1.
-            assertThat(rollbackCmd.get(3)).isEqualTo("aether-default-node-1");
+            // The 4th arg is the KSUID-minted container name. provision(InstanceType)
+            // uses ProvisionContext.provisionContext("default", "core", "default", ...),
+            // so the name is `aether-default-node-<ksuid>`.
+            assertThat(rollbackCmd.get(3)).startsWith("aether-default-node-");
         }
 
         @Test
         void provisionFailure_dockerRunAndRollbackBothFail_rollbackErrorLoggedNotPropagated() {
-            // Queue: 1) slot-probe, 2) run fails, 3) rollback fails.
-            testRunner.queuedResponses.add(Promise.success(""));
+            // Queue: 1) run fails, 2) rollback fails. No slot-probe precedes these.
             testRunner.queuedResponses.add(new DockerError.CommandExecutionFailed(
                 new RuntimeException("port bind failed")).promise());
             testRunner.queuedResponses.add(new DockerError.CommandExecutionFailed(
@@ -183,7 +172,7 @@ class DockerComputeProviderTest {
                     .onSuccess(info -> fail("Expected provision failure"))
                     .onFailure(DockerComputeProviderTest::assertProvisionFailedError);
 
-            assertThat(testRunner.allCommands).hasSize(3);
+            assertThat(testRunner.allCommands).hasSize(2);
         }
 
         @Test
@@ -193,10 +182,9 @@ class DockerComputeProviderTest {
             provider.provision(InstanceType.ON_DEMAND).await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
-            // Slot-probe + docker run (no rollback). Two commands total.
-            assertThat(testRunner.allCommands).hasSize(2);
-            assertThat(testRunner.allCommands.get(0)).contains("ps");
-            assertThat(testRunner.allCommands.get(1)).contains("run");
+            // Only `docker run` (no slot-probe, no rollback). One command total.
+            assertThat(testRunner.allCommands).hasSize(1);
+            assertThat(testRunner.allCommands.get(0)).contains("run");
         }
     }
 
@@ -204,7 +192,7 @@ class DockerComputeProviderTest {
     class ContainerNameTests {
 
         @Test
-        void buildContainerName_includesClusterAndSlot() {
+        void buildContainerName_mintsKsuidNameForCluster() {
             testRunner.nextResponse = Promise.success("id-0");
             var ctx = ProvisionContext.provisionContext("test-cluster", "core", "default",
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
@@ -213,13 +201,26 @@ class DockerComputeProviderTest {
             provider.provision(spec).await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
-            // --name must be at known position; capture the value after it.
-            var nameIdx = testRunner.lastCommand.indexOf("--name");
-            assertThat(nameIdx).isPositive();
-            var name = testRunner.lastCommand.get(nameIdx + 1);
-            // Post-migration format: `aether-<cluster>-node-<slot>`. Slot 1 on an
-            // empty host. Pool segment dropped — pool now flows through labels only.
-            assertThat(name).isEqualTo("aether-test-cluster-node-1");
+            // KSUID-minted identity: `aether-<cluster>-node-<ksuid>`. Cluster segment from
+            // ProvisionContext.clusterName; the KSUID suffix is unique and k-sortable.
+            var name = nameArg(testRunner.lastCommand);
+            assertThat(name).startsWith("aether-test-cluster-node-");
+            assertThat(name).isNotEqualTo("aether-test-cluster-node-");
+        }
+
+        @Test
+        void buildContainerName_honorsCallerSuppliedNodeId() {
+            testRunner.nextResponse = Promise.success("id-0");
+            var ctx = ProvisionContext.provisionContext("test-cluster", "core", "default",
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP)
+                                      .withNodeId("aether-test-cluster-node-1");
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
+
+            provider.provision(spec).await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            // Caller-supplied nodeId (bootstrap path) is used verbatim as the container name.
+            assertThat(nameArg(testRunner.lastCommand)).isEqualTo("aether-test-cluster-node-1");
         }
 
         @Test
@@ -229,11 +230,8 @@ class DockerComputeProviderTest {
             provider.provision(InstanceType.ON_DEMAND).await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
-            var nameIdx = testRunner.lastCommand.indexOf("--name");
-            var name = testRunner.lastCommand.get(nameIdx + 1);
-            // provision(InstanceType) hardcodes cluster="default" + pool="default";
-            // post-migration: pool dropped from name, slot 1 from empty-host probe.
-            assertThat(name).isEqualTo("aether-default-node-1");
+            // provision(InstanceType) hardcodes cluster="default"; KSUID-minted name.
+            assertThat(nameArg(testRunner.lastCommand)).startsWith("aether-default-node-");
         }
     }
 
@@ -509,6 +507,13 @@ class DockerComputeProviderTest {
     }
 
     // --- Assertion helpers ---
+
+    /// Extract the value following `--name` in a captured `docker run` command.
+    private static String nameArg(List<String> command) {
+        var nameIdx = command.indexOf("--name");
+        assertThat(nameIdx).isPositive();
+        return command.get(nameIdx + 1);
+    }
 
     private static void assertProvisionedInstance(org.pragmatica.aether.environment.InstanceInfo info) {
         assertThat(info.id().value()).isEqualTo("abc123def456");

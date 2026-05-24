@@ -19,12 +19,12 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.utility.IdGenerator;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,12 +33,11 @@ import static org.pragmatica.lang.Result.success;
 
 
 @Contract public record DockerComputeProvider(DockerCommandRunner runner,
-                                              DockerConfig config,
-                                              AtomicInteger nodeCounter) implements ComputeProvider {
+                                              DockerConfig config) implements ComputeProvider {
     private static final Logger log = LoggerFactory.getLogger(DockerComputeProvider.class);
 
     public static Result<DockerComputeProvider> dockerComputeProvider(DockerCommandRunner runner, DockerConfig config) {
-        return success(new DockerComputeProvider(runner, config, new AtomicInteger(0)));
+        return success(new DockerComputeProvider(runner, config));
     }
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
@@ -54,92 +53,35 @@ import static org.pragmatica.lang.Result.success;
         if (preflight.isPresent()) {
             return preflight.unwrap();
         }
-        // Slot allocation: query existing aether-<cluster>-node-N containers on the host,
-        // compute the next free numeric slot N, and use it for BOTH container name and
-        // NodeId. Compose-fixed nodes occupy slots 1..5; CTM auto-heal replacements
-        // continue the sequence (6, 7, ...) so `NodeId == container_name` everywhere
-        // — `docker kill <nodeId>` Just Works in the test harness.
-        return allocateSlot(spec).flatMap(slot -> provisionAtSlot(spec, slot))
+        // Identity: honor a caller-supplied ctx.nodeId() (bootstrap path), otherwise
+        // self-mint a fresh KSUID-suffixed id via the canonical IdGenerator path —
+        // exactly as the cloud providers do. The single value is used for BOTH the
+        // container name AND the NodeId, so `NodeId == container_name` holds and
+        // `docker kill <nodeId>` Just Works in the test harness. KSUID is k-sortable
+        // and unique, eliminating the slot-number reuse the old max(existing)+1 scheme
+        // suffered when dead containers were swept and the observed max dropped.
+        var identity = resolveIdentity(spec);
+        return provisionWithIdentity(spec, identity)
                                   .mapError(DockerComputeProvider::toProvisionError);
     }
 
-    private Promise<InstanceInfo> provisionAtSlot(ProvisionSpec spec, int slot) {
-        var containerName = buildContainerName(spec, slot);
-        var command = buildRunCommand(spec, containerName, slot);
-        return runner.execute(command).map(containerId -> toProvisionedInfo(containerId, containerName, spec, slot))
+    /// Resolve the node identity used as both container name and NodeId. Honors a
+    /// caller-supplied `ctx.nodeId()` when present (bootstrap supplies it), otherwise
+    /// mints `aether-<cluster>-node-<ksuid>` via [IdGenerator]. The cluster segment is
+    /// sourced from [#clusterOrDefault] (ProvisionContext.clusterName with an
+    /// AETHER_CLUSTER_NAME env fallback) so CTM replacements carry the same
+    /// `aether-<cluster>-` prefix as their compose-fixed siblings — the orphan sweeper
+    /// and `docker kill` prefix-matching keep working.
+    private String resolveIdentity(ProvisionSpec spec) {
+        var cluster = clusterOrDefault(spec.context());
+        return spec.context().nodeId().or(() -> IdGenerator.generate("aether-" + cluster + "-node"));
+    }
+
+    private Promise<InstanceInfo> provisionWithIdentity(ProvisionSpec spec, String containerName) {
+        var command = buildRunCommand(spec, containerName);
+        return runner.execute(command).map(containerId -> toProvisionedInfo(containerId, containerName, spec))
                              .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
     }
-
-    /// Query the Docker daemon for the next free `aether-<cluster>-node-N` slot.
-    /// We list every container (running OR exited) carrying `aether.cluster=<cluster>`,
-    /// parse the trailing `-node-N` from each container name, take `max(N) + 1`. When
-    /// the host has none yet, slot starts at the post-compose offset (compose uses
-    /// 1..5; auto-heal starts at 6 minimum). The `nodeCounter` provides the lower
-    /// bound so successive CTM provisions in the same JVM keep monotonic ordering
-    /// even if the previous container hasn't been listed yet (e.g. still in `Created`).
-    private Promise<Integer> allocateSlot(ProvisionSpec spec) {
-        var cluster = clusterOrDefault(spec.context());
-        var listCmd = buildSlotProbeCommand(cluster);
-        return runner.execute(listCmd)
-                     .map(output -> nextSlot(output, cluster))
-                     .recover(cause -> recoverSlotFromCounter(cause, cluster));
-    }
-
-    private static List<String> buildSlotProbeCommand(String cluster) {
-        return List.of("docker",
-                       "ps",
-                       "-a",
-                       "--filter",
-                       "label=aether.cluster=" + cluster,
-                       "--format",
-                       "{{.Names}}");
-    }
-
-    private int nextSlot(String output, String cluster) {
-        var prefix = "aether-" + cluster + "-node-";
-        var observedMax = Arrays.stream(output.split("\n"))
-                                .map(String::trim)
-                                .filter(name -> name.startsWith(prefix))
-                                .map(name -> name.substring(prefix.length()))
-                                .mapToInt(DockerComputeProvider::parseLeadingInt)
-                                .filter(n -> n > 0)
-                                .max()
-                                .orElse(0);
-        // nodeCounter floor: monotonic per-JVM lower bound so back-to-back provisions
-        // before the first container is observable in `docker ps -a` still pick distinct
-        // slots. Each provision bumps the counter; we take max(observedMax+1, counter+1).
-        var counterFloor = nodeCounter.getAndIncrement() + 1;
-        var nextFromObserved = observedMax + 1;
-        return Math.max(nextFromObserved, counterFloor);
-    }
-
-    private static int parseLeadingInt(String suffix) {
-        var i = 0;
-        while (i < suffix.length() && Character.isDigit(suffix.charAt(i))) {
-            i++;
-        }
-        if (i == 0) {
-            return -1;
-        }
-        try {
-            return Integer.parseInt(suffix.substring(0, i));
-        } catch (NumberFormatException e) {
-            return -1;
-        }
-    }
-
-    private Integer recoverSlotFromCounter(Cause cause, String cluster) {
-        // Slot-probe failure must NOT abort provisioning — fall back to the in-memory
-        // counter so CTM auto-heal still proceeds (e.g. docker daemon flake). Log the
-        // cause at WARN so the gap is explicit; subsequent provisions will retry the
-        // probe and reconcile naturally. Floor at 1 so we never hand out slot 0.
-        log.warn("Slot probe failed for cluster '{}': {} — falling back to in-memory counter (may collide with stale slot)",
-                 cluster,
-                 cause.message());
-        return Math.max(1, nodeCounter.getAndIncrement() + 1);
-    }
-
-    /// Pre-flight validation: CTM auto-heal provisioning REQUIRES a non-empty `peers`
     /// bootstrap list (3-part `nodeId:host:port` entries) so the new container can join
     /// the existing consensus group. Without peers the container starts with `PEERS=`
     /// (empty), the JVM cold-boots in isolation (`quorate=false, leaderId=none`), and
@@ -187,7 +129,6 @@ import static org.pragmatica.lang.Result.success;
     }
 
     @Override public void resetProvisionerState(String clusterName) {
-        nodeCounter.set(0);
         if (!clusterName.isEmpty()) {
             runner.execute(buildCtmPruneCommand(clusterName))
                   .onFailure(cause -> log.warn("CTM sweep failed for cluster {}: {}", clusterName, cause.message()))
@@ -247,36 +188,13 @@ import static org.pragmatica.lang.Result.success;
                                                      .promise();
     }
 
-    /// Build a cluster-scoped, slot-indexed container name where `NodeId == container name`.
-    ///
-    /// Format: `aether-<clusterName>-node-<slot>`
-    ///
-    /// Slot is computed by `allocateSlot` from the host's existing
-    /// `aether-<cluster>-node-N` containers (compose-fixed 1..5, CTM extensions 6+).
-    /// The cluster segment disambiguates concurrent clusters (e.g., integration-test
-    /// clusters A and B sharing a Docker host) so orphan sweepers that filter by
-    /// `aether-<clusterName>-` cannot accidentally cross-evict containers from a
-    /// sibling cluster. `clusterName` is sourced from [ProvisionContext#clusterName]
-    /// (set by CTM from `[cluster].name`), defaulting to `"default"` for callers
-    /// that haven't set it explicitly.
-    ///
-    /// Pool is intentionally dropped from the name: the previous shape
-    /// `aether-<cluster>-<pool>-node-<idx>-<hex>` separated the pool to disambiguate
-    /// non-core pools (worker, etc.), but pool affinity now flows through labels
-    /// (`aether.role`) and the test harness needs `NodeId == container_name` to be
-    /// stable enough that `docker kill <nodeid>` Just Works.
-    String buildContainerName(ProvisionSpec spec, int slot) {
-        var cluster = clusterOrDefault(spec.context());
-        return "aether-" + cluster + "-node-" + slot;
-    }
-
-    private List<String> buildRunCommand(ProvisionSpec spec, String containerName, int slot) {
+    private List<String> buildRunCommand(ProvisionSpec spec, String containerName) {
         var ctx = spec.context();
         var role = roleOrDefault(ctx);
         var cluster = clusterOrDefault(ctx);
-        // NodeId == container name. Any caller-supplied ctx.nodeId() is intentionally
-        // ignored — the slot-allocator owns the identity so `docker kill <nodeId>`
-        // resolves to the same container the test harness sees in compose YAML.
+        // NodeId == container name (the resolved identity: caller-supplied ctx.nodeId()
+        // or a freshly-minted KSUID id). Keeping them equal means `docker kill <nodeId>`
+        // resolves to this exact container — no nodeId→container map needed.
         var nodeId = containerName;
         var peers = ctx.peers().or("");
         var coreMax = String.valueOf(ctx.coreMax());
@@ -326,12 +244,14 @@ import static org.pragmatica.lang.Result.success;
             command.add(config.dockerGid());
         }
         if (config.exposeHostPorts()) {
-            // Port = base + slot. Compose YAMLs configure
-            // AETHER_MGMT_PORT_BASE/AETHER_APP_PORT_BASE so that base+1..base+5 map
-            // to compose-fixed nodes, and CTM extensions (slot 6+) extend the
-            // sequence without overlapping into the sibling cluster's port range.
+            // KSUID-minted replacements have no numeric slot, so the old `base + slot`
+            // host-port scheme no longer applies. Publish the in-container management
+            // port (8080) to an ephemeral host port (`-p 8080`) — Docker picks a free
+            // one. The integration harness never host-dials provider-minted replacements
+            // (they're reached on the overlay network; host-mapped ports belong to the
+            // compose-fixed seeds only), so a deterministic host port is unnecessary.
             command.add("-p");
-            command.add((config.managementPortBase() + slot) + ":8080");
+            command.add("8080");
         }
         addSpecLabels(command, ctx.extraTags());
         addPlacementLabels(command, spec.placement());
@@ -425,11 +345,12 @@ import static org.pragmatica.lang.Result.success;
 
     private InstanceInfo toProvisionedInfo(String containerId,
                                            String containerName,
-                                           ProvisionSpec spec,
-                                           int slot) {
-        var mgmtPort = config.managementPortBase() + slot;
-        var appPort = config.appPortBase() + slot;
-        var addresses = List.of("localhost:" + mgmtPort, "localhost:" + appPort);
+                                           ProvisionSpec spec) {
+        // Provider-minted replacements are reached on the Docker overlay network at
+        // the container's own ports (mgmt 8080, app 8070), addressed by container name
+        // == NodeId. Host-mapped per-slot ports were a seed-only convenience; KSUID
+        // replacements carry no slot, so report the overlay-reachable form.
+        var addresses = List.of(containerName + ":8080", containerName + ":8070");
         var tags = buildInstanceTags(spec, containerName);
         return new InstanceInfo(new InstanceId(containerId),
                                 InstanceStatus.RUNNING,
