@@ -412,6 +412,20 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
         return killNode(nodeIdStr, true);
     }
 
+    /// Black-hole fault injection (silent death) — distinct from [#killNode]. The node stays
+    /// registered in the cluster and its QUIC channels stay OPEN, but it silently drops all
+    /// inbound and outbound application traffic (SWIM probes/acks, ClusterSync ping/pong,
+    /// consensus). Peers continue to believe the link is connected, exactly as after a hard
+    /// `docker kill` with QUIC MAX_IDLE_TIMEOUT disabled. Reproduces the Docker-only
+    /// silent-death failure-detection bug on the fast in-process loop.
+    public Promise<Unit> blackhole(String nodeIdStr) {
+        return Option.option(nodes.get(nodeIdStr))
+                     .onPresent(node -> log.info("Black-holing node {} (silent death; channels stay open)", nodeIdStr))
+                     .onPresent(node -> node.blackhole(true))
+                     .map(_ -> Promise.success(Unit.unit()))
+                     .or(() -> nodeNotFound(nodeIdStr));
+    }
+
     public Promise<Unit> killNode(String nodeIdStr, boolean graceful) {
         return Option.option(nodes.get(nodeIdStr)).map(node -> killNodeInternal(nodeIdStr, node, graceful))
                             .or(() -> nodeNotFound(nodeIdStr));

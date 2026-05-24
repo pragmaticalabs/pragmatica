@@ -109,6 +109,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
 
+    /// Test-only fault injection: when set, this node silently drops ALL application traffic
+    /// (outbound send/broadcast become no-ops; inbound frames are dropped before routing) while
+    /// keeping every QUIC channel open and `connectedPeers()` unchanged. This reproduces a hard
+    /// `docker kill` with QUIC MAX_IDLE_TIMEOUT disabled: peers still believe the link is
+    /// CONNECTED yet the node never acks SWIM probes, ClusterSync pongs, or consensus. Distinct
+    /// from `stop()`, which closes channels and triggers an immediate transport-disconnect on
+    /// peers. Used by the in-process Ember chaos substrate to reproduce — on the fast loop — the
+    /// silent-death failure-detection bug otherwise only observable on Docker.
+    private volatile boolean blackholed = false;
+
     /// Per-peer eviction-driven reconnect backoff. Without this, an eviction storm at the
     /// 1Hz consensus heartbeat tempo (writeToStream → evictStaleConnection → connectPeer →
     /// next heartbeat sees same dead channel) reproducibly leaks one ephemeral UDP socket
@@ -510,19 +520,42 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     @Override
     public <M extends ProtocolMessage> Unit send(NodeId peerId, M message) {
+        if (blackholed) {
+            return unit();
+        }
         dispatchPayload(peerId, message);
         return unit();
     }
 
     @Override
     public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId, M message) {
+        if (blackholed) {
+            return Promise.success(new WriteOutcome.Sent(peerId));
+        }
         return Promise.success(dispatchPayloadWithOutcome(peerId, message));
     }
 
     @Override
     public <M extends ProtocolMessage> Unit broadcast(M message) {
+        if (blackholed) {
+            return unit();
+        }
         broadcastPayload(message, !message.deliverToPassive());
         return unit();
+    }
+
+    /// Test-only: toggle silent-death fault injection. See the `blackholed` field doc.
+    @Override
+    @Contract
+    public void blackhole(boolean enabled) {
+        blackholed = enabled;
+        log.warn("QUIC transport for {} blackhole={} (channels stay open; app traffic {})",
+                 self.id(), enabled, enabled ? "DROPPED" : "FLOWING");
+    }
+
+    /// Test-only: whether silent-death fault injection is currently active.
+    public boolean isBlackholed() {
+        return blackholed;
     }
 
     @Override
@@ -623,6 +656,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Network messages (discovery) are handled as service messages.
     @SuppressWarnings("JBCT-PAT-01") // Message routing dispatch
     private void onMessageReceived(NodeId sender, Object message) {
+        if (blackholed) {
+            // Silent death: receive the frame off the wire (keeps the QUIC channel alive and
+            // CONNECTED on the peer) but never route it, so this node neither acks SWIM probes
+            // nor replies to ClusterSync pings nor participates in consensus.
+            return;
+        }
         quicMetrics.onMessageReceived();
         if (message instanceof Message.Wired wired) {
             router.route(wired);

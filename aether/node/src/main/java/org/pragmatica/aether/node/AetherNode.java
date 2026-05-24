@@ -306,6 +306,12 @@ public interface AetherNode extends ManageableNode {
     @Contract
     void route(Message message);
 
+    /// Test-only fault injection: silently drop all cluster transport traffic to/from this node
+    /// without closing connections (peers keep seeing the link as connected). Reproduces a hard
+    /// process kill with idle-timeout disabled. See [ClusterNetwork#blackhole(boolean)].
+    @Contract
+    default void blackhole(boolean enabled) {}
+
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         return aetherNode(config,
                           () -> Runtime.getRuntime().halt(2));
@@ -894,6 +900,11 @@ public interface AetherNode extends ManageableNode {
             @Override
             public void route(Message message) {
                 router.route(message);
+            }
+
+            @Override
+            public void blackhole(boolean enabled) {
+                clusterNode.network().blackhole(enabled);
             }
 
             @Override

@@ -126,6 +126,13 @@ public interface ClusterNetwork {
     /// Returns empty if the network has not been started yet.
     Option<Server> server();
 
+    /// Test-only fault injection: when enabled, the transport silently drops ALL application
+    /// traffic (outbound sends/broadcasts become no-ops; inbound frames are dropped before
+    /// routing) WITHOUT closing any connection — peers continue to see the link as connected.
+    /// Reproduces a hard process kill with idle-timeout disabled (silent death). Default no-op
+    /// for transports that do not support fault injection.
+    default void blackhole(boolean enabled) {}
+
     /// Get transport-level metrics as a name-to-value map.
     /// Returns an empty map by default; QUIC transport overrides with connection/handshake/message stats.
     default Map<String, Number> transportMetrics() {
