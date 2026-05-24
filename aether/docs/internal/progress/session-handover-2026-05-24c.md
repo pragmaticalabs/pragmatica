@@ -88,5 +88,16 @@ I built an in-process **black-hole** fault (silent, channel stays OPEN) ON THE A
 **FIDELITY CAVEAT (the recurring lesson):** the re-projection flapping is a Docker/CTM phenomenon the in-process clean-kill spike does NOT reproduce (MembershipChaosSpikeTest passes clean). The tombstone fix needs a FAITHFUL repro (model the leader/CTM re-projection of a dead id in-process) or careful Docker validation — confirm fidelity before building on it.
 
 **NEXT (revised):** (1) Pin the re-projection DRIVER — is the `<absent>→OnDuty` re-write still `SwimHealthy` (SWIM fix incomplete?) or CTM desired-state reconcile? (tombstone blocks both, but confirm). (2) Build a faithful in-process repro of the re-projection flapping. (3) Implement the FSM tombstone (terminal STOPPED+FORCED un-promotable to OnDuty) on that loop. (4) Bundle SWIM + tombstone, validate fast-loop + Docker, commit. (5) φ → #231 backlog.
-**Held/staged at handover time:** SWIM bare-join fix + φ-accrual fix (both uncommitted on release-1.0.0-rc1, working tree).
+## 11. HELD WORK PRESERVED + NEXT-SESSION START
+
+**Held SWIM bare-join + φ-accrual fixes are committed + pushed on branch `wip/membership-tombstone-base` (HEAD `12d815ab0`, off release `54ed3c902`).** 10 files (5 SWIM, 5 φ incl. new `PhiTransportProbe.java`). `release-1.0.0-rc1` working tree is CLEAN at `54ed3c902` (all session commits pushed).
+
+**START NEXT SESSION HERE:**
+1. Read this doc (esp. §10 — the decision) + GH #230/#231.
+2. `git checkout wip/membership-tombstone-base` — the SWIM fix + φ work are there.
+3. Build the **FSM-owns-manifest-removal tombstone** (§10) — the real S01 fix. Optional first: pin the re-projection driver (SwimHealthy vs CTM reconcile) — but the tombstone is driver-agnostic so not required.
+4. Bundle SWIM + tombstone, validate (faithful in-process repro of the re-projection flapping + Docker), commit to release. Leave φ for #231 (don't merge as the S01 fix).
+5. Fidelity discipline: the re-projection flapping does NOT reproduce in the in-process clean-kill spike — build a faithful repro before trusting the fast loop for this.
+
+**Do NOT re-chase:** the cascade (fixed), off-heap (fixed), KSUID (fixed), the black-hole/φ-detection path (that was an off-target model of S01 — docker-kill CLOSES the connection; decommission DOES fire; the bug is re-projection flapping, not detection).
 </content>
