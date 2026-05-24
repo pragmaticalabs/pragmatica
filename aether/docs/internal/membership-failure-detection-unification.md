@@ -255,5 +255,7 @@ Goal: decide option-2e vs status quo **with data**, via a detector that ships sh
 ## 10. References
 - Specs: membership-architecture-spec.md (§16 S01–S20), swim-driven-topology-spec.md (§5.2 ANNOUNCE, §6 SWIM→QUIC), reachability-aggregator-spec.md, quic-transport-spec.md (§3.3), cluster-convergence-reconciler-spec.md.
 - Session handover: `progress/session-handover-2026-05-24.md` (codec/DHT/backpressure/self-drain chain).
-- Commits: `a2dfeb0f7` (codec revival), `247a55fa4` (FSM-routed reason + reclaim budget).
+- Commits: `a2dfeb0f7` (codec revival), `247a55fa4` (FSM-routed reason + reclaim budget), `6ae906fe8` (SlotClaimed-nop), `f1a451958`/`b0d3bfa1d` (Spike-2 harness).
+- Tracking issues: **#230** (Pillar-1 FSM sovereignty, `rc1`), **#231** (Spike-1 φ-accrual shadow eval), **#232** (revive in-process Ember chaos substrate).
+- Decision (2026-05-24): leaderless-SENSE / CP-DECIDE invariant + φ-accrual endpoint **confirmed**; reducer `illegal()`-cell audit **deferred until after Spike-1** (event alphabet changes if φ-accrual lands).
 </content>
