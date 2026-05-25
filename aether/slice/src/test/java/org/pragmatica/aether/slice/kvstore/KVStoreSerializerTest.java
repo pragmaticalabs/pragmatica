@@ -453,6 +453,75 @@ class KVStoreSerializerTest {
     }
 
     @Nested
+    class ProvisioningSlotCodec {
+        @Test
+        void parseProvisioningSlot_legacyThreeFields_defaultsEpochZeroAndNoSuperseded() {
+            var legacy = "1000|61000|node-occupant";
+
+            KVStoreSerializer.parseProvisioningSlotEntry("0", legacy)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (ProvisioningSlotValue) entry.getValue();
+                                 assertThat(value.spawnedAtMs()).isEqualTo(1000L);
+                                 assertThat(value.deadlineMs()).isEqualTo(61000L);
+                                 assertThat(value.assignedNodeId()).isEqualTo(Option.some(NodeId.nodeId("node-occupant").unwrap()));
+                                 assertThat(value.occupantEpoch()).isEqualTo(0L);
+                                 assertThat(value.supersededNodeId().isPresent()).isFalse();
+                             });
+        }
+
+        @Test
+        void parseProvisioningSlot_legacyThreeFieldsEmptyOccupant_defaultsEmpty() {
+            var legacy = "1000|61000|";
+
+            KVStoreSerializer.parseProvisioningSlotEntry("3", legacy)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 var value = (ProvisioningSlotValue) entry.getValue();
+                                 assertThat(value.assignedNodeId().isPresent()).isFalse();
+                                 assertThat(value.occupantEpoch()).isEqualTo(0L);
+                                 assertThat(value.supersededNodeId().isPresent()).isFalse();
+                             });
+        }
+
+        @Test
+        void roundTrip_fiveFieldFenced_preservesAllFields() {
+            var original = new ProvisioningSlotValue(2000L,
+                                                     62000L,
+                                                     Option.some(NodeId.nodeId("node-new").unwrap()),
+                                                     7L,
+                                                     Option.some(NodeId.nodeId("node-dead").unwrap()));
+
+            var serialized = KVStoreSerializer.serializeProvisioningSlot(original);
+
+            KVStoreSerializer.parseProvisioningSlotEntry("1", serialized)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> assertThat(entry.getValue()).isEqualTo(original));
+        }
+
+        @Test
+        void roundTrip_fiveFieldNoOccupantNoSuperseded_preservesEpoch() {
+            var original = new ProvisioningSlotValue(3000L,
+                                                     63000L,
+                                                     Option.none(),
+                                                     4L,
+                                                     Option.none());
+
+            var serialized = KVStoreSerializer.serializeProvisioningSlot(original);
+
+            KVStoreSerializer.parseProvisioningSlotEntry("2", serialized)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> assertThat(entry.getValue()).isEqualTo(original));
+        }
+
+        @Test
+        void parseProvisioningSlot_wrongFieldCount_returnsParseFailure() {
+            KVStoreSerializer.parseProvisioningSlotEntry("0", "1000|61000|node|7")
+                             .onSuccess(_ -> Assertions.fail());
+        }
+    }
+
+    @Nested
     class EphemeralKeyFiltering {
         @Test
         void isEphemeral_nodeArtifactKey_true() {

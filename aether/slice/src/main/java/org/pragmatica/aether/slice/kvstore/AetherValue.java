@@ -1501,23 +1501,43 @@ import static org.pragmatica.lang.Option.none;
         FAILED
     }
 
-    record ProvisioningSlotValue(long spawnedAtMs, long deadlineMs, Option<NodeId> assignedNodeId) implements AetherValue {
+    /// Canonical field order: `(spawnedAtMs, deadlineMs, assignedNodeId, occupantEpoch, supersededNodeId)`.
+    ///
+    /// `occupantEpoch` is a monotonic, slot-local generation counter; `0` means empty/never-occupied.
+    /// `supersededNodeId` records the predecessor occupant this assignment replaced; `none()` on first fill.
+    ///
+    /// Backward compatibility (slot-based-membership-convergence-spec §4.2): the legacy 3-arg
+    /// construction sites still compile via the overloaded 3-arg constructor and the
+    /// `provisioningSlotValue(..)` factories, which default `occupantEpoch = 0` and
+    /// `supersededNodeId = none()`. Mirrors the `NodeLifecycleValue` trailing-field pattern.
+    record ProvisioningSlotValue(long spawnedAtMs,
+                                 long deadlineMs,
+                                 Option<NodeId> assignedNodeId,
+                                 long occupantEpoch,
+                                 Option<NodeId> supersededNodeId) implements AetherValue {
         public ProvisioningSlotValue {
             if (assignedNodeId == null) {assignedNodeId = Option.none();}
+            if (supersededNodeId == null) {supersededNodeId = Option.none();}
+        }
+
+        /// Backward-compatible 3-arg constructor — preserves pre-fence call sites.
+        /// Defaults `occupantEpoch = 0`, `supersededNodeId = none()`.
+        public ProvisioningSlotValue(long spawnedAtMs, long deadlineMs, Option<NodeId> assignedNodeId) {
+            this(spawnedAtMs, deadlineMs, assignedNodeId, 0L, Option.none());
         }
 
         public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs, long deadlineMs) {
-            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.none());
+            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.none(), 0L, Option.none());
         }
 
         public static ProvisioningSlotValue provisioningSlotValue(long spawnedAtMs,
                                                                   long deadlineMs,
                                                                   NodeId assignedNodeId) {
-            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.option(assignedNodeId));
+            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.option(assignedNodeId), 0L, Option.none());
         }
 
         public ProvisioningSlotValue withAssignedNode(NodeId nodeId) {
-            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.option(nodeId));
+            return new ProvisioningSlotValue(spawnedAtMs, deadlineMs, Option.option(nodeId), occupantEpoch, supersededNodeId);
         }
     }
 

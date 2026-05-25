@@ -245,9 +245,11 @@ import static org.pragmatica.lang.Result.success;
         };
     }
 
-    private static String serializeProvisioningSlot(ProvisioningSlotValue v) {
+    static String serializeProvisioningSlot(ProvisioningSlotValue v) {
         return v.spawnedAtMs() + PIPE + v.deadlineMs() + PIPE + v.assignedNodeId().map(NodeId::id)
-                                                                                .or("");
+                                                                                .or("") + PIPE + v.occupantEpoch() + PIPE + v.supersededNodeId()
+                                                                                                                                            .map(NodeId::id)
+                                                                                                                                            .or("");
     }
 
     private static String serializeDhtPartitionOwnership(DhtPartitionOwnershipValue v) {
@@ -401,6 +403,7 @@ import static org.pragmatica.lang.Result.success;
             case "scheduled-task" -> parseScheduledTaskEntry(identity, rawValue);
             case "scheduled-task-state" -> parseScheduledTaskStateEntry(identity, rawValue);
             case "node-lifecycle" -> parseNodeLifecycleEntry(identity, rawValue);
+            case "provisioning-slot" -> parseProvisioningSlotEntry(identity, rawValue);
             case "config" -> parseConfigEntry(identity, rawValue);
             case "worker-directive" -> parseWorkerDirectiveEntry(identity, rawValue);
             case "activation" -> parseActivationEntry(identity, rawValue);
@@ -634,6 +637,35 @@ import static org.pragmatica.lang.Result.success;
     private static Result<NodeLifecycleState> parseNodeLifecycleState(String raw) {
         return Result.lift(() -> NodeLifecycleState.valueOf(raw))
                           .mapError(_ -> Causes.cause("Unknown lifecycle state: " + raw));
+    }
+
+    /// Deserializes a provisioning-slot value. Tolerates BOTH the 3-field legacy form
+    /// `(spawnedAtMs|deadlineMs|assignedNodeId)` — defaulting `occupantEpoch = 0`,
+    /// `supersededNodeId = none()` — AND the 5-field fenced form
+    /// `(spawnedAtMs|deadlineMs|assignedNodeId|occupantEpoch|supersededNodeId)`.
+    /// Mirrors the `NodeLifecycleValue` trailing-field backward-compat (no envelope bump, spec §7).
+    static Result<Map.Entry<AetherKey, AetherValue>> parseProvisioningSlotEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 3 && parts.length != 5) {return parseFailure("provisioning-slot value requires 3 or 5 fields, got " + parts.length);}
+        var occupantEpoch = parts.length >= 5
+                           ? Long.parseLong(parts[3])
+                           : 0L;
+        var supersededNodeId = parts.length >= 5
+                             ? parseOptionalNodeId(parts[4])
+                             : Option.<NodeId>none();
+        var key = ProvisioningSlotKey.provisioningSlotKey(identity);
+        var value = new ProvisioningSlotValue(Long.parseLong(parts[0]),
+                                              Long.parseLong(parts[1]),
+                                              parseOptionalNodeId(parts[2]),
+                                              occupantEpoch,
+                                              supersededNodeId);
+        return success(entry(key, value));
+    }
+
+    private static Option<NodeId> parseOptionalNodeId(String raw) {
+        return raw.isEmpty()
+              ? Option.none()
+              : NodeId.nodeId(raw).option();
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseConfigEntry(String identity, String raw) {
