@@ -8,7 +8,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.LifecycleSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.SlotSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.TimerScheduler;
@@ -139,6 +141,45 @@ class MembershipFsmCommandIngressTest {
         var accepted = fsm.applyLifecycleCommand(forceOnDuty(PEER_A)).await().unwrap();
 
         assertThat(accepted).as("a non-leader must not write lifecycle (single-writer)").isFalse();
+        assertThat(commandApplier.calls).isEmpty();
+    }
+
+    @Test
+    void forceDecommission_onNonLeader_proposesUnconditionally() {
+        // ForceDecommission is NOT a promotion command — the leader-gate must NOT drop it, so a
+        // decommission issued in a leader-transition window still reaches terminal STOPPED. This
+        // pins the cluster-B ghost-ON_DUTY-accumulation fix: gating decommissions during churn was
+        // the regression.
+        lifecycleSnapshot.put(PEER_A, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                                            System.currentTimeMillis()));
+        leaderFlag.set(false);
+        var fsm = startedFsm();
+        assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
+        commandApplier.calls.clear();
+
+        var accepted = fsm.applyLifecycleCommand(new ForceDecommission(PEER_A,
+                                                                       StopReason.FORCED,
+                                                                       Causes.cause("churn-window decommission"),
+                                                                       HlcTimestamp.ZERO)).await().unwrap();
+
+        assertThat(accepted).as("a non-leader ForceDecommission must still propose (not dropped during churn)").isTrue();
+        assertThat(commandApplier.calls).as("a STOPPED write must be proposed").isNotEmpty();
+        assertThat(lifecycleStatesWritten()).contains(NodeLifecycleState.STOPPED);
+    }
+
+    @Test
+    void recordJoining_onNonLeader_isNoOp() {
+        // RecordJoining IS a promotion command (re-projection vector) — it must stay leader-gated.
+        leaderFlag.set(false);
+        var fsm = startedFsm();
+        commandApplier.calls.clear();
+
+        var accepted = fsm.applyLifecycleCommand(new RecordJoining(PEER_A,
+                                                                   Option.none(),
+                                                                   Causes.cause("stale record-joining"),
+                                                                   HlcTimestamp.ZERO)).await().unwrap();
+
+        assertThat(accepted).as("a non-leader RecordJoining must be gated (promotion vector)").isFalse();
         assertThat(commandApplier.calls).isEmpty();
     }
 

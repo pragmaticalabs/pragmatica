@@ -7,6 +7,8 @@ package org.pragmatica.aether.deployment.membership.fsm;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.ClusterMembershipReducer.Outcome;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceOnDuty;
+import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.RecordJoining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelDrain;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.CancelTimer;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEffect.EmitDomainEvent;
@@ -913,6 +915,19 @@ public final class MembershipFsm {
         }
     }
 
+    /// Promotion commands (`ForceOnDuty`, `RecordJoining`) are the ONLY lifecycle commands the
+    /// sovereign ingress leader-gates: they are the sole re-projection vectors — on a follower a
+    /// stale `resolveState` could resolve a removed peer to a promotable state and re-introduce
+    /// it. The terminal/draining/untracked commands (`ForceDecommission`, `ForceDrain`,
+    /// `RequestReJoin`) are NOT gated; they cannot re-project, and gating them is what dropped
+    /// in-flight decommissions during leader-churn (the cluster-B ghost-`ON_DUTY`-accumulation
+    /// regression). The legacy `DirectLifecycleWriter` wrote all commands unconditionally via
+    /// consensus from any node — this restores that liveness for the non-promotion subset while
+    /// keeping re-projection safety for promotions.
+    private static boolean isPromotionCommand(LifecycleCommand command) {
+        return command instanceof ForceOnDuty || command instanceof RecordJoining;
+    }
+
     /// Sovereign command ingress — the single entry through which every `LifecycleCommand`
     /// (operator API, CTM scale-down, drain coordinator, reconciler, cluster-sync
     /// `readyCandidate` fan) mutates lifecycle KV. Routing through the reducer makes an illegal
@@ -921,13 +936,14 @@ public final class MembershipFsm {
     /// `STOPPED+FORCED` peer is rejected (the S01 re-projection fix), because `resolveState`
     /// resolves it to `Stopped` and `applyForceOnDuty(Stopped)` is a no-op. Returns whether the
     /// command was ACCEPTED (a real lifecycle write was proposed and committed); a reducer
-    /// no-op, a non-leader receiver, or a consensus rejection yields `false`, which the routing
-    /// `LifecycleWriter` surfaces as `CommandApplied(accepted=false)`. Commands do not consult
-    /// the reachability gate (only the two ON_DUTY decommission event cells do), so
-    /// `ReachabilityGate.ALWAYS_CONFIRMED` is passed.
+    /// no-op, a non-leader receiver of a promotion command (see `isPromotionCommand`), or a
+    /// consensus rejection yields `false`, which the routing `LifecycleWriter` surfaces as
+    /// `CommandApplied(accepted=false)`. Commands do not consult the reachability gate (only the
+    /// two ON_DUTY decommission event cells do), so `ReachabilityGate.ALWAYS_CONFIRMED` is passed.
     public Promise<Boolean> applyLifecycleCommand(LifecycleCommand command) {
-        if (!isLeader.getAsBoolean()) {
-            log.warn("MembershipFsm: lifecycle command {} for {} received on non-leader — no-op (single-writer invariant)",
+        if (isPromotionCommand(command) && !isLeader.getAsBoolean()) {
+            log.warn("MembershipFsm: promotion command {} for {} received on non-leader — no-op "
+                     + "(single-writer invariant; only ForceOnDuty/RecordJoining are leader-gated)",
                      command.getClass().getSimpleName(),
                      command.peer().id());
 
