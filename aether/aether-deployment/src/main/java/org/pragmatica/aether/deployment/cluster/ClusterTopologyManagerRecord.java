@@ -282,12 +282,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                          .toList();
     }
 
-    /// Classifies a slot against the supplied membership view + lifecycle KV (§5.1). The view
-    /// answers "is the occupant ON_DUTY+healthy?"; lifecycle KV answers "is it STOPPED/dead?".
+    /// Classifies a slot against the lifecycle KV (DECIDE plane). The occupant's committed
+    /// lifecycle state is the single source of truth (§5.1, OQ6) — NOT the SWIM-derived
+    /// `view.onDutyMemberIds()` (SENSE plane), which lags/differs from the sovereign-FSM KV.
     private SlotOccupancy classifyOccupancy(ProvisioningSlotValue slot, MembershipView view, long nowMs) {
         return slot.assignedNodeId()
                    .fold(() -> classifyEmptyOrFilling(slot, nowMs),
-                         occupant -> classifyOccupied(occupant, view));
+                         this::classifyOccupied);
     }
 
     private SlotOccupancy classifyEmptyOrFilling(ProvisioningSlotValue slot, long nowMs) {
@@ -296,35 +297,31 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                : SlotOccupancy.EMPTY;
     }
 
-    /// Classifies an OCCUPIED slot. STRICT STOPPED-gated DEAD (slot-based-membership-convergence
-    /// -spec §5.1 + OQ6 + §3.4): CTM is an actuator, NOT a liveness-decider — the sovereign FSM
-    /// reducer is the single writer of terminal STOPPED and writes it BEFORE CTM acts. An occupant
-    /// merely absent from `onDutyMemberIds` (transient flap / snapshot gap) is NOT DEAD; the slot
-    /// is "occupied, awaiting terminal state" (classified FILLING — neither freed nor refilled)
-    /// until the reducer commits STOPPED. A genuinely stuck occupant is reclaimed by the
-    /// FILLING-marker deadline (provision expiry → reset to EMPTY), not by CTM deciding liveness.
-    private SlotOccupancy classifyOccupied(NodeId occupant, MembershipView view) {
-        if (occupantStopped(occupant)) {return SlotOccupancy.DEAD;}
-        if (view.onDutyMemberIds().contains(occupant) && occupantHealthy(occupant)) {
-            return SlotOccupancy.HEALTHY;
-        }
+    /// Classifies an OCCUPIED slot on the DECIDE plane (`lifecycleReader` — the sovereign-FSM
+    /// committed lifecycle, the SAME source `occupantStopped` reads). CTM is an actuator on the
+    /// FSM's committed lifecycle, NOT a SENSE-plane reader: an occupant that the FSM committed
+    /// ON_DUTY is HEALTHY even while it still lags the SWIM-derived `onDutyMemberIds()`. Mapping:
+    /// `STOPPED→DEAD`, `ON_DUTY→HEALTHY`, `JOINING/DRAINING→FILLING`, absent→FILLING (occupied,
+    /// awaiting terminal). A genuinely stuck occupant is reclaimed by the FILLING-marker deadline
+    /// (provision expiry → reset to EMPTY), never by CTM deciding liveness.
+    private SlotOccupancy classifyOccupied(NodeId occupant) {
+        return lifecycleReader.apply(occupant)
+                              .map(lv -> classifyLifecycleState(lv.state()))
+                              .or(SlotOccupancy.FILLING);
+    }
 
-        return SlotOccupancy.FILLING;
+    private static SlotOccupancy classifyLifecycleState(NodeLifecycleState state) {
+        return switch (state) {
+            case STOPPED -> SlotOccupancy.DEAD;
+            case ON_DUTY -> SlotOccupancy.HEALTHY;
+            case JOINING, DRAINING -> SlotOccupancy.FILLING;
+        };
     }
 
     private boolean occupantStopped(NodeId occupant) {
         return lifecycleReader.apply(occupant)
                               .map(lv -> lv.state() == NodeLifecycleState.STOPPED)
                               .or(false);
-    }
-
-    /// An ON_DUTY occupant is HEALTHY when the transport-layer health hint says so. When the
-    /// observer carries no state for the occupant (snapshot-only test views), default to healthy
-    /// so a node the snapshot already lists as ON_DUTY is not perpetually mis-classified FILLING.
-    private boolean occupantHealthy(NodeId occupant) {
-        return observer.getState(occupant)
-                       .map(state -> state.health() == NodeHealth.HEALTHY)
-                       .or(true);
     }
 
     @Contract
@@ -564,12 +561,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         bumpRealActualStability("activate");
         resetProvisioningCircuit("activate (leader handoff)");
-        seedOrReseedSlots();
+        // Establish the reconciler state (Forming/Converged) FIRST so the activation reconcile —
+        // chained onto the reseed commit inside seedOrReseedSlots — reaches reconcileActive rather
+        // than early-returning on Inactive.
         activateWithCurrentTopology();
-        // After seeding the durable slot set + establishing the reconciler state, run one
-        // reconcile pass so EMPTY slots seeded for a below-target cluster are filled immediately
-        // (subject to the stability/circuit/backoff gates), and any DEAD slot is freed.
-        reconcile();
+        // seedOrReseedSlots writes the COMPLETE clusterSize slot set (bound occupants + empties) in
+        // one write-set and chains the activation reconcile onto its commit — so reconcile (and its
+        // maintainSlotSetSize) reads a slot map that already reflects the bindings, never a stale
+        // pre-commit view that would re-seed bound indices EMPTY (the activation double-seed clobber).
+        seedOrReseedSlots();
         scheduleSafetyNetPoll();
     }
 
@@ -587,6 +587,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         if (configured <= 0) {
             log.info("CTM: reseed skipped — no configured cluster size at activation; awaiting snapshot bump");
+            reconcile();
 
             return;
         }
@@ -603,7 +604,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                puts.size(),
                                                bound.size(),
                                                puts.size() - bound.size(),
-                                               configured));
+                                               configured))
+                      // Run the activation reconcile only AFTER the complete reseed write-set has
+                      // committed, so maintainSlotSetSize observes the bound slots (not a stale
+                      // pre-commit map) and does not clobber them with EMPTY seeds.
+                      .onResult(_ -> reconcile());
 
         // Reseed-surplus reaping is a lifecycle mutation — suppress it while the cluster phase is
         // not NORMAL (COLD_BOOT / RECOVERING), matching the reconcile-loop phase gate. The surplus
@@ -939,7 +944,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var healthy = countHealthy(slots, view, nowMs);
         var emptyToFill = selectEmptySlotsToFill(slots, view, nowMs, freedIndices);
         observeRealActualForStability(healthy);
-        log.debug("CTM reconcile(slot): configured={} healthy={} freedDead={} emptyToFill={} occupancy={}",
+        log.info("CTM reconcile(slot): configured={} healthy={} freedDead={} emptyToFill={} occupancy={}",
                   configured,
                   healthy,
                   freedIndices.size(),

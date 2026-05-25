@@ -229,6 +229,91 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
         assertThat(lifecycleManager.provisionCount.get()).isGreaterThanOrEqualTo(1);
     }
 
+    /// BUG 1 CONSISTENCY GUARD (pass-after; NOT a fail-before reproduction). `classifyOccupied`
+    /// keys occupancy on the lifecycle KV (`lifecycleReader`, DECIDE plane), NOT on the SWIM /
+    /// observer transport-health gate that the old `occupantHealthy()` carried. This is structurally
+    /// inert today (a bound slot is never refilled and `settleConverged` ignores `countHealthy`), so
+    /// it cannot fail-before through the public surface — the guard locks in the sovereign-FSM
+    /// principle so a future refactor that makes occupancy observable cannot silently re-introduce
+    /// the SWIM gate. An occupant ON_DUTY in lifecycle KV but with NO observer health entry (the
+    /// freshly-joined / SWIM-lagged case) must keep the cluster Converged with zero re-provision.
+    @Test
+    void classifyOccupied_keysOnLifecycleNotSwimHealthGate_consistencyGuard() throws InterruptedException {
+        clusterStore.seed(5);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
+        ctm.activate();
+        Thread.sleep(100L);
+        // SWIM/observer carries no HEALTHY hint for the occupants (the old occupantHealthy() gate
+        // would mis-classify them FILLING), while the lifecycle KV keeps every occupant ON_DUTY.
+        var provisionsAtConverge = lifecycleManager.provisionCount.get();
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        Thread.sleep(100L);
+        assertThat(ctm.reconcilerState())
+                .as("lifecycle-keyed occupancy keeps a fully-bound cluster Converged")
+                .isInstanceOf(NodeReconcilerState.Converged.class);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("no re-provision — occupancy classified on the DECIDE plane, not the SWIM gate")
+                .isEqualTo(provisionsAtConverge);
+    }
+
+    /// BUG 2 regression GUARD (activation double-seed clobber — async/timing; Docker is the
+    /// decisive gate). With a DEFERRED `commandApplier` (resolves the reseed write on a LATER tick,
+    /// recreating the stale-read window the real async Rabia KV has), activation with 5 ON_DUTY
+    /// occupants must leave all 5 slots BOUND. Old code ran `maintainSlotSetSize` against the
+    /// pre-commit (empty) map → re-seeded indices 0-4 EMPTY → clobbered the bindings (fails-before).
+    /// New: the activation reconcile is chained onto the reseed COMMIT → bindings survive.
+    @Test
+    void activate_withDeferredCommandApplier_keepsBindings_noClobber() throws InterruptedException {
+        var deferred = new DeferredCommandApplier(clusterStore);
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
+                                                      timeSpan(1).millis(),
+                                                      AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
+                                                      AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                                      AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
+                                                      timeSpan(0).millis())
+                                            .unwrap();
+        var deferredCtm = ClusterTopologyManager.clusterTopologyManager(observer,
+                                                                        lifecycleManager,
+                                                                        autoHeal,
+                                                                        DeploymentMap.deploymentMap(),
+                                                                        snapshotSource,
+                                                                        clusterStore::current,
+                                                                        clusterStore::lifecycle,
+                                                                        clusterStore::slots,
+                                                                        deferred::apply,
+                                                                        new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
+                                                                        LegacyLifecycleWriterFixture.create(deferred::apply,
+                                                                                                            clusterStore::lifecycle,
+                                                                                                            System::currentTimeMillis),
+                                                                        () -> AetherValue.ClusterPhase.NORMAL);
+        clusterStore.seed(5);
+        var epoch = 0L;
+        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {clusterStore.installOnDuty(id, epoch++);}
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            5,
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        deferredCtm.activate();
+        // The reseed write is queued but not yet committed (stale-read window open). Now flush it —
+        // the chained activation reconcile runs against the committed map.
+        deferred.flush();
+        Thread.sleep(100L);
+        var boundCount = clusterStore.slots()
+                                     .values()
+                                     .stream()
+                                     .filter(slot -> slot.assignedNodeId().isPresent())
+                                     .count();
+        assertThat(boundCount)
+                .as("all 5 reseeded slots stay BOUND through the stale-read window — no EMPTY clobber")
+                .isEqualTo(5L);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("no surplus provisioning at a fully-occupied cluster")
+                .isZero();
+    }
+
     private void publishOnDuty(Set<NodeId> onDuty, int coreCount) {
         publishOnDutyWithSource(onDuty, onDuty, coreCount);
     }
@@ -282,6 +367,33 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
 
         @Override public long observedRabiaTerm() {
             return term.get();
+        }
+    }
+
+    /// Recreates the async-commit window of the real Rabia KV: `apply` records the write into a
+    /// pending queue WITHOUT mutating the store and returns an unresolved Promise; `flush` commits
+    /// the queued writes to the backing store and resolves the Promises. Between `apply` and
+    /// `flush`, `slotReader.get()` returns the STALE pre-commit map — the window in which the old
+    /// activation double-seed clobbered bindings.
+    private static final class DeferredCommandApplier {
+        private final RecordingClusterStore store;
+        private final java.util.List<Runnable> pending = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
+        DeferredCommandApplier(RecordingClusterStore store) {
+            this.store = store;
+        }
+
+        Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
+            var promise = Promise.<List<Object>>promise();
+            pending.add(() -> store.apply(commands).onResult(promise::resolve));
+
+            return promise;
+        }
+
+        void flush() {
+            var snapshot = List.copyOf(pending);
+            pending.clear();
+            snapshot.forEach(Runnable::run);
         }
     }
 
@@ -368,8 +480,8 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
         }
 
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
-            provisionCount.incrementAndGet();
-            return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + provisionCount.get()).unwrap(),
+            var count = provisionCount.incrementAndGet();
+            return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + count).unwrap(),
                                                              InstanceStatus.RUNNING,
                                                              List.of("127.0.0.1"),
                                                              InstanceType.ON_DEMAND).unwrap());
