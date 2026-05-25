@@ -339,10 +339,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                      DrainReason.OPERATOR_DRAIN,
                                      Causes.cause("Operator drain: " + nodeId.id()),
                                      at);
+        // The FSM-routed ForceDrain enters DRAINING and emits an InvokeDrain effect that starts
+        // the drain protocol (MembershipFsm → DrainCoordinator.prepareDrain). The sovereign FSM
+        // is the sole drain trigger, so the route no longer calls prepareDrain explicitly.
         return node.lifecycleWriter()
-                   .applyCommand(command)
-                   .flatMap(_ -> node.drainCoordinator()
-                                     .prepareDrain(nodeId, DrainReason.OPERATOR_DRAIN));
+                   .applyCommand(command);
     }
 
     private TimeSpan drainTimeout() {

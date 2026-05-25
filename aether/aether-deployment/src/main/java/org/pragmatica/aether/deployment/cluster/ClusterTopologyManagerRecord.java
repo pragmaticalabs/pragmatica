@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.drain.DrainCoordinator;
-import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.LifecycleCommand.ForceDecommission;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -1213,9 +1212,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void terminateSingleNode(NodeId nodeId) {
         writeDrainingAtom(nodeId);
         var timeout = autoHealConfig.provisioningTimeout();
-        drainCoordinator.prepareDrain(nodeId, DrainReason.SCALE_DOWN).flatMap(_ -> drainCoordinator.awaitDrainAck(nodeId,
-                                                                                                                  timeout)).onResult(result -> handleDrainResult(nodeId,
-                                                                                                                                                                 result));
+        // writeDrainingAtom routes ForceDrain through the sovereign FSM, whose InvokeDrain effect
+        // starts the drain protocol (DrainCoordinator.prepareDrain) — so CTM no longer triggers
+        // prepareDrain itself; it only awaits the drain ack before terminating the instance.
+        drainCoordinator.awaitDrainAck(nodeId, timeout).onResult(result -> handleDrainResult(nodeId, result));
     }
 
     @Contract

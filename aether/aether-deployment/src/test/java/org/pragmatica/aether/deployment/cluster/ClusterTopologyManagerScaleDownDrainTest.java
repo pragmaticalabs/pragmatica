@@ -48,11 +48,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Theme D #1 — verifies that scale-down terminate is now a 2-phase protocol gated on
-/// the [`DrainCoordinator`]. Phase 1 writes a `DRAINING` lifecycle atom and calls
-/// `prepareDrain` + `awaitDrainAck`; Phase 2 calls `provider.terminate`. The rc1 stub
-/// (`NoOpDrainCoordinator`) returns immediate success so the existing flow continues
-/// to work, but the structural ordering is verified here for the rc2 #189 implementation.
+/// Theme D #1 — verifies that scale-down terminate is gated on the [`DrainCoordinator`].
+/// Phase 1 writes a `DRAINING` lifecycle atom (which, in production, the sovereign
+/// `MembershipFsm` turns into an `InvokeDrain` effect that starts the drain protocol) and
+/// `awaitDrainAck`s; Phase 2 calls `provider.terminate`. CTM no longer calls `prepareDrain`
+/// directly — the FSM's `InvokeDrain` is the sole drain trigger (this CTM-unit test uses a
+/// fixture writer, so only the DRAINING write + await + terminate ordering is asserted here).
 class ClusterTopologyManagerScaleDownDrainTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
@@ -120,11 +121,10 @@ class ClusterTopologyManagerScaleDownDrainTest {
         snapshotSource.publish(StubView.surplus(ids, onDutySet, onDuty, 3), 1L);
     }
 
-    /// On scale-down, CTM must (1) write `NodeLifecycleValue(DRAINING, ...)` via consensus,
-    /// (2) invoke `drainCoordinator.prepareDrain`, (3) `drainCoordinator.awaitDrainAck`,
-    /// (4) `lifecycleManager.terminateNode`, and finally (5) write `DECOMMISSIONED`. The
-    /// recording coordinator + recording cluster config store let us assert the exact
-    /// ordering of these effects.
+    /// On scale-down, CTM must (1) write `NodeLifecycleValue(DRAINING, ...)` via consensus
+    /// (the FSM's `InvokeDrain` then drives `prepareDrain` in production), (2)
+    /// `drainCoordinator.awaitDrainAck`, (3) `lifecycleManager.terminateNode`, and finally
+    /// (4) write `DECOMMISSIONED`. CTM no longer calls `prepareDrain` itself.
     @Test
     void scaleDown_writesDrainingBeforeTerminate() throws InterruptedException {
         var coordinator = new RecordingDrainCoordinator();
@@ -144,7 +144,6 @@ class ClusterTopologyManagerScaleDownDrainTest {
 
         var lifecycleStates = configStore.observedLifecycleStates();
         assertThat(lifecycleStates).contains(NodeLifecycleState.DRAINING);
-        assertThat(coordinator.prepareCount.get()).isGreaterThanOrEqualTo(1);
         assertThat(coordinator.awaitCount.get()).isGreaterThanOrEqualTo(1);
         assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
         assertThat(coordinator.markCompleteCount.get()).isGreaterThanOrEqualTo(1);
@@ -191,7 +190,6 @@ class ClusterTopologyManagerScaleDownDrainTest {
             Thread.sleep(50L);
         }
 
-        assertThat(coordinator.prepareCount.get()).isGreaterThanOrEqualTo(1);
         assertThat(lifecycleManager.terminateCount.get())
                 .as("terminate should fire even when drain-ack hangs")
                 .isGreaterThanOrEqualTo(1);

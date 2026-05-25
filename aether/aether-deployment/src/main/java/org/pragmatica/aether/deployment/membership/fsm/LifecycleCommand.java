@@ -48,6 +48,10 @@ import org.pragmatica.lang.Option;
 /// Operator API drain endpoint, CLI `aether nodes drain <id>`. Idempotent on
 /// already-`DRAINING`.
 public sealed interface LifecycleCommand extends MembershipFsmInput permits LifecycleCommand.ForceDecommission, LifecycleCommand.ForceOnDuty, LifecycleCommand.RecordJoining, LifecycleCommand.RequestReJoin, LifecycleCommand.ForceDrain {
+    NodeId peer();
+
+    HlcTimestamp at();
+
     Cause justification();
 
     record ForceDecommission(NodeId peer, StopReason reason, Cause justification, HlcTimestamp at) implements LifecycleCommand {}

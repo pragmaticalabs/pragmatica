@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StopReason;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -30,6 +31,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -129,6 +131,18 @@ public interface LifecycleWriter {
                                                   Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                   StreamPublisher<CommandLifecycleEvent> auditPublisher) {
         return new DirectLifecycleWriter(lifecycleReader, commandApplier, auditPublisher);
+    }
+
+    /// Builds an FSM-routed `LifecycleWriter`. Every command is dispatched through
+    /// `commandIngress` (`MembershipFsm::applyLifecycleCommand`), making the membership FSM the
+    /// sovereign single writer of lifecycle KV: illegal command-on-state is a no-op + audit
+    /// (`CommandApplied(accepted=false)`) rather than an unconditional overwrite. `clock` stamps
+    /// a fresh HLC timestamp onto the timestamp-less legacy `request*` commands. Replaces
+    /// `directLifecycleWriter` in production wiring; the direct variant remains for tests.
+    static LifecycleWriter fsmRoutedLifecycleWriter(Function<LifecycleCommand, Promise<Boolean>> commandIngress,
+                                                     Supplier<HlcTimestamp> clock,
+                                                     StreamPublisher<CommandLifecycleEvent> auditPublisher) {
+        return new FsmRoutedLifecycleWriter(commandIngress, clock, auditPublisher);
     }
 }
 

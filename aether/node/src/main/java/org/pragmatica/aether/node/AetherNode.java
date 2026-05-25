@@ -1086,6 +1086,11 @@ public interface AetherNode extends ManageableNode {
         // no-op (`unitPromise()`) — safe because Rabia sync completion can only fire after
         // the node has been fully assembled.
         var ctmLifecycleWriterRef = new AtomicReference<org.pragmatica.aether.deployment.cluster.LifecycleWriter>(null);
+        // The FSM-routed writer (built below) dispatches commands through MembershipFsm, which is
+        // constructed AFTER the writer (it depends on drainCoordinator, which depends on the
+        // writer). This ref breaks that cycle: the writer captures it now and dereferences it at
+        // command time — safe because commands can only flow after the node is fully assembled.
+        var membershipFsmRef = new AtomicReference<MembershipFsm>(null);
         ClusterSyncPongSignalFan.ReadyCandidateSink readyCandidateSink = (sender, candidate) ->
             emitForceOnDuty(ctmLifecycleWriterRef.get(), sender, candidate);
         metricsCollector.setReadinessTracker(readinessTracker);
@@ -1272,7 +1277,9 @@ public interface AetherNode extends ManageableNode {
             return Option.option(auditLifecycleCommandPublisherRef.get())
                          .fold(Promise::<Unit>unitPromise, p -> p.publish(event));
         };
-        var ctmLifecycleWriter = LifecycleWriter.directLifecycleWriter(lifecycleReader::apply, clusterCommandApplier, auditLifecycleCommandPublisher);
+        var ctmLifecycleWriter = LifecycleWriter.fsmRoutedLifecycleWriter(command -> membershipFsmRef.get().applyLifecycleCommand(command),
+                                                                          hlcClock::now,
+                                                                          auditLifecycleCommandPublisher);
         // Bind the forward-ref so the Phase 2 PR-B `readyCandidateSink` (wired above) can emit
         // `LifecycleCommand.ForceOnDuty` once the lifecycle writer exists.
         ctmLifecycleWriterRef.set(ctmLifecycleWriter);
@@ -1295,6 +1302,9 @@ public interface AetherNode extends ManageableNode {
                                                isLeaderSupplier,
                                                hlcClock,
                                                reachabilityAggregator);
+        // Bind the forward-ref so the FSM-routed ctmLifecycleWriter (built above) can dispatch
+        // commands into the now-constructed sovereign FSM.
+        membershipFsmRef.set(membershipFsm);
         membershipFsm.start();
         // Topology-observation refactor Step 3: wire the leader-side aggregator's snapshot
         // stream into the FSM. The aggregator invokes this listener synchronously after each

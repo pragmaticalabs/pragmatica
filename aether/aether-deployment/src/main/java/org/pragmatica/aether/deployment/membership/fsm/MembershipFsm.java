@@ -58,6 +58,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
@@ -822,7 +823,7 @@ public final class MembershipFsm {
 
     private void processFsmEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
-        var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
+        var current = resolveState(peer);
         var outcome = reducer.apply(current, event, currentReachabilityGate());
         fsmStates.put(peer, outcome.newState());
         // Symmetry with processOperatorEventLocked: apply effects even on the shadow path so a
@@ -863,7 +864,7 @@ public final class MembershipFsm {
 
     private void processOperatorEventLocked(MembershipFsmEvent event) {
         var peer = event.peer();
-        var current = fsmStates.getOrDefault(peer, MembershipFsmState.untracked(peer));
+        var current = resolveState(peer);
         var outcome = reducer.apply(current, event, currentReachabilityGate());
 
         if (outcome.writes().isEmpty()) {
@@ -910,6 +911,117 @@ public final class MembershipFsm {
         } finally {
             fsmLock.unlock();
         }
+    }
+
+    /// Sovereign command ingress — the single entry through which every `LifecycleCommand`
+    /// (operator API, CTM scale-down, drain coordinator, reconciler, cluster-sync
+    /// `readyCandidate` fan) mutates lifecycle KV. Routing through the reducer makes an illegal
+    /// command-on-state a no-op instead of the unconditional overwrite the legacy
+    /// `DirectLifecycleWriter` performed — e.g. a `ForceOnDuty` against a still-retained
+    /// `STOPPED+FORCED` peer is rejected (the S01 re-projection fix), because `resolveState`
+    /// resolves it to `Stopped` and `applyForceOnDuty(Stopped)` is a no-op. Returns whether the
+    /// command was ACCEPTED (a real lifecycle write was proposed and committed); a reducer
+    /// no-op, a non-leader receiver, or a consensus rejection yields `false`, which the routing
+    /// `LifecycleWriter` surfaces as `CommandApplied(accepted=false)`. Commands do not consult
+    /// the reachability gate (only the two ON_DUTY decommission event cells do), so
+    /// `ReachabilityGate.ALWAYS_CONFIRMED` is passed.
+    public Promise<Boolean> applyLifecycleCommand(LifecycleCommand command) {
+        if (!isLeader.getAsBoolean()) {
+            log.warn("MembershipFsm: lifecycle command {} for {} received on non-leader — no-op (single-writer invariant)",
+                     command.getClass().getSimpleName(),
+                     command.peer().id());
+
+            return Promise.success(Boolean.FALSE);
+        }
+
+        fsmLock.lock();
+        MembershipFsmState prior;
+        Outcome outcome;
+        List<KVCommand<AetherKey>> resolvedWrites;
+        try {
+            prior = resolveState(command.peer());
+            outcome = reducer.apply(prior, command, ReachabilityGate.ALWAYS_CONFIRMED);
+
+            if (outcome.writes().isEmpty()) {
+                applyEffectsLocked(outcome.effects());
+                logCommandOutcome(command, prior, outcome, false);
+
+                return Promise.success(Boolean.FALSE);
+            }
+
+            resolvedWrites = resolveLifecycleWrites(outcome.writes());
+        } finally {
+            fsmLock.unlock();
+        }
+
+        return commandApplier.apply(resolvedWrites)
+                             .map(_ -> applyCommandWriteSuccess(command, prior, outcome, resolvedWrites))
+                             .recover(cause -> handleCommandWriteFailure(command, cause));
+    }
+
+    private Boolean applyCommandWriteSuccess(LifecycleCommand command,
+                                             MembershipFsmState prior,
+                                             Outcome outcome,
+                                             List<KVCommand<AetherKey>> resolvedWrites) {
+        fsmLock.lock();
+        try {
+            var newState = outcome.newState();
+            fsmStates.put(newState.peer(), newState);
+            pruneIncarnationIfDecommissioned(newState.peer(), newState);
+            recordResolvedLifecycleWrites(resolvedWrites);
+            applyEffectsLocked(outcome.effects());
+            logCommandOutcome(command, prior, outcome, true);
+
+            return Boolean.TRUE;
+        } finally {
+            fsmLock.unlock();
+        }
+    }
+
+    private Boolean handleCommandWriteFailure(LifecycleCommand command, Cause cause) {
+        log.warn("MembershipFsm: lifecycle command {} for {} consensus rejected: {} — local state NOT mutated (I1)",
+                 command.getClass().getSimpleName(),
+                 command.peer().id(),
+                 cause.message());
+
+        return Boolean.FALSE;
+    }
+
+    @Contract
+    private void logCommandOutcome(LifecycleCommand command, MembershipFsmState prior, Outcome outcome, boolean accepted) {
+        log.info("MembershipFsm: lifecycle command {} for {} {} (prior={}, next={})",
+                 command.getClass().getSimpleName(),
+                 command.peer().id(),
+                 accepted ? "accepted" : "no-op (illegal-on-state / rejected)",
+                 prior.getClass().getSimpleName(),
+                 outcome.newState().getClass().getSimpleName());
+    }
+
+    /// Resolves a peer's current FSM state for the reducer. On an `fsmStates` miss, re-derives
+    /// from the retained KV lifecycle truth so a still-retained `STOPPED+FORCED` terminal
+    /// resolves to `Stopped` (FORCED preserved) rather than the `Untracked` default — closing
+    /// the window where a force-decommissioned peer that is merely absent from the in-memory map
+    /// would be re-promoted by `untrackedDirectToOnDuty`. Falls back to `Untracked` only when KV
+    /// has no entry (a genuinely new peer).
+    private MembershipFsmState resolveState(NodeId peer) {
+        var tracked = fsmStates.get(peer);
+        if (tracked != null) {
+            return tracked;
+        }
+
+        return readLifecycleFromKv(peer).map(value -> deriveStateFromLifecycle(peer, value, slotIdForPeer(peer)))
+                                        .or(MembershipFsmState.untracked(peer));
+    }
+
+    private Option<NodeLifecycleValue> readLifecycleFromKv(NodeId peer) {
+        var holder = new AtomicReference<NodeLifecycleValue>();
+        lifecycleSnapshotReader.forEachLifecycle((key, value) -> {
+            if (key.nodeId().equals(peer)) {
+                holder.set(value);
+            }
+        });
+
+        return Option.option(holder.get());
     }
 
     /// F18 resolution. Rewrites each `Put<NodeLifecycleKey, NodeLifecycleValue>` in `writes`
