@@ -15,6 +15,11 @@ LOAD_RPS="${LOAD_RPS:-5}"
 # Nodes killed during sustained load; in-flight requests on killed nodes are lost outright
 # until LB drops them; replacement provisioning + failover takes seconds.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-10.0}"
+# APP_ENDPOINT defaults to the (now-removed) LB port 9090; the test-echo slice is
+# host-mapped on cluster B's app ports 8080..8084. Without retargeting to the live
+# slice owner, every request hits a dead port and the test measures 100% error against
+# nothing (false FAIL). Coords match slice_owner_for's group:artifact prefix.
+ECHO_BLUEPRINT="${ECHO_BLUEPRINT:-org.pragmatica.aether.test:test-echo:1.0.0}"
 
 test_initial_state() {
     wait_for_cluster_ready 60
@@ -33,6 +38,12 @@ test_kill_during_load() {
     # chaos actually affects during a kill. Management /health/live is a
     # node-local synthetic and doesn't traverse the routing table that
     # gets republished on every cluster generation change.
+    # Point APP_ENDPOINT at the node hosting the ACTIVE echo slice (cluster B base app
+    # port 8080), probing /api/echo/health until routed. Mirrors 08-resources; without
+    # it the load hits the dead LB port 9090 and every request fails.
+    retarget_app_endpoint_to_active_slice "$ECHO_BLUEPRINT" 8080 "/api/echo/health" 90 \
+        || log_warn "kill-under-load: could not retarget APP_ENDPOINT to echo owner; load will probe ${APP_ENDPOINT}"
+
     start_load "$LOAD_RPS" "$LOAD_DURATION" GET "/api/echo/health"
 
     # Load establishment is genuinely time-based (load.sh ramps RPS via sleep);
