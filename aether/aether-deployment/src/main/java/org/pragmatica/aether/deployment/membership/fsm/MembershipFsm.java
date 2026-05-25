@@ -57,6 +57,8 @@ import org.pragmatica.swim.SwimObservation.UnknownObserved;
 
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -150,6 +152,14 @@ public final class MembershipFsm {
     private final Map<NodeId, Long> latestObservedIncarnation = new ConcurrentHashMap<>();
 
     private final Map<String, NodeId> slotIdToPeer = new ConcurrentHashMap<>();
+
+    /// D4 occupant-epoch fence (slot-based-membership-convergence-spec §3.3/§4.3, OQ3=wiring
+    /// layer). Per-slot epoch the current occupant was admitted under, recorded at slot-put
+    /// time alongside `slotIdToPeer`. The reducer stays pure (no slot-map dependency); the
+    /// fence in `resolveLifecycleWrites` compares this bound epoch against the slot's current
+    /// `occupantEpoch` (re-read from the slot map) to reject a superseded predecessor's late
+    /// ON_DUTY write (S05/S06 partition-heal). Cleared in lockstep with `slotIdToPeer`.
+    private final Map<String, Long> slotBoundEpoch = new ConcurrentHashMap<>();
 
     // H.4 (spec §H): `swimDecommissionTombstones` map removed. The chaos-revival-storm
     // defence is no longer needed — `MembershipView` derives ON_DUTY from SWIM directly,
@@ -777,11 +787,13 @@ public final class MembershipFsm {
 
     private void applySlotPutUnassigned(String slotId) {
         slotIdToPeer.remove(slotId);
+        slotBoundEpoch.remove(slotId);
         log.debug("MembershipFsm: slot-put slotId={} unassigned (PROVISIONING placeholder; spec §4.2)", slotId);
     }
 
     private void applySlotPutAssigned(String slotId, NodeId peer, ProvisioningSlotValue value) {
         slotIdToPeer.put(slotId, peer);
+        slotBoundEpoch.put(slotId, value.occupantEpoch());
         fsmLock.lock();
 
         try {
@@ -807,6 +819,7 @@ public final class MembershipFsm {
 
     private void applySlotRemove(String slotId) {
         var removedPeer = slotIdToPeer.remove(slotId);
+        slotBoundEpoch.remove(slotId);
         log.debug("MembershipFsm: slot-removed slotId={} peer={}",
                   slotId,
                   removedPeer == null
@@ -883,6 +896,21 @@ public final class MembershipFsm {
     private void proposeWritesAndApply(MembershipFsmEvent event, MembershipFsmState prior, Outcome outcome) {
         var peer = event.peer();
         var resolvedWrites = resolveLifecycleWrites(outcome.writes());
+
+        // D4 fence (§4.3): this peer's ON_DUTY promotion write was dropped (superseded predecessor,
+        // e.g. a late SwimHealthy on partition-heal). No-op + audit — do NOT mutate local state.
+        if (promotionWasFenced(outcome.writes(), resolvedWrites)) {
+            fsmLock.lock();
+            try {
+                applyEffectsLocked(outcome.effects());
+                logOperatorOutcome(event, prior, outcome, false);
+            } finally {
+                fsmLock.unlock();
+            }
+
+            return;
+        }
+
         log.info("MembershipFsm: operator event {} for {} → proposing {} write(s) via consensus",
                  event.getClass().getSimpleName(),
                  peer.id(),
@@ -966,6 +994,18 @@ public final class MembershipFsm {
             }
 
             resolvedWrites = resolveLifecycleWrites(outcome.writes());
+
+            // D4 fence (§4.3): the wiring-layer fence dropped this peer's ON_DUTY promotion write
+            // (a superseded predecessor). Treat the whole command as a no-op rejection — local
+            // fsmStates is NOT mutated (the stale predecessor must not re-project as ON_DUTY),
+            // matching the reducer-no-op contract above. Any incidental non-lifecycle side-writes
+            // (e.g. join-deadline removal) are discarded along with it.
+            if (promotionWasFenced(outcome.writes(), resolvedWrites)) {
+                applyEffectsLocked(outcome.effects());
+                logCommandOutcome(command, prior, outcome, false);
+
+                return Promise.success(Boolean.FALSE);
+            }
         } finally {
             fsmLock.unlock();
         }
@@ -1045,10 +1085,142 @@ public final class MembershipFsm {
     /// last-seen `NodeLifecycleValue` (via `priorLifecycle`). The reducer emits minimal
     /// 2-arg values for purity; consensus must receive complete values. Non-lifecycle writes
     /// (e.g., `Remove<ProvisioningSlotKey>`) pass through untouched.
+    ///
+    /// **D4 occupant-epoch fence (slot-based-membership-convergence-spec §3.3/§4.3, OQ3=wiring
+    /// layer).** Before the F18 rewrite, a peer whose slot has been re-occupied by a successor
+    /// has its entire promotion-write batch dropped (no-op + audit). The reducer stays pure; the
+    /// fence reads the slot map here. A write is fenced iff the peer is bound to a slot AND
+    /// (`slot.assignedNodeId != peer` — the peer was superseded — OR `boundEpoch <
+    /// slot.occupantEpoch` — a stale predecessor). This is consistent with the STOPPED-tombstone
+    /// logic in `resolveState`: a superseded predecessor's late ON_DUTY write is rejected rather
+    /// than re-projecting it as a live core (the S05/S06 partition-heal over-count vector). Only
+    /// ON_DUTY promotion writes are fenced — terminal/draining writes for a superseded peer are
+    /// idempotent and must not be dropped (mirrors `isPromotionCommand`).
     private List<KVCommand<AetherKey>> resolveLifecycleWrites(List<KVCommand<AetherKey>> writes) {
+        var fence = computeFence(writes);
+
+        if (fence.isEmpty()) {
+            return writes.stream().map(this::resolveSingleWrite).toList();
+        }
+
         return writes.stream()
+                     .filter(command -> !isFencedWrite(command, fence))
                      .map(this::resolveSingleWrite)
                      .toList();
+    }
+
+    /// Collects the fence: peers whose ON_DUTY promotion write must be dropped because they are
+    /// no longer the current occupant of the slot they were bound to, plus the bound slot ids of
+    /// those peers (so the promotion's `Remove<ProvisioningSlotKey>` does not clobber the
+    /// successor's slot). Reads the current slot map once per resolve via `slotSnapshotReader`
+    /// (the wiring-layer slot read; OQ3).
+    private Fence computeFence(List<KVCommand<AetherKey>> writes) {
+        var peers = new HashSet<NodeId>();
+        var slotIds = new HashSet<String>();
+        writes.forEach(command -> collectFenced(command, peers, slotIds));
+
+        return new Fence(peers, slotIds);
+    }
+
+    private void collectFenced(KVCommand<AetherKey> command, Set<NodeId> peers, Set<String> slotIds) {
+        if (!isOnDutyPromotionWrite(command) || !(command instanceof Put<AetherKey, ?> put) || !(put.key() instanceof NodeLifecycleKey lifecycleKey)) {
+            return;
+        }
+
+        var peer = lifecycleKey.nodeId();
+        slotIdForPeer(peer).filter(slotId -> isSupersededInSlot(peer, slotId)).onPresent(slotId -> recordFenced(peer, slotId, peers, slotIds));
+    }
+
+    private void recordFenced(NodeId peer, String slotId, Set<NodeId> peers, Set<String> slotIds) {
+        peers.add(peer);
+        slotIds.add(slotId);
+        log.warn("MembershipFsm: D4 fence — dropping ON_DUTY promotion write for superseded occupant peer={} slot={} "
+                + "(slot re-occupied or boundEpoch<occupantEpoch; spec §4.3) — no-op, stale predecessor not re-projected",
+                 peer.id(),
+                 slotId);
+    }
+
+    private static boolean isOnDutyPromotionWrite(KVCommand<AetherKey> command) {
+        return command instanceof Put<AetherKey, ?> put && put.key() instanceof NodeLifecycleKey && put.value() instanceof NodeLifecycleValue value && value.state() == NodeLifecycleState.ON_DUTY;
+    }
+
+    /// D4 fence predicate (§4.3). A peer is a superseded occupant of `slotId` iff the slot's
+    /// current `assignedNodeId` is no longer this peer (the slot was re-filled by a successor)
+    /// or the peer's bound epoch is strictly less than the slot's current `occupantEpoch`. When
+    /// the slot map has no entry for the slot, the peer is not fenced (nothing has superseded
+    /// it). A peer with no bound slot (operator force, self-bootstrap) is never fenced — the
+    /// fence is scoped to slot-bound lifecycle, per §4.3.
+    private boolean isSupersededInSlot(NodeId peer, String slotId) {
+        return currentSlotValue(slotId).map(slot -> isSuperseded(peer, slotId, slot)).or(false);
+    }
+
+    private boolean isSuperseded(NodeId peer, String slotId, ProvisioningSlotValue slot) {
+        var occupantMismatch = !slot.assignedNodeId().map(peer::equals).or(false);
+        var boundEpoch = slotBoundEpoch.getOrDefault(slotId, 0L);
+
+        return occupantMismatch || boundEpoch < slot.occupantEpoch();
+    }
+
+    private Option<ProvisioningSlotValue> currentSlotValue(String slotId) {
+        var holder = new AtomicReference<ProvisioningSlotValue>();
+        slotSnapshotReader.forEachSlot((key, value) -> captureSlotValue(slotId, key, value, holder));
+
+        return Option.option(holder.get());
+    }
+
+    private static void captureSlotValue(String slotId,
+                                         ProvisioningSlotKey key,
+                                         ProvisioningSlotValue value,
+                                         AtomicReference<ProvisioningSlotValue> holder) {
+        if (key.slotId().equals(slotId)) {
+            holder.set(value);
+        }
+    }
+
+    private static boolean isFencedWrite(KVCommand<AetherKey> command, Fence fence) {
+        if (command instanceof Put<AetherKey, ?> put && put.key() instanceof NodeLifecycleKey lifecycleKey) {
+            return fence.peers().contains(lifecycleKey.nodeId());
+        }
+        if (command instanceof KVCommand.Remove<AetherKey> remove && remove.key() instanceof NodeLifecycleKey lifecycleKey) {
+            return fence.peers().contains(lifecycleKey.nodeId());
+        }
+        if (command instanceof KVCommand.Remove<AetherKey> remove && remove.key() instanceof ProvisioningSlotKey slotKey) {
+            return fence.slotIds().contains(slotKey.slotId());
+        }
+
+        return false;
+    }
+
+    private record Fence(Set<NodeId> peers, Set<String> slotIds) {
+        boolean isEmpty() {
+            return peers.isEmpty();
+        }
+    }
+
+    /// True iff an ON_DUTY promotion write present in `original` was dropped by the D4 fence (i.e.
+    /// it is absent from `resolved`). Keys the rejection decision on the promotion write itself
+    /// rather than on `resolved` being fully empty, because the promotion batch also carries
+    /// incidental non-lifecycle writes (join-deadline removal) that the fence does not drop.
+    private static boolean promotionWasFenced(List<KVCommand<AetherKey>> original, List<KVCommand<AetherKey>> resolved) {
+        return original.stream()
+                       .filter(MembershipFsm::isOnDutyPromotionWrite)
+                       .anyMatch(write -> !containsOnDutyPromotionFor(resolved, write));
+    }
+
+    private static boolean containsOnDutyPromotionFor(List<KVCommand<AetherKey>> resolved, KVCommand<AetherKey> original) {
+        return promotionPeer(original).map(peer -> resolved.stream().anyMatch(write -> isOnDutyPromotionFor(write, peer))).or(false);
+    }
+
+    private static boolean isOnDutyPromotionFor(KVCommand<AetherKey> command, NodeId peer) {
+        return isOnDutyPromotionWrite(command) && command instanceof Put<AetherKey, ?> put && put.key() instanceof NodeLifecycleKey lifecycleKey && lifecycleKey.nodeId().equals(peer);
+    }
+
+    private static Option<NodeId> promotionPeer(KVCommand<AetherKey> command) {
+        if (command instanceof Put<AetherKey, ?> put && put.key() instanceof NodeLifecycleKey lifecycleKey) {
+            return some(lifecycleKey.nodeId());
+        }
+
+        return none();
     }
 
     private KVCommand<AetherKey> resolveSingleWrite(KVCommand<AetherKey> command) {
@@ -1191,7 +1363,12 @@ public final class MembershipFsm {
     }
 
     private void indexSlotForReplay(ProvisioningSlotKey slotKey, ProvisioningSlotValue slotValue) {
-        slotValue.assignedNodeId().onPresent(peer -> slotIdToPeer.put(slotKey.slotId(), peer));
+        slotValue.assignedNodeId().onPresent(peer -> indexSlotOccupant(slotKey.slotId(), peer, slotValue.occupantEpoch()));
+    }
+
+    private void indexSlotOccupant(String slotId, NodeId peer, long occupantEpoch) {
+        slotIdToPeer.put(slotId, peer);
+        slotBoundEpoch.put(slotId, occupantEpoch);
     }
 
     private void reconstructPeerFromLifecycle(NodeLifecycleKey lifecycleKey, NodeLifecycleValue value) {
@@ -1208,6 +1385,7 @@ public final class MembershipFsm {
     private void clearState() {
         fsmStates.clear();
         slotIdToPeer.clear();
+        slotBoundEpoch.clear();
         priorLifecycle.clear();
         latestObservedIncarnation.clear();
     }

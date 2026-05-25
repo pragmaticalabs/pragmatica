@@ -22,8 +22,10 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeHealth;
@@ -151,13 +153,14 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var coreNodeIds = allNodeIds.stream().filter(id -> !topologyManager.isPassive(id)).filter(id -> isHealthy(topologyManager,
                                                                                                                   id)).filter(id -> isLiveLifecycle(membershipView,
                                                                                                                                                     id)).map(NodeId::id).toList();
-        // H.2 (spec §H): coreCount derives from MembershipView (SWIM ∪ KV-overrides).
-        // RC1 reachability-aggregator landing: replace per-reader local QUIC view
-        // (network.connectedPeers()) with the leader-broadcast cluster-canonical
-        // snapshot. Cold-start fallback: when no snapshot is cached yet, use the
-        // KV-only ON_DUTY count (no transport filter). See
-        // aether/docs/specs/reachability-aggregator-spec.md Layer 5.
-        var coreCount = reachableOnDutyCount(node.membershipView(),
+        // §6 D1 slot-derived headcount: coreCount is the number of provisioning slots whose
+        // occupant is ON_DUTY+healthy-and-reachable, capped at clusterSize by construction
+        // (one occupant per slot, |slots| == clusterSize). MembershipView is demoted from "the
+        // count" to the per-occupant lifecycle+health input consumed by slot classification;
+        // the reachability snapshot is still consulted per-occupant. Cold-start (no slots seeded
+        // in KV yet) falls back to the SWIM-derived count so self-bootstrap still reports.
+        var coreCount = slotDerivedCoreCount(node,
+                                             node.membershipView(),
                                              node.metricsCollector().lastReachabilitySnapshot(),
                                              selfId);
         var workerCount = Math.max(0, connectedPeers.size() - coreCount);
@@ -193,7 +196,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
         // admitted self). The snapshot helper also now honours SWIM-derived ON_DUTY via the
         // healthHint check (no KV ON_DUTY required) so both paths converge.
         // RC1 reachability-aggregator landing: see assembleFromTopologyManager.
-        var viewCount = reachableOnDutyCount(node.membershipView(),
+        // §6 D1: slot-derived headcount, capped at clusterSize. Cold-start (no slots yet) →
+        // SWIM-derived count → generation snapshot, preserving the prior fallback ladder.
+        var viewCount = slotDerivedCoreCount(node,
+                                             node.membershipView(),
                                              node.metricsCollector().lastReachabilitySnapshot(),
                                              selfId);
         var coreCount = viewCount > 0
@@ -215,6 +221,52 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                  nodeDetails,
                                                  epoch,
                                                  topologyMode(topologyManager));
+    }
+
+    /// §6 D1 slot-derived headcount. Counts provisioning slots whose occupant is
+    /// ON_DUTY+healthy-and-reachable. Because the cluster owns exactly `clusterSize` slots and
+    /// each slot has at most one occupant, the result is capped at `clusterSize` by
+    /// construction — a stale corpse and its fresh replacement that briefly share a slot's
+    /// identity contribute at most one (the slot is read once; only its current
+    /// `assignedNodeId` is classified). `MembershipView` supplies the per-occupant
+    /// lifecycle+health classification input (demoted from "the count" to "an input"); the
+    /// reachability snapshot is consulted per-occupant.
+    ///
+    /// **Cold-start fallback.** Before CTM seeds the durable slot map (very-early bootstrap,
+    /// self-only formation), there are no slots in KV. Counting zero would under-report the
+    /// freshly-bootstrapped leader; fall back to the SWIM-derived `reachableOnDutyCount` so
+    /// self-bootstrap still converges. Once slots exist, the slot map is authoritative.
+    static int slotDerivedCoreCount(ManageableNode node,
+                                    MembershipView view,
+                                    Option<AggregatedReachabilitySnapshot> snapshot,
+                                    NodeId selfId) {
+        var occupants = new ArrayList<NodeId>();
+        node.kvStore().forEach(ProvisioningSlotKey.class,
+                               ProvisioningSlotValue.class,
+                               (_, value) -> value.assignedNodeId().onPresent(occupants::add));
+
+        if (occupants.isEmpty()) {
+            return reachableOnDutyCount(view, snapshot, selfId);
+        }
+
+        int count = 0;
+        for (var occupant : occupants) {
+            if (isHealthyOccupant(view, snapshot, selfId, occupant)) {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// Per-slot occupancy classification (§5.1 HEALTHY): the slot's occupant counts iff its
+    /// effective lifecycle is ON_DUTY (MembershipView input) AND it is reachable (self is always
+    /// reachable; SWIM does not observe self locally).
+    private static boolean isHealthyOccupant(MembershipView view,
+                                             Option<AggregatedReachabilitySnapshot> snapshot,
+                                             NodeId selfId,
+                                             NodeId occupant) {
+        return view.statusOf(occupant) == MemberStatus.ON_DUTY && (occupant.equals(selfId) || isReachable(snapshot, occupant));
     }
 
     /// Cluster-canonical reachable-and-on-duty count.
