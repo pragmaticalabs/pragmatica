@@ -100,12 +100,12 @@ class ClusterTopologyManagerStabilityWindowTest {
                                                               DeploymentMap.deploymentMap(),
                                                               snapshotSource,
                                                               configStore::current,
-                                                              nodeId -> Option.none(),
-                                                              java.util.Map::of,
+                                                              configStore::lifecycle,
+                                                              configStore::slots,
                                                               configStore::apply,
                                                               new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
                                                               LegacyLifecycleWriterFixture.create(configStore::apply,
-                                                                                                   nodeId -> Option.none(),
+                                                                                                   configStore::lifecycle,
                                                                                                    System::currentTimeMillis),
                                                               () -> org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase.NORMAL);
     }
@@ -172,27 +172,33 @@ class ClusterTopologyManagerStabilityWindowTest {
     @Test
     void realActualStableForWindow_dispatchesDeficitProvisioning() throws InterruptedException {
         var ctm = createCtm(timeSpan(200).millis());
-        // Activate while already at desired size to bypass Forming.
+        // Activate while already at desired size to bypass Forming; occupants ON_DUTY in KV.
+        configStore.installOnDuty(SELF, 0L);
+        configStore.installOnDuty(PEER_A, 1L);
+        configStore.installOnDuty(PEER_B, 2L);
+        configStore.installOnDuty(PEER_C, 3L);
+        configStore.installOnDuty(PEER_D, 4L);
         snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             5,
                                             5),
                                1L);
         ctm.activate();
-        // Two nodes go down — anchor bumps but the deficit is permanent (not boot-in-progress).
+        // Two nodes die — reducer STOPs them (permanent deficit, not boot-in-progress).
+        configStore.installStopped(PEER_C);
+        configStore.installStopped(PEER_D);
         snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B),
                                             3,
                                             5),
                                2L);
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-        // Within the stability window — no dispatch yet.
+        // Within the stability window — no FILL dispatch yet (the DEAD slots are freed, but
+        // provisioning into the resulting EMPTY slots is gated by the stability window).
         assertThat(lifecycleManager.provisionCount.get())
                 .as("dispatch suppressed during stability window")
                 .isZero();
-        // Wait for the stability window to elapse PLUS a safety-net poll cycle. The safety-net
-        // poll is the only re-trigger that does NOT bump the anchor, so the gate becomes
-        // releasable purely by elapsed wall-clock time.
+        // Wait for the stability window to elapse PLUS a safety-net poll cycle.
         Thread.sleep(STABILITY_WINDOW.millis() + 500L);
         assertThat(lifecycleManager.provisionCount.get())
                 .as("dispatch released after stability window elapsed")
@@ -234,6 +240,8 @@ class ClusterTopologyManagerStabilityWindowTest {
     private static final class StubClusterConfigStore {
         final AtomicInteger applyCount = new AtomicInteger();
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
+        private final java.util.concurrent.ConcurrentHashMap<AetherKey.ProvisioningSlotKey, org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue> slotKv = new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.ConcurrentHashMap<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue> lifecycleKv = new java.util.concurrent.ConcurrentHashMap<>();
 
         void seed(int coreCount) {
             current.set(Option.some(new ClusterConfigValue("",
@@ -247,20 +255,53 @@ class ClusterTopologyManagerStabilityWindowTest {
                                                            System.currentTimeMillis())));
         }
 
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue.nodeLifecycleValue(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.ON_DUTY,
+                                                                                                                          "host-" + nodeId.id(),
+                                                                                                                          5000,
+                                                                                                                          org.pragmatica.aether.slice.generation.Epoch.epoch(0L, epoch)));
+        }
+
+        void installStopped(NodeId nodeId) {
+            lifecycleKv.put(nodeId, org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue.nodeLifecycleValue(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.STOPPED,
+                                                                                                                          "host-" + nodeId.id(),
+                                                                                                                          5000));
+        }
+
         Option<ClusterConfigValue> current() {
             return current.get();
+        }
+
+        Option<org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue> lifecycle(NodeId nodeId) {
+            return Option.option(lifecycleKv.get(nodeId));
+        }
+
+        java.util.Map<AetherKey.ProvisioningSlotKey, org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue> slots() {
+            return new java.util.LinkedHashMap<>(slotKv);
         }
 
         Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
             applyCount.incrementAndGet();
             for (var command : commands) {
-                if (command instanceof KVCommand.Put<?, ?> put
-                    && put.key() instanceof AetherKey.ClusterConfigKey
-                    && put.value() instanceof ClusterConfigValue configValue) {
-                    current.set(Option.some(configValue));
+                switch (command) {
+                    case KVCommand.Put<AetherKey, ?> put -> applyPut(put);
+                    case KVCommand.Remove<AetherKey> remove -> {
+                        if (remove.key() instanceof AetherKey.ProvisioningSlotKey psk) {slotKv.remove(psk);}
+                    }
+                    default -> {}
                 }
             }
             return Promise.success(List.of());
+        }
+
+        private void applyPut(KVCommand.Put<AetherKey, ?> put) {
+            if (put.key() instanceof AetherKey.ProvisioningSlotKey psk && put.value() instanceof org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue psv) {
+                slotKv.put(psk, psv);
+            } else if (put.key() instanceof AetherKey.ClusterConfigKey && put.value() instanceof ClusterConfigValue configValue) {
+                current.set(Option.some(configValue));
+            } else if (put.key() instanceof AetherKey.NodeLifecycleKey nlk && put.value() instanceof org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue nlv) {
+                lifecycleKv.put(nlk.nodeId(), nlv);
+            }
         }
     }
 

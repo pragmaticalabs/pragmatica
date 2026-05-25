@@ -84,6 +84,7 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
     private TopologyObserver observer;
     private RecordingLifecycleManager lifecycleManager;
     private RecordingClusterStore clusterStore;
+    private ClusterTopologyManager ctm;
 
     @BeforeEach
     void setUp() {
@@ -123,186 +124,134 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
                                                               () -> AetherValue.ClusterPhase.NORMAL);
     }
 
-    private void publishFullCluster() {
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                               1L);
-    }
-
-    private void publishDeficitOfOne(long term) {
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                                4,
-                                                5),
-                               term);
-    }
-
-    /// Step 1 of the structural fix: production writes the slot UNASSIGNED at dispatch and then
-    /// re-PUTs it ASSIGNED to the canonical id the provider allocated (echoed via
-    /// `InstanceInfo.nodeId()`). The provider — not the CTM — owns identity; `ProvisionContext.
-    /// nodeId` is left empty so the provider mints the id and reports it back.
-    @Test
-    void provisionNodes_writesSlotAssignedToProviderAllocatedId() {
-        var ctm = createCtm(timeSpan(60).seconds());
-        publishFullCluster();
+    /// Reseed a full 5-of-5 cluster (occupants bound to slots 0-4) then activate.
+    private void activateFull() {
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
         ctm.activate();
-        publishDeficitOfOne(2L);
+    }
+
+    /// Model the reducer STOPping `dead` (remove-then-add §3.4 step 1): its slot goes DEAD →
+    /// CTM frees → EMPTY → refilled. Republish on-duty without the dead node.
+    private void stopPeer(NodeId dead, Set<NodeId> remaining) {
+        clusterStore.installStopped(dead);
+        publishOnDuty(remaining);
+    }
+
+    private void publishOnDuty(Set<NodeId> onDuty) {
+        var all = Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        snapshotSource.publish(StubView.stubView(all, onDuty, onDuty.size(), 5), snapshotSource.term.get() + 1L);
+        var epoch = 0L;
+        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {
+            if (onDuty.contains(id)) {clusterStore.installOnDuty(id, epoch++);}
+        }
+    }
+
+    private void awaitAssignedSlot() throws InterruptedException {
+        var deadline = System.currentTimeMillis() + 2000L;
+
+        while (countAssignedNewSlots() == 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+    }
+
+    private long countAssignedNewSlots() {
+        return clusterStore.slots()
+                           .values()
+                           .stream()
+                           .filter(slot -> slot.assignedNodeId().map(id -> id.id().startsWith("aether-test-node-")).or(false))
+                           .count();
+    }
+
+    /// Provider-owns-identity (slot-based-membership-convergence-spec §5.3): the provider mints the
+    /// real id (echoed via `InstanceInfo.nodeId()`) and CTM binds it to the stable integer slot.
+    /// CTM does NOT pre-allocate `ProvisionContext.nodeId`.
+    @Test
+    void provisionIntoSlot_bindsProviderAllocatedIdToIntegerSlot() throws InterruptedException {
+        ctm = createCtm(timeSpan(60).seconds());
+        activateFull();
+        // Reducer STOPs PEER_D (youngest → slot 4); CTM frees the DEAD slot and refills it.
+        stopPeer(PEER_D, Set.of(SELF, PEER_A, PEER_B, PEER_C));
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        assertThat(lifecycleManager.provisionCount.get())
-                .as("deficit=1 → exactly one provision dispatch")
-                .isEqualTo(1);
-        var slots = clusterStore.slots();
-        assertThat(slots).as("exactly one slot atom written").hasSize(1);
-        var slotValue = slots.values().iterator().next();
-        assertThat(slotValue.assignedNodeId().isPresent())
-                .as("slot atom re-PUT ASSIGNED to provider-allocated id after provision resolves")
-                .isTrue();
-        var slotNodeId = slotValue.assignedNodeId().unwrap();
-        assertThat(slotNodeId.id())
-                .as("slot assignedNodeId equals the id the provider echoed back via InstanceInfo")
-                .isEqualTo(lifecycleManager.lastAllocatedId());
+        awaitAssignedSlot();
+        assertThat(countAssignedNewSlots()).as("freed DEAD slot refilled with provider-allocated occupant").isEqualTo(1);
+        var newSlot = clusterStore.slots()
+                                  .entrySet()
+                                  .stream()
+                                  .filter(e -> e.getValue().assignedNodeId().map(id -> id.id().startsWith("aether-test-node-")).or(false))
+                                  .findFirst()
+                                  .orElseThrow();
+        assertThat(newSlot.getKey().slotId()).as("slot is keyed by a stable integer index").matches("\\d+");
+        assertThat(newSlot.getValue().assignedNodeId().unwrap().id()).isEqualTo(lifecycleManager.lastAllocatedId());
         assertThat(lifecycleManager.provisionedContextNodeIds)
                 .as("CTM does NOT pre-allocate ProvisionContext.nodeId — provider owns identity")
                 .isEmpty();
     }
 
-    /// Provider-owns-identity, no-id edge: when the provider reports an empty `InstanceInfo.
-    /// nodeId()` (should not happen for docker/cloud) the slot is left UNASSIGNED — no ghost
-    /// JOINING is written, and the slot expires/GCs cleanly.
+    /// No-id edge: when the provider reports an empty `InstanceInfo.nodeId()` the slot is left
+    /// FILLING (no occupant) to expire and reset — no ghost JOINING is written.
     @Test
-    void provisionNodes_leavesSlotUnassigned_whenProviderReportsNoId() {
+    void provisionIntoSlot_leavesSlotFilling_whenProviderReportsNoId() throws InterruptedException {
         lifecycleManager.echoNodeId.set(false);
-        var ctm = createCtm(timeSpan(60).seconds());
-        publishFullCluster();
-        ctm.activate();
-        publishDeficitOfOne(2L);
+        ctm = createCtm(timeSpan(60).seconds());
+        activateFull();
+        stopPeer(PEER_D, Set.of(SELF, PEER_A, PEER_B, PEER_C));
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        assertThat(lifecycleManager.provisionCount.get())
-                .as("deficit=1 → exactly one provision dispatch")
-                .isEqualTo(1);
-        var slots = clusterStore.slots();
-        assertThat(slots).as("slot atom still written (UNASSIGNED)").hasSize(1);
-        assertThat(slots.values().iterator().next().assignedNodeId().isPresent())
-                .as("slot stays UNASSIGNED when provider reports no id — no ghost JOINING")
-                .isFalse();
+        Thread.sleep(100L);
+        assertThat(countAssignedNewSlots()).as("no occupant bound when provider reports no id").isZero();
+        var fillingNoOccupant = clusterStore.slots()
+                                            .values()
+                                            .stream()
+                                            .anyMatch(slot -> slot.spawnedAtMs() > 0L && slot.assignedNodeId().isEmpty());
+        assertThat(fillingNoOccupant).as("slot stays FILLING (marker stamped, no occupant)").isTrue();
     }
 
-    /// Step 2 of the structural fix: when a slot expires unfulfilled, the assigned NodeId is
-    /// authoritatively tombstoned (NodeLifecycleKey → DECOMMISSIONED) and the cloud-side
-    /// instance is reaped (best-effort) via `lifecycleManager.terminateNode`. Together these
-    /// close the door on late-arriving nodes silently joining as ON_DUTY.
+    /// D2 fast-free: a DEAD slot (occupant STOPPED) is freed with a best-effort cloud reap and NO
+    /// drain ack (the `NoOpDrainCoordinator` never acks; termination still proceeds).
     @Test
-    void slotExpiry_tombstonesAssignedNodeId() throws InterruptedException {
-        var ctm = createCtm(timeSpan(50).millis());
-        publishFullCluster();
-        ctm.activate();
-        publishDeficitOfOne(2L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        assertThat(clusterStore.slots()).hasSize(1);
-        var assignedId = clusterStore.slots().values().iterator().next().assignedNodeId().unwrap();
-        // Let the slot deadline lapse.
-        Thread.sleep(200L);
+    void deadSlot_freedWithoutDrainAck_andCloudReaped() throws InterruptedException {
+        ctm = createCtm(timeSpan(60).seconds());
+        activateFull();
         var terminateBefore = lifecycleManager.terminateCount.get();
-        // Drive an expiry tick via a reconcile trigger. expireSlots() runs from a Reconciling
-        // state during reconcileActive — a benign membership event re-runs the path.
-        publishDeficitOfOne(3L);
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A,
-                                                                List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        assertThat(clusterStore.slots())
-                .as("expired slot atom removed")
-                .doesNotContainKey(clusterStore.lastSlotKeyFor(assignedId));
-        var tombstone = clusterStore.lifecycle(assignedId);
-        assertThat(tombstone.isPresent())
-                .as("lifecycle atom written for expired-slot owner")
-                .isTrue();
-        assertThat(tombstone.unwrap().state())
-                .as("expired-slot owner authoritatively DECOMMISSIONED")
-                .isEqualTo(NodeLifecycleState.STOPPED);
-        assertThat(lifecycleManager.terminateCount.get())
-                .as("cloud-side instance reap requested (best-effort)")
-                .isGreaterThan(terminateBefore);
-        assertThat(lifecycleManager.terminatedNodes)
-                .as("terminateNode called with the expired slot's assignedNodeId")
-                .contains(assignedId);
-    }
-
-    /// Step 3 of the structural fix: a late-arriving node carrying a tombstoned NodeId must NOT
-    /// be promoted to ON_DUTY. The DECOMMISSIONED tombstone written on expiry is the gate —
-    /// downstream consumers (MembershipFsm, MembershipView, dashboard) reading
-    /// `NodeLifecycleKey` see DECOMMISSIONED and refuse promotion. We assert the gate is in
-    /// place by checking the lifecycle store, which is the authoritative source.
-    @Test
-    void lateArrival_afterSlotExpiry_doesNotPromote() throws InterruptedException {
-        var ctm = createCtm(timeSpan(50).millis());
-        publishFullCluster();
-        ctm.activate();
-        publishDeficitOfOne(2L);
+        stopPeer(PEER_D, Set.of(SELF, PEER_A, PEER_B, PEER_C));
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        var assignedId = clusterStore.slots().values().iterator().next().assignedNodeId().unwrap();
-        Thread.sleep(200L);
-        publishDeficitOfOne(3L);
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A,
-                                                                List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        // Tombstone is now in place.
-        assertThat(clusterStore.lifecycle(assignedId).unwrap().state())
-                .as("tombstone exists before simulated late arrival")
-                .isEqualTo(NodeLifecycleState.STOPPED);
-        // Simulate the late-arriving node showing up as ON_DUTY in a snapshot. The FSM
-        // single-writer rule applies in production; here we assert that the lifecycle gate
-        // (DECOMMISSIONED tombstone) survives — i.e., the late-arriving node does not get
-        // promoted by any code path going through the CTM. The CTM never writes ON_DUTY for
-        // such a node — only MembershipFsm does, and its `(DECOMMISSIONED, SwimHealthy) → nop`
-        // cell is the FSM-level gate.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, assignedId),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, assignedId),
-                                                5,
-                                                5),
-                               4L);
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(assignedId,
-                                                                List.of(SELF,
-                                                                         PEER_A,
-                                                                         PEER_B,
-                                                                         PEER_C,
-                                                                         PEER_D,
-                                                                         assignedId)));
-        assertThat(clusterStore.lifecycle(assignedId).unwrap().state())
-                .as("tombstone survives late arrival — CTM never overwrites DECOMMISSIONED")
-                .isEqualTo(NodeLifecycleState.STOPPED);
+        var deadline = System.currentTimeMillis() + 2000L;
+
+        while (lifecycleManager.terminateCount.get() == terminateBefore && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("dead occupant cloud-reaped (best-effort, no drain ack)")
+                .isGreaterThan(terminateBefore);
+        assertThat(lifecycleManager.terminatedNodes).as("terminateNode called with the dead occupant id").contains(PEER_D);
     }
 
-    /// Step 4 of the structural fix: each provisioning dispatch must produce a globally unique
-    /// NodeId. Two back-to-back dispatches must NOT collide.
+    /// Two EMPTY slots fill to two DISTINCT stable integer slots with distinct provider ids.
     @Test
-    void provisionNodes_generatesUniqueIds() {
-        var ctm = createCtm(timeSpan(60).seconds());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                               1L);
-        ctm.activate();
-        // Deficit=2 in one snapshot → two provisions back-to-back from the same reconcile pass.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B),
-                                                3,
-                                                5),
-                               2L);
+    void provisionIntoSlot_assignsDistinctIntegerSlots() throws InterruptedException {
+        ctm = createCtm(timeSpan(60).seconds());
+        activateFull();
+        clusterStore.installStopped(PEER_C);
+        clusterStore.installStopped(PEER_D);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B));
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        assertThat(lifecycleManager.provisionCount.get())
-                .as("two deficit-driven dispatches expected")
-                .isGreaterThanOrEqualTo(2);
-        var assignedIds = clusterStore.slots().values().stream()
-                                                         .map(ProvisioningSlotValue::assignedNodeId)
-                                                         .filter(Option::isPresent)
-                                                         .map(Option::unwrap)
-                                                         .toList();
-        assertThat(assignedIds).as("each slot has a distinct assignedNodeId")
-                                                         .doesNotHaveDuplicates();
-        assertThat(lifecycleManager.allocatedIds()).as("each provision yielded a distinct provider-allocated id")
-                                                                                                                .doesNotHaveDuplicates();
+        var deadline = System.currentTimeMillis() + 2000L;
+
+        while (countAssignedNewSlots() < 2 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+
+        var assignedIds = clusterStore.slots()
+                                      .values()
+                                      .stream()
+                                      .map(ProvisioningSlotValue::assignedNodeId)
+                                      .filter(Option::isPresent)
+                                      .map(Option::unwrap)
+                                      .filter(id -> id.id().startsWith("aether-test-node-"))
+                                      .toList();
+        assertThat(assignedIds).as("each refilled slot has a distinct provider-allocated occupant").doesNotHaveDuplicates();
+        assertThat(lifecycleManager.allocatedIds()).doesNotHaveDuplicates();
     }
 
     private record StubView(Set<NodeId> coreMemberIds,
@@ -369,6 +318,17 @@ class ClusterTopologyManagerIdentityBoundSlotTest {
 
         Option<ClusterConfigValue> currentClusterConfig() {
             return clusterConfig.get();
+        }
+
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                                          "host-" + nodeId.id(),
+                                                                          5000,
+                                                                          org.pragmatica.aether.slice.generation.Epoch.epoch(0L, epoch)));
+        }
+
+        void installStopped(NodeId nodeId) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED, "host-" + nodeId.id(), 5000));
         }
 
         Map<ProvisioningSlotKey, ProvisioningSlotValue> slots() {

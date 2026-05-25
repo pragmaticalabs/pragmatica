@@ -11,10 +11,14 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
@@ -50,22 +54,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// CTM auto-heal storm regression: deficit + surplus accounting must include live
-/// provisioning slots written to the KV-Store.
-///
-/// Gap B — `reconcileActive` must not provision a top-up while a live slot in the
-/// KV-Store is already covering the gap. A slot is "live" when its `deadlineMs` is in
-/// the future (un-expired). Expired slots are correctly ignored, so a stalled wave
-/// re-arms top-up dispatch.
-///
-/// Gap C — `handleSurplus` may legitimately terminate during `Reconciling` when there are
-/// no live slots in flight (e.g., same-target overshoot where a previously expired-slot
-/// node finally arrives ON_DUTY alongside its replacement). When live slots are in
-/// flight, surplus termination defers until the wave completes.
-///
-/// All tests drive the production code path (`provisionNodes` → `writeProvisioningSlotAtom`).
-/// They never install slot atoms manually — that would mask the integration between the
-/// dispatch path and the KV mirror.
+/// Slot-based-membership-convergence-spec §5.2: durable-slot occupancy convergence. Replaces the
+/// pre-slot "live-slot deficit subtraction" accounting — a FILLING slot (occupant JOINING or
+/// in-flight provision) is not re-provisioned; a DEAD slot (occupant STOPPED) is freed and
+/// refilled; surplus slots beyond `coreCount` are reaped (CTM-provisioned occupants only).
 class ClusterTopologyManagerLiveSlotAccountingTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
@@ -85,6 +77,7 @@ class ClusterTopologyManagerLiveSlotAccountingTest {
     private TopologyObserver observer;
     private RecordingLifecycleManager lifecycleManager;
     private RecordingClusterStore clusterStore;
+    private ClusterTopologyManager ctm;
 
     @BeforeEach
     void setUp() {
@@ -114,187 +107,101 @@ class ClusterTopologyManagerLiveSlotAccountingTest {
                                                               DeploymentMap.deploymentMap(),
                                                               snapshotSource,
                                                               clusterStore::currentClusterConfig,
-                                                              nodeId -> Option.none(),
+                                                              clusterStore::lifecycle,
                                                               clusterStore::slots,
                                                               clusterStore::apply,
                                                               new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
                                                               LegacyLifecycleWriterFixture.create(clusterStore::apply,
-                                                                                                   nodeId -> Option.none(),
+                                                                                                   clusterStore::lifecycle,
                                                                                                    System::currentTimeMillis),
                                                               () -> AetherValue.ClusterPhase.NORMAL);
     }
 
-    /// Gap B: when the KV-Store already holds a live (un-expired) provisioning slot, the
-    /// deficit accounting must subtract it. Cluster at 4 healthy ON_DUTY with desired=5
-    /// and one live slot in KV — no second dispatch may fire on the next reconcile tick.
+    /// A FILLING slot (occupant present but JOINING — not ON_DUTY, not STOPPED) is NOT
+    /// re-provisioned. This replaces the old "live slot subtracted from deficit" dedup.
     @Test
-    void reconcileActive_deficitWithLiveSlots_doesNotTopUp() {
-        // Long-lived slot: deadline is 60s out — un-expired throughout the test.
-        var ctm = createCtm(timeSpan(60).seconds());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                               1L);
+    void reconcile_doesNotRefillFillingSlot() throws InterruptedException {
+        ctm = createCtm(timeSpan(60).seconds());
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
         ctm.activate();
-        // Drop PEER_D so deficit = 1. Production dispatch writes one slot to KV.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                                4,
-                                                5),
-                               2L);
+        // PEER_D drops from on-duty but is NOT STOPPED (still JOINING / flapping) → slot FILLING.
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C));
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        var firstWave = lifecycleManager.provisionCount.get();
-        assertThat(firstWave).as("first wave dispatched exactly one provision for deficit=1").isEqualTo(1);
-        assertThat(clusterStore.slots())
-                .as("first wave wrote one live slot atom to KV via production path")
-                .hasSize(1);
-        // Next reconcile tick — snapshot still reports deficit, slot is still live in KV.
-        // Without Gap B, this would top up; with Gap B, it must defer.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                                4,
-                                                5),
-                               3L);
-        // Drive reconcile a few times via the safety-net-equivalent (membership events that
-        // trigger reconcile()). Use a distinct peer that's NOT decommissioned (otherwise the
-        // event mutates the topology).
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A,
-                                                                List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_B,
-                                                                List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_C,
-                                                                List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        Thread.sleep(100L);
         assertThat(lifecycleManager.provisionCount.get())
-                .as("no top-up dispatched — KV live slot covers the deficit")
-                .isEqualTo(firstWave);
+                .as("FILLING slot (occupant not yet terminal) is not re-provisioned")
+                .isZero();
     }
 
-    /// Gap B: an expired slot must NOT cover deficit. The next reconcile tick must
-    /// observe expiry (deadlineMs < nowMs) and dispatch a fresh wave.
+    /// A DEAD slot (occupant STOPPED by the reducer) is freed and refilled. This replaces the old
+    /// "expired slot does not cover deficit → top up" path.
     @Test
-    void reconcileActive_deficitWithExpiredSlots_topsUp() throws InterruptedException {
-        // Short-lived slot (50ms) — expires in well under the test window.
-        var ctm = createCtm(timeSpan(50).millis());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                               1L);
+    void reconcile_freesDeadSlot_andRefills() throws InterruptedException {
+        ctm = createCtm(timeSpan(60).seconds());
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
         ctm.activate();
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                                4,
-                                                5),
-                               2L);
+        clusterStore.installStopped(PEER_D);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C));
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        var firstWave = lifecycleManager.provisionCount.get();
-        assertThat(firstWave).isEqualTo(1);
-        assertThat(clusterStore.slots()).hasSize(1);
-        // Wait beyond the provisioning timeout so the slot atom's deadlineMs has lapsed.
-        Thread.sleep(200L);
-        // Re-publish the deficit snapshot — slot is now expired in KV.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                                4,
-                                                5),
-                               3L);
-        // Trigger another reconcile (slot expiry is observed via liveProvisioningSlotCount).
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A,
-                                                                List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        awaitProvision(1);
         assertThat(lifecycleManager.provisionCount.get())
-                .as("expired KV slot does not cover deficit — production must top up")
-                .isGreaterThan(firstWave);
+                .as("DEAD slot freed → EMPTY → refilled")
+                .isGreaterThanOrEqualTo(1);
     }
 
-    /// Gap C narrow guard, positive case: same-target overshoot during `Reconciling`
-    /// must legitimately terminate when no live slots are in flight. Sequence:
-    /// drop one peer → deficit=1, wave dispatched → slot expires → late-arriving original
-    /// AND replacement both healthy → actual=6, target=5, surplus=1. No live slots, so
-    /// the narrowed guard lets termination proceed.
+    /// Scale-down surplus (coreCount shrinks) reaps the highest-index CTM-provisioned occupant.
     @Test
-    void handleSurplus_actualExceedsTargetDuringReconciling_noLiveSlots_terminates()
-            throws InterruptedException {
-        var ctm = createCtm(timeSpan(50).millis());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                               1L);
+    void reconcile_reapsSurplus_onScaleDown() throws InterruptedException {
+        ctm = createCtm(timeSpan(60).seconds());
+        // coreCount 4 → slot 4 (youngest occupant PEER_D) surplus; reaped (CTM-provisioned).
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 4);
         ctm.activate();
-        // Deficit → Reconciling. Slot written to KV via production path.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                                4,
-                                                5),
-                               2L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Reconciling.class);
-        // Let the slot deadline lapse so liveProvisioningSlotCount() returns 0.
-        Thread.sleep(200L);
-        // Both the original PEER_D and a replacement come up — actual=6, target=5.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                6,
-                                                5),
-                               3L);
-        var beforeTerminate = lifecycleManager.terminateCount.get();
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_D,
-                                                                List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        // Surplus path must fire (state was Reconciling, but no live slots, no terminations
-        // in flight — the narrowed Gap C guard lets us proceed).
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        awaitTerminate(1);
+        assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
+        assertThat(lifecycleManager.terminatedNodes).contains(PEER_D);
+    }
+
+    /// At target (all slots HEALTHY) no provisioning and no termination fire.
+    @Test
+    void reconcile_noOp_whenAllSlotsHealthy() throws InterruptedException {
+        ctm = createCtm(timeSpan(60).seconds());
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        ctm.activate();
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        Thread.sleep(100L);
+        assertThat(lifecycleManager.provisionCount.get()).isZero();
+        assertThat(lifecycleManager.terminateCount.get()).isZero();
+    }
+
+    private void publishOnDuty(Set<NodeId> onDuty) {
+        publishOnDuty(onDuty, 5);
+    }
+
+    private void publishOnDuty(Set<NodeId> onDuty, int coreCount) {
+        clusterStore.seedClusterConfig(coreCount);
+        var all = Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        snapshotSource.publish(StubView.stubView(all, onDuty, onDuty.size(), coreCount), snapshotSource.term.get() + 1L);
+        var epoch = 0L;
+        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {
+            if (onDuty.contains(id)) {clusterStore.installOnDuty(id, epoch++);}
+        }
+    }
+
+    private void awaitProvision(int atLeast) throws InterruptedException {
         var deadline = System.currentTimeMillis() + 2000L;
-        while (lifecycleManager.terminateCount.get() == beforeTerminate
-                && System.currentTimeMillis() < deadline) {
+
+        while (lifecycleManager.provisionCount.get() < atLeast && System.currentTimeMillis() < deadline) {
             Thread.sleep(20L);
         }
-        assertThat(lifecycleManager.terminateCount.get())
-                .as("surplus terminated despite Reconciling state — no live slots block it")
-                .isGreaterThan(beforeTerminate);
     }
 
-    /// Gap C narrow guard, negative case: while a live slot is in flight, surplus
-    /// termination must defer. Sequence: deficit dispatched → slot live in KV with state
-    /// = Reconciling(target=5). Snapshot then reports actual=6 healthy ON_DUTY against
-    /// the same target — surplus appears WITHIN the in-flight provisioning wave. CTM
-    /// must wait: provisioning AND terminating against the same target would oscillate.
-    @Test
-    void handleSurplus_actualExceedsTargetDuringReconciling_withLiveSlots_waits() {
-        // Long-lived slot (60s) — stays live throughout the test.
-        var ctm = createCtm(timeSpan(60).seconds());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                               1L);
-        ctm.activate();
-        // Deficit drives the production dispatch path; one slot is now live in KV.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                                4,
-                                                5),
-                               2L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        assertThat(clusterStore.slots()).hasSize(1);
-        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Reconciling.class);
-        var beforeTerminate = lifecycleManager.terminateCount.get();
-        // Surplus appears WITHIN the in-flight wave: same target=5, but actual climbed to 6
-        // (e.g. the original PEER_D arrived ON_DUTY before its replacement, and a spurious
-        // extra node is reporting healthy). Live slot is still un-expired in KV.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                6,
-                                                5),
-                               3L);
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_D,
-                                                                List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        // Gap C narrow guard: Reconciling + liveSlots>0 → defer surplus termination.
-        assertThat(lifecycleManager.terminateCount.get())
-                .as("surplus termination deferred while live slot remains in KV during Reconciling")
-                .isEqualTo(beforeTerminate);
-        assertThat(clusterStore.slots())
-                .as("live slot atom remains in KV — wave has not been cancelled")
-                .hasSize(1);
+    private void awaitTerminate(int atLeast) throws InterruptedException {
+        var deadline = System.currentTimeMillis() + 2000L;
+
+        while (lifecycleManager.terminateCount.get() < atLeast && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
     }
 
     private record StubView(Set<NodeId> coreMemberIds,
@@ -303,18 +210,8 @@ class ClusterTopologyManagerLiveSlotAccountingTest {
                             int desiredCoreSize,
                             Set<NodeId> ctmProvisionedNodeIds,
                             Set<NodeId> nodesWithoutSlices) implements MembershipView {
-        static StubView stubView(Set<NodeId> coreMemberIds,
-                                 Set<NodeId> onDutyMemberIds,
-                                 int healthyOnDutyCount,
-                                 int desiredCoreSize) {
-            // All on-duty peers are CTM-provisioned so surplus termination has eligible
-            // candidates (the production filter excludes non-CTM-managed nodes).
-            return new StubView(coreMemberIds,
-                                onDutyMemberIds,
-                                healthyOnDutyCount,
-                                desiredCoreSize,
-                                onDutyMemberIds,
-                                Set.of());
+        static StubView stubView(Set<NodeId> coreMemberIds, Set<NodeId> onDutyMemberIds, int healthyOnDutyCount, int desiredCoreSize) {
+            return new StubView(coreMemberIds, onDutyMemberIds, healthyOnDutyCount, desiredCoreSize, onDutyMemberIds, Set.of());
         }
     }
 
@@ -336,31 +233,31 @@ class ClusterTopologyManagerLiveSlotAccountingTest {
         }
     }
 
-    /// Shared KV-store backing for slots, cluster-config, and lifecycle atoms. Wires
-    /// `slots()` (reader) to the same map that `apply(...)` (writer) populates — so the
-    /// production code path `provisionNodes` → `writeProvisioningSlotAtom` → KV is
-    /// observable via `slots()`, exactly as a real leader would see it after replicating
-    /// the slot atom through consensus.
     private static final class RecordingClusterStore {
-        final AtomicInteger slotPutCount = new AtomicInteger();
-        final AtomicInteger slotRemoveCount = new AtomicInteger();
         private final AtomicReference<Option<ClusterConfigValue>> clusterConfig = new AtomicReference<>(Option.none());
         private final ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<NodeId, NodeLifecycleValue> lifecycleKv = new ConcurrentHashMap<>();
 
         void seedClusterConfig(int coreCount) {
-            clusterConfig.set(Option.some(new ClusterConfigValue("",
-                                                                  "",
-                                                                  "1.0.0",
-                                                                  coreCount,
-                                                                  3,
-                                                                  9,
-                                                                  "test",
-                                                                  1L,
-                                                                  System.currentTimeMillis())));
+            clusterConfig.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreCount, 3, 9, "test",
+                                                                 clusterConfig.get().map(ClusterConfigValue::configVersion).or(0L) + 1L,
+                                                                 System.currentTimeMillis())));
+        }
+
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-" + nodeId.id(), 5000, Epoch.epoch(0L, epoch)));
+        }
+
+        void installStopped(NodeId nodeId) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED, "host-" + nodeId.id(), 5000));
         }
 
         Option<ClusterConfigValue> currentClusterConfig() {
             return clusterConfig.get();
+        }
+
+        Option<NodeLifecycleValue> lifecycle(NodeId nodeId) {
+            return Option.option(lifecycleKv.get(nodeId));
         }
 
         Map<ProvisioningSlotKey, ProvisioningSlotValue> slots() {
@@ -381,21 +278,17 @@ class ClusterTopologyManagerLiveSlotAccountingTest {
         }
 
         private void applyPut(KVCommand.Put<AetherKey, ?> put) {
-            if (put.key() instanceof ProvisioningSlotKey psk
-                    && put.value() instanceof ProvisioningSlotValue psv) {
-                slotPutCount.incrementAndGet();
+            if (put.key() instanceof ProvisioningSlotKey psk && put.value() instanceof ProvisioningSlotValue psv) {
                 slotKv.put(psk, psv);
-            } else if (put.key() instanceof AetherKey.ClusterConfigKey
-                    && put.value() instanceof ClusterConfigValue cv) {
+            } else if (put.key() instanceof AetherKey.ClusterConfigKey && put.value() instanceof ClusterConfigValue cv) {
                 clusterConfig.set(Option.some(cv));
+            } else if (put.key() instanceof NodeLifecycleKey nlk && put.value() instanceof NodeLifecycleValue nlv) {
+                lifecycleKv.put(nlk.nodeId(), nlv);
             }
         }
 
         private void applyRemove(KVCommand.Remove<AetherKey> remove) {
-            if (remove.key() instanceof ProvisioningSlotKey psk) {
-                slotRemoveCount.incrementAndGet();
-                slotKv.remove(psk);
-            }
+            if (remove.key() instanceof ProvisioningSlotKey psk) {slotKv.remove(psk);}
         }
     }
 
@@ -405,8 +298,7 @@ class ClusterTopologyManagerLiveSlotAccountingTest {
         final List<NodeId> terminatedNodes = Collections.synchronizedList(new ArrayList<>());
 
         @Override public Promise<ActionResult> executeAction(NodeAction action) {
-            return Promise.success(new ActionResult.NodeStarted(InstanceInfo.instanceInfo(InstanceId.instanceId("stub")
-                                                                                                    .unwrap(),
+            return Promise.success(new ActionResult.NodeStarted(InstanceInfo.instanceInfo(InstanceId.instanceId("stub").unwrap(),
                                                                                           InstanceStatus.RUNNING,
                                                                                           List.of("127.0.0.1"),
                                                                                           InstanceType.ON_DEMAND).unwrap()));
@@ -414,8 +306,7 @@ class ClusterTopologyManagerLiveSlotAccountingTest {
 
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
             provisionCount.incrementAndGet();
-            return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + provisionCount.get())
-                                                                       .unwrap(),
+            return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + provisionCount.get()).unwrap(),
                                                              InstanceStatus.RUNNING,
                                                              List.of("127.0.0.1"),
                                                              InstanceType.ON_DEMAND).unwrap());

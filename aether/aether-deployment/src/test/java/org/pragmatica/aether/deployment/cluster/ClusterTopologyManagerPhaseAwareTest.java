@@ -108,12 +108,17 @@ class ClusterTopologyManagerPhaseAwareTest {
                                                               DeploymentMap.deploymentMap(),
                                                               snapshotSource,
                                                               configStore::current,
-                                                              nodeId -> Option.none(),
-                                                              () -> java.util.Map.of(),
+                                                              configStore::lifecycle,
+                                                              configStore::slots,
                                                               configStore::apply,
                                                               new NoOpDrainCoordinator(),
                                                               lifecycleWriter,
                                                               phase::get);
+    }
+
+    private void installOnDuty(NodeId... ids) {
+        var epoch = 0L;
+        for (var id : ids) {configStore.installOnDuty(id, epoch++);}
     }
 
     @Nested class PhaseAwareSuspension {
@@ -141,6 +146,7 @@ class ClusterTopologyManagerPhaseAwareTest {
             var ctm = createCtm();
             // Surplus (5 ON_DUTY, configured 3) — without phase suspension, would terminate.
             configStore.seed(3);
+            installOnDuty(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
             snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                                      Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                                      5,
@@ -173,15 +179,18 @@ class ClusterTopologyManagerPhaseAwareTest {
         void ctm_phaseTransitionBackToNormal_restartsStabilityWindowFromZero() throws InterruptedException {
             phase.set(ClusterPhase.NORMAL);
             var ctm = createCtm();
+            installOnDuty(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
             snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                                      Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                                      5,
                                                      5),
                                    1L);
             ctm.activate();
-            // Move to RECOVERING — drop to 3 ON_DUTY.
+            // Move to RECOVERING — reducer STOPs two nodes (drop to 3 ON_DUTY).
             phase.set(ClusterPhase.RECOVERING);
             ctm.onClusterPhaseChanged(ClusterPhase.RECOVERING);
+            configStore.installStopped(PEER_C);
+            configStore.installStopped(PEER_D);
             snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                                      Set.of(SELF, PEER_A, PEER_B),
                                                      3,
@@ -210,6 +219,9 @@ class ClusterTopologyManagerPhaseAwareTest {
         void ctm_stabilityAnchor_doesNotReset_onSameCountNotification() throws InterruptedException {
             phase.set(ClusterPhase.NORMAL);
             var ctm = createCtm();
+            installOnDuty(SELF, PEER_A, PEER_B);
+            configStore.installStopped(PEER_C);
+            configStore.installStopped(PEER_D);
             snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                                      Set.of(SELF, PEER_A, PEER_B),
                                                      3,
@@ -311,6 +323,8 @@ class ClusterTopologyManagerPhaseAwareTest {
 
     private static final class StubClusterConfigStore {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
+        private final java.util.concurrent.ConcurrentHashMap<AetherKey.ProvisioningSlotKey, org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue> slotKv = new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.ConcurrentHashMap<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue> lifecycleKv = new java.util.concurrent.ConcurrentHashMap<>();
 
         void seed(int coreCount) {
             current.set(Option.some(new ClusterConfigValue("",
@@ -324,19 +338,52 @@ class ClusterTopologyManagerPhaseAwareTest {
                                                             System.currentTimeMillis())));
         }
 
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue.nodeLifecycleValue(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.ON_DUTY,
+                                                                                                                          "host-" + nodeId.id(),
+                                                                                                                          5000,
+                                                                                                                          org.pragmatica.aether.slice.generation.Epoch.epoch(0L, epoch)));
+        }
+
+        void installStopped(NodeId nodeId) {
+            lifecycleKv.put(nodeId, org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue.nodeLifecycleValue(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.STOPPED,
+                                                                                                                          "host-" + nodeId.id(),
+                                                                                                                          5000));
+        }
+
         Option<ClusterConfigValue> current() {
             return current.get();
         }
 
+        Option<org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue> lifecycle(NodeId nodeId) {
+            return Option.option(lifecycleKv.get(nodeId));
+        }
+
+        java.util.Map<AetherKey.ProvisioningSlotKey, org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue> slots() {
+            return new java.util.LinkedHashMap<>(slotKv);
+        }
+
         Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
             for (var command : commands) {
-                if (command instanceof KVCommand.Put<?, ?> put
-                    && put.key() instanceof AetherKey.ClusterConfigKey
-                    && put.value() instanceof ClusterConfigValue configValue) {
-                    current.set(Option.some(configValue));
+                switch (command) {
+                    case KVCommand.Put<AetherKey, ?> put -> applyPut(put);
+                    case KVCommand.Remove<AetherKey> remove -> {
+                        if (remove.key() instanceof AetherKey.ProvisioningSlotKey psk) {slotKv.remove(psk);}
+                    }
+                    default -> {}
                 }
             }
             return Promise.success(List.of());
+        }
+
+        private void applyPut(KVCommand.Put<AetherKey, ?> put) {
+            if (put.key() instanceof AetherKey.ProvisioningSlotKey psk && put.value() instanceof org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue psv) {
+                slotKv.put(psk, psv);
+            } else if (put.key() instanceof AetherKey.ClusterConfigKey && put.value() instanceof ClusterConfigValue configValue) {
+                current.set(Option.some(configValue));
+            } else if (put.key() instanceof AetherKey.NodeLifecycleKey nlk && put.value() instanceof org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue nlv) {
+                lifecycleKv.put(nlk.nodeId(), nlv);
+            }
         }
     }
 

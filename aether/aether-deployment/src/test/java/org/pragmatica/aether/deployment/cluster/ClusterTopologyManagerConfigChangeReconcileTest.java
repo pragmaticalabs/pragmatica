@@ -12,7 +12,13 @@ import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -95,12 +101,12 @@ class ClusterTopologyManagerConfigChangeReconcileTest {
                                                               DeploymentMap.deploymentMap(),
                                                               snapshotSource,
                                                               configStore::current,
-                                                              nodeId -> Option.none(),
-                                                              java.util.Map::of,
+                                                              configStore::lifecycle,
+                                                              configStore::slots,
                                                               configStore::apply,
                                                               new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
                                                               LegacyLifecycleWriterFixture.create(configStore::apply,
-                                                                                                   nodeId -> Option.none(),
+                                                                                                   configStore::lifecycle,
                                                                                                    System::currentTimeMillis),
                                                               () -> org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase.NORMAL);
     }
@@ -112,7 +118,11 @@ class ClusterTopologyManagerConfigChangeReconcileTest {
     @Test
     void setDesiredSize_triggersImmediateReconcile() throws InterruptedException {
         var ctm = createCtm();
-        // Snapshot reflects converged 3-of-3 cluster.
+        // Snapshot reflects converged 3-of-3 cluster; occupants ON_DUTY in lifecycle KV.
+        configStore.seed(3);
+        configStore.installOnDuty(SELF, 0L);
+        configStore.installOnDuty(PEER_A, 1L);
+        configStore.installOnDuty(PEER_B, 2L);
         snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B),
                                                    Set.of(SELF, PEER_A, PEER_B),
                                                    3,
@@ -120,23 +130,28 @@ class ClusterTopologyManagerConfigChangeReconcileTest {
                                1L);
         ctm.activate();
         Thread.sleep(20L);
-        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
 
-        // Operator scales to 5 — this writes a new ClusterConfigValue + new snapshot.
+        // Operator scales to 5 — new ClusterConfigValue + new snapshot reporting desired=5.
+        configStore.seed(5);
         snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B),
                                                    Set.of(SELF, PEER_A, PEER_B),
                                                    3,
                                                    5),
                                2L);
-        // Production: the KVNotificationRouter dispatches `onClusterConfigChanged` after the
-        // `Put<ClusterConfigKey>` is committed; here we invoke it directly to verify the
-        // synchronous reconcile path.
+        // Production: KVNotificationRouter dispatches `onClusterConfigChanged` after the
+        // `Put<ClusterConfigKey>` commits; invoke directly to verify the synchronous reconcile.
         var beforeProvisions = lifecycleManager.provisionCount.get();
         ctm.onClusterConfigChanged();
 
-        // Provisioning must have been dispatched synchronously on the calling thread.
+        // Scale-up adds 2 EMPTY slots (3→5) which the reconcile loop fills immediately.
+        var deadline = System.currentTimeMillis() + 2000L;
+
+        while (lifecycleManager.provisionCount.get() == beforeProvisions && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+
         assertThat(lifecycleManager.provisionCount.get())
-                .as("immediate reconcile must dispatch provisioning without waiting for safety-net poll")
+                .as("immediate reconcile fills the new EMPTY slots without waiting for safety-net poll")
                 .isGreaterThan(beforeProvisions);
     }
 
@@ -183,6 +198,8 @@ class ClusterTopologyManagerConfigChangeReconcileTest {
 
     private static final class StubClusterConfigStore {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
+        private final java.util.concurrent.ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.ConcurrentHashMap<NodeId, NodeLifecycleValue> lifecycleKv = new java.util.concurrent.ConcurrentHashMap<>();
 
         void seed(int coreCount) {
             current.set(Option.some(new ClusterConfigValue("",
@@ -192,23 +209,50 @@ class ClusterTopologyManagerConfigChangeReconcileTest {
                                                            3,
                                                            9,
                                                            "test",
-                                                           1L,
+                                                           current.get().map(ClusterConfigValue::configVersion).or(0L) + 1L,
                                                            System.currentTimeMillis())));
+        }
+
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                                                      "host-" + nodeId.id(),
+                                                                                      5000,
+                                                                                      Epoch.epoch(0L, epoch)));
         }
 
         Option<ClusterConfigValue> current() {
             return current.get();
         }
 
+        Option<NodeLifecycleValue> lifecycle(NodeId nodeId) {
+            return Option.option(lifecycleKv.get(nodeId));
+        }
+
+        java.util.Map<ProvisioningSlotKey, ProvisioningSlotValue> slots() {
+            return new java.util.LinkedHashMap<>(slotKv);
+        }
+
         Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
             for (var command : commands) {
-                if (command instanceof KVCommand.Put<?, ?> put
-                    && put.key() instanceof AetherKey.ClusterConfigKey
-                    && put.value() instanceof ClusterConfigValue configValue) {
-                    current.set(Option.some(configValue));
+                switch (command) {
+                    case KVCommand.Put<AetherKey, ?> put -> applyPut(put);
+                    case KVCommand.Remove<AetherKey> remove -> {
+                        if (remove.key() instanceof ProvisioningSlotKey psk) {slotKv.remove(psk);}
+                    }
+                    default -> {}
                 }
             }
             return Promise.success(List.of());
+        }
+
+        private void applyPut(KVCommand.Put<AetherKey, ?> put) {
+            if (put.key() instanceof ProvisioningSlotKey psk && put.value() instanceof ProvisioningSlotValue psv) {
+                slotKv.put(psk, psv);
+            } else if (put.key() instanceof AetherKey.ClusterConfigKey && put.value() instanceof ClusterConfigValue configValue) {
+                current.set(Option.some(configValue));
+            } else if (put.key() instanceof NodeLifecycleKey nlk && put.value() instanceof NodeLifecycleValue nlv) {
+                lifecycleKv.put(nlk.nodeId(), nlv);
+            }
         }
     }
 

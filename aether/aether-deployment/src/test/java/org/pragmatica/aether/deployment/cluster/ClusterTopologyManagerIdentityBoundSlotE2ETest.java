@@ -158,87 +158,68 @@ class ClusterTopologyManagerIdentityBoundSlotE2ETest {
     }
 
     @Test
-    void identityBoundSlotLifecycle_expiredSlot_tombstonesOwnerAndFsmRefusesLateRevival()
+    void deadSlot_ctmFreesWithoutStoppedWrite_andFsmRefusesLateRevival()
             throws InterruptedException {
-        // Step 1 — provision via CTM deficit path. Slot timeout short enough to expire mid-test.
-        var ctm = createCtm(timeSpan(50).millis());
+        // Step 1 — full 5/5 cluster; CTM reseeds and binds occupants to slots 0-4.
+        var ctm = createCtm(timeSpan(60).seconds());
+        clusterStore.installOnDuty(SELF, 0L);
+        clusterStore.installOnDuty(PEER_A, 1L);
+        clusterStore.installOnDuty(PEER_B, 2L);
+        clusterStore.installOnDuty(PEER_C, 3L);
+        clusterStore.installOnDuty(PEER_D, 4L);
         snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                                 Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                                 5,
                                                 5),
                                1L);
         ctm.activate();
+
+        // Step 2 — the reducer STOPs PEER_D (remove-then-add §3.4 step 1; OQ6: reducer owns the
+        // STOPPED write, NOT CTM). CTM observes the DEAD slot and frees it.
+        clusterStore.installStopped(PEER_D);
+        var terminateCountBefore = lifecycleManager.terminateCount.get();
         snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                                 Set.of(SELF, PEER_A, PEER_B, PEER_C),
                                                 4,
                                                 5),
                                2L);
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+        var deadline = System.currentTimeMillis() + 2000L;
 
-        // Step 2 — capture the slot atom; assert it was re-PUT ASSIGNED to the provider id.
-        assertThat(lifecycleManager.provisionCount.get())
-                .as("deficit=1 → exactly one provision dispatch")
-                .isEqualTo(1);
-        var slotsBeforeExpiry = clusterStore.slots();
-        assertThat(slotsBeforeExpiry).as("slot atom written via production path").hasSize(1);
-        var assignedNodeId = slotsBeforeExpiry.values().iterator().next().assignedNodeId().unwrap();
-        assertThat(assignedNodeId.id())
-                .as("slot assignedNodeId equals the id the provider echoed back via InstanceInfo")
-                .isEqualTo(lifecycleManager.lastAllocatedId());
+        while (lifecycleManager.terminateCount.get() == terminateCountBefore && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
 
-        // Step 3 — advance past the slot deadline without the node ever arriving healthy.
-        Thread.sleep(200L);
-
-        // Step 4 — drive the expiry tick via a benign reconcile trigger.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                                4,
-                                                5),
-                               3L);
-        var terminateCountBefore = lifecycleManager.terminateCount.get();
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A,
-                                                                List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-
-        // Step 5a — STOPPED tombstone written for the assigned NodeId.
-        var tombstone = clusterStore.lifecycle(assignedNodeId);
-        assertThat(tombstone.isPresent())
-                .as("lifecycle atom written for expired-slot owner")
-                .isTrue();
-        assertThat(tombstone.unwrap().state())
-                .as("expired-slot owner authoritatively STOPPED")
+        // Step 3 — D2: CTM best-effort cloud-reaps the dead occupant (no drain ack) and does NOT
+        // write STOPPED itself — the lifecycle entry remains the reducer-authored STOPPED.
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("CTM cloud-reaps the dead occupant (best-effort, no drain ack)")
+                .isGreaterThan(terminateCountBefore);
+        assertThat(lifecycleManager.terminatedNodes).contains(PEER_D);
+        assertThat(clusterStore.lifecycle(PEER_D).unwrap().state())
+                .as("lifecycle entry remains STOPPED (reducer-authored; CTM did not overwrite)")
                 .isEqualTo(NodeLifecycleState.STOPPED);
 
-        // Step 5b — terminateNode invoked on the recording lifecycle manager with that exact id.
-        assertThat(lifecycleManager.terminateCount.get())
-                .as("cloud-side instance reap requested via lifecycleManager.terminateNode")
-                .isGreaterThan(terminateCountBefore);
-        assertThat(lifecycleManager.terminatedNodes)
-                .as("terminateNode called with the expired slot's assignedNodeId")
-                .contains(assignedNodeId);
-
-        // Step 6 — start a real MembershipFsm; it replays from KV and sees the tombstone.
+        // Step 4 — a real MembershipFsm replays from KV and sees the tombstone.
         var fsm = createFsm(() -> true);
         fsm.start().await().onFailure(cause -> assertThat(cause).isNull());
-
-        assertThat(fsm.get(assignedNodeId).isPresent())
+        assertThat(fsm.get(PEER_D).isPresent())
                 .as("FSM reconstructs tracked state for the tombstoned peer from KV replay")
                 .isTrue();
-        assertThat(fsm.get(assignedNodeId).unwrap())
+        assertThat(fsm.get(PEER_D).unwrap())
                 .as("FSM derives Stopped from the lifecycle KV entry")
                 .isInstanceOf(MembershipFsmState.Stopped.class);
 
         var commandsBeforeLateArrival = clusterStore.commandCount();
 
-        // Step 7 — simulate the late arrival: SWIM observes the tombstoned node healthy.
-        // The reducer cell (STOPPED, SwimHealthy) → nop must keep the FSM at
-        // Stopped and must NOT propose any KV writes.
-        fsm.onSwimObservation(new HealthyObserved(assignedNodeId, 1L));
+        // Step 5 — late arrival: SWIM observes the tombstoned node healthy. The reducer cell
+        // (STOPPED, SwimHealthy) → nop must keep the FSM Stopped and propose no KV writes.
+        fsm.onSwimObservation(new HealthyObserved(PEER_D, 1L));
 
-        // Step 8 — assert FSM remains in Stopped, no ON_DUTY write follows.
-        assertThat(fsm.get(assignedNodeId).unwrap())
+        assertThat(fsm.get(PEER_D).unwrap())
                 .as("FSM stays STOPPED after late SwimHealthy — applyStopped == nop")
                 .isInstanceOf(MembershipFsmState.Stopped.class);
-        assertThat(clusterStore.lifecycle(assignedNodeId).unwrap().state())
+        assertThat(clusterStore.lifecycle(PEER_D).unwrap().state())
                 .as("KV lifecycle entry remains STOPPED — no late revival write")
                 .isEqualTo(NodeLifecycleState.STOPPED);
         assertThat(clusterStore.commandCount())
@@ -320,6 +301,19 @@ class ClusterTopologyManagerIdentityBoundSlotE2ETest {
 
         Option<NodeLifecycleValue> lifecycle(NodeId nodeId) {
             return Option.option(lifecycleKv.get(nodeId));
+        }
+
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.ON_DUTY,
+                                                                          "host-" + nodeId.id(),
+                                                                          5000,
+                                                                          org.pragmatica.aether.slice.generation.Epoch.epoch(0L, epoch)));
+        }
+
+        void installStopped(NodeId nodeId) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState.STOPPED,
+                                                                          "host-" + nodeId.id(),
+                                                                          5000));
         }
 
         int commandCount() {

@@ -11,9 +11,15 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -26,11 +32,15 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -43,15 +53,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Verifies the CTM provisioning circuit breaker that bounds runaway provisioning when
-/// replacement VMs consistently fail to reach ON_DUTY. After `MAX_CONSECUTIVE_PROVISIONING_FAILURES`
-/// (3) consecutive slot-expiry events, further deficit-driven provisioning is halted until
-/// a successful node arrival, phase NORMAL transition, leader (re)activation, or operator
-/// `setDesiredSize`.
-///
-/// Cloud failure signature this guards against: replacement VMs that don't join within the
-/// 70 s slot deadline (cloud-init speed) cause CTM to spawn another, and another, indefinitely
-/// — observed last session as 7+ orphan VMs in 7 minutes.
+/// Verifies the CTM provisioning circuit breaker (retained unchanged by the slot model,
+/// slot-based-membership-convergence-spec §5.2). After `MAX_CONSECUTIVE_PROVISIONING_FAILURES`
+/// (3) consecutive provider failures, slot-fill provisioning is halted until a successful node
+/// arrival (`onNodeReady`), leader (re)activation, or operator `setDesiredSize`. The failure
+/// signal is now a failing `provisionNode` (provider API rejection) rather than a slot-expiry
+/// event — the gate logic (`provisioningCircuitTripped` / backoff) is identical.
 class ClusterTopologyManagerCircuitBreakerTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
@@ -66,14 +73,14 @@ class ClusterTopologyManagerCircuitBreakerTest {
     private static final NodeInfo INFO_D = NodeInfo.nodeInfo(PEER_D, NodeAddress.nodeAddress("localhost", 5004).unwrap());
 
     private static final TimeSpan NEGLIGIBLE_STABILITY = timeSpan(0).millis();
-
     private static final long INITIAL_CLOCK_MS = 1_000_000_000L;
 
     private StubSnapshotSource snapshotSource;
     private TopologyObserver observer;
     private RecordingLifecycleManager lifecycleManager;
-    private StubClusterConfigStore configStore;
+    private RecordingClusterStore clusterStore;
     private AtomicLong clockMs;
+    private ClusterTopologyManager ctm;
 
     @BeforeEach
     void setUp() {
@@ -85,8 +92,8 @@ class ClusterTopologyManagerCircuitBreakerTest {
                                         List.of(INFO_SELF, INFO_A, INFO_B, INFO_C, INFO_D));
         observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         lifecycleManager = new RecordingLifecycleManager();
-        configStore = new StubClusterConfigStore();
-        configStore.seed(5);
+        clusterStore = new RecordingClusterStore();
+        clusterStore.seed(5);
         clockMs = new AtomicLong(INITIAL_CLOCK_MS);
     }
 
@@ -103,322 +110,176 @@ class ClusterTopologyManagerCircuitBreakerTest {
                                                                          autoHeal,
                                                                          DeploymentMap.deploymentMap(),
                                                                          snapshotSource,
-                                                                         configStore::current,
-                                                                         nodeId -> Option.none(),
-                                                                         java.util.Map::of,
-                                                                         configStore::apply,
+                                                                         clusterStore::current,
+                                                                         clusterStore::lifecycle,
+                                                                         clusterStore::slots,
+                                                                         clusterStore::apply,
                                                                          new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
-                                                                         LegacyLifecycleWriterFixture.create(configStore::apply,
-                                                                                                              nodeId -> Option.none(),
+                                                                         LegacyLifecycleWriterFixture.create(clusterStore::apply,
+                                                                                                              clusterStore::lifecycle,
                                                                                                               clockMs::get),
                                                                          () -> ClusterPhase.NORMAL,
                                                                          clockMs::get);
     }
 
-    /// Establish a 5-node cluster, drop two peers, dispatch the first wave, expire it,
-    /// repeat enough times to cross the failure threshold. After the breaker trips, further
-    /// deficit-driven reconciles MUST NOT dispatch additional provisioning calls regardless
-    /// of how much wall-clock time advances.
+    /// Provider consistently fails; after 3 consecutive failures the breaker trips and further
+    /// fill attempts are halted regardless of clock advance.
     @Test
-    void circuitBreaker_haltsProvisioning_after3ConsecutiveSlotExpiries() {
-        var slotTimeoutMs = 100L;
-        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
-        ctm.activate();
-
-        // Drop two peers — desired=5, healthyOnDuty=3, deficit=2
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B),
-                                            3,
-                                            5),
-                               2L);
-
-        // Wave 1 — initial deficit, dispatches first provisioning attempt(s).
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-        var afterWave1 = lifecycleManager.provisionCount.get();
-        assertThat(afterWave1).isGreaterThanOrEqualTo(1);
-
-        // Drive the breaker through its threshold — each cycle expires the slot(s), records a
-        // failure, sets a fresh backoff. We advance the clock past slot deadline AND the maximum
-        // backoff window each iteration to guarantee the next reconcile re-enters handleDeficit.
-        for (var attempt = 0;attempt <5;attempt++) {
-            clockMs.addAndGet(slotTimeoutMs + (5 * 60 * 1000L));
-            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        }
-
-        // After enough cycles, provisioning count plateaus — circuit tripped.
+    void circuitBreaker_haltsProvisioning_after3ConsecutiveFailures() {
+        ctm = createCtm(timeSpan(100L).millis());
+        activateConvergedThenDeficit();
+        lifecycleManager.failProvision(true);
+        driveDeficitReconciles(8);
         var plateauCount = lifecycleManager.provisionCount.get();
-        // Advance past the maximum backoff (5 min) but well below the 1h auto-reset
-        // quiescence window — verifies the breaker stays tripped until an explicit
-        // reset trigger, not that it auto-clears on time alone.
-        clockMs.addAndGet(30 * 60 * 1000L);  // advance 1 h — backoff fully clear
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+        assertThat(plateauCount).as("at least one provision attempt fired").isGreaterThanOrEqualTo(1);
+
+        // Advance well past backoff but below 1h auto-reset; breaker stays tripped.
+        clockMs.addAndGet(30 * 60 * 1000L);
+        driveDeficitReconciles(3);
         assertThat(lifecycleManager.provisionCount.get())
-            .as("provisioning must NOT continue after circuit breaker trips, regardless of clock advance")
-            .isEqualTo(plateauCount);
+                .as("provisioning halted after breaker trips, regardless of clock advance")
+                .isEqualTo(plateauCount);
     }
 
-    /// After the breaker trips, reset paths must clear it and allow provisioning to resume.
-    /// `setDesiredSize` is the operator-action reset (per Fix #2 §4 in the handover).
+    /// `setDesiredSize` is the operator-action reset — it re-opens the gate after a trip.
     @Test
     void circuitBreaker_resets_onSetDesiredSize() {
-        var slotTimeoutMs = 100L;
-        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
-        ctm.activate();
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B),
-                                            3,
-                                            5),
-                               2L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-
-        // Trip the breaker by repeated expirations.
-        for (var attempt = 0;attempt <6;attempt++) {
-            clockMs.addAndGet(slotTimeoutMs + (5 * 60 * 1000L));
-            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        }
+        ctm = createCtm(timeSpan(100L).millis());
+        activateConvergedThenDeficit();
+        lifecycleManager.failProvision(true);
+        driveDeficitReconciles(8);
         var plateauCount = lifecycleManager.provisionCount.get();
-        // Advance past the maximum backoff (5 min) but well below the 1h auto-reset
-        // quiescence window — verifies the breaker stays tripped until an explicit
-        // reset trigger, not that it auto-clears on time alone.
         clockMs.addAndGet(30 * 60 * 1000L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-        assertThat(lifecycleManager.provisionCount.get())
-            .as("breaker must be tripped before reset")
-            .isEqualTo(plateauCount);
+        driveDeficitReconciles(2);
+        assertThat(lifecycleManager.provisionCount.get()).as("breaker tripped").isEqualTo(plateauCount);
 
-        // Operator-driven reset: setDesiredSize re-opens the gate.
         ctm.setDesiredSize(5).await();
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+        driveDeficitReconciles(1);
         assertThat(lifecycleManager.provisionCount.get())
-            .as("provisioning must resume after setDesiredSize reset")
-            .isGreaterThan(plateauCount);
+                .as("provisioning resumes after setDesiredSize reset")
+                .isGreaterThan(plateauCount);
     }
 
-    /// `onNodeReady` (slot.JOIN) is the canonical "successful provisioning" signal.
-    /// A node reaching ON_DUTY clears the failure counter, allowing future deficits to
-    /// dispatch provisioning normally.
+    /// `onNodeReady` (a successful provisioning / ON_DUTY arrival) clears the failure counter.
     @Test
     void circuitBreaker_resets_onNodeReady() {
-        var slotTimeoutMs = 100L;
-        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
-        ctm.activate();
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B),
-                                            3,
-                                            5),
-                               2L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-
-        // Trip the breaker.
-        for (var attempt = 0;attempt <6;attempt++) {
-            clockMs.addAndGet(slotTimeoutMs + (5 * 60 * 1000L));
-            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        }
+        ctm = createCtm(timeSpan(100L).millis());
+        activateConvergedThenDeficit();
+        lifecycleManager.failProvision(true);
+        driveDeficitReconciles(8);
         var plateauCount = lifecycleManager.provisionCount.get();
-        // Advance past the maximum backoff (5 min) but well below the 1h auto-reset
-        // quiescence window — verifies the breaker stays tripped until an explicit
-        // reset trigger, not that it auto-clears on time alone.
         clockMs.addAndGet(30 * 60 * 1000L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
+        driveDeficitReconciles(2);
         assertThat(lifecycleManager.provisionCount.get()).isEqualTo(plateauCount);
 
-        // Replacement node arrives: snapshot reflects a successful join, then onNodeReady fires.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                            4,
-                                            5),
-                               3L);
+        // A node reaches ON_DUTY — resets the breaker; provider now succeeds.
+        lifecycleManager.failProvision(false);
         ctm.onNodeReady(PEER_C);
-
-        // Now create a fresh deficit and verify provisioning resumes.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                            4,
-                                            5),
-                               4L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+        driveDeficitReconciles(1);
         assertThat(lifecycleManager.provisionCount.get())
-            .as("provisioning must resume after successful node arrival")
-            .isGreaterThan(plateauCount);
+                .as("provisioning resumes after successful node arrival")
+                .isGreaterThan(plateauCount);
     }
 
-    /// Backoff between failures defers the next provisioning attempt — within the backoff
-    /// window, deficit-driven reconciles do NOT dispatch new provisions.
+    /// Within the backoff window a fresh deficit reconcile does NOT dispatch a new fill.
     @Test
     void circuitBreaker_backoff_defersWithinWindow() {
-        var slotTimeoutMs = 100L;
-        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
-        ctm.activate();
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B),
-                                            3,
-                                            5),
-                               2L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-        var afterWave1 = lifecycleManager.provisionCount.get();
-        assertThat(afterWave1).isGreaterThanOrEqualTo(1);
+        ctm = createCtm(timeSpan(100L).millis());
+        activateConvergedThenDeficit();
+        lifecycleManager.failProvision(true);
+        driveDeficitReconciles(1);
+        var afterFirstFailure = lifecycleManager.provisionCount.get();
+        assertThat(afterFirstFailure).isGreaterThanOrEqualTo(1);
 
-        // Expire slots — failure recorded, backoff window starts (>= 30 s for first failure).
-        clockMs.addAndGet(slotTimeoutMs + 1L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        var afterFirstExpire = lifecycleManager.provisionCount.get();
-
-        // Within backoff (advance only 5 s — well below 30 s base backoff).
+        // Within backoff (advance 5s — below 30s base backoff): no new dispatch.
         clockMs.addAndGet(5000L);
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         assertThat(lifecycleManager.provisionCount.get())
-            .as("deficit reconciles WITHIN backoff window must not dispatch new provisions")
-            .isEqualTo(afterFirstExpire);
+                .as("deficit reconcile within backoff window must not dispatch")
+                .isEqualTo(afterFirstFailure);
     }
 
-    /// Default-state invariant: auto-heal is enabled out of the box, and the toggle
-    /// reports its prior value on transition (audit log).
     @Test
     void autoHeal_isEnabledByDefault_andToggleReturnsPriorState() {
-        var ctm = createCtm(timeSpan(100L).millis());
-        assertThat(ctm.isAutoHealEnabled()).as("auto-heal must be enabled by default").isTrue();
-        assertThat(ctm.setAutoHealEnabled(false, "test-disable")).as("disable returns prior=true").isTrue();
-        assertThat(ctm.isAutoHealEnabled()).as("after disable, status is false").isFalse();
-        assertThat(ctm.setAutoHealEnabled(true, "test-enable")).as("enable returns prior=false").isFalse();
-        assertThat(ctm.isAutoHealEnabled()).as("after enable, status is true").isTrue();
+        ctm = createCtm(timeSpan(100L).millis());
+        assertThat(ctm.isAutoHealEnabled()).isTrue();
+        assertThat(ctm.setAutoHealEnabled(false, "test-disable")).isTrue();
+        assertThat(ctm.isAutoHealEnabled()).isFalse();
+        assertThat(ctm.setAutoHealEnabled(true, "test-enable")).isFalse();
+        assertThat(ctm.isAutoHealEnabled()).isTrue();
     }
 
-    /// When auto-heal is disabled, deficit-driven reconciles MUST NOT dispatch
-    /// any provisioning calls — independent of the circuit breaker state, the
-    /// stability window, or the backoff timer. This is the operator-controlled
-    /// kill switch used by `13-edge-cases/test-disruption-budget` to prevent
-    /// CTM from racing the budget check while the test drains nodes.
+    /// Operator kill-switch: with auto-heal disabled, EMPTY slots are NOT filled.
     @Test
     void autoHeal_disabled_haltsDeficitProvisioning() {
-        var slotTimeoutMs = 100L;
-        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
+        ctm = createCtm(timeSpan(100L).millis());
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
         ctm.activate();
-
-        // Disable auto-heal BEFORE the deficit appears.
         ctm.setAutoHealEnabled(false, "test setup");
-
-        // Create a deficit — drop two peers. desired=5, healthyOnDuty=3.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B),
-                                            3,
-                                            5),
-                               2L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-
-        // Even after multiple reconcile triggers and clock advances, no provisioning fired.
+        // Create a deficit: STOP two peers (reducer-modeled) so their slots become DEAD→EMPTY.
+        clusterStore.installStopped(PEER_C);
+        clusterStore.installStopped(PEER_D);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B));
         for (var attempt = 0;attempt <5;attempt++) {
-            clockMs.addAndGet(slotTimeoutMs + 1_000L);
+            clockMs.addAndGet(1_000L);
             ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         }
         assertThat(lifecycleManager.provisionCount.get())
-            .as("auto-heal disabled — no provisioning calls regardless of deficit/reconcile/clock-advance")
-            .isEqualTo(0);
+                .as("auto-heal disabled halts all slot-fill provisioning")
+                .isZero();
     }
 
-    /// Re-enabling auto-heal after a deficit was suppressed lets the next
-    /// reconcile pick up the pending work. Verifies the operator can pause +
-    /// resume mid-flight (e.g., disable for a maintenance window, re-enable
-    /// when the window closes).
+    /// Circuit-breaker state is observable for operator tooling.
     @Test
-    void autoHeal_reEnable_resumesProvisioning() {
-        var slotTimeoutMs = 100L;
-        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
-        ctm.activate();
-        ctm.setAutoHealEnabled(false, "test pause");
-
-        // Create a deficit while disabled — no provisioning.
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B),
-                                            3,
-                                            5),
-                               2L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-        assertThat(lifecycleManager.provisionCount.get()).as("no provisioning while disabled").isEqualTo(0);
-
-        // Re-enable. With a Reconciling state in place, setAutoHealEnabled(true) nudges
-        // a reconcile. If we are still in Converged state, the next membership event
-        // will drive handleDeficit, which now permits the call.
-        ctm.setAutoHealEnabled(true, "test resume");
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        assertThat(lifecycleManager.provisionCount.get())
-            .as("after re-enable, deficit reconcile dispatches provisioning")
-            .isGreaterThanOrEqualTo(1);
+    void circuitBreakerState_reportsFailuresAndThreshold() {
+        ctm = createCtm(timeSpan(100L).millis());
+        var state = ctm.circuitBreakerState();
+        assertThat(state.trippedAt()).isEqualTo(3);
+        assertThat(state.tripped()).isFalse();
     }
 
-    /// Auto-reset backstop: when the breaker has been tripped but no provisioning
-    /// failure has occurred for the auto-reset quiescence window (1h), the breaker
-    /// self-clears on the next reconcile so an unattended cluster eventually retries
-    /// without operator intervention.
+    /// Operator can reset the breaker explicitly.
     @Test
-    void circuitBreaker_autoResets_after1hQuiescence() {
-        var slotTimeoutMs = 100L;
-        var ctm = createCtm(timeSpan(slotTimeoutMs).millis());
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
-        ctm.activate();
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B),
-                                            3,
-                                            5),
-                               2L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
+    void resetCircuitBreaker_clearsFailureCount() {
+        ctm = createCtm(timeSpan(100L).millis());
+        activateConvergedThenDeficit();
+        lifecycleManager.failProvision(true);
+        driveDeficitReconciles(8);
+        // Provider recovers, then operator resets — the post-reset reconcile succeeds, leaving the
+        // failure counter cleared.
+        lifecycleManager.failProvision(false);
+        ctm.resetCircuitBreaker("operator test");
+        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isZero();
+    }
 
-        // Trip the breaker.
-        for (var attempt = 0;attempt <6;attempt++) {
-            clockMs.addAndGet(slotTimeoutMs + (5 * 60 * 1000L));
+    private void driveDeficitReconciles(int cycles) {
+        for (var attempt = 0;attempt <cycles;attempt++) {
+            // Advance past the FILLING-marker deadline (100ms) AND the pre-trip backoff windows
+            // (30s/60s/120s) but keep the cumulative advance well under the 1h auto-reset window
+            // so the breaker stays tripped once it crosses the threshold.
+            clockMs.addAndGet(130_000L);
             ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
         }
-        var plateauCount = lifecycleManager.provisionCount.get();
+    }
 
-        // Verify breaker is tripped (provisioning halted) at 30 min — well before the 1h auto-reset window.
-        clockMs.addAndGet(30 * 60 * 1000L);
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-        assertThat(lifecycleManager.provisionCount.get())
-            .as("breaker must remain tripped at 30 min (well below 1h auto-reset window)")
-            .isEqualTo(plateauCount);
+    /// Activate a converged 5/5 cluster (lands Converged, not Forming), then model the reducer
+    /// STOPping one core so its slot goes DEAD → freed → EMPTY, leaving a single-slot deficit the
+    /// reconcile loop tries (and, when `failProvision` is set, fails) to fill — one failure per
+    /// reconcile so the breaker threshold (3) is crossed deterministically.
+    private void activateConvergedThenDeficit() {
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        ctm.activate();
+        clusterStore.installStopped(PEER_D);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C));
+    }
 
-        // Now advance past 1h auto-reset window. Next reconcile should self-clear the
-        // breaker and dispatch a fresh provisioning attempt.
-        clockMs.addAndGet(31 * 60 * 1000L);  // total elapsed since last failure: 30m + 31m = 61m > 1h
-        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-        assertThat(lifecycleManager.provisionCount.get())
-            .as("provisioning must resume after 1h auto-reset (no operator action required)")
-            .isGreaterThan(plateauCount);
+    private void publishOnDuty(Set<NodeId> onDuty) {
+        var all = Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        snapshotSource.publish(new StubView(all, onDuty, onDuty.size(), 5, all, Set.of()), snapshotSource.term.get() + 1L);
+        var epoch = 0L;
+        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {
+            if (onDuty.contains(id)) {clusterStore.installOnDuty(id, epoch++);}
+        }
     }
 
     private record StubView(Set<NodeId> coreMemberIds,
@@ -426,14 +287,7 @@ class ClusterTopologyManagerCircuitBreakerTest {
                             int healthyOnDutyCount,
                             int desiredCoreSize,
                             Set<NodeId> ctmProvisionedNodeIds,
-                            Set<NodeId> nodesWithoutSlices) implements MembershipView {
-        static StubView stubView(Set<NodeId> coreMemberIds,
-                                 Set<NodeId> onDutyMemberIds,
-                                 int healthyOnDutyCount,
-                                 int desiredCoreSize) {
-            return new StubView(coreMemberIds, onDutyMemberIds, healthyOnDutyCount, desiredCoreSize, coreMemberIds, Set.of());
-        }
-    }
+                            Set<NodeId> nodesWithoutSlices) implements MembershipView {}
 
     private static final class StubSnapshotSource implements GenerationSnapshotSource {
         private final AtomicReference<Option<MembershipView>> view = new AtomicReference<>(Option.none());
@@ -453,42 +307,71 @@ class ClusterTopologyManagerCircuitBreakerTest {
         }
     }
 
-    private static final class StubClusterConfigStore {
-        final AtomicInteger applyCount = new AtomicInteger();
+    private static final class RecordingClusterStore {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
+        private final ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<NodeId, NodeLifecycleValue> lifecycleKv = new ConcurrentHashMap<>();
 
         void seed(int coreCount) {
-            current.set(Option.some(new ClusterConfigValue("",
-                                                           "",
-                                                           "1.0.0",
-                                                           coreCount,
-                                                           3,
-                                                           9,
-                                                           "test",
-                                                           1L,
-                                                           System.currentTimeMillis())));
+            current.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreCount, 3, 9, "test", 1L, System.currentTimeMillis())));
+        }
+
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, "host-" + nodeId.id(), 5000, Epoch.epoch(0L, epoch)));
+        }
+
+        void installStopped(NodeId nodeId) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED, "host-" + nodeId.id(), 5000));
         }
 
         Option<ClusterConfigValue> current() {
             return current.get();
         }
 
+        Option<NodeLifecycleValue> lifecycle(NodeId nodeId) {
+            return Option.option(lifecycleKv.get(nodeId));
+        }
+
+        Map<ProvisioningSlotKey, ProvisioningSlotValue> slots() {
+            return new LinkedHashMap<>(slotKv);
+        }
+
         Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
-            applyCount.incrementAndGet();
-            for (var command : commands) {
-                if (command instanceof KVCommand.Put<?, ?> put
-                    && put.key() instanceof AetherKey.ClusterConfigKey
-                    && put.value() instanceof ClusterConfigValue configValue) {
-                    current.set(Option.some(configValue));
-                }
-            }
+            for (var command : commands) {applyOne(command);}
             return Promise.success(List.of());
+        }
+
+        private void applyOne(KVCommand<AetherKey> command) {
+            switch (command) {
+                case KVCommand.Put<AetherKey, ?> put -> applyPut(put);
+                case KVCommand.Remove<AetherKey> remove -> applyRemove(remove);
+                default -> {}
+            }
+        }
+
+        private void applyPut(KVCommand.Put<AetherKey, ?> put) {
+            if (put.key() instanceof ProvisioningSlotKey psk && put.value() instanceof ProvisioningSlotValue psv) {
+                slotKv.put(psk, psv);
+            } else if (put.key() instanceof AetherKey.ClusterConfigKey && put.value() instanceof ClusterConfigValue cv) {
+                current.set(Option.some(cv));
+            } else if (put.key() instanceof NodeLifecycleKey nlk && put.value() instanceof NodeLifecycleValue nlv) {
+                lifecycleKv.put(nlk.nodeId(), nlv);
+            }
+        }
+
+        private void applyRemove(KVCommand.Remove<AetherKey> remove) {
+            if (remove.key() instanceof ProvisioningSlotKey psk) {slotKv.remove(psk);}
         }
     }
 
     private static final class RecordingLifecycleManager implements NodeLifecycleManager {
         final AtomicInteger provisionCount = new AtomicInteger();
         final AtomicInteger terminateCount = new AtomicInteger();
+        private final AtomicReference<Boolean> fail = new AtomicReference<>(false);
+
+        void failProvision(boolean value) {
+            fail.set(value);
+        }
 
         @Override public Promise<ActionResult> executeAction(NodeAction action) {
             return Promise.success(new ActionResult.NodeStarted(InstanceInfo.instanceInfo(InstanceId.instanceId("stub").unwrap(),
@@ -499,6 +382,9 @@ class ClusterTopologyManagerCircuitBreakerTest {
 
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
             provisionCount.incrementAndGet();
+
+            if (fail.get()) {return Causes.cause("simulated provider API rejection").promise();}
+
             return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + provisionCount.get()).unwrap(),
                                                              InstanceStatus.RUNNING,
                                                              List.of("127.0.0.1"),

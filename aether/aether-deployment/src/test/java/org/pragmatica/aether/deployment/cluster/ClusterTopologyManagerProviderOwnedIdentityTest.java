@@ -84,6 +84,7 @@ class ClusterTopologyManagerProviderOwnedIdentityTest {
     private TopologyObserver observer;
     private RecordingLifecycleManager lifecycleManager;
     private RecordingClusterStore clusterStore;
+    private ClusterTopologyManager ctm;
 
     @BeforeEach
     void setUp() {
@@ -123,143 +124,126 @@ class ClusterTopologyManagerProviderOwnedIdentityTest {
                                                               () -> AetherValue.ClusterPhase.NORMAL);
     }
 
-    @Nested
-    class TwoPhaseProvisioning {
-        @Test
-        void provisionNodes_writesSlotUnassignedThenAssignsProviderId_whenProviderEchoesNodeId() {
-            lifecycleManager.echoedId.set(PROVIDER_ID);
-            var ctm = createCtm();
-            snapshotSource.publish(view(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        5,
-                                        5),
-                                   1L);
-            ctm.activate();
-            // Drop one peer — leader provisions exactly one replacement.
-            snapshotSource.publish(view(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                        4,
-                                        5),
-                                   2L);
-            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+    private void activateFull() {
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Map.of());
+        ctm.activate();
+    }
 
-            assertThat(lifecycleManager.provisionCount.get())
-                    .as("deficit=1 → one provision dispatch")
-                    .isEqualTo(1);
-            // Phase 1: an UNASSIGNED slot atom was written before the assigned re-PUT.
-            assertThat(clusterStore.firstSlotPutWasUnassigned.get())
-                    .as("slot is written UNASSIGNED first — no JOINING for any ghost id")
-                    .isTrue();
-            assertThat(clusterStore.assignedNodeIdsWritten())
-                    .as("no aether-core-node-* ghost id is ever assigned to a slot")
-                    .noneMatch(id -> id.id().startsWith("aether-core-node"));
-            // Phase 2: after the provision resolves, the slot is re-PUT ASSIGNED to the real id.
-            var slots = clusterStore.slots();
-            assertThat(slots).as("exactly one live slot atom").hasSize(1);
-            var assigned = slots.values().iterator().next().assignedNodeId();
-            assertThat(assigned.isPresent()).as("slot re-PUT ASSIGNED after provision resolved").isTrue();
-            assertThat(assigned.unwrap().id())
-                    .as("slot assignedNodeId is the provider-echoed id")
-                    .isEqualTo(PROVIDER_ID);
-            // slotKeyByNodeId is keyed by the real id — completion cleanup matches.
-            var realId = nodeId(PROVIDER_ID).unwrap();
-            var slotKey = slots.keySet().iterator().next();
-            clusterStore.installLifecycle(realId,
-                                          NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY,
-                                                                                "host-real",
-                                                                                6000));
-            ctm.onNodeReady(realId);
-            assertThat(clusterStore.slots())
-                    .as("onNodeReady(realId) removes the slot keyed by the provider id")
-                    .doesNotContainKey(slotKey);
+    private void publishOnDuty(Set<NodeId> onDuty, Map<NodeId, LifecycleState> lifecycleStates) {
+        var all = Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        snapshotSource.publish(joiningView(all, onDuty, onDuty.size(), 5, lifecycleStates), snapshotSource.term.get() + 1L);
+        var epoch = 0L;
+        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {
+            if (onDuty.contains(id)) {clusterStore.installOnDuty(id, epoch++);}
         }
+    }
 
-        @Test
-        void provisionNodes_leavesSlotUnassigned_whenProviderReportsNoId() {
-            lifecycleManager.echoedId.set(null);
-            var ctm = createCtm();
-            snapshotSource.publish(view(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        5,
-                                        5),
-                                   1L);
-            ctm.activate();
-            snapshotSource.publish(view(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                        4,
-                                        5),
-                                   2L);
-            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+    private void awaitProvision(int atLeast) throws InterruptedException {
+        var deadline = System.currentTimeMillis() + 2000L;
 
-            assertThat(lifecycleManager.provisionCount.get()).isEqualTo(1);
-            var slots = clusterStore.slots();
-            assertThat(slots).as("slot atom written").hasSize(1);
-            assertThat(slots.values().iterator().next().assignedNodeId().isPresent())
-                    .as("provider reported no id → slot stays UNASSIGNED, no ghost JOINING")
-                    .isFalse();
-            assertThat(clusterStore.assignedNodeIdsWritten())
-                    .as("no slot was ever PUT with an assigned id")
-                    .isEmpty();
+        while (lifecycleManager.provisionCount.get() < atLeast && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
         }
     }
 
     @Nested
-    class JoiningAwareDeficit {
+    class ProviderOwnsIdentity {
+        /// The provider mints the real id (echoed via `InstanceInfo.nodeId()`); CTM binds it to the
+        /// freed slot. CTM never pre-allocates a ghost id and never writes a ghost-assigned slot.
         @Test
-        void reconcile_dispatchesZeroProvisions_whenJoiningPlusOnDutyCoversDesired() {
-            var ctm = createCtm();
-            // Activate converged at 5/5 so subsequent reconcile() runs reconcileActive (not the
-            // activation leader-failover path, which bypasses the joining-aware deficit math).
-            snapshotSource.publish(view(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        5,
-                                        5),
-                                   1L);
-            ctm.activate();
-            assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
-            // desired=5, 4 ON_DUTY + 1 JOINING = 5 capacity (in-progress) → deficit must be 0.
-            snapshotSource.publish(joiningView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                               Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                               4,
-                                               5,
-                                               Map.of(PEER_D, LifecycleState.JOINING)),
-                                   2L);
-            // A topology event drives reconcileActive while the JOINING node has not yet matured.
+        void freedSlot_refilledWithProviderEchoedId_notAGhostId() throws InterruptedException {
+            lifecycleManager.echoedId.set(PROVIDER_ID);
+            ctm = createCtm();
+            activateFull();
+            // Reducer STOPs PEER_D → its slot DEAD → freed → refilled with the provider-echoed id.
+            clusterStore.installStopped(PEER_D);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), Map.of());
             ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+            awaitProvision(1);
+            assertThat(clusterStore.assignedNodeIdsWritten())
+                    .as("no aether-core-node-* ghost id is ever assigned to a slot")
+                    .noneMatch(id -> id.id().startsWith("aether-core-node"));
+            var assigned = clusterStore.slots()
+                                       .values()
+                                       .stream()
+                                       .map(ProvisioningSlotValue::assignedNodeId)
+                                       .filter(Option::isPresent)
+                                       .map(Option::unwrap)
+                                       .anyMatch(id -> id.id().equals(PROVIDER_ID));
+            assertThat(assigned).as("freed slot re-bound to the provider-echoed id").isTrue();
+        }
 
-            assertThat(lifecycleManager.provisionCount.get())
-                    .as("JOINING node covers the deficit — zero provisions dispatched")
-                    .isZero();
+        /// Durable slots (D1): when the occupant reaches ON_DUTY the slot is NOT deleted — it stays
+        /// bound and reclassifies HEALTHY (replaces the old delete-on-ON_DUTY behavior).
+        @Test
+        void slotNotDeleted_whenOccupantReachesOnDuty() throws InterruptedException {
+            lifecycleManager.echoedId.set(PROVIDER_ID);
+            ctm = createCtm();
+            activateFull();
+            clusterStore.installStopped(PEER_D);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), Map.of());
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+            awaitProvision(1);
+            var sizeAfterFill = clusterStore.slots().size();
+            var realId = nodeId(PROVIDER_ID).unwrap();
+            clusterStore.installOnDuty(realId, 9L);
+            ctm.onNodeReady(realId);
             assertThat(clusterStore.slots())
-                    .as("no slot atom written when capacity-in-progress covers the gap")
-                    .isEmpty();
-            assertThat(ctm.reconcilerState())
-                    .as("CTM stays out of Reconciling — no replacement wave")
-                    .isNotInstanceOf(NodeReconcilerState.Reconciling.class);
+                    .as("durable slot set keeps exactly clusterSize entries — slot NOT deleted on ON_DUTY")
+                    .hasSize(sizeAfterFill);
         }
 
         @Test
-        void reconcile_dispatchesProvision_whenDeficitExceedsJoiningCapacity() {
-            lifecycleManager.echoedId.set(PROVIDER_ID);
-            var ctm = createCtm();
-            snapshotSource.publish(view(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                        5,
-                                        5),
-                                   1L);
-            ctm.activate();
-            assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
-            // desired=5, 3 ON_DUTY + 1 JOINING = 4 → genuine deficit of 1 remains after joining.
-            snapshotSource.publish(joiningView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                               Set.of(SELF, PEER_A, PEER_B),
-                                               3,
-                                               5,
-                                               Map.of(PEER_C, LifecycleState.JOINING)),
-                                   2L);
+        void noOccupantBound_whenProviderReportsNoId() throws InterruptedException {
+            lifecycleManager.echoedId.set(null);
+            ctm = createCtm();
+            activateFull();
+            clusterStore.installStopped(PEER_D);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), Map.of());
             ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+            awaitProvision(1);
+            // The freed slot (the one whose marker is stamped but provider returned no id) carries
+            // a FILLING marker and NO occupant — no ghost JOINING.
+            var fillingNoOccupant = clusterStore.slots()
+                                                .values()
+                                                .stream()
+                                                .anyMatch(slot -> slot.spawnedAtMs() > 0L && slot.assignedNodeId().isEmpty());
+            assertThat(fillingNoOccupant)
+                    .as("provider reported no id → slot stays FILLING with no occupant")
+                    .isTrue();
+        }
+    }
 
+    @Nested
+    class FillingAwareDeficit {
+        /// A slot whose occupant is JOINING (FILLING) is NOT re-provisioned — the durable-slot
+        /// replacement for the old joining-aware deficit subtraction.
+        @Test
+        void reconcile_doesNotRefillFillingSlot_whenOccupantJoining() throws InterruptedException {
+            ctm = createCtm();
+            activateFull();
+            assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
+            // PEER_D is JOINING (occupant present, not ON_DUTY, not STOPPED) → slot FILLING.
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), Map.of(PEER_D, LifecycleState.JOINING));
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+            Thread.sleep(100L);
             assertThat(lifecycleManager.provisionCount.get())
-                    .as("deficit beyond JOINING capacity still triggers provisioning")
+                    .as("FILLING slot (JOINING occupant) is not re-provisioned")
+                    .isZero();
+        }
+
+        /// An EMPTY slot (occupant STOPPED → freed) IS filled.
+        @Test
+        void reconcile_fillsEmptySlot_whenOccupantStopped() throws InterruptedException {
+            lifecycleManager.echoedId.set(PROVIDER_ID);
+            ctm = createCtm();
+            activateFull();
+            clusterStore.installStopped(PEER_D);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), Map.of());
+            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
+            awaitProvision(1);
+            assertThat(lifecycleManager.provisionCount.get())
+                    .as("STOPPED occupant → DEAD slot freed → EMPTY → filled")
                     .isGreaterThanOrEqualTo(1);
         }
     }
@@ -332,6 +316,17 @@ class ClusterTopologyManagerProviderOwnedIdentityTest {
 
         Option<NodeLifecycleValue> lifecycle(NodeId nodeId) {
             return Option.option(lifecycleKv.get(nodeId));
+        }
+
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY,
+                                                                          "host-" + nodeId.id(),
+                                                                          5000,
+                                                                          org.pragmatica.aether.slice.generation.Epoch.epoch(0L, epoch)));
+        }
+
+        void installStopped(NodeId nodeId) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.STOPPED, "host-" + nodeId.id(), 5000));
         }
 
         Map<ProvisioningSlotKey, ProvisioningSlotValue> slots() {

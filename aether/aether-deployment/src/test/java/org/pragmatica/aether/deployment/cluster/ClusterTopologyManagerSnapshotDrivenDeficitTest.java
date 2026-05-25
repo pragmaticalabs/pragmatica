@@ -11,13 +11,20 @@ import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -27,8 +34,12 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -41,16 +52,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// Verifies that `ClusterTopologyManagerRecord` reads cluster size from the
-/// snapshot-backed `MembershipView` (when present) and triggers provisioning without
-/// running an independent deficit-hysteresis timer chain. After the commit-3 refactor
-/// the CTM has no local `configuredSize`/`desiredSize` caches — everything flows
-/// through the snapshot, and `setDesiredSize` is a thin `ClusterConfigValue` write.
+/// Slot-based-membership-convergence-spec §5: CTM reads cluster size from the snapshot-backed
+/// `MembershipView` and converges occupancy against a durable slot set sized to
+/// `ClusterConfigValue.coreCount`. Deficit → EMPTY slots filled; surplus → highest-index reapable
+/// slots removed (Option B: CTM-provisioned safety filter retained — MANUAL/UNKNOWN occupants are
+/// never auto-terminated).
 class ClusterTopologyManagerSnapshotDrivenDeficitTest {
-    // Termination candidates must be CTM-provisioned — the hard filter
-    // (`MembershipView::ctmProvisionedNodeIds`) excludes fixtures that the compute provider
-    // cannot actually terminate. The stub view's `ctmProvisionedNodeIds` determines
-    // eligibility; node-id prefixes no longer drive this decision.
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
     private static final NodeId PEER_B = nodeId("node-b").unwrap();
@@ -66,7 +73,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     private StubSnapshotSource snapshotSource;
     private TopologyObserver observer;
     private RecordingLifecycleManager lifecycleManager;
-    private StubClusterConfigStore configStore;
+    private RecordingClusterStore clusterStore;
     private ClusterTopologyManager ctm;
 
     @BeforeEach
@@ -79,14 +86,8 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                         List.of(INFO_SELF, INFO_A, INFO_B, INFO_C, INFO_D));
         observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         lifecycleManager = new RecordingLifecycleManager();
-        // Seed a baseline ClusterConfigValue so setDesiredSize() can write-through.
-        configStore = new StubClusterConfigStore();
-        configStore.seed(5);
-        // Use a long retry interval so the safety-net timer never fires during the test —
-        // we drive reconciliation purely via setDesiredSize / topology events. Use a 1ms
-        // stability window so the post-RC1 phantom-provision gate is a no-op for these
-        // legacy provisioning-flow tests; the gate itself is covered by
-        // `ClusterTopologyManagerStabilityWindowTest`.
+        clusterStore = new RecordingClusterStore();
+        clusterStore.seed(5);
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
                                                       timeSpan(1).millis(),
                                                       AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
@@ -99,237 +100,164 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                                             autoHeal,
                                                             DeploymentMap.deploymentMap(),
                                                             snapshotSource,
-                                                            configStore::current,
-                                                            nodeId -> Option.none(),
-                                                            java.util.Map::of,
-                                                            configStore::apply,
+                                                            clusterStore::current,
+                                                            clusterStore::lifecycle,
+                                                            clusterStore::slots,
+                                                            clusterStore::apply,
                                                             new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
-                                                            LegacyLifecycleWriterFixture.create(configStore::apply,
-                                                                                                 nodeId -> Option.none(),
+                                                            LegacyLifecycleWriterFixture.create(clusterStore::apply,
+                                                                                                 clusterStore::lifecycle,
                                                                                                  System::currentTimeMillis),
                                                             () -> AetherValue.ClusterPhase.NORMAL);
     }
 
     @Test
-    void reconcile_provisionsImmediately_whenSnapshotReportsDeficit() {
-        // Snapshot reports only 4 healthy ON_DUTY out of desired 5
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C),
-                                            4,
-                                            5),
-                               1L);
+    void reconcile_provisionsIntoEmptySlots_whenSnapshotReportsDeficit() throws InterruptedException {
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), 5);
         ctm.activate();
-        // Topology event triggers reconcile; snapshot-driven deficit provisioning fires
         ctm.onNodeReady(PEER_A);
-        // Expect one provisioning attempt - no hysteresis defer
-        assertThat(lifecycleManager.provisionCount.get()).isGreaterThanOrEqualTo(1);
-        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Reconciling.class);
+        awaitProvision(1);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("one EMPTY slot filled for the 4-of-5 cluster")
+                .isGreaterThanOrEqualTo(1);
     }
 
     @Test
-    void reconcile_doesNotProvision_whenSnapshotReportsConverged() {
-        // Snapshot reports all 5 healthy ON_DUTY at the desired core size of 5
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
+    void reconcile_doesNotProvision_whenSnapshotReportsConverged() throws InterruptedException {
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
         ctm.activate();
-        assertThat(lifecycleManager.provisionCount.get()).isZero();
-        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
+        ctm.onNodeReady(PEER_A);
+        Thread.sleep(100L);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("all 5 slots HEALTHY — no provisioning")
+                .isZero();
     }
 
     @Test
-    void reconcile_terminatesSurplus_whenSnapshotReportsOverCapacity() {
-        // Snapshot reports 7 healthy ON_DUTY but desired core size is 5
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            7,
-                                            5),
-                               1L);
+    void reconcile_terminatesSurplus_whenSnapshotReportsOverCapacity() throws InterruptedException {
+        // 5 ON_DUTY occupants bound to slots 0-4, but coreCount shrinks to 3 → slots 3-4 removed.
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 3);
         ctm.activate();
-        // Topology change triggers reconcile; snapshot surplus drives termination.
-        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        awaitTerminate(1);
         assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
     }
 
     @Test
     void setDesiredSize_writesClusterConfigValueAtom_withIncrementedVersion() {
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
         ctm.activate();
-        var before = configStore.currentVersion();
+        var before = clusterStore.currentVersion();
         var result = ctm.setDesiredSize(7).await();
         assertThat(result.isSuccess()).isTrue();
-        var after = configStore.current().unwrap();
+        var after = clusterStore.current().unwrap();
         assertThat(after.coreCount()).isEqualTo(7);
         assertThat(after.configVersion()).isEqualTo(before + 1);
-        assertThat(configStore.applyCount.get()).isEqualTo(1);
     }
 
     @Test
     void setDesiredSize_belowQuorum_rejectedWithoutAtomWrite() {
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
         ctm.activate();
+        var before = clusterStore.currentVersion();
         var result = ctm.setDesiredSize(2).await();
         assertThat(result.isFailure()).isTrue();
-        assertThat(configStore.applyCount.get()).isZero();
+        assertThat(clusterStore.currentVersion()).isEqualTo(before);
+    }
+
+    /// Option B safety invariant: surplus slots whose occupants are MANUAL-source are NEVER
+    /// auto-terminated — CTM must not kill an operator-seeded node on scale-down.
+    @Test
+    void reconcile_terminatesOnlyCtmProvisionedSurplus_whenSurplusIsManual() throws InterruptedException {
+        // coreCount 3 → slots 3-4 surplus, but their occupants (PEER_C, PEER_D) are MANUAL.
+        publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(), 3);
+        ctm.activate();
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        Thread.sleep(100L);
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("MANUAL-source surplus occupants are NOT auto-terminated")
+                .isZero();
     }
 
     @Test
-    void reconcile_terminatesOnlyCtmProvisionedSurplus_whenSurplusIsManual() {
-        // 7 healthy members but only SELF is CTM-provisioned; the rest are MANUAL.
-        // SELF is excluded (self cannot be terminated), so no eligible candidates remain.
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            7,
-                                            5,
-                                            Set.of(SELF)),
-                               1L);
+    void reconcile_terminatesCtmProvisionedSurplus_whenCandidatesAreCtm() throws InterruptedException {
+        // coreCount 3 → slots 3-4 surplus; their occupants (PEER_C, PEER_D) are CTM-provisioned.
+        publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(PEER_C, PEER_D), 3);
         ctm.activate();
-        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        assertThat(lifecycleManager.terminateCount.get()).isZero();
-    }
-
-    @Test
-    void reconcile_terminatesCtmProvisionedSurplus_whenCandidatesAreCtm() {
-        // 7 healthy members; PEER_A and PEER_B are CTM-provisioned candidates.
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            7,
-                                            5,
-                                            Set.of(PEER_A, PEER_B)),
-                               1L);
-        ctm.activate();
-        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        awaitTerminate(1);
         assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
-        assertThat(lifecycleManager.terminatedNodeIds()).isSubsetOf(Set.of(PEER_A, PEER_B));
+        assertThat(lifecycleManager.terminatedNodeIds()).isSubsetOf(Set.of(PEER_C, PEER_D));
     }
 
+    /// Option B safety invariant: an empty CTM-provisioned set (legacy / UNKNOWN projection) means
+    /// no surplus occupant is reapable — selection refuses to terminate anything (conservative).
     @Test
-    void reconcile_doesNotTerminate_whenAllCandidatesUnknownProvisioningSource() {
-        // Empty CTM-provisioned set models an UNKNOWN / legacy projection —
-        // selection must refuse to terminate anything (conservative).
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            7,
-                                            5,
-                                            Set.of()),
-                               1L);
+    void reconcile_doesNotTerminate_whenAllCandidatesUnknownProvisioningSource() throws InterruptedException {
+        publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(), 3);
         ctm.activate();
-        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        Thread.sleep(100L);
         assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
+    /// §5.4 highest-index removal: scale-down 5→4 removes slot 4. Its occupant is the youngest
+    /// bound core (highest seniority epoch → highest index), reaped because CTM-provisioned.
     @Test
-    void reconcile_prefersEmptyNodesForTermination_whenSnapshotReportsNodesWithoutSlices() {
-        // PEER_A and PEER_B both CTM-provisioned; only PEER_B has no slices per snapshot.
-        // The comparator prefers empty nodes, so PEER_B must be terminated ahead of PEER_A
-        // when surplus == 1.
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            6,
-                                            5,
-                                            Set.of(PEER_A, PEER_B),
-                                            Set.of(PEER_B)),
-                               1L);
+    void reconcile_reapsHighestIndexSlot_onScaleDownByOne() throws InterruptedException {
+        publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(PEER_C, PEER_D), 4);
         ctm.activate();
-        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+        awaitTerminate(1);
         assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
-        assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_B);
+        // Slot 4 holds the youngest occupant (PEER_D, highest epoch) — it is reaped.
+        assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
     }
 
     @Test
-    void reconcile_emptyNodeOutsideCtmProvisionedSet_isNotTerminated() {
-        // PEER_A reported as empty by snapshot but NOT CTM-provisioned — hard filter excludes it.
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            6,
-                                            5,
-                                            Set.of(),
-                                            Set.of(PEER_A)),
-                               1L);
+    void reconcile_observesDeficit_onSubsequentSnapshotTrigger() throws InterruptedException {
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
         ctm.activate();
-        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        assertThat(lifecycleManager.terminateCount.get()).isZero();
-    }
-
-    @Test
-    void reconcile_redispatches_whenTargetChangesMidReconciling() {
-        // Regression for Bug W: scale-up 5→7 places CTM in Reconciling(target=7, current=5).
-        // Before the new target (7) is reached, operator scales back down to 5. The snapshot's
-        // desiredCoreSize becomes 5 and actual membership reaches 7 (both provisioned nodes joined).
-        // Without the stale-target guard, handleSurplus short-circuits on `instanceof Reconciling`
-        // and the cluster stays stuck for minutes. With the fix, reconcileActive detects the target
-        // change, resets to Converged, and handleSurplus then terminates the surplus.
-        //
-        // Step 1: activate in a converged state (desired=5, actual=5) — bypasses Forming.
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5,
-                                            Set.of(PEER_A, PEER_B)),
-                               1L);
-        ctm.activate();
-        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
-
-        // Step 2: operator scales up to 7 — deficit triggers provisioning and enters Reconciling(target=7).
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            7,
-                                            Set.of(PEER_A, PEER_B)),
-                               2L);
-        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Reconciling.class);
-        var reconciling = (NodeReconcilerState.Reconciling) ctm.reconcilerState();
-        assertThat(reconciling.targetSize()).isEqualTo(7);
+        ctm.onNodeReady(PEER_A);
+        Thread.sleep(100L);
+        assertThat(lifecycleManager.provisionCount.get()).isZero();
+        // The reducer STOPs a dropped core; CTM then frees + refills its slot.
+        clusterStore.installStopped(PEER_C);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_D), 5);
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
+        awaitProvision(1);
         assertThat(lifecycleManager.provisionCount.get()).isGreaterThanOrEqualTo(1);
-
-        // Step 3: operator scales back down to 5 while the previous scale-up is still in-flight.
-        // Both provisioned nodes joined (snapshot actual=7) with desired=5.
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            7,
-                                            5,
-                                            Set.of(PEER_A, PEER_B)),
-                               3L);
-
-        // Step 4: next reconcile trigger (topology event, safety-net poll, or onNodeReady).
-        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(PEER_B, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-
-        // The stale-target guard transitions Reconciling(target=7) → Converged and re-dispatches
-        // handleSurplus, which terminates the CTM-provisioned surplus (PEER_A and/or PEER_B).
-        assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
-        assertThat(lifecycleManager.terminatedNodeIds()).isSubsetOf(Set.of(PEER_A, PEER_B));
     }
 
-    @Test
-    void reconcile_observesNewSnapshotTerm_onSubsequentTrigger() {
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            5,
-                                            5),
-                               1L);
-        ctm.activate();
-        assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
+    private void publishOnDuty(Set<NodeId> onDuty, int coreCount) {
+        publishOnDutyWithSource(onDuty, onDuty, coreCount);
+    }
 
-        // Snapshot advances to a new term reporting deficit
-        snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                            Set.of(SELF, PEER_A, PEER_B),
-                                            3,
-                                            5),
-                               2L);
-        // External trigger (topology event in production) drives reconcile
-        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeRemoved(PEER_C, List.of()));
-        assertThat(lifecycleManager.provisionCount.get()).isGreaterThanOrEqualTo(1);
+    private void publishOnDutyWithSource(Set<NodeId> onDuty, Set<NodeId> ctmProvisioned, int coreCount) {
+        clusterStore.seed(coreCount);
+        var all = Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        snapshotSource.publish(new StubView(all, onDuty, onDuty.size(), coreCount, ctmProvisioned, Set.of()),
+                               snapshotSource.term.get() + 1L);
+        var epoch = 0L;
+        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {
+            if (onDuty.contains(id)) {clusterStore.installOnDuty(id, epoch++);}
+        }
+    }
+
+    private void awaitProvision(int atLeast) throws InterruptedException {
+        var deadline = System.currentTimeMillis() + 2000L;
+
+        while (lifecycleManager.provisionCount.get() < atLeast && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+    }
+
+    private void awaitTerminate(int atLeast) throws InterruptedException {
+        var deadline = System.currentTimeMillis() + 2000L;
+
+        while (lifecycleManager.terminateCount.get() < atLeast && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
     }
 
     private record StubView(Set<NodeId> coreMemberIds,
@@ -337,23 +265,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                             int healthyOnDutyCount,
                             int desiredCoreSize,
                             Set<NodeId> ctmProvisionedNodeIds,
-                            Set<NodeId> nodesWithoutSlices) implements MembershipView {
-        StubView(Set<NodeId> coreMemberIds,
-                 Set<NodeId> onDutyMemberIds,
-                 int healthyOnDutyCount,
-                 int desiredCoreSize,
-                 Set<NodeId> ctmProvisionedNodeIds) {
-            this(coreMemberIds, onDutyMemberIds, healthyOnDutyCount, desiredCoreSize, ctmProvisionedNodeIds, Set.of());
-        }
-
-        static StubView stubView(Set<NodeId> coreMemberIds,
-                                 Set<NodeId> onDutyMemberIds,
-                                 int healthyOnDutyCount,
-                                 int desiredCoreSize) {
-            // Default: all core members are CTM-provisioned (preserves existing test semantics).
-            return new StubView(coreMemberIds, onDutyMemberIds, healthyOnDutyCount, desiredCoreSize, coreMemberIds, Set.of());
-        }
-    }
+                            Set<NodeId> nodesWithoutSlices) implements MembershipView {}
 
     private static final class StubSnapshotSource implements GenerationSnapshotSource {
         private final AtomicReference<Option<MembershipView>> view = new AtomicReference<>(Option.none());
@@ -373,22 +285,26 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
         }
     }
 
-    /// Simulates the kv-store `ClusterConfigValue` atom plus the `cluster.apply` path
-    /// that CTM uses for `setDesiredSize` write-through.
-    private static final class StubClusterConfigStore {
-        final AtomicInteger applyCount = new AtomicInteger();
+    private static final class RecordingClusterStore {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
+        private final ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<NodeId, NodeLifecycleValue> lifecycleKv = new ConcurrentHashMap<>();
 
         void seed(int coreCount) {
-            current.set(Option.some(new ClusterConfigValue("",
-                                                           "",
-                                                           "1.0.0",
-                                                           coreCount,
-                                                           3,
-                                                           9,
-                                                           "test",
-                                                           1L,
+            current.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreCount, 3, 9, "test",
+                                                           current.get().map(ClusterConfigValue::configVersion).or(0L) + 1L,
                                                            System.currentTimeMillis())));
+        }
+
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                                          "host-" + nodeId.id(),
+                                                                          5000,
+                                                                          Epoch.epoch(0L, epoch)));
+        }
+
+        void installStopped(NodeId nodeId) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED, "host-" + nodeId.id(), 5000));
         }
 
         Option<ClusterConfigValue> current() {
@@ -399,23 +315,46 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
             return current.get().map(ClusterConfigValue::configVersion).or(0L);
         }
 
+        Option<NodeLifecycleValue> lifecycle(NodeId nodeId) {
+            return Option.option(lifecycleKv.get(nodeId));
+        }
+
+        Map<ProvisioningSlotKey, ProvisioningSlotValue> slots() {
+            return new LinkedHashMap<>(slotKv);
+        }
+
         Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
-            applyCount.incrementAndGet();
-            for (var command : commands) {
-                if (command instanceof KVCommand.Put<?, ?> put
-                    && put.key() instanceof AetherKey.ClusterConfigKey
-                    && put.value() instanceof ClusterConfigValue configValue) {
-                    current.set(Option.some(configValue));
-                }
-            }
+            for (var command : commands) {applyOne(command);}
             return Promise.success(List.of());
+        }
+
+        private void applyOne(KVCommand<AetherKey> command) {
+            switch (command) {
+                case KVCommand.Put<AetherKey, ?> put -> applyPut(put);
+                case KVCommand.Remove<AetherKey> remove -> applyRemove(remove);
+                default -> {}
+            }
+        }
+
+        private void applyPut(KVCommand.Put<AetherKey, ?> put) {
+            if (put.key() instanceof ProvisioningSlotKey psk && put.value() instanceof ProvisioningSlotValue psv) {
+                slotKv.put(psk, psv);
+            } else if (put.key() instanceof AetherKey.ClusterConfigKey && put.value() instanceof ClusterConfigValue cv) {
+                current.set(Option.some(cv));
+            } else if (put.key() instanceof NodeLifecycleKey nlk && put.value() instanceof NodeLifecycleValue nlv) {
+                lifecycleKv.put(nlk.nodeId(), nlv);
+            }
+        }
+
+        private void applyRemove(KVCommand.Remove<AetherKey> remove) {
+            if (remove.key() instanceof ProvisioningSlotKey psk) {slotKv.remove(psk);}
         }
     }
 
     private static final class RecordingLifecycleManager implements NodeLifecycleManager {
         final AtomicInteger provisionCount = new AtomicInteger();
         final AtomicInteger terminateCount = new AtomicInteger();
-        private final java.util.concurrent.CopyOnWriteArraySet<NodeId> terminatedIds = new java.util.concurrent.CopyOnWriteArraySet<>();
+        private final CopyOnWriteArraySet<NodeId> terminatedIds = new CopyOnWriteArraySet<>();
 
         Set<NodeId> terminatedNodeIds() {
             return Set.copyOf(terminatedIds);

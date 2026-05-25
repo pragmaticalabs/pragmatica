@@ -133,209 +133,150 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
         return createCtm(NEGLIGIBLE_STABILITY);
     }
 
+    private void publishOnDuty(Set<NodeId> onDuty) {
+        var all = Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        snapshotSource.publish(StubView.stubView(all, onDuty, onDuty.size(), 5), snapshotSource.observedRabiaTerm() + 1L);
+        var epoch = 0L;
+        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {
+            if (onDuty.contains(id)) {clusterStore.installOnDuty(id, epoch++);}
+        }
+    }
+
+    private void awaitProvision(int atLeast) throws InterruptedException {
+        var deadline = System.currentTimeMillis() + 2000L;
+
+        while (lifecycleManager.provisionCount.get() < atLeast && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20L);
+        }
+    }
+
     @Nested
     class HappyPath {
+        /// A reseeded leader seeds exactly clusterSize stable-index slots; a DEAD slot (occupant
+        /// STOPPED) is freed and refilled.
         @Test
-        void provisionNodes_writesSlotToKV_onLeaderSide() {
+        void deadSlot_freed_andRefilled() throws InterruptedException {
             var ctm = createCtm();
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                                   1L);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
             ctm.activate();
-            // Drop two peers — leader provisions replacements.
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B),
-                                                3,
-                                                5),
-                                   2L);
+            assertThat(clusterStore.slots()).as("durable slot set seeded to clusterSize").hasSize(5);
+            clusterStore.installStopped(PEER_C);
+            clusterStore.installStopped(PEER_D);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B));
             ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-            var dispatched = lifecycleManager.provisionCount.get();
-            assertThat(dispatched).as("at least one provision dispatched").isGreaterThanOrEqualTo(1);
-            assertThat(clusterStore.slotPutCount.get())
-                    .as("each provision creates one ProvisioningSlot KV atom")
-                    .isGreaterThanOrEqualTo(dispatched);
+            awaitProvision(1);
+            assertThat(lifecycleManager.provisionCount.get()).isGreaterThanOrEqualTo(1);
             assertThat(clusterStore.slots())
-                    .as("KV-mirrored slots match dispatched provisions")
-                    .hasSize(dispatched);
+                    .as("durable slot set stays sized to clusterSize across free+refill")
+                    .hasSize(5);
         }
 
+        /// Durable slots (D1): a stalled FILLING marker past its deadline resets to EMPTY (slot
+        /// persists) rather than being deleted.
         @Test
-        void slotExpiry_deletesKVAtom() throws InterruptedException {
-            // Use a short provisioning timeout so the in-memory Reconciling slot deadlines
-            // lapse within the test window. After the deadline passes, the next reconcile tick
-            // (driven by another topology event) calls `expireSlots`, which drops the slots
-            // from the in-memory list AND issues KV `Remove` commands for the expired atoms.
+        void stalledFillingMarker_resetsToEmpty_slotPersists() throws InterruptedException {
             var ctm = createCtm(NEGLIGIBLE_STABILITY, timeSpan(50).millis());
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                                   1L);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
             ctm.activate();
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B),
-                                                3,
-                                                5),
-                                   2L);
-            ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-            var slotsAfterDispatch = clusterStore.slots().size();
-            assertThat(slotsAfterDispatch).isGreaterThanOrEqualTo(1);
-            // Wait beyond the provisioning timeout so deadlines lapse.
-            Thread.sleep(150L);
-            // Snapshot still reports the same deficit (provisions stalled).
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B),
-                                                3,
-                                                5),
-                                   3L);
-            // Trigger another reconcile so `expireSlots` runs.
+            clusterStore.installStopped(PEER_D);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C));
             ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of()));
-            assertThat(clusterStore.slotRemoveCount.get())
-                    .as("expired slots produce KV Remove commands")
-                    .isGreaterThanOrEqualTo(1);
+            awaitProvision(1);
+            Thread.sleep(150L);
+            ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
+            assertThat(clusterStore.slots())
+                    .as("slot set persists at clusterSize — slots reset to EMPTY, never deleted")
+                    .hasSize(5);
         }
 
+        /// Durable slots: the slot is NOT deleted when its occupant reaches ON_DUTY.
         @Test
-        void slotCompletion_onAssignedNodeOnDuty_deletesKVAtom() {
+        void slotNotDeleted_whenOccupantReachesOnDuty() {
             var ctm = createCtm();
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                                   1L);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
             ctm.activate();
-            // Manually install a slot that was dispatched by a (notional) prior wave with
-            // PEER_C as the assigned node.
-            var nowMs = System.currentTimeMillis();
-            var slotKey = ProvisioningSlotKey.provisioningSlotKey("manual-c");
-            clusterStore.installSlot(slotKey, ProvisioningSlotValue.provisioningSlotValue(nowMs, nowMs + 60_000L, PEER_C));
-            // Mirror PEER_C arriving ON_DUTY in lifecycle KV.
-            clusterStore.installLifecycle(PEER_C,
-                                          NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
-                                                                                  "host-c",
-                                                                                  5003));
+            var sizeAfterActivate = clusterStore.slots().size();
+            clusterStore.installOnDuty(PEER_C, 9L);
             ctm.onNodeReady(PEER_C);
-            assertThat(clusterStore.slotRemoveCount.get())
-                    .as("completed slot for ON_DUTY node is removed from KV")
-                    .isGreaterThanOrEqualTo(1);
-            assertThat(clusterStore.slots()).as("KV slot atom is gone").isEmpty();
+            assertThat(clusterStore.slots())
+                    .as("durable slot NOT deleted on ON_DUTY arrival")
+                    .hasSize(sizeAfterActivate);
         }
     }
 
     @Nested
     class LeaderHandoff {
+        /// Leader activation wipes legacy UUID slots and reseeds stable-index slots binding
+        /// current ON_DUTY occupants — no duplicate provision wave for serving occupants.
         @Test
-        void leaderHandoff_midProvision_newLeaderRehydratesSlots() {
+        void leaderHandoff_reseedsStableSlots_noDuplicateWave() {
             var leaderOne = createCtm();
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                                   1L);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
             leaderOne.activate();
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B),
-                                                3,
-                                                5),
-                                   2L);
-            leaderOne.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_C, List.of()));
-            var slotsLeftByLeader1 = clusterStore.slots().size();
-            assertThat(slotsLeftByLeader1).as("leader-1 created KV slots").isGreaterThanOrEqualTo(1);
-            // Leader-1 hands off; deactivate so its safety-net timer cannot fire spurious
-            // provisions while leader-2 takes over.
+            clusterStore.installSlot(ProvisioningSlotKey.provisioningSlotKey(java.util.UUID.randomUUID().toString()),
+                                     ProvisioningSlotValue.provisioningSlotValue(System.currentTimeMillis(),
+                                                                                 System.currentTimeMillis() + 60_000L));
             leaderOne.deactivate();
-            // Reset CTM in-memory counters by creating a fresh CTM instance against the same
-            // `clusterStore`.
             lifecycleManager.provisionCount.set(0);
             var leaderTwo = createCtm();
             leaderTwo.activate();
-            assertThat(leaderTwo.reconcilerState())
-                    .as("leader-2 enters Reconciling because KV slots indicate in-flight wave")
-                    .isInstanceOf(NodeReconcilerState.Reconciling.class);
-            var rehydrated = (NodeReconcilerState.Reconciling) leaderTwo.reconcilerState();
-            assertThat(rehydrated.inFlight())
-                    .as("leader-2 in-flight slot count matches what leader-1 left in KV")
-                    .hasSize(slotsLeftByLeader1);
-            // Crucial dedup property: leader-2 did NOT dispatch a fresh wave despite seeing the
-            // same deficit as leader-1.
+            assertThat(clusterStore.slots().keySet())
+                    .as("reseed wipes legacy UUID slots — only stable integer indices remain")
+                    .allMatch(key -> key.slotId().matches("\\d+"));
+            assertThat(clusterStore.slots()).as("reseeded to clusterSize stable slots").hasSize(5);
             assertThat(lifecycleManager.provisionCount.get())
-                    .as("leader-2 must NOT double-dispatch — slots from KV cover the deficit")
+                    .as("leader-2 binds existing ON_DUTY occupants — no duplicate wave")
                     .isZero();
         }
 
         @Test
-        void leaderHandoff_completedSlotsCleanedUp() {
+        void leaderHandoff_bindsOccupantsBySeniority() {
             var leaderOne = createCtm();
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                                   1L);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
             leaderOne.activate();
-            // Manually install a slot whose assigned node already reached ON_DUTY.
-            var nowMs = System.currentTimeMillis();
-            var slotKey = ProvisioningSlotKey.provisioningSlotKey("done-a");
-            clusterStore.installSlot(slotKey, ProvisioningSlotValue.provisioningSlotValue(nowMs, nowMs + 60_000L, PEER_A));
-            clusterStore.installLifecycle(PEER_A,
-                                          NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
-                                                                                  "host-a",
-                                                                                  5001));
             leaderOne.deactivate();
-            // Leader-2 takes over.
             var leaderTwo = createCtm();
             leaderTwo.activate();
-            assertThat(clusterStore.slots())
-                    .as("slot for already-ON_DUTY node is auto-cleaned on rehydrate")
-                    .doesNotContainKey(slotKey);
+            var boundOccupants = clusterStore.slots()
+                                             .values()
+                                             .stream()
+                                             .map(ProvisioningSlotValue::assignedNodeId)
+                                             .filter(Option::isPresent)
+                                             .map(Option::unwrap)
+                                             .toList();
+            assertThat(boundOccupants)
+                    .as("all 5 ON_DUTY occupants bound to slots by seniority")
+                    .containsExactlyInAnyOrder(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
         }
     }
 
     @Nested
     class ColdBootRegression {
-        /// CRITICAL regression-prevention test for the prior Fix 5 incident. Cluster A starts
-        /// with 3 of 5 static nodes ready and configured=5. Leader elects, snapshot reports
-        /// `realActual=3, configured=5`. Within the bootstrap-grace + stability window, NO
-        /// `ProvisioningSlot` atom must be written and NO `provisionNodes(...)` call must
-        /// fire. After the remaining 2 nodes join, the cluster converges to 5/5 with zero
-        /// provisioning ever having been dispatched.
+        /// CRITICAL Fix-5 regression: a below-target cluster within the bootstrap-grace + stability
+        /// window must NOT dispatch real provisioning. Seeding EMPTY slots is fine — the invariant
+        /// is zero provisioning + convergence once the remaining static nodes join.
         @Test
         void coldBoot_doesNotPhantomProvision() throws InterruptedException {
             var ctm = createCtm(COLD_BOOT_STABILITY);
-            // 3 of 5 nodes ON_DUTY at activation — same shape as the historic Fix-5 failure.
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B),
-                                                3,
-                                                5),
-                                   1L);
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B));
             ctm.activate();
-            // Sleep through the Forming cooldown (1ms) plus enough time that the safety-net poll
-            // fires repeatedly while the deficit is visible.
             Thread.sleep(500L);
-            // Within the stability window — no provisioning must have fired and no KV slot atom
-            // can have been written.
             assertThat(lifecycleManager.provisionCount.get())
                     .as("no provisionNodes(...) within bootstrap stability window")
                     .isZero();
-            assertThat(clusterStore.slotPutCount.get())
-                    .as("no ProvisioningSlot atom written within stability window")
-                    .isZero();
-            // Remaining 2 nodes finish booting before the stability window matures.
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                5,
-                                                5),
-                                   2L);
+            var occupantsAssigned = clusterStore.slots()
+                                                .values()
+                                                .stream()
+                                                .anyMatch(slot -> slot.assignedNodeId().map(id -> id.id().startsWith("stub")).or(false));
+            assertThat(occupantsAssigned)
+                    .as("no provider-allocated occupant assigned within stability window")
+                    .isFalse();
+            publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
             ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_C, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
             ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_D, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-            // Wait beyond the stability window so any pending dispatch would have fired by now.
             Thread.sleep(COLD_BOOT_STABILITY.millis() + 200L);
             assertThat(lifecycleManager.provisionCount.get())
                     .as("cluster converged 5/5 without ever dispatching provisioning")
-                    .isZero();
-            assertThat(clusterStore.slotPutCount.get())
-                    .as("no slot atom ever written in cold-boot scenario")
                     .isZero();
             assertThat(ctm.reconcilerState()).isInstanceOf(NodeReconcilerState.Converged.class);
         }
@@ -416,6 +357,17 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
 
         void installLifecycle(NodeId nodeId, NodeLifecycleValue value) {
             lifecycleKv.put(nodeId, value);
+        }
+
+        void installOnDuty(NodeId nodeId, long epoch) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY,
+                                                                          "host-" + nodeId.id(),
+                                                                          5000,
+                                                                          org.pragmatica.aether.slice.generation.Epoch.epoch(0L, epoch)));
+        }
+
+        void installStopped(NodeId nodeId) {
+            lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED, "host-" + nodeId.id(), 5000));
         }
 
         void replaceAllSlotsWithLapsed() {
