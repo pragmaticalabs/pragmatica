@@ -189,10 +189,13 @@ class ClusterMembershipReducerTest {
             assertNop(reducer.apply(state, forceDrain(T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
-        @Test void provisioning_forceDecommissionForced_writesDecommissionedAndClearsSlot() {
+        @Test void provisioning_forceDecommissionForced_writesDecommissioned_slotPersists() {
             var outcome = reducer.apply(state, forceDecommissionForced(T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "operator-forced");
-            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            // Durable slots (D1): the reducer writes only the STOPPED lifecycle atom; CTM owns
+            // slot occupancy (scale-down via removeSurplusSlots, failure-clearing via freeDeadSlots).
+            assertThat(outcome.writes()).noneMatch(c -> c instanceof KVCommand.Remove<?> r
+                                                       && r.key() instanceof ProvisioningSlotKey);
         }
 
         @Test void provisioning_drainOutcome_isErr() {
@@ -211,7 +214,10 @@ class ClusterMembershipReducerTest {
         @Test void joining_swimHealthy_promotesToOnDuty_leaderInitiated() {
             var outcome = reducer.apply(state, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertOnDuty(outcome, T1);
-            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            // Durable slots (D1): the slot is NOT removed on ON_DUTY — it persists and CTM
+            // reclassifies it HEALTHY. The reducer writes only the lifecycle + join-deadline-clear.
+            assertThat(outcome.writes()).noneMatch(c -> c instanceof KVCommand.Remove<?> r
+                                                       && r.key() instanceof ProvisioningSlotKey);
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
             assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
         }
@@ -221,7 +227,8 @@ class ClusterMembershipReducerTest {
             var outcome = reducer.apply(slotless, new SwimHealthy(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertOnDuty(outcome, T1);
             // Lifecycle Put (ON_DUTY) + JoinDeadlineKey Remove (Phase 1 step J co-write).
-            // No slot to remove (slotless Joining) — so exactly 2 writes.
+            // Durable slots (D1): the slot is never removed on ON_DUTY (slotted or slotless),
+            // so exactly 2 writes either way.
             assertThat(outcome.writes()).hasSize(2);
             assertThat(outcome.writes()).noneMatch(c -> c instanceof KVCommand.Remove<?> r
                                                        && r.key() instanceof ProvisioningSlotKey);
@@ -250,7 +257,10 @@ class ClusterMembershipReducerTest {
         @Test void joining_forceDecommissionGraceful_writesDecommissioned() {
             var outcome = reducer.apply(state, forceDecommissionGraceful(T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "graceful-stop");
-            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            // Durable slots (D1): JOINING-stop does NOT delete the slot atom; CTM clears the
+            // occupant in place (DEAD → freeSlot). Reducer writes only the STOPPED lifecycle.
+            assertThat(outcome.writes()).noneMatch(c -> c instanceof KVCommand.Remove<?> r
+                                                       && r.key() instanceof ProvisioningSlotKey);
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
         }
 
@@ -266,7 +276,10 @@ class ClusterMembershipReducerTest {
         @Test void joining_joinDeadlineExpired_writesDecommissioned_joinTimeout() {
             var outcome = reducer.apply(state, new JoinDeadlineExpired(PEER, T1), ReachabilityGate.ALWAYS_CONFIRMED);
             assertDecommissioned(outcome, T1, "join-timeout");
-            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            // Durable slots (D1): JOINING-stop does NOT delete the slot atom; CTM clears the
+            // occupant in place. Reducer writes only the STOPPED lifecycle + join-deadline-clear.
+            assertThat(outcome.writes()).noneMatch(c -> c instanceof KVCommand.Remove<?> r
+                                                       && r.key() instanceof ProvisioningSlotKey);
             assertThat(outcome.effects()).contains(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE));
         }
     }
@@ -620,7 +633,9 @@ class ClusterMembershipReducerTest {
 
             assertThat(outcome.newState()).isEqualTo(MembershipFsmState.onDuty(PEER, ms(T1)));
             assertThat(outcome.writes()).contains(putLifecycle(NodeLifecycleState.ON_DUTY, T1));
-            assertThat(outcome.writes()).contains(removeSlot(SLOT_ID));
+            // Durable slots (D1): the slot persists on ON_DUTY (CTM reclassifies it HEALTHY).
+            assertThat(outcome.writes()).noneMatch(c -> c instanceof KVCommand.Remove<?> r
+                                                       && r.key() instanceof ProvisioningSlotKey);
             assertEmitted(outcome, MembershipDomainEvent.NODE_ON_DUTY);
         }
 
@@ -699,15 +714,15 @@ class ClusterMembershipReducerTest {
         }
 
         /// Mirrors `ClusterMembershipReducer.joiningToStopped` output: lifecycle write +
-        /// join-deadline remove (Phase 1 step J co-write) + slot removal + cancel-join-deadline
-        /// effect + NODE_FAILED domain event with the transport-failure reason.
-        /// `swimDriven=false` (transport-failure is NOT a SWIM reason).
+        /// join-deadline remove (Phase 1 step J co-write) + cancel-join-deadline effect +
+        /// NODE_FAILED domain event with the transport-failure reason. Durable slots (D1):
+        /// NO slot removal — CTM clears the dead occupant in place. `swimDriven=false`
+        /// (transport-failure is NOT a SWIM reason).
         private static Outcome joiningToDecommissionedTransport(HlcTimestamp at) {
             var newState = MembershipFsmState.stopped(PEER, ms(at), StopReason.FORCED, false);
             return Outcome.outcome(newState,
                                    List.of(putLifecycle(NodeLifecycleState.STOPPED, at, Option.some(StopReason.FORCED)),
-                                           removeJoinDeadline(),
-                                           removeSlot(SLOT_ID)),
+                                           removeJoinDeadline()),
                                    List.of(new CancelTimer(PEER, TimerKind.JOIN_DEADLINE),
                                            new EmitDomainEvent(PEER,
                                                                MembershipDomainEvent.NODE_FAILED,
@@ -826,10 +841,6 @@ class ClusterMembershipReducerTest {
                                                           at)
                                       .withStopReason(stopReason);
         return new KVCommand.Put<>(key, value);
-    }
-
-    private static KVCommand<AetherKey> removeSlot(String slotId) {
-        return new KVCommand.Remove<>(ProvisioningSlotKey.provisioningSlotKey(slotId));
     }
 
     /// Mirrors `ClusterMembershipReducer.putJoinDeadline` — deadlineMs = at-millis +

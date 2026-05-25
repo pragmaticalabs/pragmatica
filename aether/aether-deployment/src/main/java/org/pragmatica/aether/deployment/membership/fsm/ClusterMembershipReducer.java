@@ -35,7 +35,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DrainDeadlineKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.JoinDeadlineKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DrainDeadlineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.JoinDeadlineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
@@ -400,7 +399,9 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         var writes = new ArrayList<KVCommand<AetherKey>>();
         writes.add(putLifecycle(state.peer(), NodeLifecycleState.ON_DUTY, at, Option.none()));
         writes.add(removeJoinDeadline(state.peer()));
-        state.slotId().onPresent(slotId -> writes.add(removeSlot(slotId)));
+        // Durable slots (D1, spec §3.1): the slot is NOT deleted when its occupant reaches
+        // ON_DUTY — it persists and CTM `classifyOccupied` reclassifies it HEALTHY. The reducer
+        // only writes the lifecycle atom; CTM is the sole owner of slot occupancy.
         var effects = new ArrayList<MembershipEffect>();
         effects.add(new CancelTimer(state.peer(), TimerKind.JOIN_DEADLINE));
         effects.add(emit(state.peer(), MembershipDomainEvent.NODE_ON_DUTY, REASON_NONE));
@@ -414,7 +415,10 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         var writes = new ArrayList<KVCommand<AetherKey>>();
         writes.add(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(stopReason)));
         writes.add(removeJoinDeadline(state.peer()));
-        state.slotId().onPresent(slotId -> writes.add(removeSlot(slotId)));
+        // Durable slots (D1, spec §3.1): a JOINING node stopping does NOT delete the slot atom.
+        // The slot persists with its assignedNodeId; CTM `classifyOccupancy` → DEAD → `freeSlot`
+        // clears the occupant IN PLACE (records supersededNodeId) and refills. The reducer only
+        // writes the lifecycle (STOPPED) atom.
         var effects = new ArrayList<MembershipEffect>();
         effects.add(new CancelTimer(state.peer(), TimerKind.JOIN_DEADLINE));
         effects.add(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
@@ -521,12 +525,12 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
                                effects);
     }
 
-    /// Command-driven decommission from `Provisioning`. Clears the reserved slot atomically
-    /// with the lifecycle write so CTM accounting remains accurate.
+    /// Command-driven decommission from `Provisioning`. Writes only the STOPPED lifecycle atom.
+    /// Durable slots (D1, spec §3.1): CTM owns slot occupancy — it handles scale-down via
+    /// `removeSurplusSlots` (removes slots with index >= configured) and failure-clearing via
+    /// `freeDeadSlots`. The reducer must NOT delete the slot atom.
     private Outcome provisioningToStopped(Provisioning state, HlcTimestamp at, String reason, StopReason stopReason) {
-        var writes = new ArrayList<KVCommand<AetherKey>>();
-        writes.add(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(stopReason)));
-        writes.add(removeSlot(state.slotId()));
+        var writes = singleWrite(putLifecycle(state.peer(), NodeLifecycleState.STOPPED, at, Option.some(stopReason)));
         var effects = List.<MembershipEffect> of(emit(state.peer(), MembershipDomainEvent.NODE_FAILED, reason));
 
         return Outcome.outcome(MembershipFsmState.stopped(state.peer(), toMillis(at), stopReason, false),
@@ -578,10 +582,6 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
         var value = NodeLifecycleValue.nodeLifecycleValue(newState, toMillis(at), "", 0, Epoch.ZERO, at).withStopReason(stopReason);
 
         return new KVCommand.Put<>(key, value);
-    }
-
-    private static KVCommand<AetherKey> removeSlot(String slotId) {
-        return new KVCommand.Remove<>(ProvisioningSlotKey.provisioningSlotKey(slotId));
     }
 
     /// Phase 1 step J — write the JOIN_DEADLINE observability atom. `deadlineMs` is wall-clock
