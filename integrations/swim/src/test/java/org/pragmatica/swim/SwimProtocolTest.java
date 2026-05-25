@@ -25,10 +25,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
+import org.pragmatica.swim.SwimMessage.Announce;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
 import org.pragmatica.swim.SwimMessage.PingReq;
@@ -185,6 +188,83 @@ class SwimProtocolTest {
             assertThat(forwarded.message()).isInstanceOf(Ack.class);
             assertThat(((Ack) forwarded.message()).from()).isEqualTo(NODE_B);
             assertThat(((Ack) forwarded.message()).sequence()).isEqualTo(42L); // original sequence restored
+        }
+    }
+
+    /// Resurrection guard (SWIM dead-node-revival fix). A bare ANNOUNCE is gossip, NOT proof of
+    /// reachability. An unknown member learned from a bare ANNOUNCE must NOT be introduced as
+    /// ALIVE/HEALTHY — it enters SUSPECT (probe-on-arrival) and is only promoted to ALIVE by a
+    /// real probe-ack. `JoinAnnounced` still fires so the reachability probe proceeds.
+    @Nested
+    class AnnounceResurrectionGuard {
+        private RecordingTransport transport;
+        private RecordingListener listener;
+        private SwimProtocol protocol;
+        private RecordingObservationSink observations;
+
+        @BeforeEach
+        void setUp() {
+            transport = new RecordingTransport();
+            listener = new RecordingListener();
+            protocol = SwimProtocol.swimProtocol(swimConfig(), transport, listener, SELF_ID, SELF_ADDR)
+                                   .fold(cause -> null, v -> v);
+            observations = new RecordingObservationSink();
+            protocol.addObservationListener(observations);
+        }
+
+        @Test
+        void handleAnnounce_unknownMember_addedAsSuspectNotAlive() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(protocol.members()).containsKey(NODE_A);
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("bare ANNOUNCE must introduce the member as SUSPECT (probe-on-arrival), not ALIVE")
+                .isEqualTo(MemberState.SUSPECT);
+        }
+
+        @Test
+        void handleAnnounce_unknownMember_doesNotSetEverSeenHealthy() {
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(protocol.everSeenHealthyForTest(NODE_A))
+                .as("bare ANNOUNCE is not reachability proof — must NOT mark the peer ever-healthy")
+                .isFalse();
+            assertThat(observations.byType(SwimObservation.HealthyObserved.class))
+                .as("bare ANNOUNCE must NOT emit HealthyObserved")
+                .isEmpty();
+        }
+
+        @Test
+        void handleAnnounce_unknownMember_stillDeliversJoinAnnounced() {
+            // The legitimate reachability probe (clusterNetwork.connect) is driven by
+            // JoinAnnounced — formation must remain unaffected by the resurrection guard.
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+
+            assertThat(observations.byType(SwimObservation.JoinAnnounced.class))
+                .as("JoinAnnounced must still fire so the reachability probe proceeds")
+                .hasSize(1);
+        }
+
+        @Test
+        void handleAnnounce_thenProbeAck_promotesToAlive() {
+            // After the SUSPECT introduction, a real probe-ack from the peer promotes it to
+            // ALIVE/HEALTHY — the reachability-backed path that formation depends on.
+            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
+
+            // Simulate a probe-ack from NODE_A (markAliveIfNeeded path).
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 1L, List.of()));
+
+            assertThat(protocol.members().get(NODE_A).state())
+                .as("a real probe-ack must promote the SUSPECT-on-arrival member to ALIVE")
+                .isEqualTo(MemberState.ALIVE);
+            assertThat(protocol.everSeenHealthyForTest(NODE_A))
+                .as("probe-ack is reachability proof — peer becomes ever-healthy")
+                .isTrue();
+        }
+
+        private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
+            return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress(addr.getHostString(), addr.getPort()).unwrap());
         }
     }
 
@@ -450,6 +530,22 @@ class SwimProtocolTest {
         @Override
         public void onMemberLeft(NodeId nodeId) {
             left.add(nodeId);
+        }
+    }
+
+    static class RecordingObservationSink implements java.util.function.Consumer<SwimObservation> {
+        final CopyOnWriteArrayList<SwimObservation> all = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void accept(SwimObservation observation) {
+            all.add(observation);
+        }
+
+        <T extends SwimObservation> List<T> byType(Class<T> type) {
+            return all.stream()
+                      .filter(type::isInstance)
+                      .map(type::cast)
+                      .toList();
         }
     }
 }

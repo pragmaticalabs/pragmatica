@@ -44,7 +44,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
             switch (event) {
                 case StartRequested _ -> tx.transitionTo(ctx.starting());
-                case PeerJoined pj -> tx.handle(() -> handleStoppedPeerJoined(ctx, pj.member()));
+                case PeerJoined pj -> tx.handle(() -> handleStoppedPeerJoined(pj.member()));
                 case PeerSuspect ps -> tx.handle(() -> ctx.reportHint(ps.member().nodeId(),
                                                                       HealthHint.SUSPECTED));
                 case PeerFaulty pf -> tx.handle(() -> ctx.routeFaulty(pf.member().nodeId(),
@@ -57,9 +57,11 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         }
     }
 
-    private static void handleStoppedPeerJoined(SwimHealthContext ctx, SwimMember member) {
-        LOG.info("SWIM member joined (detector stopped): {}", member.nodeId());
-        ctx.reportHint(member.nodeId(), HealthHint.HEALTHY);
+    private static void handleStoppedPeerJoined(SwimMember member) {
+        // Bare gossip join while the detector is Stopped/Starting carries no reachability
+        // proof. Emit NO HEALTHY hint — let it arrive via `PeerConnected`/probe-ack once the
+        // protocol is Running. Emitting HEALTHY here resurrects unreachable bare-gossip joins.
+        LOG.info("SWIM member joined (detector stopped/starting): {} — no HEALTHY hint until connection", member.nodeId());
     }
 
     record Starting(SwimHealthContext ctx) implements SwimHealthState {
@@ -74,7 +76,7 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                                                                         Option.none()));
                 case StartFailed _ -> tx.transitionTo(ctx.stopped());
                 case StopRequested _ -> tx.transitionTo(ctx.stopped());
-                case PeerJoined pj -> tx.handle(() -> handleStoppedPeerJoined(ctx, pj.member()));
+                case PeerJoined pj -> tx.handle(() -> handleStoppedPeerJoined(pj.member()));
                 case PeerSuspect ps -> tx.handle(() -> ctx.reportHint(ps.member().nodeId(),
                                                                       HealthHint.SUSPECTED));
                 case PeerFaulty pf -> tx.handle(() -> ctx.routeFaulty(pf.member().nodeId(),
@@ -118,9 +120,12 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
         }
 
         private void handlePeerJoined(SwimMember member) {
-            LOG.info("SWIM member joined: {}", member.nodeId());
-            ctx.resetFaultyWindow(ctx.nowMs());
-            ctx.reportHint(member.nodeId(), HealthHint.HEALTHY);
+            // A bare SWIM join (gossip-driven) is NOT proof of reachability. Do NOT assert
+            // HEALTHY and do NOT reset the faulty window here — doing so would resurrect a
+            // dead, unreachable node (and erase accumulated FAULTY evidence) off a stale
+            // Announce. HEALTHY arrives only via `PeerConnected` (real QUIC connection) or a
+            // probe-ack. A STOPPED or FAULTY peer rejoining by gossip must NOT be auto-healed.
+            LOG.info("SWIM member joined (gossip): {} — awaiting connection/probe-ack before HEALTHY", member.nodeId());
         }
 
         private void handlePeerFaulty(SwimMember member, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
@@ -214,9 +219,12 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
             switch (event) {
                 case StopRequested _ -> tx.transitionTo(ctx.stopped(), this::stopProtocolAndTransport);
                 case PeerConnected pc -> recoverOnPeerConnected(pc, tx);
-                case PeerJoined pj -> recoverOnPeerJoined(pj, tx);
                 case LeaderChanged lc -> handleLeaderChanged(lc, tx);
-                case PeerSuspect _, PeerFaulty _, PeerLeft _, ReportHint _ -> tx.ignore();
+                // A bare gossip PeerJoined is NOT proof local connectivity is restored, so it
+                // must NOT recover from LocalDisconnect nor assert HEALTHY (that would resurrect
+                // an unreachable node and wipe FAULTY evidence). Recovery flows only from a real
+                // `PeerConnected` (re-established QUIC connection) or probe-ack.
+                case PeerJoined _, PeerSuspect _, PeerFaulty _, PeerLeft _, ReportHint _ -> tx.ignore();
                 case StartRequested _, ProtocolReady _, StartFailed _ -> tx.ignore();
             }
         }
@@ -229,25 +237,12 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                             () -> applyPeerConnectedRecovery(event));
         }
 
-        private void recoverOnPeerJoined(PeerJoined event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
-            LOG.info("Network recovered from local disconnect via join {}",
-                     event.member().nodeId());
-            tx.transitionTo(new Running(ctx, swim, transport, encryptor, currentLeader),
-                            () -> applyPeerJoinedRecovery(event));
-        }
-
         private void applyPeerConnectedRecovery(PeerConnected event) {
             var peer = event.peer();
             event.info().onPresent(info -> readdOrMarkAlive(peer,
                                                             SwimHealthContext.toSwimAddress(info, SWIM_PORT_OFFSET))).onEmpty(() -> readdOrMarkAliveFromTopology(peer));
             ctx.resetFaultyWindow(ctx.nowMs());
             ctx.reportHint(peer, HealthHint.HEALTHY);
-        }
-
-        private void applyPeerJoinedRecovery(PeerJoined event) {
-            ctx.resetFaultyWindow(ctx.nowMs());
-            ctx.reportHint(event.member().nodeId(),
-                           HealthHint.HEALTHY);
         }
 
         private void readdOrMarkAliveFromTopology(NodeId peer) {

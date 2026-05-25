@@ -53,11 +53,13 @@ class SwimHealthFsmTest {
     private static final NodeId PEER_B = new NodeId("node-3");
 
     private final List<NetworkServiceMessage.DisconnectNode> routedDisconnects = new ArrayList<>();
+    private final List<org.pragmatica.aether.slice.generation.HealthSignal.SwimHint> emittedHints = new ArrayList<>();
     private FsmTestHarness<SwimHealthState, SwimHealthEvents> harness;
     private AtomicReference<SwimHealthContext> ctxRef;
 
     private void buildHarness(boolean isLeader) {
         routedDisconnects.clear();
+        emittedHints.clear();
         var router = MessageRouter.mutable();
         router.addRoute(NetworkServiceMessage.DisconnectNode.class, routedDisconnects::add);
         var topology = threeNodeTopology();
@@ -80,13 +82,28 @@ class SwimHealthFsmTest {
                                         topology,
                                         serializer,
                                         deserializer,
-                                        _ -> {}, // HealthSignalSink no-op
+                                        recordingSink(), // HealthSignalSink — records emitted hints
                                         () -> Epoch.ZERO,
                                         () -> isLeader,
                                         PeerObservationStore.peerObservationStore(),
                                         SwimConfig.DEFAULT);
         ctxRef.set(ctx);
         return ctx.stopped();
+    }
+
+    private org.pragmatica.aether.slice.generation.HealthSignalSink recordingSink() {
+        return signal -> {
+            if (signal instanceof org.pragmatica.aether.slice.generation.HealthSignal.SwimHint hint) {
+                emittedHints.add(hint);
+            }
+        };
+    }
+
+    private java.util.List<org.pragmatica.aether.slice.generation.HealthHint> hintsFor(NodeId peer) {
+        return emittedHints.stream()
+                           .filter(h -> h.nodeId().equals(peer))
+                           .map(org.pragmatica.aether.slice.generation.HealthSignal.SwimHint::state)
+                           .toList();
     }
 
     private static TopologyConfig threeNodeTopology() {
@@ -212,7 +229,7 @@ class SwimHealthFsmTest {
 
             harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_A)));
 
-            // The arm performs a side effect (resetFaultyWindow + reportHint) without changing
+            // The arm performs a side effect (a log line, no HEALTHY hint) without changing
             // state. It MUST be observed as `handled`, not as `ignored`, so dashboards count it.
             assertThat(harness.handled()).hasSize(1);
             assertThat(harness.handled().getFirst().event())
@@ -298,6 +315,96 @@ class SwimHealthFsmTest {
             assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
             assertThat(((SwimHealthState.Running) harness.state()).currentLeader())
                 .isEqualTo(Option.some(PEER_A));
+        }
+    }
+
+    /// Resurrection guard (SWIM dead-node-revival fix). A bare gossip join/announce carries
+    /// NO reachability proof — it must NOT assert HEALTHY. HEALTHY arrives only via a real
+    /// `PeerConnected` (QUIC connection) or a probe-ack.
+    @Nested
+    class ResurrectionGuard {
+        @Test
+        void peerJoined_inRunning_emitsNoHealthyHint() {
+            buildHarness(false);
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(),
+                                                                 new StubTransport(),
+                                                                 GossipEncryptor.none()));
+            assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
+
+            harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_A)));
+
+            // Bare join must NOT produce a HEALTHY hint for the unreachable peer.
+            assertThat(hintsFor(PEER_A))
+                .as("bare gossip PeerJoined must not assert HEALTHY")
+                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+        }
+
+        @Test
+        void peerJoined_inStoppedOrStarting_emitsNoHealthyHint() {
+            buildHarness(false);
+            // Stopped: bare join, no hint.
+            harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_A)));
+            // Starting: bare join, no hint.
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_B)));
+
+            assertThat(hintsFor(PEER_A))
+                .as("bare join in Stopped must not assert HEALTHY")
+                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+            assertThat(hintsFor(PEER_B))
+                .as("bare join in Starting must not assert HEALTHY")
+                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+        }
+
+        @Test
+        void peerConnected_inRunning_emitsHealthyHint() {
+            // Formation safety: a REAL connection (PeerConnected) DOES produce HEALTHY.
+            buildHarness(false);
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(PEER_A),
+                                                                 new StubTransport(),
+                                                                 GossipEncryptor.none()));
+            assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
+
+            harness.dispatch(new SwimHealthEvents.PeerConnected(PEER_A, Option.none()));
+
+            assertThat(hintsFor(PEER_A))
+                .as("PeerConnected (real reachability) must assert HEALTHY — formation depends on it")
+                .contains(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+        }
+
+        @Test
+        void bareJoinAfterFaulty_doesNotEraseFaultyEvidence_andDoesNotHeal() {
+            // A FAULTY peer rejoining by gossip must NOT be auto-healed: no HEALTHY hint, and
+            // the prior FAULTY signal is preserved (the last emitted hint for the peer is FAULTY).
+            buildHarness(false);
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            // Seed 2 peers so a single PeerFaulty does NOT trip the local-disconnect majority
+            // guard (threshold is > totalMembers/2): it routes a real FAULTY hint instead.
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(PEER_A, PEER_B),
+                                                                 new StubTransport(),
+                                                                 GossipEncryptor.none()));
+            assertThat(harness.state()).isInstanceOf(SwimHealthState.Running.class);
+
+            // Establish FAULTY evidence for PEER_A.
+            harness.dispatch(new SwimHealthEvents.PeerFaulty(faulty(PEER_A)));
+            assertThat(harness.state())
+                .as("a single faulty peer must not trip the local-disconnect guard with 2 seeds")
+                .isInstanceOf(SwimHealthState.Running.class);
+            assertThat(hintsFor(PEER_A))
+                .as("PeerFaulty must emit a FAULTY hint")
+                .contains(org.pragmatica.aether.slice.generation.HealthHint.FAULTY);
+
+            // Stale gossip re-announces PEER_A as joined — must NOT heal it.
+            harness.dispatch(new SwimHealthEvents.PeerJoined(faulty(PEER_A)));
+
+            assertThat(hintsFor(PEER_A))
+                .as("bare join after FAULTY must not emit HEALTHY (no resurrection)")
+                .doesNotContain(org.pragmatica.aether.slice.generation.HealthHint.HEALTHY);
+            assertThat(hintsFor(PEER_A).getLast())
+                .as("FAULTY evidence preserved: last emitted hint stays FAULTY")
+                .isEqualTo(org.pragmatica.aether.slice.generation.HealthHint.FAULTY);
         }
     }
 

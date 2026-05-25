@@ -127,17 +127,17 @@ class CoreSwimHealthDetectorHintEmissionTest {
     @Nested
     class HintEmissions {
         @Test
-        void onMemberJoined_emitsHealthyHint() {
+        void onMemberJoined_emitsNoHint() {
+            // Resurrection guard: a bare SWIM join is gossip, not reachability proof.
+            // It must NOT emit a HEALTHY hint — HEALTHY arrives only via onNodeConnected
+            // (real QUIC connection) or a probe-ack. See SwimHealthState.handlePeerJoined.
             var member = SwimMember.swimMember(PEER_A, new InetSocketAddress("127.0.0.2", 9002));
 
             detector.onMemberJoined(member);
 
-            assertThat(emittedSignals).hasSize(1);
-            assertThat(emittedSignals.getFirst()).isInstanceOfSatisfying(HealthSignal.SwimHint.class, hint -> {
-                assertThat(hint.nodeId()).isEqualTo(PEER_A);
-                assertThat(hint.state()).isEqualTo(HealthHint.HEALTHY);
-                assertThat(hint.observedAt()).isEqualTo(Epoch.epoch(7L, 3L));
-            });
+            assertThat(emittedSignals)
+                .as("bare onMemberJoined must not emit any health signal (no HEALTHY resurrection)")
+                .isEmpty();
         }
 
         @Test
@@ -290,17 +290,20 @@ class CoreSwimHealthDetectorHintEmissionTest {
         }
 
         @Test
-        void onMemberJoined_follower_writesToStoreAndSink() {
+        void onMemberJoined_follower_emitsNoHintAndNoStoreWrite() {
+            // Resurrection guard (follower path): a bare gossip join emits NO health signal
+            // and writes nothing to the store. HEALTHY requires a real connection/probe-ack.
             var follower = followerDetector();
             var member = SwimMember.swimMember(PEER_A, new InetSocketAddress("127.0.0.2", 9002));
 
             follower.onMemberJoined(member);
 
-            assertThat(emittedSignals).singleElement()
-                                      .isInstanceOfSatisfying(HealthSignal.SwimHint.class,
-                                                               hint -> assertThat(hint.state()).isEqualTo(HealthHint.HEALTHY));
-            assertThat(store.drainHealth()).singleElement()
-                                           .satisfies(obs -> assertThat(obs.hint()).isEqualTo(HealthHintWire.HEALTHY));
+            assertThat(emittedSignals)
+                .as("follower bare join must not emit any health signal")
+                .isEmpty();
+            assertThat(store.drainHealth())
+                .as("follower bare join must not write a health observation to the store")
+                .isEmpty();
         }
     }
 }

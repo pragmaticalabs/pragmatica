@@ -585,11 +585,20 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         if (!members.containsKey(announce.nodeInfo().id())) {
+            // Resurrection guard: a bare ANNOUNCE is gossip, NOT proof of reachability.
+            // Introduce the unknown member as SUSPECT (probe-on-arrival) rather than
+            // ALIVE. SUSPECT keeps the member `isProbable` so the next tick probes it;
+            // a real probe-ack (`processAckProbe`) or a QUIC `PeerConnected` promotes it
+            // to ALIVE/HEALTHY. Crucially SUSPECT does NOT set `everSeenHealthy` and does
+            // NOT emit `HealthyObserved`, so a dead node re-announced via stale gossip is
+            // never re-admitted as HEALTHY off a bare join. If the node is genuinely
+            // unreachable the suspect-window expiry drives it to FAULTY/UNKNOWN.
+            // `JoinAnnounced` (below) still fires, so the legitimate reachability probe
+            // (`clusterNetwork.connect`) proceeds — formation is unaffected.
             var update = MembershipUpdate.membershipUpdate(
-                announce.nodeInfo().id(), MemberState.ALIVE, announce.incarnation(),
+                announce.nodeInfo().id(), MemberState.SUSPECT, announce.incarnation(),
                 swimAddressFor(announce.nodeInfo()));
             applyNewMember(update);
-            addMemberUpdate(update);
         }
 
         deliverObservation(new SwimObservation.JoinAnnounced(
