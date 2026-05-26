@@ -132,6 +132,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private static final long PROVISIONING_BACKOFF_BASE_MS = 30_000L;
     private static final long PROVISIONING_BACKOFF_MAX_MS = 300_000L;
     private static final long PROVISIONING_AUTO_RESET_QUIESCENCE_MS = 3_600_000L;
+    /// Short bounded drain budget for SURPLUS (non-slot) orphans. A surplus orphan is an ON_DUTY
+    /// node bound to NO durable slot; slot-routed membership/provisioning never targets it, but
+    /// slice placement (`ClusterDeploymentState.allocatableNodes()` — ON_DUTY-filtered, NOT
+    /// slot-filtered) still CAN, so it is drained (not bare fast-freed) to evict/migrate its slices.
+    /// Capped well below the full `provisioningTimeout` so three sequential surplus reaps converge
+    /// fast and emit their generation bumps promptly (baseline-quiesce budget), instead of each
+    /// waiting up to the full provisioning timeout for an ack that an orphan with no slices never
+    /// produces. Effective budget is `min(provisioningTimeout, this)`.
+    private static final TimeSpan SURPLUS_DRAIN_TIMEOUT = TimeSpan.timeSpan(5).seconds();
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -1036,17 +1045,50 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// Atomically marks the occupant `inFlightReaps` (re-entrancy / cross-path de-dup guard) and
-    /// dispatches its occupancy-aware reap exactly once. `Set.add` returns false when the node is
-    /// already being reaped — by a racing periodic reconcile (the synchronous reseed-commit reconcile
-    /// can run `reapStableSurplusOccupants` before `reapReseedSurplus` is reached) or by a prior tick
-    /// — in which case the reap is skipped, so a node is never double-terminated.
+    /// dispatches its occupancy-aware SURPLUS-ORPHAN reap exactly once. `Set.add` returns false when
+    /// the node is already being reaped — by a racing periodic reconcile (the synchronous
+    /// reseed-commit reconcile can run `reapStableSurplusOccupants` before `reapReseedSurplus` is
+    /// reached) or by a prior tick — in which case the reap is skipped, so a node is never
+    /// double-terminated.
+    ///
+    /// A surplus orphan is an ON_DUTY node bound to NO durable slot. Slot-routed membership never
+    /// targets it; only slice placement still CAN (ON_DUTY-filtered allocation). So a STOPPED orphan
+    /// takes the DEAD fast-free path (no drain), while a LIVE orphan gets a SHORT BOUNDED drain
+    /// (`surplusDrainTimeout`) — long enough for the FSM `InvokeDrain` to migrate its few slices, but
+    /// capped far below the full graceful-drain budget so convergence is fast and generation churn
+    /// minimal. This is distinct from a genuine slot occupant descaled on scale-down
+    /// (`reapSlotOccupant`), which keeps the full graceful-drain budget.
     @Contract
     private void reapStableSurplusOccupant(NodeId occupant) {
         if (!inFlightReaps.add(occupant)) {return;}
 
-        reapOccupantOccupancyAware(occupant, occupantStopped(occupant)
-                                             ? SlotOccupancy.DEAD
-                                             : SlotOccupancy.HEALTHY);
+        reapSurplusOrphanOccupancyAware(occupant, occupantStopped(occupant)
+                                                  ? SlotOccupancy.DEAD
+                                                  : SlotOccupancy.HEALTHY);
+    }
+
+    /// Surplus-orphan occupancy-aware reap: DEAD → fast-free (no drain); live → SHORT bounded drain
+    /// (`surplusDrainTimeout`), NOT the full graceful-drain budget used for descaled slot occupants.
+    @Contract
+    private void reapSurplusOrphanOccupancyAware(NodeId occupant, SlotOccupancy occupancy) {
+        if (occupancy == SlotOccupancy.DEAD) {
+            fastFreeDeadOccupant(occupant);
+
+            return;
+        }
+
+        terminateNodeWithDrainTimeout(occupant, surplusDrainTimeout());
+    }
+
+    /// Effective surplus-orphan drain budget: the shorter of `provisioningTimeout` (so a deployment
+    /// that tightens the provisioning timeout below the surplus cap still applies) and the
+    /// `SURPLUS_DRAIN_TIMEOUT` cap.
+    private TimeSpan surplusDrainTimeout() {
+        var provisioning = autoHealConfig.provisioningTimeout();
+
+        return provisioning.compareTo(SURPLUS_DRAIN_TIMEOUT) <= 0
+               ? provisioning
+               : SURPLUS_DRAIN_TIMEOUT;
     }
 
     /// Committed slot occupants — the `assignedNodeId`s of the durable slots read live this pass.
@@ -1282,8 +1324,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         reapOccupantOccupancyAware(occupant, occupancy);
     }
 
-    /// Occupancy-aware reap (slot-based-membership-convergence-spec §5.4 + reseed §7.3): DEAD
-    /// occupants are fast-freed (no drain); genuinely HEALTHY/other occupants drain gracefully.
+    /// Occupancy-aware reap of a GENUINE slot occupant descaled on scale-down
+    /// (slot-based-membership-convergence-spec §5.4): DEAD occupants are fast-freed (no drain);
+    /// genuinely HEALTHY/other occupants drain gracefully under the FULL `provisioningTimeout`
+    /// budget. SURPLUS (non-slot) orphans take the separate short-bounded-drain path
+    /// (`reapSurplusOrphanOccupancyAware`) — only a node losing its actual slot warrants a full
+    /// graceful drain here.
     @Contract
     private void reapOccupantOccupancyAware(NodeId occupant, SlotOccupancy occupancy) {
         if (occupancy == SlotOccupancy.DEAD) {
@@ -1478,12 +1524,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void terminateSingleNode(NodeId nodeId) {
+        terminateNodeWithDrainTimeout(nodeId, autoHealConfig.provisioningTimeout());
+    }
+
+    /// Drains then terminates a node with an EXPLICIT drain-ack budget. Genuine slot occupants
+    /// descaled on scale-down pass the full `provisioningTimeout` (graceful drain); surplus orphans
+    /// pass the short `surplusDrainTimeout` (fast convergence). Both share the same FSM-driven
+    /// drain → terminate → decommission chain; only the await budget differs.
+    @Contract
+    private void terminateNodeWithDrainTimeout(NodeId nodeId, TimeSpan drainTimeout) {
         writeDrainingAtom(nodeId);
-        var timeout = autoHealConfig.provisioningTimeout();
         // writeDrainingAtom routes ForceDrain through the sovereign FSM, whose InvokeDrain effect
         // starts the drain protocol (DrainCoordinator.prepareDrain) — so CTM no longer triggers
         // prepareDrain itself; it only awaits the drain ack before terminating the instance.
-        drainCoordinator.awaitDrainAck(nodeId, timeout).onResult(result -> handleDrainResult(nodeId, result));
+        drainCoordinator.awaitDrainAck(nodeId, drainTimeout).onResult(result -> handleDrainResult(nodeId, result));
     }
 
     @Contract
