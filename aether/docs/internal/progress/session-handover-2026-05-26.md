@@ -70,3 +70,23 @@ In-process Ember harness is synchronous and CANNOT reproduce these async/cross-p
 - **Self-termination is a footgun** — §5 drained the whole cluster once (formation gap) before the dynamic predicate fixed it. Gate hard; prefer state-based (wait-while-unfilled) over time-based.
 - **Sub-quorum minority must dissolve, not auto-heal** — [[project_subquorum_must_dissolve]].
 - Docker is the only arbiter for this subsystem (~20 min/iteration); budget accordingly.
+
+---
+
+## 8. #231 + reachability-gate findings (post-handover investigation + spike)
+
+**Verified #231 mechanism (code-grounded):** SWIM *does* detect death — it probes app-level (its own UDP ping/ack, ~10s suspect→FAULTY), so it catches a killed/black-holed process. But the SWIM→FSM decommission for an ON_DUTY node — `(OnDuty, SwimFaulty)` and `(OnDuty, TransportUnreachable)` (`ClusterMembershipReducer.java:173-186`) — is GATED by `ReachabilityGate.isConfirmedUnreachable`, backed by the leader-side `ReachabilityAggregator` quorum: it needs (N/2)+1 corroborating UNREACHABLE observers AND a single stale transport-"CONNECTED" observation vetoes promotion (holds UNKNOWN). A black-hole keeps its QUIC channel open → self-fold reports CONNECTED → veto → both fast cells nop. The only surviving path is the deadline-driven `LifecycleReconciler` (10s tick, 60s warmup, `JoiningTimeout`=45s, `OnDutyFaulty`=30s-FAULTY) → exactly the "deadline+1-2s" signature (raising the budget 60→90s shifted firing linearly). **φ-accrual (`PhiAccrualDetector`) is implemented + correct but UNWIRED in production** (only tests reference it). The intended "SWIM = topology source-of-truth driving lifecycle" is **refuted** — SWIM is demoted to advisory input behind a transport/quorum gate.
+
+**Gate-disable spike (commit `8ad603b8f`, THROWAWAY):** ungated the ON_DUTY cells + flipped `(Joining,SwimFaulty)→STOPPED` + relaxed COLD_BOOT FAULTY-suppression. Docker suite-02 result:
+- **NO FLAP.** Zero `NODE_FAILED`/`ForceDecommission`/evict churn, zero `exit 2` self-drains; only the deliberately-killed container exited (137). → **The reachability gate appears removable post-`VirtualThreadScheduler` fix** (it was likely compensating for scheduler-starved stale observations). Split-brain protection lives in `SelfDrainCoordinator` (quorum dissolve), NOT this gate, so dropping it is safe.
+- **But ungating did NOT fix the observed failures**, which separates three previously-tangled problems:
+  1. **JOINING-kill decommission (S01, ~91s):** unchanged — SWIM doesn't probe a *pre-HEALTHY* node, so the ungated cell has no FAULTY to act on. Needs SWIM to probe JOINING nodes (or a transport/φ signal).
+  2. **Recovery wedge (`current=3`, the DOMINANT blocker):** NOT flap (zero eviction events). It is a **provisioning/FILLING wedge** — slots stick `FILLING` (a provisioned replacement never joins/starts) and never recycle to EMPTY → never re-provisioned → cluster stuck under capacity. Same issue as §4.
+
+**Path to 15/15 (ordered by leverage):**
+1. **Fix the FILLING-recycle / provisioning wedge** — the dominant blocker. Why doesn't a failed/never-joining provision reclassify EMPTY → re-provision? (the reserve-then-provision in-flight guard + FILLING deadline should recycle it; they are not.) This is what keeps the cluster under 5.
+2. **Drop the reachability gate** (simplification; no-flap confirmed) — reduces surface; keep `SelfDrainCoordinator`.
+3. **SWIM probe pre-HEALTHY/JOINING nodes** (or wire transport/φ) → fast JOINING-kill decommission.
+4. **Wire φ-accrual** for the partial-black-hole (consensus-silent but SWIM-responsive) case — a refinement, not required for the kill/black-hole cases SWIM already catches.
+
+Spike commit `8ad603b8f` is throwaway — revert it, or keep the gate-removal as a simplification per the no-flap finding (decide next session).
