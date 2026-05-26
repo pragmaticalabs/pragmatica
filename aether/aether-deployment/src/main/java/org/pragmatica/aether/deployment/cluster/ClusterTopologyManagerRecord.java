@@ -96,7 +96,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
                                     ConcurrentHashMap<NodeId, ProvisioningSlotKey> slotKeyByNodeId,
                                     ConcurrentHashMap<Integer, Long> inFlightSlotIndices,
-                                    Set<NodeId> inFlightReaps,
                                     CancellableTask safetyNetTimer,
                                     AtomicLong realActualStableSinceMs,
                                     AtomicInteger lastObservedRealActual,
@@ -132,15 +131,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private static final long PROVISIONING_BACKOFF_BASE_MS = 30_000L;
     private static final long PROVISIONING_BACKOFF_MAX_MS = 300_000L;
     private static final long PROVISIONING_AUTO_RESET_QUIESCENCE_MS = 3_600_000L;
-    /// Short bounded drain budget for SURPLUS (non-slot) orphans. A surplus orphan is an ON_DUTY
-    /// node bound to NO durable slot; slot-routed membership/provisioning never targets it, but
-    /// slice placement (`ClusterDeploymentState.allocatableNodes()` — ON_DUTY-filtered, NOT
-    /// slot-filtered) still CAN, so it is drained (not bare fast-freed) to evict/migrate its slices.
-    /// Capped well below the full `provisioningTimeout` so three sequential surplus reaps converge
-    /// fast and emit their generation bumps promptly (baseline-quiesce budget), instead of each
-    /// waiting up to the full provisioning timeout for an ack that an orphan with no slices never
-    /// produces. Effective budget is `min(provisioningTimeout, this)`.
-    private static final TimeSpan SURPLUS_DRAIN_TIMEOUT = TimeSpan.timeSpan(5).seconds();
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -174,7 +164,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
-                                                ConcurrentHashMap.newKeySet(),
                                                 CancellableTask.cancellableTask(),
                                                 new AtomicLong(clock.getAsLong()),
                                                 new AtomicInteger(UNINITIALIZED_REAL_ACTUAL),
@@ -591,54 +580,61 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         scheduleSafetyNetPoll();
     }
 
-    /// Wipe-and-reseed on leader activation (slot-based-membership-convergence-spec §7.3, OQ4).
-    /// Legacy UUID-keyed (and any stale index-keyed) slots are wiped — they are transient and
-    /// carry no durable truth. The durable membership truth is the `NodeLifecycleKey` ON_DUTY
-    /// entries, from which the reseed reconstructs occupancy: the `S` occupants with the LOWEST
-    /// `observedCoreEpoch` (oldest first; tie-break NodeId lexical for determinism) bind to slots
-    /// `0..S-1`; surplus occupants are left unbound and reaped occupancy-aware (the
-    /// convergence-collapse point that squeezes out an existing over-count). Remaining indices are
-    /// seeded EMPTY for the subsequent reconcile pass to fill.
+    /// Create-once / preserve on leader activation (slot-based-core-membership-redesign §2). The
+    /// node↔slot binding is durable and authoritative in KV across leader changes:
+    ///
+    /// - **KV already has slots (leader change / re-activation):** do NOT wipe, do NOT rebind. The
+    ///   existing `slot→node` bindings persist; the activation reconcile (and its
+    ///   `maintainSlotSetSize`) adds/removes slots if `configured` changed — no rebind. This is the
+    ///   single change that eliminates the orphan/collapse class (OQ4 wipe-and-reseed re-bound
+    ///   durable slots to CTM replacements and orphaned the live originals).
+    /// - **KV is empty (first formation):** create the slot set and bind the present non-stopped
+    ///   occupants (the only path that writes initial bindings), then reconcile. STOPPED occupants
+    ///   lingering in the ON_DUTY snapshot (SENSE plane lagging the DECIDE plane) are NOT bound —
+    ///   re-binding would fire a SlotClaimed for a dead occupant; their slots are left EMPTY for
+    ///   normal convergence to fill.
     @Contract
     private void seedOrReseedSlots() {
         var configured = activationDesiredSize();
 
         if (configured <= 0) {
-            log.info("CTM: reseed skipped — no configured cluster size at activation; awaiting snapshot bump");
+            log.info("CTM: seed skipped — no configured cluster size at activation; awaiting snapshot bump");
+            reconcile();
+
+            return;
+        }
+        if (!indexedSlots().isEmpty()) {
+            log.info("CTM: existing slots present at activation — preserving bindings (no wipe/rebind); reconciling for configured={}",
+                     configured);
             reconcile();
 
             return;
         }
 
-        wipeAllSlotAtoms();
+        seedFirstFormation(configured);
+    }
 
-        // Bind only occupants whose committed lifecycle is NOT already STOPPED. A peer that is
-        // STOPPED in the lifecycle but still lingers in the ON_DUTY snapshot at activation (the
-        // SENSE plane lags the DECIDE plane) must NOT be re-bound — re-binding re-PUTs its slot
-        // with assignedNodeId=some(dead-peer), which fires a SlotClaimed for a dead occupant.
-        // Leave its slot EMPTY so normal convergence fills it with a fresh provider-allocated node.
+    /// First formation (KV has no slots): create the slot set and bind the present non-stopped
+    /// occupants. Surplus beyond `configured` is NOT reaped here — any excess self-drains in Phase 2
+    /// (§5); on first formation with <= configured bootstrap nodes there is no surplus.
+    @Contract
+    private void seedFirstFormation(int configured) {
         var occupants = onDutyOccupantsBySeniority().stream()
                                                     .filter(occupant -> !occupantStopped(occupant))
                                                     .toList();
         var bound = occupants.stream().limit(configured).toList();
-        var surplus = occupants.stream().skip(configured).toList();
         var puts = buildReseedPuts(bound, configured);
         commandApplier.apply(puts)
-                      .onFailure(cause -> log.warn("CTM: failed to reseed {} slot(s): {}", puts.size(), cause.message()))
-                      .onSuccess(_ -> log.info("CTM: reseeded {} slot(s) ({} bound to live occupants, {} empty) for configured={}",
+                      .onFailure(cause -> log.warn("CTM: failed to seed {} slot(s): {}", puts.size(), cause.message()))
+                      .onSuccess(_ -> log.info("CTM: seeded {} slot(s) ({} bound to live occupants, {} empty) for configured={} (first formation)",
                                                puts.size(),
                                                bound.size(),
                                                puts.size() - bound.size(),
                                                configured))
-                      // Run the activation reconcile only AFTER the complete reseed write-set has
+                      // Run the activation reconcile only AFTER the complete seed write-set has
                       // committed, so maintainSlotSetSize observes the bound slots (not a stale
                       // pre-commit map) and does not clobber them with EMPTY seeds.
                       .onResult(_ -> reconcile());
-
-        // Reseed-surplus reaping is a lifecycle mutation — suppress it while the cluster phase is
-        // not NORMAL (COLD_BOOT / RECOVERING), matching the reconcile-loop phase gate. The surplus
-        // stays bound until the phase normalizes, when the reconcile loop reaps it.
-        if (!surplus.isEmpty() && phaseSupplier.get() == ClusterPhase.NORMAL) {reapReseedSurplus(surplus);}
     }
 
     /// ON_DUTY occupants (from the generation snapshot) sorted by seniority: `observedCoreEpoch`
@@ -674,36 +670,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         slotKeyByNodeId.put(occupant, key);
 
         return putSlotCommand(key, new ProvisioningSlotValue(nowMs, deadlineMs, Option.some(occupant), 1L, Option.none()));
-    }
-
-    /// Reaps surplus reseed occupants UNCONDITIONALLY of provisioning provenance (the slot set is
-    /// authoritative — an ON_DUTY occupant left unbound after the seniority-ordered reseed is
-    /// surplus and must be reaped regardless of source). Occupancy-aware: a STOPPED occupant takes
-    /// the DEAD fast-free path; a live occupant drains gracefully (HEALTHY path). Marks each via the
-    /// shared `inFlightReaps` guard so the periodic surplus reaper (`reapStableSurplusOccupants`)
-    /// does not double-reap the same occupant while it still lingers in the ON_DUTY snapshot.
-    @Contract
-    private void reapReseedSurplus(List<NodeId> surplus) {
-        log.warn("CTM: reseed surplus — reaping {} occupant(s) beyond configured size occupancy-aware: {}",
-                 surplus.size(),
-                 surplus);
-        surplus.forEach(this::reapStableSurplusOccupant);
-    }
-
-    @Contract
-    private void wipeAllSlotAtoms() {
-        var allSlots = slotReader.get();
-
-        if (allSlots.isEmpty()) {return;}
-
-        var deletes = allSlots.keySet().stream().map(ClusterTopologyManagerRecord::deleteSlotCommand).toList();
-        commandApplier.apply(deletes)
-                      .onFailure(cause -> log.warn("CTM: failed to wipe {} legacy slot atom(s) on reseed: {}", deletes.size(), cause.message()))
-                      .onSuccess(_ -> log.info("CTM: wiped {} legacy slot atom(s) on reseed", deletes.size()));
-        slotKeyByNodeId.clear();
-        // Reseed rebuilds the entire slot set from scratch — drop any stale per-index in-flight
-        // claims so the post-reseed reconcile can re-target freshly EMPTY indices.
-        inFlightSlotIndices.clear();
     }
 
     @SuppressWarnings("unchecked")
@@ -940,10 +906,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (configured == 0) {return;}
 
         // Slot-set maintenance (D1 §5.4): bring the durable slot set to exactly `configured`
-        // BEFORE classifying occupancy. Scale-up adds empty slots; scale-down drains+removes the
-        // highest-index slots (occupant reaped occupancy-aware). Folded into the idempotent
+        // BEFORE classifying occupancy. Scale-up adds empty slots; scale-down removes the
+        // highest-index slot atoms (occupants self-drain via §5). Folded into the idempotent
         // reconcile loop so activation-seed, config-change, and cold-start all converge uniformly.
-        maintainSlotSetSize(view, configured);
+        maintainSlotSetSize(configured);
         convergeSlotOccupancy(currentState, view, configured);
     }
 
@@ -956,7 +922,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var nowMs = nowMs();
         var slots = indexedSlots();
         var freedIndices = freeDeadSlots(slots, view, nowMs);
-        reapStableSurplusOccupants(slots, view, configured);
         var healthy = countHealthy(slots, view, nowMs);
         var emptyToFill = selectEmptySlotsToFill(slots, view, nowMs, freedIndices);
         observeRealActualForStability(healthy);
@@ -986,116 +951,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         log.info("CTM converged(slot): healthy={} configured={}, transitioning to Converged", healthy, configured);
         transitionTo(new NodeReconcilerState.Converged());
-    }
-
-    /// Periodic-reconcile surplus-occupant reaping (closes the reseed-only coverage gap). The bound
-    /// slot occupants are the KEEPERS: any ON_DUTY member (DECIDE plane, `view.onDutyMemberIds()`)
-    /// that is NOT a current committed slot occupant and is NOT in-flight is a STABLE SURPLUS
-    /// occupant — an orphan that joined between reseeds and never bound to a slot — and is reaped
-    /// occupancy-aware. This runs every reconcile tick, so orphans are squeezed out in steady-state,
-    /// not only at leader-activation reseed.
-    ///
-    /// SATURATION GATE (critical): surplus reaping fires ONLY when the durable slot set is fully
-    /// bound — the count of distinct slot occupants is `>= configured`. While fewer slots are bound
-    /// than configured (cold reseed, leader failover that seeded EMPTY slots, mid-fill convergence),
-    /// an un-slotted ON_DUTY member is a slot-FILL CANDIDATE the convergence loop can still absorb,
-    /// NOT surplus — reaping it here would terminate legitimate members (and, unbounded, the whole
-    /// cluster). Only once every slot holds an occupant does an EXTRA ON_DUTY member become genuine
-    /// surplus that the slot set cannot represent.
-    ///
-    /// SAFETY GATES: only when phase is NORMAL AND in quorum (never reap during recovery or below
-    /// quorum — the cluster may be dissolving). A node is excluded from "stable surplus" while it is
-    /// in-flight (`inFlightProvisions`) OR currently transitioning into a slot (present as a key in
-    /// `slotKeyByNodeId` — `assignOccupant` records the node there synchronously BEFORE the slot-PUT
-    /// commits, closing the TOCTOU window where a just-ON_DUTY node whose `assignOccupant` slot-PUT
-    /// has not yet round-tripped to KV would otherwise look un-slotted) OR already being reaped
-    /// (`inFlightReaps`). Reusing existing state needs no debounce timer.
-    ///
-    /// RE-ENTRANCY GUARD (`inFlightReaps`): the reap drain/terminate chain resolves and calls
-    /// `reconcile()` again synchronously, but the SENSE-plane `onDutyMemberIds()` snapshot still
-    /// lists the node ON_DUTY until the async generation snapshot catches up. Without the guard the
-    /// same node would be re-reaped on every re-entrant tick (unbounded recursion). A node is marked
-    /// `inFlightReaps` before its reap is dispatched and stays marked until it actually leaves
-    /// `onDutyMemberIds` — pruned lazily here — so it is reaped exactly once.
-    @Contract
-    private void reapStableSurplusOccupants(List<IndexedSlot> slots, MembershipView view, int configured) {
-        if (configured <= 0 || phaseSupplier.get() != ClusterPhase.NORMAL || !inQuorum.getAsBoolean()) {return;}
-
-        var keepers = slotOccupants(slots);
-
-        // Saturation gate: only reap when every slot is bound — otherwise un-slotted ON_DUTY members
-        // are fill candidates the convergence loop absorbs, not surplus.
-        if (keepers.size() < configured) {return;}
-
-        var onDuty = view.onDutyMemberIds();
-        inFlightReaps.retainAll(onDuty);
-        var surplus = onDuty.stream()
-                          .filter(node -> !keepers.contains(node))
-                          .filter(node -> !slotKeyByNodeId.containsKey(node))
-                          .filter(node -> !inFlightProvisions.containsKey(node))
-                          .filter(node -> !inFlightReaps.contains(node))
-                          .toList();
-
-        if (surplus.isEmpty()) {return;}
-
-        log.warn("CTM: periodic reconcile — reaping {} stable surplus ON_DUTY occupant(s) not bound to any slot occupancy-aware: {}",
-                 surplus.size(),
-                 surplus);
-        surplus.forEach(this::reapStableSurplusOccupant);
-    }
-
-    /// Atomically marks the occupant `inFlightReaps` (re-entrancy / cross-path de-dup guard) and
-    /// dispatches its occupancy-aware SURPLUS-ORPHAN reap exactly once. `Set.add` returns false when
-    /// the node is already being reaped — by a racing periodic reconcile (the synchronous
-    /// reseed-commit reconcile can run `reapStableSurplusOccupants` before `reapReseedSurplus` is
-    /// reached) or by a prior tick — in which case the reap is skipped, so a node is never
-    /// double-terminated.
-    ///
-    /// A surplus orphan is an ON_DUTY node bound to NO durable slot. Slot-routed membership never
-    /// targets it; only slice placement still CAN (ON_DUTY-filtered allocation). So a STOPPED orphan
-    /// takes the DEAD fast-free path (no drain), while a LIVE orphan gets a SHORT BOUNDED drain
-    /// (`surplusDrainTimeout`) — long enough for the FSM `InvokeDrain` to migrate its few slices, but
-    /// capped far below the full graceful-drain budget so convergence is fast and generation churn
-    /// minimal. This is distinct from a genuine slot occupant descaled on scale-down
-    /// (`reapSlotOccupant`), which keeps the full graceful-drain budget.
-    @Contract
-    private void reapStableSurplusOccupant(NodeId occupant) {
-        if (!inFlightReaps.add(occupant)) {return;}
-
-        reapSurplusOrphanOccupancyAware(occupant, occupantStopped(occupant)
-                                                  ? SlotOccupancy.DEAD
-                                                  : SlotOccupancy.HEALTHY);
-    }
-
-    /// Surplus-orphan occupancy-aware reap: DEAD → fast-free (no drain); live → SHORT bounded drain
-    /// (`surplusDrainTimeout`), NOT the full graceful-drain budget used for descaled slot occupants.
-    @Contract
-    private void reapSurplusOrphanOccupancyAware(NodeId occupant, SlotOccupancy occupancy) {
-        if (occupancy == SlotOccupancy.DEAD) {
-            fastFreeDeadOccupant(occupant);
-
-            return;
-        }
-
-        terminateNodeWithDrainTimeout(occupant, surplusDrainTimeout());
-    }
-
-    /// Effective surplus-orphan drain budget: the shorter of `provisioningTimeout` (so a deployment
-    /// that tightens the provisioning timeout below the surplus cap still applies) and the
-    /// `SURPLUS_DRAIN_TIMEOUT` cap.
-    private TimeSpan surplusDrainTimeout() {
-        var provisioning = autoHealConfig.provisioningTimeout();
-
-        return provisioning.compareTo(SURPLUS_DRAIN_TIMEOUT) <= 0
-               ? provisioning
-               : SURPLUS_DRAIN_TIMEOUT;
-    }
-
-    /// Committed slot occupants — the `assignedNodeId`s of the durable slots read live this pass.
-    private Set<NodeId> slotOccupants(List<IndexedSlot> slots) {
-        return slots.stream()
-                    .flatMap(slot -> slot.value().assignedNodeId().stream())
-                    .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Provisions into the supplied empty slots, gated by stability/circuit/backoff. Marks the
@@ -1258,7 +1113,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// highest-index slots (occupant reaped occupancy-aware). Idempotent: a no-op when the set
     /// already matches.
     @Contract
-    private void maintainSlotSetSize(MembershipView view, int configured) {
+    private void maintainSlotSetSize(int configured) {
         var slots = indexedSlots();
         var present = slots.stream()
                            .map(IndexedSlot::index)
@@ -1274,7 +1129,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                 .filter(slot -> slot.index() >= configured)
                                 .toList();
 
-        if (!surplusSlots.isEmpty()) {removeSurplusSlots(surplusSlots, view);}
+        if (!surplusSlots.isEmpty()) {removeSurplusSlots(surplusSlots);}
     }
 
     @Contract
@@ -1287,58 +1142,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                       .onSuccess(_ -> log.info("CTM: seeded {} empty slot(s) {} to track configured size", puts.size(), indices));
     }
 
-    /// Scale-down: structurally remove ALL surplus slots (index >= configured) regardless of
-    /// occupant provisioning provenance (the slot set is authoritative — an occupant of a
-    /// surplus slot is surplus and must be reaped, operator-seeded or not; operator nodes are
-    /// expected to be modeled within the slot set, not as out-of-band un-slotted nodes). A surplus
-    /// slot with a live occupant gets the occupant terminated occupancy-aware then the slot removed.
+    /// Scale-down (slot-based-core-membership-redesign §6): structurally remove ALL surplus slot
+    /// ATOMS (index >= configured), unbinding their occupants. The leader does NOT terminate the
+    /// occupants here — once a node loses its slot binding it becomes an orphan and removes itself.
+    /// occupant removal on scale-down completes via §5 self-drain (Phase 2)
     @Contract
-    private void removeSurplusSlots(List<IndexedSlot> surplusSlots, MembershipView view) {
-        var nowMs = nowMs();
-
+    private void removeSurplusSlots(List<IndexedSlot> surplusSlots) {
         if (surplusSlots.isEmpty()) {return;}
 
-        surplusSlots.forEach(slot -> reapSurplusOccupant(slot, view, nowMs));
         var removes = surplusSlots.stream()
                               .map(slot -> deleteSlotCommand(slot.key()))
                               .toList();
         commandApplier.apply(removes)
                       .onFailure(cause -> log.warn("CTM: failed to remove {} surplus slot(s): {}", removes.size(), cause.message()))
-                      .onSuccess(_ -> log.info("CTM: removed {} surplus slot(s) on scale-down", removes.size()));
-    }
-
-    @Contract
-    private void reapSurplusOccupant(IndexedSlot slot, MembershipView view, long nowMs) {
-        slot.value()
-            .assignedNodeId()
-            .onPresent(occupant -> reapSlotOccupant(occupant, classifyOccupancy(slot.value(), view, nowMs)));
-    }
-
-    /// Reaps a slot occupant on scale-down (slot about to be removed). Atomically marks
-    /// `inFlightReaps` so neither the periodic surplus reaper nor a racing reseed-surplus reaps the
-    /// same node once its slot is gone but it still lingers ON_DUTY in the SENSE-plane snapshot.
-    @Contract
-    private void reapSlotOccupant(NodeId occupant, SlotOccupancy occupancy) {
-        if (!inFlightReaps.add(occupant)) {return;}
-
-        reapOccupantOccupancyAware(occupant, occupancy);
-    }
-
-    /// Occupancy-aware reap of a GENUINE slot occupant descaled on scale-down
-    /// (slot-based-membership-convergence-spec §5.4): DEAD occupants are fast-freed (no drain);
-    /// genuinely HEALTHY/other occupants drain gracefully under the FULL `provisioningTimeout`
-    /// budget. SURPLUS (non-slot) orphans take the separate short-bounded-drain path
-    /// (`reapSurplusOrphanOccupancyAware`) — only a node losing its actual slot warrants a full
-    /// graceful drain here.
-    @Contract
-    private void reapOccupantOccupancyAware(NodeId occupant, SlotOccupancy occupancy) {
-        if (occupancy == SlotOccupancy.DEAD) {
-            fastFreeDeadOccupant(occupant);
-
-            return;
-        }
-
-        terminateSingleNode(occupant);
+                      .onSuccess(_ -> log.info("CTM: removed {} surplus slot atom(s) on scale-down (occupants self-drain via §5)", removes.size()));
     }
 
     /// Frees DEAD slots in place (D2 §5.2): clears the occupant, records it as `supersededNodeId`
@@ -1527,10 +1344,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         terminateNodeWithDrainTimeout(nodeId, autoHealConfig.provisioningTimeout());
     }
 
-    /// Drains then terminates a node with an EXPLICIT drain-ack budget. Genuine slot occupants
-    /// descaled on scale-down pass the full `provisioningTimeout` (graceful drain); surplus orphans
-    /// pass the short `surplusDrainTimeout` (fast convergence). Both share the same FSM-driven
-    /// drain → terminate → decommission chain; only the await budget differs.
+    /// Drains then terminates a node with an EXPLICIT drain-ack budget via the FSM-driven
+    /// drain → terminate → decommission chain. Retained for non-scale-down lifecycle paths; the
+    /// leader no longer terminates live nodes on scale-down (slot-based-core-membership-redesign §6
+    /// — surplus-slot occupants self-drain via §5).
     @Contract
     private void terminateNodeWithDrainTimeout(NodeId nodeId, TimeSpan drainTimeout) {
         writeDrainingAtom(nodeId);

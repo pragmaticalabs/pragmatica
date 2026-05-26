@@ -149,17 +149,23 @@ class ClusterTopologyManagerLiveSlotAccountingTest {
                 .isGreaterThanOrEqualTo(1);
     }
 
-    /// Scale-down surplus (coreCount shrinks) reaps the highest-index CTM-provisioned occupant.
+    /// Scale-down surplus (coreCount shrinks) removes the highest-index slot ATOM, unbinding its
+    /// occupant. Per slot-based-core-membership-redesign §6 the leader does NOT terminate the
+    /// occupant — it self-drains in Phase 2 (§5).
     @Test
-    void reconcile_reapsSurplus_onScaleDown() throws InterruptedException {
+    void reconcile_removesSurplusSlotAtom_onScaleDown_noTerminate() throws InterruptedException {
         ctm = createCtm(timeSpan(60).seconds());
-        // coreCount 4 → slot 4 (youngest occupant PEER_D) surplus; reaped (CTM-provisioned).
+        // coreCount 4 → slot 4 (youngest occupant PEER_D) surplus; its atom is removed, no terminate.
         publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 4);
         ctm.activate();
         ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        awaitTerminate(1);
-        assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
-        assertThat(lifecycleManager.terminatedNodes).contains(PEER_D);
+        Thread.sleep(200L);
+        assertThat(clusterStore.slots().keySet())
+                .as("surplus slot atom [4] is removed on scale-down")
+                .doesNotContain(ProvisioningSlotKey.provisioningSlotKey("4"));
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("the leader does NOT terminate the scale-down occupant — it self-drains via §5")
+                .isZero();
     }
 
     /// At target (all slots HEALTHY) no provisioning and no termination fire.
@@ -192,14 +198,6 @@ class ClusterTopologyManagerLiveSlotAccountingTest {
         var deadline = System.currentTimeMillis() + 2000L;
 
         while (lifecycleManager.provisionCount.get() < atLeast && System.currentTimeMillis() < deadline) {
-            Thread.sleep(20L);
-        }
-    }
-
-    private void awaitTerminate(int atLeast) throws InterruptedException {
-        var deadline = System.currentTimeMillis() + 2000L;
-
-        while (lifecycleManager.terminateCount.get() < atLeast && System.currentTimeMillis() < deadline) {
             Thread.sleep(20L);
         }
     }

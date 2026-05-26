@@ -206,31 +206,31 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
 
     @Nested
     class LeaderHandoff {
-        /// Leader activation wipes legacy UUID slots and reseeds stable-index slots binding
-        /// current ON_DUTY occupants — no duplicate provision wave for serving occupants.
+        /// Create-once / preserve (slot-based-core-membership-redesign §2): leader-1 first-forms the
+        /// stable slot set (KV empty); leader-2 finds slots already present and PRESERVES the
+        /// existing bindings — no wipe, no rebind, no duplicate provision wave for serving occupants.
         @Test
-        void leaderHandoff_reseedsStableSlots_noDuplicateWave() {
+        void leaderHandoff_preservesStableSlots_noDuplicateWave() {
             var leaderOne = createCtm();
             publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
             leaderOne.activate();
-            clusterStore.installSlot(ProvisioningSlotKey.provisioningSlotKey(java.util.UUID.randomUUID().toString()),
-                                     ProvisioningSlotValue.provisioningSlotValue(System.currentTimeMillis(),
-                                                                                 System.currentTimeMillis() + 60_000L));
             leaderOne.deactivate();
             lifecycleManager.provisionCount.set(0);
             var leaderTwo = createCtm();
             leaderTwo.activate();
+            assertThat(clusterStore.slots()).as("slot set preserved at clusterSize stable slots").hasSize(5);
             assertThat(clusterStore.slots().keySet())
-                    .as("reseed wipes legacy UUID slots — only stable integer indices remain")
+                    .as("the preserved bindings keep their stable integer indices")
                     .allMatch(key -> key.slotId().matches("\\d+"));
-            assertThat(clusterStore.slots()).as("reseeded to clusterSize stable slots").hasSize(5);
             assertThat(lifecycleManager.provisionCount.get())
-                    .as("leader-2 binds existing ON_DUTY occupants — no duplicate wave")
+                    .as("leader-2 preserves existing bound occupants — no duplicate wave")
                     .isZero();
         }
 
+        /// First formation binds the present occupants; the binding then PERSISTS across the leader
+        /// change (create-once / preserve — no rebind on leader-2 activation).
         @Test
-        void leaderHandoff_bindsOccupantsBySeniority() {
+        void leaderHandoff_preservesOccupantBindings() {
             var leaderOne = createCtm();
             publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
             leaderOne.activate();
@@ -245,7 +245,7 @@ class ClusterTopologyManagerProvisioningSlotKvMirrorTest {
                                              .map(Option::unwrap)
                                              .toList();
             assertThat(boundOccupants)
-                    .as("all 5 ON_DUTY occupants bound to slots by seniority")
+                    .as("all 5 occupant bindings persist across the leader change")
                     .containsExactlyInAnyOrder(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
         }
     }

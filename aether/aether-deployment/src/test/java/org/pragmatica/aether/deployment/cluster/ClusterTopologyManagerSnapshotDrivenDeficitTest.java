@@ -232,108 +232,6 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                                              inQuorum);
     }
 
-    /// PART 2 (periodic-reconcile surplus reaping — closes the reseed-only coverage gap). 5 slots
-    /// bound to SELF/A-D at coreCount=5; then an orphan ON_DUTY member (joined between reseeds, never
-    /// bound to a slot) appears in the snapshot. The periodic reconcile reaps the orphan down to
-    /// configured, and the 5 slot occupants (keepers) are NOT reaped.
-    @Test
-    void reconcile_reapsStableSurplusOccupant_notBoundToAnySlot() throws InterruptedException {
-        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
-        ctm.activate();
-        Thread.sleep(100L);
-        // An orphan reaches ON_DUTY between reseeds — present on the DECIDE plane, no slot binds it.
-        clusterStore.installOnDuty(PEER_ORPHAN, 9L);
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
-                                            6,
-                                            5,
-                                            Set.of(),
-                                            Set.of()),
-                               snapshotSource.term.get() + 1L);
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_ORPHAN, List.of()));
-        awaitTerminate(1);
-        assertThat(lifecycleManager.terminatedNodeIds())
-                .as("the un-slotted orphan is reaped down to configured")
-                .contains(PEER_ORPHAN);
-        assertThat(lifecycleManager.terminatedNodeIds())
-                .as("the 5 slot occupants (keepers) are NOT reaped")
-                .doesNotContain(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
-    }
-
-    /// PART 2 SAFETY: below quorum, the periodic surplus reaping is suppressed — the cluster may be
-    /// a dissolving minority and CTM must not terminate occupants.
-    @Test
-    void reconcile_doesNotReapStableSurplus_whenBelowQuorum() throws InterruptedException {
-        var belowQuorumCtm = createCtmWithQuorum(() -> false);
-        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
-        belowQuorumCtm.activate();
-        Thread.sleep(100L);
-        clusterStore.installOnDuty(PEER_ORPHAN, 9L);
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
-                                            6,
-                                            5,
-                                            Set.of(),
-                                            Set.of()),
-                               snapshotSource.term.get() + 1L);
-        belowQuorumCtm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_ORPHAN, List.of()));
-        Thread.sleep(200L);
-        assertThat(lifecycleManager.terminateCount.get())
-                .as("below quorum — no surplus reaping (cluster may be dissolving)")
-                .isZero();
-    }
-
-    /// PART 2 SAFETY: outside NORMAL phase (recovery), the periodic surplus reaping is suppressed.
-    @Test
-    void reconcile_doesNotReapStableSurplus_whenPhaseNotNormal() throws InterruptedException {
-        // activate while NORMAL so 5 slots bind, then flip the phase to RECOVERING for the reconcile.
-        var phase = new AtomicReference<>(AetherValue.ClusterPhase.NORMAL);
-        var phaseAwareCtm = createCtm(phase::get, () -> true);
-        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
-        phaseAwareCtm.activate();
-        Thread.sleep(100L);
-        phase.set(AetherValue.ClusterPhase.RECOVERING);
-        clusterStore.installOnDuty(PEER_ORPHAN, 9L);
-        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
-                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
-                                            6,
-                                            5,
-                                            Set.of(),
-                                            Set.of()),
-                               snapshotSource.term.get() + 1L);
-        phaseAwareCtm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_ORPHAN, List.of()));
-        Thread.sleep(200L);
-        assertThat(lifecycleManager.terminateCount.get())
-                .as("non-NORMAL phase — reconcile suspended, no surplus reaping")
-                .isZero();
-    }
-
-    /// PART 2 SAFETY: a freshly-provisioned node bound to a slot via `assignOccupant` (recorded in
-    /// the in-flight slot-binding map) is NOT a stable surplus — it is an occupant, not an orphan.
-    /// Filling a deficit slot must never trip the surplus reaper into terminating the new node.
-    @Test
-    void reconcile_doesNotReapJustProvisionedOccupant_asSurplus() throws InterruptedException {
-        // 4-of-5 deficit: slot 4 EMPTY → provisioned + assigned. The new occupant must not be reaped.
-        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), 5);
-        ctm.activate();
-        ctm.onNodeReady(PEER_A);
-        awaitProvision(1);
-        Thread.sleep(150L);
-        assertThat(lifecycleManager.terminateCount.get())
-                .as("a just-provisioned slot occupant is not mistaken for a stable surplus orphan")
-                .isZero();
-    }
-
-    @Test
-    void reconcile_terminatesSurplus_whenSnapshotReportsOverCapacity() throws InterruptedException {
-        // 5 ON_DUTY occupants bound to slots 0-4, but coreCount shrinks to 3 → slots 3-4 removed.
-        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 3);
-        ctm.activate();
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        awaitTerminate(1);
-        assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
-    }
-
     @Test
     void setDesiredSize_writesClusterConfigValueAtom_withIncrementedVersion() {
         publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
@@ -354,59 +252,6 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
         var result = ctm.setDesiredSize(2).await();
         assertThat(result.isFailure()).isTrue();
         assertThat(clusterStore.currentVersion()).isEqualTo(before);
-    }
-
-    /// Slot set is authoritative: surplus slots are reaped regardless of occupant provisioning
-    /// provenance. A MANUAL-source surplus occupant (operator-seeded but un-slotted-as-surplus) is
-    /// now reaped on scale-down — operator nodes are expected to be modeled within the slot set, not
-    /// as out-of-band un-slotted nodes that linger above target.
-    @Test
-    void reconcile_terminatesSurplus_evenWhenManualSource() throws InterruptedException {
-        // coreCount 3 → slots 3-4 surplus; their occupants (PEER_C, PEER_D) are MANUAL-source.
-        publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(), 3);
-        ctm.activate();
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        awaitTerminate(1);
-        assertThat(lifecycleManager.terminateCount.get())
-                .as("MANUAL-source surplus occupants are now reaped (slot set authoritative, provenance shield removed)")
-                .isGreaterThanOrEqualTo(1);
-    }
-
-    @Test
-    void reconcile_terminatesCtmProvisionedSurplus_whenCandidatesAreCtm() throws InterruptedException {
-        // coreCount 3 → slots 3-4 surplus; their occupants (PEER_C, PEER_D) are CTM-provisioned.
-        publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(PEER_C, PEER_D), 3);
-        ctm.activate();
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        awaitTerminate(1);
-        assertThat(lifecycleManager.terminateCount.get()).isGreaterThanOrEqualTo(1);
-        assertThat(lifecycleManager.terminatedNodeIds()).isSubsetOf(Set.of(PEER_C, PEER_D));
-    }
-
-    /// Slot set is authoritative: an empty CTM-provisioned set (legacy / UNKNOWN-source projection)
-    /// no longer shields surplus slots — every surplus slot is reaped regardless of provenance.
-    @Test
-    void reconcile_terminatesSurplus_evenWhenUnknownProvisioningSource() throws InterruptedException {
-        publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(), 3);
-        ctm.activate();
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        awaitTerminate(1);
-        assertThat(lifecycleManager.terminateCount.get())
-                .as("UNKNOWN-source surplus occupants are now reaped (provenance shield removed)")
-                .isGreaterThanOrEqualTo(1);
-    }
-
-    /// §5.4 highest-index removal: scale-down 5→4 removes slot 4. Its occupant is the youngest
-    /// bound core (highest seniority epoch → highest index), reaped because CTM-provisioned.
-    @Test
-    void reconcile_reapsHighestIndexSlot_onScaleDownByOne() throws InterruptedException {
-        publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(PEER_C, PEER_D), 4);
-        ctm.activate();
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        awaitTerminate(1);
-        assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
-        // Slot 4 holds the youngest occupant (PEER_D, highest epoch) — it is reaped.
-        assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
     }
 
     @Test
@@ -509,6 +354,105 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                 .isZero();
     }
 
+    /// §2 first formation (KV empty): the leader creates the slot set and binds the present
+    /// non-stopped occupants. This is the ONLY path that writes initial bindings.
+    @Test
+    void activate_firstFormation_createsAndBindsSlots_whenKvEmpty() throws InterruptedException {
+        clusterStore.seed(5);
+        var epoch = 0L;
+        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {clusterStore.installOnDuty(id, epoch++);}
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            5,
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        ctm.activate();
+        Thread.sleep(150L);
+        var slots = clusterStore.slots();
+        assertThat(slots).as("first formation creates exactly configured slots").hasSize(5);
+        var boundOccupants = slots.values()
+                                  .stream()
+                                  .flatMap(slot -> slot.assignedNodeId().stream())
+                                  .collect(java.util.stream.Collectors.toSet());
+        assertThat(boundOccupants)
+                .as("first formation binds the present non-stopped occupants")
+                .containsExactlyInAnyOrder(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+    }
+
+    /// §2 leader change / re-activation (KV already has slots): the leader does NOT wipe and does NOT
+    /// rebind. Existing `slot→node` bindings persist across activation even when the ON_DUTY snapshot
+    /// presents a different membership (here a replacement candidate PEER_ORPHAN that the old
+    /// wipe-and-reseed would have bound into a slot, orphaning a live original).
+    @Test
+    void activate_leaderChange_preservesExistingBindings_noWipeNoRebind() throws InterruptedException {
+        clusterStore.seed(5);
+        // KV already holds 5 slots bound to the 5 keepers (survived a prior leader's formation).
+        var keepers = List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        for (var index = 0; index < keepers.size(); index++) {clusterStore.seedSlot(index, keepers.get(index));}
+        var epoch = 0L;
+        for (var id : keepers) {clusterStore.installOnDuty(id, epoch++);}
+        // The new leader's snapshot lists a replacement candidate (PEER_ORPHAN) ahead by seniority —
+        // the old reseed would rebind a slot to it. Create-once/preserve must ignore it.
+        clusterStore.installOnDuty(PEER_ORPHAN, 0L);
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
+                                            Set.of(PEER_ORPHAN, SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            6,
+                                            5,
+                                            Set.of(),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        ctm.activate();
+        Thread.sleep(150L);
+        var boundOccupants = clusterStore.slots()
+                                         .values()
+                                         .stream()
+                                         .flatMap(slot -> slot.assignedNodeId().stream())
+                                         .collect(java.util.stream.Collectors.toSet());
+        assertThat(boundOccupants)
+                .as("existing bindings persist across leader change — no rebind to the replacement candidate")
+                .containsExactlyInAnyOrder(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        assertThat(boundOccupants)
+                .as("the replacement candidate is never bound into a slot (no wipe-and-rebind)")
+                .doesNotContain(PEER_ORPHAN);
+    }
+
+    /// §6 scale-down: the leader removes the surplus slot ATOMS (index >= configured), unbinding
+    /// their occupants, but does NOT terminate them — the now-unbound occupants self-drain in Phase
+    /// 2 (§5). 5 slots bound, coreCount shrinks to 3 → slots 3-4 removed, ZERO terminations.
+    @Test
+    void scaleDown_removesSurplusSlotAtoms_doesNotTerminateOccupants() throws InterruptedException {
+        clusterStore.seed(5);
+        var keepers = List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        for (var index = 0; index < keepers.size(); index++) {clusterStore.seedSlot(index, keepers.get(index));}
+        var epoch = 0L;
+        for (var id : keepers) {clusterStore.installOnDuty(id, epoch++);}
+        ctm.activate();
+        Thread.sleep(100L);
+        // Scale down to 3 → slots 3 and 4 are surplus.
+        clusterStore.seed(3);
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            3,
+                                            Set.of(),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        ctm.onClusterConfigChanged();
+        Thread.sleep(200L);
+        assertThat(clusterStore.slots().keySet())
+                .as("surplus slot atoms [3,4] are removed on scale-down")
+                .doesNotContain(ProvisioningSlotKey.provisioningSlotKey("3"),
+                                ProvisioningSlotKey.provisioningSlotKey("4"));
+        assertThat(clusterStore.slots())
+                .as("the slot set shrinks to exactly configured=3")
+                .hasSize(3);
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("the leader does NOT terminate scale-down occupants — they self-drain via §5")
+                .isZero();
+    }
+
     private void publishOnDuty(Set<NodeId> onDuty, int coreCount) {
         publishOnDutyWithSource(onDuty, onDuty, coreCount);
     }
@@ -528,14 +472,6 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
         var deadline = System.currentTimeMillis() + 2000L;
 
         while (lifecycleManager.provisionCount.get() < atLeast && System.currentTimeMillis() < deadline) {
-            Thread.sleep(20L);
-        }
-    }
-
-    private void awaitTerminate(int atLeast) throws InterruptedException {
-        var deadline = System.currentTimeMillis() + 2000L;
-
-        while (lifecycleManager.terminateCount.get() < atLeast && System.currentTimeMillis() < deadline) {
             Thread.sleep(20L);
         }
     }
@@ -612,6 +548,13 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
 
         void installStopped(NodeId nodeId) {
             lifecycleKv.put(nodeId, NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED, "host-" + nodeId.id(), 5000));
+        }
+
+        /// Pre-seeds a durable slot already bound to `occupant` (simulates KV that survived a prior
+        /// leader's first-formation seed — the input to the create-once/preserve activation path).
+        void seedSlot(int index, NodeId occupant) {
+            slotKv.put(ProvisioningSlotKey.provisioningSlotKey(Integer.toString(index)),
+                       new ProvisioningSlotValue(1L, Long.MAX_VALUE, Option.some(occupant), 1L, Option.none()));
         }
 
         Option<ClusterConfigValue> current() {

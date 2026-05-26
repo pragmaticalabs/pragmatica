@@ -243,52 +243,6 @@ class ClusterTopologyManagerPhaseAwareTest {
         }
     }
 
-    @Nested class LifecycleRouting {
-        @Test
-        void ctm_drainPath_routesThroughLifecycleWriter() throws InterruptedException {
-            phase.set(ClusterPhase.NORMAL);
-            var ctm = createCtm();
-            // Surplus: 5 ON_DUTY, configured 3 → expect 2 drains via LifecycleWriter.
-            configStore.seed(3);
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                     Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                     5,
-                                                     3),
-                                   1L);
-            ctm.activate();
-            ctm.onClusterConfigChanged(); // bypass stability gate
-            // Wait for the async drain/terminate chain to complete.
-            var deadline = System.currentTimeMillis() + 3000L;
-            while (lifecycleWriter.drainCount.get() == 0 && System.currentTimeMillis() < deadline) {
-                Thread.sleep(20L);
-            }
-            assertThat(lifecycleWriter.drainCount.get())
-                    .as("CTM drain must route through LifecycleWriter — no direct KV write")
-                    .isGreaterThanOrEqualTo(1);
-        }
-
-        @Test
-        void ctm_decommissionPath_routesThroughLifecycleWriter() throws InterruptedException {
-            phase.set(ClusterPhase.NORMAL);
-            var ctm = createCtm();
-            configStore.seed(3);
-            snapshotSource.publish(StubView.stubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                     Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
-                                                     5,
-                                                     3),
-                                   1L);
-            ctm.activate();
-            ctm.onClusterConfigChanged();
-            var deadline = System.currentTimeMillis() + 3000L;
-            while (lifecycleWriter.decommissionCount.get() == 0 && System.currentTimeMillis() < deadline) {
-                Thread.sleep(20L);
-            }
-            assertThat(lifecycleWriter.decommissionCount.get())
-                    .as("CTM decommission must route through LifecycleWriter — no direct KV write")
-                    .isGreaterThanOrEqualTo(1);
-        }
-    }
-
     private record StubView(Set<NodeId> coreMemberIds,
                             Set<NodeId> onDutyMemberIds,
                             int healthyOnDutyCount,
