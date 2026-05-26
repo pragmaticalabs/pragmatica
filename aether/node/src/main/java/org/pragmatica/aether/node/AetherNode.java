@@ -1559,14 +1559,11 @@ public interface AetherNode extends ManageableNode {
         // (deactivate() drove the FSM to Dormant on METRICS-group reassignment even while quorum
         // held, never resuming — the leader-change detection-blindness bug). DeploymentMetricsScheduler
         // is leader-pinned via toggleDeploymentMetricsOnLeaderChange instead of task-assignment.
-        taskGroupActivator.register(controlLoop);
-        taskGroupActivator.register(ttmManager);
-        taskGroupActivator.register(rollbackManager);
-        taskGroupActivator.register(deploymentManager);
-        taskGroupActivator.register(abTestManager);
-        taskGroupActivator.register(clusterDeploymentManager);
-        loadBalancerManager.onPresent(taskGroupActivator::register);
-        taskGroupActivator.register(DelegatedStorageAdapter.noOp());
+        // #231 Step 2: the remaining control-plane DelegatedComponents (CDM, LoadBalancer, ControlLoop,
+        // TTMManager, RollbackManager, AbTestManager, DeploymentManager, StorageAdapter, StreamingCoordinator)
+        // are leader-pinned via their toggle*OnLeaderChange routes in collectRouteEntries / allEntries below.
+        // The TaskGroupActivator machinery stays present (assigning to nobody — harmless) until Step 3.
+        var delegatedStorageAdapter = DelegatedStorageAdapter.noOp();
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode);
         var managementServerRef = new java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>>(Option.empty());
@@ -1961,7 +1958,13 @@ public interface AetherNode extends ManageableNode {
                                                                              streamWatermarkTracker,
                                                                              streamSegmentIndex,
                                                                              streamSegmentReader);
-        taskGroupActivator.register(streamingCoordinator);
+        // #231 Step 2: StreamingCoordinator (STREAMING) and the STORAGE adapter are leader-pinned
+        // via toggle*OnLeaderChange routes appended below (after the collectRouteEntries leader-change
+        // block, preserving the required activation order ... → StreamingCoordinator → StorageAdapter).
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> toggleStreamingOnLeaderChange(change, streamingCoordinator)));
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> toggleStorageOnLeaderChange(change, delegatedStorageAdapter)));
         var streamForwardTransport = createStreamForwardTransport(clusterNode.network());
         var streamingConfig = config.streaming();
         var streamReadForwardMetrics = StreamReadForwardMetrics.inMemory();
@@ -2575,6 +2578,63 @@ public interface AetherNode extends ManageableNode {
         if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
     }
 
+    /// #231 Step 2 — leader-pin the remaining control-plane DelegatedComponents (formerly
+    /// task-assignment-driven via TaskGroupActivator.register). Each mirrors toggleCtmOnLeaderChange:
+    /// activate() on leader gain, deactivate() on leader loss. All return Promise<Unit> (discarded
+    /// like the template). CDM — TaskGroup DEPLOYMENT.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleCdmOnLeaderChange(LeaderNotification.LeaderChange change, ClusterDeploymentManager cdm) {
+        if (change.localNodeIsLeader()) {cdm.activate();} else {cdm.deactivate();}
+    }
+
+    /// LoadBalancer — TaskGroup DEPLOYMENT; routed AFTER CDM (reconciles CDM-produced routes).
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleLbOnLeaderChange(LeaderNotification.LeaderChange change, LoadBalancerManager lbm) {
+        if (change.localNodeIsLeader()) {lbm.activate();} else {lbm.deactivate();}
+    }
+
+    /// ControlLoop — TaskGroup SCALING.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleControlLoopOnLeaderChange(LeaderNotification.LeaderChange change, ControlLoop controlLoop) {
+        if (change.localNodeIsLeader()) {controlLoop.activate();} else {controlLoop.deactivate();}
+    }
+
+    /// TTMManager — TaskGroup SCALING.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleTtmOnLeaderChange(LeaderNotification.LeaderChange change, TTMManager ttmManager) {
+        if (change.localNodeIsLeader()) {ttmManager.activate();} else {ttmManager.deactivate();}
+    }
+
+    /// RollbackManager — TaskGroup SCALING.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleRollbackOnLeaderChange(LeaderNotification.LeaderChange change, RollbackManager rollbackManager) {
+        if (change.localNodeIsLeader()) {rollbackManager.activate();} else {rollbackManager.deactivate();}
+    }
+
+    /// AbTestManager — TaskGroup STRATEGIES.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleAbTestOnLeaderChange(LeaderNotification.LeaderChange change, AbTestManager abTestManager) {
+        if (change.localNodeIsLeader()) {abTestManager.activate();} else {abTestManager.deactivate();}
+    }
+
+    /// DeploymentManager (update/DeploymentManager) — leader-pinned control-plane singleton.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleDeploymentManagerOnLeaderChange(LeaderNotification.LeaderChange change, DeploymentManager deploymentManager) {
+        if (change.localNodeIsLeader()) {deploymentManager.activate();} else {deploymentManager.deactivate();}
+    }
+
+    /// StreamingCoordinator — TaskGroup STREAMING.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleStreamingOnLeaderChange(LeaderNotification.LeaderChange change, StreamingCoordinator streamingCoordinator) {
+        if (change.localNodeIsLeader()) {streamingCoordinator.activate();} else {streamingCoordinator.deactivate();}
+    }
+
+    /// StorageAdapter — TaskGroup STORAGE (harmless for noOp, correct for the real adapter).
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleStorageOnLeaderChange(LeaderNotification.LeaderChange change, DelegatedStorageAdapter storageAdapter) {
+        if (change.localNodeIsLeader()) {storageAdapter.activate();} else {storageAdapter.deactivate();}
+    }
+
     private static void startSwimOnQuorum(QuorumStateNotification notification,
                                           CoreSwimHealthDetector swimHealthDetector,
                                           ClusterNetwork network,
@@ -3022,8 +3082,27 @@ public interface AetherNode extends ManageableNode {
                                               change -> toggleCtmOnLeaderChange(change, clusterTopologyManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleReconcilerOnLeaderChange(change, lifecycleReconciler)));
+        // #231 Step 2 — CDM (DEPLOYMENT) leader-pinned. LoadBalancer (DEPLOYMENT) MUST be registered
+        // AFTER CDM since it reconciles routes CDM produces.
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> toggleCdmOnLeaderChange(change, clusterDeploymentManager)));
+        loadBalancerManager.onPresent(lbm -> entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                                                   change -> toggleLbOnLeaderChange(change, lbm))));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleDeploymentMetricsOnLeaderChange(change, deploymentMetricsScheduler)));
+        // #231 Step 2 — SCALING (ControlLoop, TTMManager, RollbackManager), STRATEGIES (AbTestManager),
+        // and DeploymentManager leader-pinned. ControlLoop did NOT previously receive LeaderChange
+        // (only QuorumStateNotification + MembershipDecision), so this toggle is additive — no duplicate.
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> toggleControlLoopOnLeaderChange(change, controlLoop)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> toggleTtmOnLeaderChange(change, ttmManager)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> toggleRollbackOnLeaderChange(change, rollbackManager)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> toggleAbTestOnLeaderChange(change, abTestManager)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> toggleDeploymentManagerOnLeaderChange(change, deploymentManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()
