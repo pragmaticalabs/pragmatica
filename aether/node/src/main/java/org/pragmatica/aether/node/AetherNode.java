@@ -606,6 +606,7 @@ public interface AetherNode extends ManageableNode {
                           Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier,
                           org.pragmatica.aether.deployment.audit.RecentCommandsBuffer recentCommandsBuffer,
                           Option<org.pragmatica.aether.deployment.reconciler.LifecycleReconciler> lifecycleReconciler,
+                          PhiObserver phiObserver,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -638,6 +639,7 @@ public interface AetherNode extends ManageableNode {
             public Promise<Unit> start() {
                 log.info("Starting Aether node {}", self());
                 snapshotCollector.start();
+                phiObserver.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::start);
 
@@ -660,6 +662,7 @@ public interface AetherNode extends ManageableNode {
                 ttmManager.stop();
                 scheduledTaskManager.stop();
                 snapshotCollector.stop();
+                phiObserver.stop();
                 SliceRuntime.clear();
                 streamPartitionManager.close();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
@@ -1126,6 +1129,14 @@ public interface AetherNode extends ManageableNode {
         peerObservationStore.setCapSupplier(() -> Math.max(periodicConfig.capFloor().getAsInt(),
                                                            clusterNode.topologyManager().topology().size() * 4));
         metricsCollector.addPongListener(pong -> metricsScheduler.onPongReceived(pong.sender()));
+        // #231 Stage 2a (OBSERVE only): LEADER-SIDE φ-accrual feed. The pong stream is
+        // leader-centric in steady state — only the leader sustains a full per-peer stream, so
+        // φ is fed ONLY while this node is the leader (followers' streams stall and would falsely
+        // climb to the suspicion ceiling). The observer self-gates on isLeaderSupplier and resets
+        // detector state across leadership transitions. PURE INSTRUMENTATION — nothing reads
+        // suspected()/phi() to drive action here; only heartbeat-feed + periodic logging.
+        var phiObserver = PhiObserver.phiObserver(config.self(), isLeaderSupplier);
+        metricsCollector.addPongListener(pong -> phiObserver.onPong(pong.sender()));
         // Leader/spokesman-gated aggregator ingest. Tier-1 pongs (from core members)
         // arrive when this node is the cluster leader; Tier-2 pongs (from governors)
         // arrive when this node is an active spokesman. Both feed the same
@@ -1543,8 +1554,11 @@ public interface AetherNode extends ManageableNode {
                                                         Option.some(deploymentManager),
                                                         Option.empty(),
                                                         Option.some(taskGroupAssignmentRegistry::ownerFor));
-        taskGroupActivator.register(metricsScheduler);
-        taskGroupActivator.register(deploymentMetricsScheduler);
+        // #231 Step 1: ClusterSyncScheduler (metricsScheduler) is quorum-driven via its
+        // onQuorumStateChange route below; task-assignment registration was redundant AND harmful
+        // (deactivate() drove the FSM to Dormant on METRICS-group reassignment even while quorum
+        // held, never resuming — the leader-change detection-blindness bug). DeploymentMetricsScheduler
+        // is leader-pinned via toggleDeploymentMetricsOnLeaderChange instead of task-assignment.
         taskGroupActivator.register(controlLoop);
         taskGroupActivator.register(ttmManager);
         taskGroupActivator.register(rollbackManager);
@@ -2052,6 +2066,7 @@ public interface AetherNode extends ManageableNode {
                                   effectivePhaseSupplier,
                                   recentCommandsBuffer,
                                   Option.some(lifecycleReconciler),
+                                  phiObserver,
                                   startTimeMs);
         nodeDeploymentManager.setShutdownCallback(node::stop);
         nodeDeploymentManager.setSelfReadySignal(nodeLifecycle::signalReady);
@@ -2162,6 +2177,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                       effectivePhaseSupplier,
                                                                                                       recentCommandsBuffer,
                                                                                                       Option.some(lifecycleReconciler),
+                                                                                                      phiObserver,
                                                                                                       startTimeMs);
                                                                             }
                                                                                 return node;
@@ -2539,6 +2555,14 @@ public interface AetherNode extends ManageableNode {
     @SuppressWarnings("JBCT-RET-01")
     private static void toggleCtmOnLeaderChange(LeaderNotification.LeaderChange change, ClusterTopologyManager ctm) {
         if (change.localNodeIsLeader()) {ctm.activate();} else {ctm.deactivate();}
+    }
+
+    /// #231 Step 1 — leader-pin DeploymentMetricsScheduler (the genuinely task-assignment-gated
+    /// METRICS component: its activate() calls startPinging() and onQuorumStateChange only stops
+    /// on DISAPPEARED, never self-starts). Mirrors toggleCtmOnLeaderChange so it runs on the leader.
+    @SuppressWarnings("JBCT-RET-01")
+    private static void toggleDeploymentMetricsOnLeaderChange(LeaderNotification.LeaderChange change, DeploymentMetricsScheduler s) {
+        if (change.localNodeIsLeader()) {s.activate();} else {s.deactivate();}
     }
 
     /// Phase 4 PR-D (cluster-convergence-reconciler) — activate the leader-only
@@ -2998,6 +3022,8 @@ public interface AetherNode extends ManageableNode {
                                               change -> toggleCtmOnLeaderChange(change, clusterTopologyManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleReconcilerOnLeaderChange(change, lifecycleReconciler)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> toggleDeploymentMetricsOnLeaderChange(change, deploymentMetricsScheduler)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()
