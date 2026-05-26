@@ -63,6 +63,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     private static final NodeId PEER_B = nodeId("node-b").unwrap();
     private static final NodeId PEER_C = nodeId("node-c").unwrap();
     private static final NodeId PEER_D = nodeId("node-d").unwrap();
+    private static final NodeId PEER_ORPHAN = nodeId("node-orphan").unwrap();
 
     private static final NodeInfo INFO_SELF = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("localhost", 5000).unwrap());
     private static final NodeInfo INFO_A = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("localhost", 5001).unwrap());
@@ -202,6 +203,11 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
     }
 
     private ClusterTopologyManager createCtmWithQuorum(java.util.function.BooleanSupplier inQuorum) {
+        return createCtm(() -> AetherValue.ClusterPhase.NORMAL, inQuorum);
+    }
+
+    private ClusterTopologyManager createCtm(java.util.function.Supplier<AetherValue.ClusterPhase> phase,
+                                             java.util.function.BooleanSupplier inQuorum) {
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
                                                       timeSpan(1).millis(),
                                                       AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
@@ -222,8 +228,100 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                                              LegacyLifecycleWriterFixture.create(clusterStore::apply,
                                                                                                   clusterStore::lifecycle,
                                                                                                   System::currentTimeMillis),
-                                                             () -> AetherValue.ClusterPhase.NORMAL,
+                                                             phase,
                                                              inQuorum);
+    }
+
+    /// PART 2 (periodic-reconcile surplus reaping — closes the reseed-only coverage gap). 5 slots
+    /// bound to SELF/A-D at coreCount=5; then an orphan ON_DUTY member (joined between reseeds, never
+    /// bound to a slot) appears in the snapshot. The periodic reconcile reaps the orphan down to
+    /// configured, and the 5 slot occupants (keepers) are NOT reaped.
+    @Test
+    void reconcile_reapsStableSurplusOccupant_notBoundToAnySlot() throws InterruptedException {
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
+        ctm.activate();
+        Thread.sleep(100L);
+        // An orphan reaches ON_DUTY between reseeds — present on the DECIDE plane, no slot binds it.
+        clusterStore.installOnDuty(PEER_ORPHAN, 9L);
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
+                                            6,
+                                            5,
+                                            Set.of(),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_ORPHAN, List.of()));
+        awaitTerminate(1);
+        assertThat(lifecycleManager.terminatedNodeIds())
+                .as("the un-slotted orphan is reaped down to configured")
+                .contains(PEER_ORPHAN);
+        assertThat(lifecycleManager.terminatedNodeIds())
+                .as("the 5 slot occupants (keepers) are NOT reaped")
+                .doesNotContain(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+    }
+
+    /// PART 2 SAFETY: below quorum, the periodic surplus reaping is suppressed — the cluster may be
+    /// a dissolving minority and CTM must not terminate occupants.
+    @Test
+    void reconcile_doesNotReapStableSurplus_whenBelowQuorum() throws InterruptedException {
+        var belowQuorumCtm = createCtmWithQuorum(() -> false);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
+        belowQuorumCtm.activate();
+        Thread.sleep(100L);
+        clusterStore.installOnDuty(PEER_ORPHAN, 9L);
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
+                                            6,
+                                            5,
+                                            Set.of(),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        belowQuorumCtm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_ORPHAN, List.of()));
+        Thread.sleep(200L);
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("below quorum — no surplus reaping (cluster may be dissolving)")
+                .isZero();
+    }
+
+    /// PART 2 SAFETY: outside NORMAL phase (recovery), the periodic surplus reaping is suppressed.
+    @Test
+    void reconcile_doesNotReapStableSurplus_whenPhaseNotNormal() throws InterruptedException {
+        // activate while NORMAL so 5 slots bind, then flip the phase to RECOVERING for the reconcile.
+        var phase = new AtomicReference<>(AetherValue.ClusterPhase.NORMAL);
+        var phaseAwareCtm = createCtm(phase::get, () -> true);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5);
+        phaseAwareCtm.activate();
+        Thread.sleep(100L);
+        phase.set(AetherValue.ClusterPhase.RECOVERING);
+        clusterStore.installOnDuty(PEER_ORPHAN, 9L);
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_ORPHAN),
+                                            6,
+                                            5,
+                                            Set.of(),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        phaseAwareCtm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_ORPHAN, List.of()));
+        Thread.sleep(200L);
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("non-NORMAL phase — reconcile suspended, no surplus reaping")
+                .isZero();
+    }
+
+    /// PART 2 SAFETY: a freshly-provisioned node bound to a slot via `assignOccupant` (recorded in
+    /// the in-flight slot-binding map) is NOT a stable surplus — it is an occupant, not an orphan.
+    /// Filling a deficit slot must never trip the surplus reaper into terminating the new node.
+    @Test
+    void reconcile_doesNotReapJustProvisionedOccupant_asSurplus() throws InterruptedException {
+        // 4-of-5 deficit: slot 4 EMPTY → provisioned + assigned. The new occupant must not be reaped.
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), 5);
+        ctm.activate();
+        ctm.onNodeReady(PEER_A);
+        awaitProvision(1);
+        Thread.sleep(150L);
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("a just-provisioned slot occupant is not mistaken for a stable surplus orphan")
+                .isZero();
     }
 
     @Test
@@ -258,18 +356,20 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
         assertThat(clusterStore.currentVersion()).isEqualTo(before);
     }
 
-    /// Option B safety invariant: surplus slots whose occupants are MANUAL-source are NEVER
-    /// auto-terminated — CTM must not kill an operator-seeded node on scale-down.
+    /// Slot set is authoritative: surplus slots are reaped regardless of occupant provisioning
+    /// provenance. A MANUAL-source surplus occupant (operator-seeded but un-slotted-as-surplus) is
+    /// now reaped on scale-down — operator nodes are expected to be modeled within the slot set, not
+    /// as out-of-band un-slotted nodes that linger above target.
     @Test
-    void reconcile_terminatesOnlyCtmProvisionedSurplus_whenSurplusIsManual() throws InterruptedException {
-        // coreCount 3 → slots 3-4 surplus, but their occupants (PEER_C, PEER_D) are MANUAL.
+    void reconcile_terminatesSurplus_evenWhenManualSource() throws InterruptedException {
+        // coreCount 3 → slots 3-4 surplus; their occupants (PEER_C, PEER_D) are MANUAL-source.
         publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(), 3);
         ctm.activate();
         ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        Thread.sleep(100L);
+        awaitTerminate(1);
         assertThat(lifecycleManager.terminateCount.get())
-                .as("MANUAL-source surplus occupants are NOT auto-terminated")
-                .isZero();
+                .as("MANUAL-source surplus occupants are now reaped (slot set authoritative, provenance shield removed)")
+                .isGreaterThanOrEqualTo(1);
     }
 
     @Test
@@ -283,15 +383,17 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
         assertThat(lifecycleManager.terminatedNodeIds()).isSubsetOf(Set.of(PEER_C, PEER_D));
     }
 
-    /// Option B safety invariant: an empty CTM-provisioned set (legacy / UNKNOWN projection) means
-    /// no surplus occupant is reapable — selection refuses to terminate anything (conservative).
+    /// Slot set is authoritative: an empty CTM-provisioned set (legacy / UNKNOWN-source projection)
+    /// no longer shields surplus slots — every surplus slot is reaped regardless of provenance.
     @Test
-    void reconcile_doesNotTerminate_whenAllCandidatesUnknownProvisioningSource() throws InterruptedException {
+    void reconcile_terminatesSurplus_evenWhenUnknownProvisioningSource() throws InterruptedException {
         publishOnDutyWithSource(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), Set.of(), 3);
         ctm.activate();
         ctm.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)));
-        Thread.sleep(100L);
-        assertThat(lifecycleManager.terminateCount.get()).isZero();
+        awaitTerminate(1);
+        assertThat(lifecycleManager.terminateCount.get())
+                .as("UNKNOWN-source surplus occupants are now reaped (provenance shield removed)")
+                .isGreaterThanOrEqualTo(1);
     }
 
     /// §5.4 highest-index removal: scale-down 5→4 removes slot 4. Its occupant is the youngest
