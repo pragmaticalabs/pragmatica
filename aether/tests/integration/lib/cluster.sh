@@ -422,7 +422,19 @@ rotate_mgmt_entry_point() {
             return 0
         fi
     done
-    log_warn "rotate_mgmt_entry_point: no surviving core node on ports ${base_port}..${base_port}+$((NODE_COUNT - 1))" >&2
+    # Seed host-port range exhausted: all five compose seeds may have been replaced
+    # by CTM KSUID containers (destructive suites), which publish their mgmt port to
+    # Docker-chosen ephemeral host ports outside MGMT_PORT..MGMT_PORT+N-1. Discover a
+    # live replacement via the Docker label index so management stays reachable
+    # through full seed replacement. See _discover_endpoint_by_label (lib/common.sh).
+    local discovered
+    if discovered=$(_discover_endpoint_by_label); then
+        export MGMT_ENTRY_POINT="$discovered"
+        export CLUSTER_ENDPOINT="$discovered"
+        log_info "Rotated MGMT_ENTRY_POINT to ${discovered} (via docker label discovery — seeds replaced)" >&2
+        return 0
+    fi
+    log_warn "rotate_mgmt_entry_point: no surviving core node on ports ${base_port}..${base_port}+$((NODE_COUNT - 1)) and no labeled container reachable" >&2
     return 1
 }
 

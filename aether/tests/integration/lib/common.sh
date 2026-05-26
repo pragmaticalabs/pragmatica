@@ -72,13 +72,26 @@ aether_failover() {
             done
         else
             local base_port="${MGMT_PORT}"
+            local found_port=""
             for i in $(seq 0 $((NODE_COUNT - 1))); do
                 local port=$((base_port + i))
                 if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "http://${TARGET_HOST}:${port}/health/live" >/dev/null 2>&1; then
                     host_port="${TARGET_HOST}:${port}"
+                    found_port="yes"
                     break
                 fi
             done
+            # Seed range exhausted — the seeds may all have been replaced by CTM
+            # KSUID containers on ephemeral host ports (destructive suites). Discover
+            # a live one via the Docker label index so the CLI keeps working through
+            # full seed replacement. _discover_endpoint_by_label prints an http:// URL;
+            # strip the scheme for the `aether -c host:port` form below.
+            if [ -z "$found_port" ]; then
+                local discovered
+                if discovered=$(_discover_endpoint_by_label); then
+                    host_port="${discovered#http://}"
+                fi
+            fi
         fi
     fi
     local cli_tls_flag=""
@@ -145,9 +158,86 @@ log_step()  { echo -e "${BLUE}[STEP]${NC}  $(_log_prefix)$1"; }
 # HTTP helpers — management API
 # Retained for tests that need raw HTTP access (status codes, custom headers)
 # ---------------------------------------------------------------------------
+# Discover a live cluster management endpoint via the Docker daemon label index,
+# bypassing the fixed seed host-port range (MGMT_PORT..MGMT_PORT+N-1).
+#
+# WHY this exists: destructive suites (02-chaos, 03-scaling) kill compose-seed
+# nodes; CTM auto-heals by provisioning KSUID-named replacement containers
+# (aether-<cluster>-node-<ksuid>, label aether.provisioned-by=ctm). Over a suite
+# ALL five original seeds can be replaced. Replacements publish their in-container
+# management port (8080) to an *ephemeral* host port chosen by Docker
+# (DockerComputeProvider.buildRunCommand `-p 8080`), NOT to the deterministic
+# 5161..5165 seed slots. So once every seed is gone, the seed-range port scan in
+# _resolve_live_endpoint / aether_failover / rotate_mgmt_entry_point finds nothing
+# and every management call returns '' (http_code 000) — the `got ''` cascade.
+#
+# This helper asks the remote Docker daemon for any RUNNING container labeled
+# `aether.cluster=${CLUSTER_ID}`, resolves its host-published 8080/tcp port via
+# `docker port`, and prints `http://${TARGET_HOST}:<host-port>` for the first one
+# that answers /health/live. Every node (seed OR replacement) runs management on
+# in-container port 8080 (Dockerfile EXPOSE 8080 + MANAGEMENT_PORT=8080), so this
+# survives arbitrary seed replacement.
+#
+# Docker/remote only: cloud nodes have per-VM public IPs (rotate_mgmt_entry_point
+# handles cloud failover via cloud_public_ip). Returns the URL on stdout / rc 0 on
+# success; rc 1 (no output) when no live labeled container is reachable.
+#
+# Result is cached for DISCOVER_TTL seconds (default 5) so the common case — every
+# api_get calling _resolve_live_endpoint — doesn't pay an SSH round-trip per call.
+# The cache is invalidated implicitly because the cached URL is re-probed with a
+# cheap local curl before reuse.
+_LABEL_DISCOVERED_ENDPOINT=""
+_LABEL_DISCOVERED_AT=0
+_discover_endpoint_by_label() {
+    [ "${ENV_TYPE:-docker}" = "cloud" ] && return 1
+    local cluster="${CLUSTER_ID:-}"
+    [ -z "$cluster" ] && return 1
+
+    # Cache hit: reuse a previously discovered endpoint if it still answers and the
+    # entry is fresh. The local curl probe is ~50ms vs a ~300ms+ SSH round-trip.
+    local now ttl="${DISCOVER_TTL:-5}"
+    now=$(date +%s)
+    if [ -n "$_LABEL_DISCOVERED_ENDPOINT" ] && [ $((now - _LABEL_DISCOVERED_AT)) -lt "$ttl" ]; then
+        if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${_LABEL_DISCOVERED_ENDPOINT}/health/live" >/dev/null 2>&1; then
+            echo "$_LABEL_DISCOVERED_ENDPOINT"
+            return 0
+        fi
+    fi
+
+    # Single SSH round-trip: list running containers for this cluster and, for each,
+    # emit the host port that maps to in-container 8080/tcp. `docker port <name> 8080/tcp`
+    # prints lines like `0.0.0.0:33191` / `[::]:33191`; we take the IPv4 line's port.
+    # Compose seeds map 8080 to their fixed slot (e.g. node-1 -> 5161); CTM
+    # replacements map to a Docker-chosen ephemeral host port. Either way the host
+    # port is reachable from the test runner via ${TARGET_HOST}:<port>.
+    local listing
+    listing=$(remote_exec "docker ps --filter 'label=aether.cluster=${cluster}' --format '{{.Names}}' | while read -r n; do hp=\$(docker port \"\$n\" 8080/tcp 2>/dev/null | grep -m1 '0\\.0\\.0\\.0:' | sed 's/.*://'); [ -n \"\$hp\" ] && echo \"\$hp\"; done" 2>/dev/null) || return 1
+    [ -z "$listing" ] && return 1
+
+    local hp endpoint
+    while IFS= read -r hp; do
+        [ -z "$hp" ] && continue
+        endpoint="http://${TARGET_HOST}:${hp}"
+        if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
+            _LABEL_DISCOVERED_ENDPOINT="$endpoint"
+            _LABEL_DISCOVERED_AT="$now"
+            echo "$endpoint"
+            return 0
+        fi
+    done <<< "$listing"
+    return 1
+}
+
 # Resolve an endpoint that actually responds to /health/live. Preserves the pinned
 # CLUSTER_ENDPOINT when it's up; rotates once to any live core node when the pinned
 # endpoint is dead (e.g., during chaos-suite recovery where the pinned node was killed).
+#
+# Resolution order:
+#   1. pinned CLUSTER_ENDPOINT (happy path — preserves forwarding-bug detection)
+#   2. fixed seed host-port range MGMT_PORT..MGMT_PORT+N-1 (surviving compose seeds)
+#   3. Docker label discovery (CTM KSUID replacements with ephemeral host ports) —
+#      the only path that survives full seed replacement; see
+#      _discover_endpoint_by_label.
 _resolve_live_endpoint() {
     if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
         echo "${CLUSTER_ENDPOINT}"
@@ -162,6 +252,14 @@ _resolve_live_endpoint() {
             return 0
         fi
     done
+    # Seed range exhausted — fall back to Docker label discovery so a cluster whose
+    # seeds were all replaced by CTM (KSUID containers on ephemeral host ports) is
+    # still reachable for management.
+    local discovered
+    if discovered=$(_discover_endpoint_by_label); then
+        echo "$discovered"
+        return 0
+    fi
     echo "${CLUSTER_ENDPOINT}"  # fall back; caller will see curl failure
     return 1
 }
