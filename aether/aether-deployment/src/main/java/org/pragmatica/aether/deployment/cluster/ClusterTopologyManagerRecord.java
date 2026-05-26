@@ -909,7 +909,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void convergeSlotOccupancy(NodeReconcilerState currentState, MembershipView view, int configured) {
         var nowMs = nowMs();
         var slots = indexedSlots();
-        var freedIndices = freeDeadSlots(slots, view, nowMs);
+        var freedDead = freeDeadSlots(slots, view, nowMs);
+        var freedStale = freeStaleFillingSlots(slots, view, nowMs);
+        var freedIndices = Stream.concat(freedDead.stream(), freedStale.stream())
+                                 .collect(Collectors.toUnmodifiableSet());
         var healthy = countHealthy(slots, view, nowMs);
         var emptyToFill = selectEmptySlotsToFill(slots, view, nowMs, freedIndices);
         observeRealActualForStability(healthy);
@@ -917,10 +920,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var remainingEmpty = emptyToFill.stream()
                                         .filter(slot -> !boundThisPass.contains(slot.index()))
                                         .toList();
-        log.info("CTM reconcile(slot): configured={} healthy={} freedDead={} emptyToFill={} boundExisting={} remainingEmpty={} occupancy={}",
+        log.info("CTM reconcile(slot): configured={} healthy={} freedDead={} freedStale={} emptyToFill={} boundExisting={} remainingEmpty={} occupancy={}",
                   configured,
                   healthy,
-                  freedIndices.size(),
+                  freedDead.size(),
+                  freedStale.size(),
                   emptyToFill.size(),
                   boundThisPass.size(),
                   remainingEmpty.size(),
@@ -1284,6 +1288,53 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return dead.stream()
                    .map(IndexedSlot::index)
                    .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// Reclaims STALE-FILLING slots (assigned slots whose occupant is stuck non-terminal past the
+    /// FILLING-marker deadline and has left the connected set). Honors the deadline contract the
+    /// unassigned path (classifyEmptyOrFilling) already enforces but classifyOccupied does not, WITHOUT
+    /// letting CTM decide liveness from SWIM directly: a slot is reclaimed only when its occupant has
+    /// ALREADY left connectedCoreMembers() AND its stamped deadline lapsed. A connected-but-slow JOINING
+    /// node KEEPS its slot (matches the §5 self-drain live-occupant predicate) — this is the safety gate
+    /// that distinguishes this from the removed leader-side surplus reaper (which reaped LIVE nodes →
+    /// collapse). Reuses freeSlot, so lineage/epoch/terminate match the DEAD path. Returns freed indices.
+    private Set<Integer> freeStaleFillingSlots(List<IndexedSlot> slots, MembershipView view, long nowMs) {
+        var connected = connectedCoreMembers();
+        var stale = slots.stream()
+                         .filter(slot -> isStaleFilling(slot, view, nowMs, connected))
+                         .toList();
+
+        if (stale.isEmpty()) {return Set.of();}
+
+        stale.forEach(this::freeSlot);
+
+        return stale.stream()
+                    .map(IndexedSlot::index)
+                    .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// A slot is stale-FILLING iff it is occupied by a DISCONNECTED occupant, classifies FILLING, and
+    /// its stamped deadline has lapsed. The connected-occupant check is the safety gate: a live (still
+    /// connected) occupant keeps its slot — only a disconnected stuck one is reclaimed.
+    private boolean isStaleFilling(IndexedSlot slot, MembershipView view, long nowMs, Set<NodeId> connected) {
+        var value = slot.value();
+
+        return isDisconnectedOccupant(value, connected)
+               && classifyOccupancy(value, view, nowMs) == SlotOccupancy.FILLING
+               && isDeadlineLapsed(value, nowMs);
+    }
+
+    /// The slot is occupied AND its occupant has already left the connected set.
+    private boolean isDisconnectedOccupant(ProvisioningSlotValue value, Set<NodeId> connected) {
+        return value.assignedNodeId()
+                    .map(occupant -> !connected.contains(occupant))
+                    .or(false);
+    }
+
+    /// The stamped FILLING-marker deadline has lapsed. `deadlineMs > 0` mirrors the unassigned-path
+    /// `spawnedAtMs > 0` intent — never reclaim a slot with no deadline stamped.
+    private static boolean isDeadlineLapsed(ProvisioningSlotValue value, long nowMs) {
+        return value.deadlineMs() > 0L && value.deadlineMs() < nowMs;
     }
 
     @Contract
