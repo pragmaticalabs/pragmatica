@@ -47,11 +47,9 @@ import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
-import org.pragmatica.aether.deployment.delegation.TaskAssignmentCoordinator;
-import org.pragmatica.aether.deployment.delegation.TaskGroupActivator;
 import org.pragmatica.aether.deployment.membership.ReachabilityAggregator;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.aether.slice.delegation.TaskGroupAssignmentRegistry;
+import org.pragmatica.aether.slice.delegation.TaskAssignmentError;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
@@ -194,6 +192,7 @@ import org.pragmatica.consensus.net.quic.QuicPeerStateListener;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -288,7 +287,7 @@ public interface AetherNode extends ManageableNode {
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
-    TaskAssignmentCoordinator taskAssignmentCoordinator();
+    Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
     int connectedNodeCount();
@@ -583,8 +582,6 @@ public interface AetherNode extends ManageableNode {
                           StreamReadRouter streamReadRouter,
                           ConsumerGroupCoordinator consumerGroupCoordinator,
                           ConsumerGroupRegistry consumerGroupRegistry,
-                          TaskAssignmentCoordinator taskAssignmentCoordinator,
-                          TaskGroupAssignmentRegistry taskGroupAssignmentRegistry,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
@@ -628,6 +625,11 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Option<ClusterGenerationSnapshot> currentGenerationSnapshot() {
                 return generationSnapshotSupplier.get();
+            }
+
+            @Override
+            public Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver() {
+                return group -> clusterNode.leaderManager().leader().toResult(TaskAssignmentError.notAssigned(group));
             }
 
             @Override
@@ -1007,11 +1009,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                              provider,
                                                                                                                                                              config.appHttp()
                                                                                                                                                                    .port()));
-        var taskGroupActivator = TaskGroupActivator.taskGroupActivator(config.self(), clusterNode);
-        var taskAssignmentCoordinator = TaskAssignmentCoordinator.taskAssignmentCoordinator(config.self(),
-                                                                                            clusterNode,
-                                                                                            kvStore,
-                                                                                            clusterNode.topologyManager());
         var discoveryProvider = config.environment().flatMap(EnvironmentIntegration::discovery);
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
@@ -1538,7 +1535,11 @@ public interface AetherNode extends ManageableNode {
                                                                                             snapshotSupplier);
         var serverBossGroup = clusterNode.network().server().map(org.pragmatica.net.tcp.Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server().map(org.pragmatica.net.tcp.Server::workerGroup);
-        var taskGroupAssignmentRegistry = TaskGroupAssignmentRegistry.taskGroupAssignmentRegistry(kvStore);
+        // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is
+        // the current leader. Resolver mirrors the former registry's no-owner failure (notAssigned)
+        // when no leader is committed, using the same leaderManager source as the toggle*OnLeaderChange routes.
+        Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver =
+            group -> clusterNode.leaderManager().leader().toResult(TaskAssignmentError.notAssigned(group));
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         config.timeouts().forwarding(),
                                                         config.self(),
@@ -1553,16 +1554,15 @@ public interface AetherNode extends ManageableNode {
                                                         serverWorkerGroup,
                                                         Option.some(deploymentManager),
                                                         Option.empty(),
-                                                        Option.some(taskGroupAssignmentRegistry::ownerFor));
+                                                        Option.some(taskGroupOwnerResolver));
         // #231 Step 1: ClusterSyncScheduler (metricsScheduler) is quorum-driven via its
         // onQuorumStateChange route below; task-assignment registration was redundant AND harmful
         // (deactivate() drove the FSM to Dormant on METRICS-group reassignment even while quorum
         // held, never resuming — the leader-change detection-blindness bug). DeploymentMetricsScheduler
         // is leader-pinned via toggleDeploymentMetricsOnLeaderChange instead of task-assignment.
-        // #231 Step 2: the remaining control-plane DelegatedComponents (CDM, LoadBalancer, ControlLoop,
+        // #231 Step 2: the remaining control-plane components (CDM, LoadBalancer, ControlLoop,
         // TTMManager, RollbackManager, AbTestManager, DeploymentManager, StorageAdapter, StreamingCoordinator)
         // are leader-pinned via their toggle*OnLeaderChange routes in collectRouteEntries / allEntries below.
-        // The TaskGroupActivator machinery stays present (assigning to nobody — harmless) until Step 3.
         var delegatedStorageAdapter = DelegatedStorageAdapter.noOp();
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode);
@@ -1600,9 +1600,6 @@ public interface AetherNode extends ManageableNode {
                                                 loadBalancerManager,
                                                 (TopologyObserver) clusterNode.topologyManager(),
                                                 clusterTopologyManager,
-                                                taskGroupActivator,
-                                                taskAssignmentCoordinator,
-                                                taskGroupAssignmentRegistry,
                                                 consumerGroupCoordinator,
                                                 consumerGroupRegistry,
                                                 membershipFsm,
@@ -1993,7 +1990,7 @@ public interface AetherNode extends ManageableNode {
                                                  streamForwardClient::onReadForwardResponse));
         registerStreamForwardExtensions(resourceProviderSetup,
                                         streamForwardClient,
-                                        taskGroupAssignmentRegistry,
+                                        taskGroupOwnerResolver,
                                         streamPartitionManager,
                                         serializer,
                                         deserializer);
@@ -2046,8 +2043,6 @@ public interface AetherNode extends ManageableNode {
                                   streamReadRouter,
                                   consumerGroupCoordinator,
                                   consumerGroupRegistry,
-                                  taskAssignmentCoordinator,
-                                  taskGroupAssignmentRegistry,
                                   storageSetups,
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
@@ -2157,8 +2152,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                       streamReadRouter,
                                                                                                       consumerGroupCoordinator,
                                                                                                       consumerGroupRegistry,
-                                                                                                      taskAssignmentCoordinator,
-                                                                                                      taskGroupAssignmentRegistry,
                                                                                                       storageSetups,
                                                                                                       clusterTopologyManager,
                                                                                                       eventLoopMetricsCollector,
@@ -2578,8 +2571,8 @@ public interface AetherNode extends ManageableNode {
         if (change.localNodeIsLeader()) {reconciler.activate();} else {reconciler.deactivate();}
     }
 
-    /// #231 Step 2 — leader-pin the remaining control-plane DelegatedComponents (formerly
-    /// task-assignment-driven via TaskGroupActivator.register). Each mirrors toggleCtmOnLeaderChange:
+    /// #231 Step 2 — leader-pin the remaining control-plane components. Each mirrors
+    /// toggleCtmOnLeaderChange:
     /// activate() on leader gain, deactivate() on leader loss. All return Promise<Unit> (discarded
     /// like the template). CDM — TaskGroup DEPLOYMENT.
     @SuppressWarnings("JBCT-RET-01")
@@ -2969,9 +2962,6 @@ public interface AetherNode extends ManageableNode {
                                                                     Option<LoadBalancerManager> loadBalancerManager,
                                                                     TopologyObserver topologyManager,
                                                                     ClusterTopologyManager clusterTopologyManager,
-                                                                    TaskGroupActivator taskGroupActivator,
-                                                                    TaskAssignmentCoordinator taskAssignmentCoordinator,
-                                                                    TaskGroupAssignmentRegistry taskGroupAssignmentRegistry,
                                                                     ConsumerGroupCoordinator consumerGroupCoordinator,
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
                                                                     MembershipFsm membershipFsm,
@@ -3051,10 +3041,6 @@ public interface AetherNode extends ManageableNode {
                                                                       lbm::onNodeRoutesRemove));
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
-        kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentPut);
-        kvRouterBuilder.onRemove(AetherKey.TaskAssignmentKey.class, taskGroupActivator::onTaskAssignmentRemove);
-        kvRouterBuilder.onPut(AetherKey.TaskAssignmentKey.class, taskGroupAssignmentRegistry::onTaskAssignmentPut);
-        kvRouterBuilder.onRemove(AetherKey.TaskAssignmentKey.class, taskGroupAssignmentRegistry::onTaskAssignmentRemove);
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
@@ -3074,8 +3060,6 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                               notification -> routeQuorumDisappearedToSelfDrain(notification,
                                                                                                 selfDrainCoordinator)));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              taskAssignmentCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               consumerGroupCoordinator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -3151,12 +3135,6 @@ public interface AetherNode extends ManageableNode {
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                               clusterTopologyManager::onSelfShutdown));
-        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
-                                              taskAssignmentCoordinator::onMembershipDecision));
-        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
-                                              taskAssignmentCoordinator::onMembershipDecision));
-        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
-                                              taskAssignmentCoordinator::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
                                               metricsScheduler::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
@@ -3434,13 +3412,13 @@ public interface AetherNode extends ManageableNode {
 
     private static void registerStreamForwardExtensions(ResourceProviderSetup resourceProviderSetup,
                                                         StreamForwardClient forwardClient,
-                                                        TaskGroupAssignmentRegistry registry,
+                                                        Fn1<Result<NodeId>, TaskGroup> ownerResolver,
                                                         StreamPartitionManager streamPartitionManager,
                                                         Serializer serializer,
                                                         Deserializer deserializer) {
         resourceProviderSetup.spiProvider().onPresent(spi -> registerForwardExtensionsOnSpi(spi,
                                                                                             forwardClient,
-                                                                                            registry,
+                                                                                            ownerResolver,
                                                                                             streamPartitionManager,
                                                                                             serializer,
                                                                                             deserializer));
@@ -3448,7 +3426,7 @@ public interface AetherNode extends ManageableNode {
 
     private static void registerForwardExtensionsOnSpi(SpiResourceProvider spi,
                                                        StreamForwardClient forwardClient,
-                                                       TaskGroupAssignmentRegistry registry,
+                                                       Fn1<Result<NodeId>, TaskGroup> ownerResolver,
                                                        StreamPartitionManager streamPartitionManager,
                                                        Serializer serializer,
                                                        Deserializer deserializer) {
@@ -3457,7 +3435,7 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(Serializer.class, serializer);
         spi.registerExtension(Deserializer.class, deserializer);
         spi.registerExtension(StreamPublisherFactory.GovernorResolver.class,
-                              new StreamPublisherFactory.GovernorResolver(() -> registry.ownerFor(TaskGroup.STREAMING)
+                              new StreamPublisherFactory.GovernorResolver(() -> ownerResolver.apply(TaskGroup.STREAMING)
                                                                                         .option()));
     }
 

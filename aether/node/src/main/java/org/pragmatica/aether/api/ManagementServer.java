@@ -43,7 +43,6 @@ import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.api.routes.StorageRoutes;
 import org.pragmatica.aether.api.routes.StreamRoutes;
-import org.pragmatica.aether.api.routes.TaskRoutes;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.Pipeline;
@@ -289,7 +288,6 @@ class ManagementServerImpl implements ManagementServer {
                                                    nodeSupplier.get().consumerGroupRegistry()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(ApiKeyRoutes.apiKeyRoutes(nodeSupplier));
-        routeSources.add(TaskRoutes.taskRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
@@ -748,7 +746,7 @@ class ManagementServerImpl implements ManagementServer {
                                          long startTime,
                                          TaskGroup group) {
         var node = nodeSupplier.get();
-        var ownerResult = node.taskGroupAssignmentRegistry().ownerFor(group);
+        var ownerResult = node.taskGroupOwnerResolver().apply(group);
 
         if (ownerResult.isFailure()) {return false;}
 
@@ -826,7 +824,7 @@ class ManagementServerImpl implements ManagementServer {
                                               forwardingTimeouts.retryDelay().millis(),
                                               forwardingTimeouts.maxRetries(),
                                               () -> coreNodeIds(node),
-                                              node.taskGroupAssignmentRegistry()::ownerFor,
+                                              node.taskGroupOwnerResolver(),
                                               () -> nodeSupplier.get()
                                                                 .leader());
         var wrapped = Option.<HttpForwarder> some(fwd);

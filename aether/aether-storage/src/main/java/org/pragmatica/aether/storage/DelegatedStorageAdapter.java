@@ -4,8 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.storage;
 
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -20,7 +18,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-public final class DelegatedStorageAdapter implements DelegatedComponent {
+public final class DelegatedStorageAdapter {
     private static final Logger log = LoggerFactory.getLogger(DelegatedStorageAdapter.class);
 
     private final DemotionManager demotionManager;
@@ -90,7 +88,7 @@ public final class DelegatedStorageAdapter implements DelegatedComponent {
         };
     }
 
-    @Override public Promise<Unit> activate() {
+    public Promise<Unit> activate() {
         if (active.compareAndSet(false, true)) {
             demotionManager.activate();
             garbageCollector.activate();
@@ -99,7 +97,7 @@ public final class DelegatedStorageAdapter implements DelegatedComponent {
         return Promise.success(unit());
     }
 
-    @Override public Promise<Unit> deactivate() {
+    public Promise<Unit> deactivate() {
         if (active.compareAndSet(true, false)) {
             garbageCollector.deactivate();
             demotionManager.deactivate();
@@ -108,11 +106,7 @@ public final class DelegatedStorageAdapter implements DelegatedComponent {
         return Promise.success(unit());
     }
 
-    @Override public TaskGroup taskGroup() {
-        return TaskGroup.STORAGE;
-    }
-
-    @Override public boolean isActive() {
+    public boolean isActive() {
         return active.get();
     }
 }

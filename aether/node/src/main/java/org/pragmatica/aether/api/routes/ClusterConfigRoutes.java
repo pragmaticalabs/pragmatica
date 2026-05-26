@@ -238,8 +238,8 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static Option<LoadBalancerStatusInfo> buildLoadBalancerInfo(ManageableNode node) {
-        return node.taskGroupAssignmentRegistry()
-                   .ownerFor(TaskGroup.DEPLOYMENT)
+        return node.taskGroupOwnerResolver()
+                   .apply(TaskGroup.DEPLOYMENT)
                    .option()
                    .flatMap(ownerId -> node.topologyManager()
                                            .get(ownerId)

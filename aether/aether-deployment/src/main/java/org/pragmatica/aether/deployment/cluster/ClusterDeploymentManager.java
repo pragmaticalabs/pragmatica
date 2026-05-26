@@ -24,8 +24,6 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Vers
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.generation.ClusterGenerationSnapshot;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -74,7 +72,10 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-public interface ClusterDeploymentManager extends DelegatedComponent {
+public interface ClusterDeploymentManager {
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
     @Contract
     @MessageReceiver
     void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
@@ -370,11 +371,6 @@ public interface ClusterDeploymentManager extends DelegatedComponent {
             ctx.dispatch(new Deactivate());
 
             return Promise.unitPromise();
-        }
-
-        @Override
-        public TaskGroup taskGroup() {
-            return TaskGroup.DEPLOYMENT;
         }
 
         @Override

@@ -64,7 +64,7 @@ import java.util.List;
 /// Consumers: any code that needs to react to canonical cluster membership changes — notably
 /// `ClusterDeploymentManager` (workload reassignment), `ClusterTopologyManager` (capacity
 /// anchoring), `LoadBalancerManager` (target table), `HttpForwarder` (routing cleanup),
-/// `SliceInvoker`, `TaskAssignmentCoordinator`, `ClusterSyncCollector`,
+/// `SliceInvoker`, `ClusterSyncCollector`,
 /// `DeploymentMetricsCollector`, `ControlLoop`, `AppHttpServer`, `DHTTopologyListener`.
 public sealed interface MembershipDecision extends Message.Local {
     /// Sentinel `logIndex` for cold-replay or unwired emission sites. Subscribers reading

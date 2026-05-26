@@ -1435,26 +1435,6 @@ import static org.pragmatica.lang.Option.none;
         }
     }
 
-    record TaskAssignmentValue(NodeId assignedTo, long assignedAtMs, AssignmentStatus status, String failureReason) implements AetherValue {
-        @Codec public enum AssignmentStatus {
-            ASSIGNED,
-            ACTIVE,
-            FAILED
-        }
-
-        public static TaskAssignmentValue taskAssignmentValue(NodeId assignedTo) {
-            return new TaskAssignmentValue(assignedTo, System.currentTimeMillis(), AssignmentStatus.ASSIGNED, "");
-        }
-
-        public TaskAssignmentValue withStatus(AssignmentStatus newStatus) {
-            return new TaskAssignmentValue(assignedTo, assignedAtMs, newStatus, failureReason);
-        }
-
-        public TaskAssignmentValue withFailure(String reason) {
-            return new TaskAssignmentValue(assignedTo, assignedAtMs, AssignmentStatus.FAILED, reason);
-        }
-    }
-
     record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt) implements AetherValue {
         public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId) {
             return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis());

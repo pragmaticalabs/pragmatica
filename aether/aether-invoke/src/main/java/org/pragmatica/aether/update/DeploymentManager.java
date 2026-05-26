@@ -6,19 +6,23 @@ package org.pragmatica.aether.update;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.List;
 
 
-public interface DeploymentManager extends DelegatedComponent {
+public interface DeploymentManager {
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
     Result<Deployment> start(String blueprintId,
                              Version newVersion,
                              DeploymentStrategy strategy,

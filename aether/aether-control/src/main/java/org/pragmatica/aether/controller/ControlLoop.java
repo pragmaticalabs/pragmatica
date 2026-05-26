@@ -11,8 +11,6 @@ import org.pragmatica.aether.controller.fsm.ControlLoopEvents.Deactivate;
 import org.pragmatica.aether.controller.fsm.ControlLoopState;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
@@ -51,7 +49,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@Contract public interface ControlLoop extends DelegatedComponent {
+@Contract public interface ControlLoop {
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
     @MessageReceiver void onMembershipDecision(MembershipDecision decision);
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
@@ -130,10 +131,6 @@ import org.slf4j.LoggerFactory;
             log.info("Node {} deactivating control loop", ctx.self());
             fsm.dispatch(new Deactivate());
             return Promise.unitPromise();
-        }
-
-        @Override public TaskGroup taskGroup() {
-            return TaskGroup.SCALING;
         }
 
         @Override public boolean isActive() {

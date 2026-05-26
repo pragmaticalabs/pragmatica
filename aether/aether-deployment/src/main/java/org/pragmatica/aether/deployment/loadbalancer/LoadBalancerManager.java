@@ -14,8 +14,6 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
@@ -47,7 +45,10 @@ import static org.pragmatica.aether.environment.RouteChange.routeChange;
 
 
 @SuppressWarnings("JBCT-RET-01")
-public interface LoadBalancerManager extends DelegatedComponent {
+public interface LoadBalancerManager {
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
     @MessageReceiver
     void onMembershipDecision(MembershipDecision decision);
 
@@ -329,11 +330,6 @@ public interface LoadBalancerManager extends DelegatedComponent {
                 state.set(new LoadBalancerManagerState.Dormant());
 
                 return Promise.unitPromise();
-            }
-
-            @Override
-            public TaskGroup taskGroup() {
-                return TaskGroup.DEPLOYMENT;
             }
 
             @Override

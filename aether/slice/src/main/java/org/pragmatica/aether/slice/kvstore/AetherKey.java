@@ -8,7 +8,6 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -1093,32 +1092,6 @@ import static org.pragmatica.lang.Result.success;
         }
     }
 
-    record TaskAssignmentKey(TaskGroup taskGroup) implements AetherKey {
-        private static final String PREFIX = "task-assignment/";
-
-        @Override public String asString() {
-            return PREFIX + taskGroup.name();
-        }
-
-        @Override public String toString() {
-            return asString();
-        }
-
-        public static TaskAssignmentKey taskAssignmentKey(TaskGroup taskGroup) {
-            return new TaskAssignmentKey(taskGroup);
-        }
-
-        public static Result<TaskAssignmentKey> taskAssignmentKey(String key) {
-            if (!key.startsWith(PREFIX)) {return TASK_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();}
-            var enumName = key.substring(PREFIX.length());
-            if (enumName.isEmpty()) {return TASK_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();}
-            return Result.lift1(_ -> TASK_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key),
-                                TaskGroup::valueOf,
-                                enumName)
-            .map(TaskAssignmentKey::new);
-        }
-    }
-
     record StreamConfigKey(String streamName) implements AetherKey {
         private static final String PREFIX = "stream-config/";
 
@@ -1141,8 +1114,6 @@ import static org.pragmatica.lang.Result.success;
             return success(new StreamConfigKey(name));
         }
     }
-
-    Fn1<Cause, String> TASK_ASSIGNMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid task-assignment key format: %s");
 
     Fn1<Cause, String> STREAM_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-config key format: %s");
 

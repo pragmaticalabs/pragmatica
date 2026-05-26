@@ -8,8 +8,6 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -38,7 +36,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public interface AbTestManager extends DelegatedComponent {
+public interface AbTestManager {
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
     Promise<AbTestDeployment> createTest(ArtifactBase artifactBase,
                                          Map<String, Version> variantVersions,
                                          SplitRule splitRule);
@@ -90,10 +91,6 @@ public interface AbTestManager extends DelegatedComponent {
                 log.info("A/B test manager passive (STRATEGIES task group unassigned)");
                 active.set(false);
                 return Promise.success(Unit.unit());
-            }
-
-            @Override public TaskGroup taskGroup() {
-                return TaskGroup.STRATEGIES;
             }
 
             @Override public boolean isActive() {

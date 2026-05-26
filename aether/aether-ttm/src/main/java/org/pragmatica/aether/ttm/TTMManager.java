@@ -7,8 +7,6 @@ package org.pragmatica.aether.ttm;
 import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.metrics.MinuteAggregator;
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.ttm.error.TTMError;
 import org.pragmatica.aether.ttm.model.ScalingRecommendation;
 import org.pragmatica.aether.ttm.model.TTMForecast;
@@ -33,7 +31,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public interface TTMManager extends DelegatedComponent {
+@SuppressWarnings("JBCT-RET-01") public interface TTMManager {
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
     Option<TTMForecast> currentForecast();
     TTMState state();
     void onForecast(Consumer<TTMForecast> callback);
@@ -79,10 +80,6 @@ import org.slf4j.LoggerFactory;
 
         @Override public Promise<Unit> deactivate() {
             return Promise.unitPromise();
-        }
-
-        @Override public TaskGroup taskGroup() {
-            return TaskGroup.SCALING;
         }
 
         @Override public boolean isActive() {
@@ -139,10 +136,6 @@ import org.slf4j.LoggerFactory;
             log.info("Deactivating TTM evaluation");
             stopEvaluation();
             return Promise.unitPromise();
-        }
-
-        @Override public TaskGroup taskGroup() {
-            return TaskGroup.SCALING;
         }
 
         @Override public boolean isActive() {

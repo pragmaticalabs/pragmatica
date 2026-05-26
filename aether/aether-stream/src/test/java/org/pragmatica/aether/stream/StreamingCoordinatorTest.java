@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
@@ -171,12 +170,6 @@ class StreamingCoordinatorTest {
             awaitSuccess(coordinator.deactivate());
 
             assertThat(coordinator.isActive()).isFalse();
-        }
-
-        @Test
-        void taskGroup_returnsStreaming() {
-            var coordinator = buildCoordinator();
-            assertThat(coordinator.taskGroup()).isEqualTo(TaskGroup.STREAMING);
         }
 
         @Test

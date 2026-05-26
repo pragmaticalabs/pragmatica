@@ -15,8 +15,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -37,7 +35,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-@SuppressWarnings("JBCT-RET-01") public interface RollbackManager extends DelegatedComponent {
+@SuppressWarnings("JBCT-RET-01") public interface RollbackManager {
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
     @MessageReceiver void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
     @MessageReceiver void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut);
     @MessageReceiver void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event);
@@ -177,10 +178,6 @@ import org.slf4j.LoggerFactory;
                 log.info("Node {} deactivating RollbackManager", self);
                 rollbackStates.clear();
                 return Promise.unitPromise();
-            }
-
-            @Override public TaskGroup taskGroup() {
-                return TaskGroup.SCALING;
             }
 
             @Override public boolean isActive() {
@@ -409,9 +406,6 @@ import org.slf4j.LoggerFactory;
         }
         @Override public Promise<Unit> deactivate() {
             return Promise.unitPromise();
-        }
-        @Override public TaskGroup taskGroup() {
-            return TaskGroup.SCALING;
         }
         @Override public boolean isActive() {
             return false;

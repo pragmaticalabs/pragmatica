@@ -4,8 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.metrics.deployment;
 
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -31,8 +29,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public interface DeploymentMetricsScheduler extends DelegatedComponent {
+public interface DeploymentMetricsScheduler {
     TimeSpan DEFAULT_INTERVAL = TimeSpan.timeSpan(5).seconds();
+
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
 
     @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
     @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
@@ -90,10 +92,6 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
         active.set(false);
         stopPinging();
         return Promise.unitPromise();
-    }
-
-    @Override public TaskGroup taskGroup() {
-        return TaskGroup.METRICS;
     }
 
     @Override public boolean isActive() {

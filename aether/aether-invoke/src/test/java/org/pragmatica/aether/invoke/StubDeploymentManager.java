@@ -7,7 +7,6 @@ package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.update.CleanupPolicy;
 import org.pragmatica.aether.update.Deployment;
 import org.pragmatica.aether.update.DeploymentError;
@@ -74,11 +73,6 @@ class StubDeploymentManager implements DeploymentManager {
     @Override
     public Promise<Unit> deactivate() {
         return Promise.success(Unit.unit());
-    }
-
-    @Override
-    public TaskGroup taskGroup() {
-        return TaskGroup.STRATEGIES;
     }
 
     @Override

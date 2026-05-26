@@ -4,8 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
@@ -27,7 +25,7 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 
-public final class StreamingCoordinator implements DelegatedComponent {
+public final class StreamingCoordinator {
     private static final Logger log = LoggerFactory.getLogger(StreamingCoordinator.class);
 
     private final GovernorFailoverHandler failoverHandler;
@@ -67,18 +65,18 @@ public final class StreamingCoordinator implements DelegatedComponent {
                                         segmentReader);
     }
 
-    public static DelegatedComponent noOp() {
+    public static NoOpStreamingComponent noOp() {
         return new NoOpStreamingComponent();
     }
 
-    @Override public Promise<Unit> activate() {
+    public Promise<Unit> activate() {
         if (!active.compareAndSet(false, true)) {return Promise.success(unit());}
         retentionEnforcer.start();
         log.info("STREAMING delegation group activated");
         return runFailoverRecovery();
     }
 
-    @Override public Promise<Unit> deactivate() {
+    public Promise<Unit> deactivate() {
         if (active.compareAndSet(true, false)) {
             retentionEnforcer.close();
             log.info("STREAMING delegation group deactivated");
@@ -86,11 +84,7 @@ public final class StreamingCoordinator implements DelegatedComponent {
         return Promise.success(unit());
     }
 
-    @Override public TaskGroup taskGroup() {
-        return TaskGroup.STREAMING;
-    }
-
-    @Override public boolean isActive() {
+    public boolean isActive() {
         return active.get();
     }
 
@@ -135,24 +129,20 @@ public final class StreamingCoordinator implements DelegatedComponent {
     }
 }
 
-final class NoOpStreamingComponent implements DelegatedComponent {
+final class NoOpStreamingComponent {
     private final AtomicBoolean active = new AtomicBoolean(false);
 
-    @Override public Promise<Unit> activate() {
+    public Promise<Unit> activate() {
         active.set(true);
         return Promise.success(unit());
     }
 
-    @Override public Promise<Unit> deactivate() {
+    public Promise<Unit> deactivate() {
         active.set(false);
         return Promise.success(unit());
     }
 
-    @Override public TaskGroup taskGroup() {
-        return TaskGroup.STREAMING;
-    }
-
-    @Override public boolean isActive() {
+    public boolean isActive() {
         return active.get();
     }
 }

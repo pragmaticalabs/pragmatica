@@ -340,9 +340,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
             // entire retry budget against a single stale snapshot of (owner, connectedPeers) —
             // every retry hit the same wrong or disconnected node and returned 503. Two
             // independent failure modes both produced "Request failed after all retries":
-            // (1) owner-disconnected race: KV TaskAssignmentKey update reached the forwarder
+            // (1) owner-disconnected race: a leader change reached the forwarder
             //     before the QUIC `connectedPeers()` set caught up;
-            // (2) stale ownership after blue-green promote: task-group reassignment via consensus
+            // (2) stale ownership after blue-green promote: leadership change via consensus
             //     reaches each node independently, so the forwarder may point at the old owner
             //     while the new owner has not yet activate()d.
             // Both classes are addressed by re-querying the resolver and connectedness on each

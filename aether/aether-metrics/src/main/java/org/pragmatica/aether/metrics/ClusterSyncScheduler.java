@@ -8,8 +8,6 @@ import org.pragmatica.aether.metrics.fsm.ClusterSyncContext;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
-import org.pragmatica.aether.slice.delegation.DelegatedComponent;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.HealthSignalSink;
 import org.pragmatica.cluster.metrics.AggregatedReachabilitySnapshot;
@@ -41,9 +39,12 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 
-public interface ClusterSyncScheduler extends DelegatedComponent, PeerObservationBuffer {
+public interface ClusterSyncScheduler extends PeerObservationBuffer {
     int DEFAULT_PING_TIMEOUT_THRESHOLD = 3;
 
+    Promise<Unit> activate();
+    Promise<Unit> deactivate();
+    boolean isActive();
     @MessageReceiver@Contract void onMembershipDecision(MembershipDecision decision);
     @MessageReceiver@Contract void onQuorumStateChange(QuorumStateNotification notification);
     @Contract void stop();
@@ -237,10 +238,6 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
     @Override public Promise<Unit> deactivate() {
         context.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         return Promise.unitPromise();
-    }
-
-    @Override public TaskGroup taskGroup() {
-        return TaskGroup.METRICS;
     }
 
     @Override public boolean isActive() {

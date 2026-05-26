@@ -8,7 +8,6 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
-import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
@@ -72,10 +71,6 @@ final class DeploymentManagerImpl implements DeploymentManager {
         active = false;
         activeDeployments.clear();
         return Promise.success(Unit.unit());
-    }
-
-    @Override public TaskGroup taskGroup() {
-        return TaskGroup.STRATEGIES;
     }
 
     @Override public boolean isActive() {

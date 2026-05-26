@@ -161,7 +161,6 @@ import static org.pragmatica.lang.Result.success;
             case StorageStatusKey _ -> "storage-status";
             case StorageBlockKey _ -> "storage-block";
             case StorageRefKey _ -> "storage-ref";
-            case TaskAssignmentKey _ -> "task-assignment";
             case CloudCredentialsKey _ -> "cloud-credentials";
             case ConsumerGroupKey _ -> "consumer-group";
             case ApiKeyKey _ -> "api-key";
@@ -231,7 +230,6 @@ import static org.pragmatica.lang.Result.success;
             case StorageStatusValue v -> serializeStorageStatus(v);
             case StorageBlockValue v -> serializeStorageBlock(v);
             case StorageRefValue v -> serializeStorageRef(v);
-            case TaskAssignmentValue v -> serializeTaskAssignment(v);
             case CloudCredentialsValue v -> serializeCloudCredentials(v);
             case ConsumerGroupValue v -> serializeConsumerGroup(v);
             case ApiKeyValue v -> serializeApiKey(v);
@@ -419,7 +417,6 @@ import static org.pragmatica.lang.Result.success;
             case "storage-status" -> parseStorageStatusEntry(identity, rawValue);
             case "storage-block" -> parseStorageBlockEntry(identity, rawValue);
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
-            case "task-assignment" -> parseTaskAssignmentEntry(identity, rawValue);
             case "stream-config" -> parseStreamConfigEntry(identity, rawValue);
             case "cloud-credentials" -> parseCloudCredentialsEntry(identity, rawValue);
             case "consumer-group" -> parseConsumerGroupEntry(identity, rawValue);
@@ -991,26 +988,6 @@ import static org.pragmatica.lang.Result.success;
                                           .map(key -> entry(key,
                                                             new StorageRefValue(parts[0],
                                                                                 Long.parseLong(parts[1]))));
-    }
-
-    private static String serializeTaskAssignment(TaskAssignmentValue v) {
-        return v.assignedTo().id() + PIPE + v.assignedAtMs() + PIPE + v.status().name() + PIPE + v.failureReason();
-    }
-
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseTaskAssignmentEntry(String identity, String raw) {
-        var parts = raw.split("(?<!\\\\)\\|", - 1);
-        if (parts.length != 4) {return parseFailure("task-assignment value requires 4 fields, got " + parts.length);}
-        return TaskAssignmentKey.taskAssignmentKey("task-assignment/" + identity)
-                                                  .flatMap(key -> NodeId.nodeId(parts[0])
-                                                                               .flatMap(nodeId -> buildTaskAssignmentValue(nodeId,
-                                                                                                                           parts).map(value -> entry(key,
-                                                                                                                                                     value))));
-    }
-
-    private static Result<TaskAssignmentValue> buildTaskAssignmentValue(NodeId nodeId, String[] parts) {
-        return Result.lift(() -> Long.parseLong(parts[1]))
-                          .flatMap(ts -> Result.lift(() -> TaskAssignmentValue.AssignmentStatus.valueOf(parts[2]))
-                                                    .map(status -> new TaskAssignmentValue(nodeId, ts, status, parts[3])));
     }
 
     private static String serializeStreamConfig(StreamConfigValue v) {
