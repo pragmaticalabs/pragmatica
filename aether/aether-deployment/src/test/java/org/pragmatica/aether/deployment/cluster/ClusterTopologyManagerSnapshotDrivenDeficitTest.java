@@ -133,6 +133,99 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                 .isZero();
     }
 
+    /// LAYER 3 (anti-flood quorum gate): below committed-healthy quorum the CTM must NOT provision
+    /// replacement nodes — it defers to SelfDrainCoordinator to dissolve the minority partition.
+    /// `inQuorum=() -> false` simulates a minority-side leader; a clear 4-of-5 deficit that would
+    /// otherwise provision must result in ZERO provisions.
+    @Test
+    void reconcile_doesNotProvision_whenBelowQuorum() throws InterruptedException {
+        var belowQuorumCtm = createCtmWithQuorum(() -> false);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), 5);
+        belowQuorumCtm.activate();
+        belowQuorumCtm.onNodeReady(PEER_A);
+        Thread.sleep(200L);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("below quorum — provisioning deferred to SelfDrainCoordinator, no replacement nodes")
+                .isZero();
+    }
+
+    /// LAYER 3 (gate-open preserves existing behavior): with `inQuorum=() -> true` the same deficit
+    /// provisions normally — the gate is a pure suppressor, not a behavior change above quorum.
+    @Test
+    void reconcile_provisionsIntoEmptySlots_whenInQuorum() throws InterruptedException {
+        var inQuorumCtm = createCtmWithQuorum(() -> true);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), 5);
+        inQuorumCtm.activate();
+        inQuorumCtm.onNodeReady(PEER_A);
+        awaitProvision(1);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("in quorum — normal deficit provisioning proceeds")
+                .isGreaterThanOrEqualTo(1);
+    }
+
+    /// LAYER 2 (reseed skips STOPPED occupants): on leader activation the reseed binds occupants
+    /// from the ON_DUTY snapshot, but a peer whose committed lifecycle is already STOPPED (the
+    /// SENSE plane lagging the DECIDE plane) must NOT be re-bound — re-binding fires a SlotClaimed
+    /// for a dead peer. Its slot must be left EMPTY for normal convergence to refill.
+    @Test
+    void activate_reseedSkipsStoppedOccupant_leavesSlotEmptyForRefill() throws InterruptedException {
+        clusterStore.seed(5);
+        // 5 occupants present in the ON_DUTY snapshot, but PEER_D is already STOPPED in lifecycle KV.
+        var epoch = 0L;
+        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {clusterStore.installOnDuty(id, epoch++);}
+        clusterStore.installStopped(PEER_D);
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            5,
+                                            5,
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        ctm.activate();
+        Thread.sleep(150L);
+        var boundToDead = clusterStore.slots()
+                                      .values()
+                                      .stream()
+                                      .filter(slot -> slot.assignedNodeId().map(PEER_D::equals).or(false))
+                                      .count();
+        assertThat(boundToDead)
+                .as("no slot is re-bound to the already-STOPPED occupant PEER_D")
+                .isZero();
+        var boundCount = clusterStore.slots()
+                                     .values()
+                                     .stream()
+                                     .filter(slot -> slot.assignedNodeId().isPresent())
+                                     .count();
+        assertThat(boundCount)
+                .as("the 4 live occupants are bound; the dead occupant's slot is left EMPTY")
+                .isEqualTo(4L);
+    }
+
+    private ClusterTopologyManager createCtmWithQuorum(java.util.function.BooleanSupplier inQuorum) {
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
+                                                      timeSpan(1).millis(),
+                                                      AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
+                                                      AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                                      AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
+                                                      timeSpan(0).millis())
+                                            .unwrap();
+        return ClusterTopologyManager.clusterTopologyManager(observer,
+                                                             lifecycleManager,
+                                                             autoHeal,
+                                                             DeploymentMap.deploymentMap(),
+                                                             snapshotSource,
+                                                             clusterStore::current,
+                                                             clusterStore::lifecycle,
+                                                             clusterStore::slots,
+                                                             clusterStore::apply,
+                                                             new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
+                                                             LegacyLifecycleWriterFixture.create(clusterStore::apply,
+                                                                                                  clusterStore::lifecycle,
+                                                                                                  System::currentTimeMillis),
+                                                             () -> AetherValue.ClusterPhase.NORMAL,
+                                                             inQuorum);
+    }
+
     @Test
     void reconcile_terminatesSurplus_whenSnapshotReportsOverCapacity() throws InterruptedException {
         // 5 ON_DUTY occupants bound to slots 0-4, but coreCount shrinks to 3 → slots 3-4 removed.

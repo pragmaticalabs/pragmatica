@@ -119,6 +119,7 @@ class ClusterTopologyManagerCircuitBreakerTest {
                                                                                                               clusterStore::lifecycle,
                                                                                                               clockMs::get),
                                                                          () -> ClusterPhase.NORMAL,
+                                                                         () -> true,
                                                                          clockMs::get);
     }
 

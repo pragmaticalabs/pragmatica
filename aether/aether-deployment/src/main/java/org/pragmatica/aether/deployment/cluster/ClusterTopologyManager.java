@@ -26,6 +26,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -52,6 +53,10 @@ public interface ClusterTopologyManager extends TopologyManager {
     boolean isAutoHealEnabled();
     boolean setAutoHealEnabled(boolean enabled, String reason);
 
+    /// Test/legacy factory overload. `inQuorum` defaults to a permanently-true supplier so
+    /// existing call sites that do not gate on quorum remain quorate-by-assumption. Production
+    /// (`AetherNode`) MUST use the `BooleanSupplier`-taking overload below wired to
+    /// `TopologyObserver.inQuorum()` so a minority partition stops provisioning.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -64,6 +69,37 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          DrainCoordinator drainCoordinator,
                                                          LifecycleWriter lifecycleWriter,
                                                          Supplier<ClusterPhase> phaseSupplier) {
+        return clusterTopologyManager(observer,
+                                      lifecycleManager,
+                                      config,
+                                      deploymentMap,
+                                      snapshotSource,
+                                      clusterConfigReader,
+                                      lifecycleReader,
+                                      slotReader,
+                                      commandApplier,
+                                      drainCoordinator,
+                                      lifecycleWriter,
+                                      phaseSupplier,
+                                      () -> true);
+    }
+
+    /// Production factory. `inQuorum` is the committed-healthy quorum bit (wire
+    /// `TopologyObserver.inQuorum()`). When it reports `false` the CTM stops provisioning
+    /// replacements and defers to `SelfDrainCoordinator` to dissolve the minority partition.
+    static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
+                                                         NodeLifecycleManager lifecycleManager,
+                                                         AutoHealConfig config,
+                                                         DeploymentMap deploymentMap,
+                                                         GenerationSnapshotSource snapshotSource,
+                                                         Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                         Function<NodeId, Option<NodeLifecycleValue>> lifecycleReader,
+                                                         Supplier<Map<ProvisioningSlotKey, ProvisioningSlotValue>> slotReader,
+                                                         Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                         DrainCoordinator drainCoordinator,
+                                                         LifecycleWriter lifecycleWriter,
+                                                         Supplier<ClusterPhase> phaseSupplier,
+                                                         BooleanSupplier inQuorum) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -76,6 +112,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          drainCoordinator,
                                                                          lifecycleWriter,
                                                                          phaseSupplier,
+                                                                         inQuorum,
                                                                          System::currentTimeMillis);
     }
 }

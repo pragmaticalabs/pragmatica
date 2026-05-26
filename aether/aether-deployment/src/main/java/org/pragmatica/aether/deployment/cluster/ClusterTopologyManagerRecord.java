@@ -62,6 +62,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -88,6 +89,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     DrainCoordinator drainCoordinator,
                                     LifecycleWriter lifecycleWriter,
                                     Supplier<ClusterPhase> phaseSupplier,
+                                    BooleanSupplier inQuorum,
                                     AtomicReference<NodeReconcilerState> stateRef,
                                     AtomicBoolean active,
                                     ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
@@ -140,6 +142,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      DrainCoordinator drainCoordinator,
                                                                      LifecycleWriter lifecycleWriter,
                                                                      Supplier<ClusterPhase> phaseSupplier,
+                                                                     BooleanSupplier inQuorum,
                                                                      LongSupplier clock) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
@@ -153,6 +156,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 drainCoordinator,
                                                 lifecycleWriter,
                                                 phaseSupplier,
+                                                inQuorum,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
                                                 new ConcurrentHashMap<>(),
@@ -594,7 +598,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         wipeAllSlotAtoms();
 
-        var occupants = onDutyOccupantsBySeniority();
+        // Bind only occupants whose committed lifecycle is NOT already STOPPED. A peer that is
+        // STOPPED in the lifecycle but still lingers in the ON_DUTY snapshot at activation (the
+        // SENSE plane lags the DECIDE plane) must NOT be re-bound — re-binding re-PUTs its slot
+        // with assignedNodeId=some(dead-peer), which fires a SlotClaimed for a dead occupant.
+        // Leave its slot EMPTY so normal convergence fills it with a fresh provider-allocated node.
+        var occupants = onDutyOccupantsBySeniority().stream()
+                                                    .filter(occupant -> !occupantStopped(occupant))
+                                                    .toList();
         var bound = occupants.stream().limit(configured).toList();
         var surplus = occupants.stream().skip(configured).toList();
         var puts = buildReseedPuts(bound, configured);
@@ -1008,6 +1019,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private boolean provisioningGatesPass(int healthy, int configured) {
         var nowMs = nowMs();
 
+        // Quorum gate (anti-flood): below committed-healthy quorum the cluster is a minority
+        // partition. Provisioning replacements here is a runaway flood (5→28+ nodes) that never
+        // re-establishes quorum. Stop provisioning and let SelfDrainCoordinator dissolve the
+        // minority side. Gates on TopologyObserver.inQuorum() (committed-healthy bit) — NOT on
+        // transport connectedPeers, which the flood inflates.
+        if (!inQuorum.getAsBoolean()) {
+            log.info("CTM: below quorum — deferring provisioning to SelfDrainCoordinator (healthy={}, configured={})",
+                     healthy,
+                     configured);
+            return false;
+        }
         if (!stabilityElapsed(nowMs)) {
             log.info("CTM: stability window not yet elapsed (elapsed={}ms, required={}ms, healthy={}, configured={}); deferring fill",
                      nowMs - realActualStableSinceMs.get(),

@@ -1326,7 +1326,12 @@ public interface AetherNode extends ManageableNode {
                                                                                    clusterCommandApplier,
                                                                                    drainCoordinator,
                                                                                    ctmLifecycleWriter,
-                                                                                   effectivePhaseSupplier);
+                                                                                   effectivePhaseSupplier,
+                                                                                   // Quorum gate: TopologyObserver.inQuorum() is the committed-healthy
+                                                                                   // quorum bit. Below quorum the CTM stops provisioning replacements
+                                                                                   // (anti-flood) and defers to SelfDrainCoordinator to dissolve the
+                                                                                   // minority partition.
+                                                                                   ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum());
         // Phase 4 PR-D (cluster-convergence-reconciler) — leader-only periodic
         // `LifecycleReconciler`. Dormant on construction; activated on leader gain via
         // `toggleReconcilerOnLeaderChange` (registered alongside the CTM toggle further down
