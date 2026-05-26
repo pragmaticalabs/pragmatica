@@ -32,6 +32,10 @@ across leader change.** This redesign makes the binding durable and authoritativ
   exception, §3).
 - **KV is the single source of truth.** A node's membership is defined solely by whether it holds a
   slot binding. **A core node with no binding is an orphan.**
+- **Coherence (keystone): for a core node, `ON_DUTY ⟺ holds a slot`.** Binding DRIVES the lifecycle
+  (bind → ON_DUTY; no/lost slot → drain). The two must never disagree — slice routing keys off
+  lifecycle-`ON_DUTY` (`AllocationPool`) while membership keys off slots; if a node could be ON_DUTY
+  without a slot, the model leaks. "Bound" and "ON_DUTY/serving" are the same predicate for core.
 - Scaling = changing the slot count. Everything else converges from the invariant automatically.
 
 ## 2. Binding is created once, then preserved
@@ -47,18 +51,36 @@ across leader change.** This redesign makes the binding durable and authoritativ
 This single change eliminates the orphan/collapse class: killing a node frees *its* slot (refilled in
 place); the other nodes keep theirs.
 
-## 3. First formation (the gated exception)
+## 3. Universal slot-fill algorithm (subsumes formation, re-provision, late-join)
 
-Before a leader exists there are no slot atoms and no authority to act — a bootstrapping node has
-nothing that could tell it "you have no slot, stop." It simply KV-watches. So **there is no
-premature-drain race at formation.**
+A single rule fills any empty slot — at formation and in steady state alike. For each empty slot, in
+deterministic order:
 
-The leader is elected only after quorum forms. On first activation (KV empty) it creates the slot set
-and binds present nodes. A bootstrap node that joins *after* the initial binding and holds no slot
-**binds into an empty slot if one exists** rather than being drained. Provisioning into a still-empty
-slot sits behind the provisioning **stability window** (~30s), so the remaining bootstrap nodes join
-and bind before any replacement is provisioned. The orphan self-drain predicate (§5) does not fire
-during formation because it requires the slot set to be at full `configured` size.
+1. **Bind an existing node if one is available:** pick a **connected, joined, unbound, non-draining**
+   core node (deterministic: sort candidates × sort empty slots) and bind it via a conditional write
+   (CAS: only if the slot is still empty AND the node still unbound). Fast — no boot latency. This is
+   how the bootstrap seeds acquire slots at formation (they are all connected-joined-unbound) and how
+   a spare/late/descaled-but-not-yet-drained node is reused.
+2. **Else provision a new node** via reserve-then-provision (§4) — the FALLBACK, only when no existing
+   candidate exists.
+
+**Provisioning is suppressed during formation.** Until the cluster has formed (phase `NORMAL`), step 2
+does not run — empty slots are filled only from existing connected nodes (step 1). Exit condition:
+all slots filled, OR a formation-timeout (so a slot whose expected bootstrap node never appears is
+eventually provisioned). Before a leader exists there is no authority to provision or drain anyway, so
+a bootstrapping node just KV-watches (no premature-drain race).
+
+This is universal because it treats core nodes as fungible slot occupants regardless of provenance
+(consistent with the deleted provenance shield). Consequences that fall out for free: more connected
+nodes than slots → the leftovers get no slot → drain (§5); scale-down → slot count shrinks → the
+now-slotless occupants drain — one mechanism. **The FSM must transition an *existing* connected node to
+occupant on `SlotClaimed`** (not only a freshly-provisioned one) — verify the `(state, SlotClaimed)`
+cells actually land it ON_DUTY rather than nop.
+
+Caveats (low-probability, flagged in the design review): a slot bound to a dead-but-undetected
+occupant reads as filled, so reuse waits on failure-detection freeing it (inherits #231); a flapping
+node needs a "connected-stable-for-N" guard before it is bindable; if slots ever carry placement
+constraints, "any connected node" is wrong (the current core is homogeneous).
 
 ## 4. Binding at provision time (slot is bound from t=0)
 
@@ -95,20 +117,31 @@ widens — bounded (logarithmic), self-correcting.
 ## 5. Orphan self-drain (self-policing, leaderless)
 
 A core node removes *itself* when it is a genuine orphan — no leader-side en-masse reaping. The
-predicate fires only when the node's KV view is provably converged:
+decision is **state-based, not a fixed-time grace**: a node defers as long as there is *any* slot it
+could still be placed in, and drains only once every slot is occupied by a *connected* member and it
+is not one of them.
 
 ```
+liveFilled = count of slots whose occupant is in the connected-members set   // dead/disconnected occupant ⇒ slot is NOT live-filled
 if (core
     && rabia.isActive()            // sync complete; NOT Syncing/Paused/Stopped
     && inQuorum()                  // connected to a true majority → synced == converged
-    && graceElapsed                // dwell after join/activation
-    && slotSet.size() == configured // never act on a partial set
-    && !slotSet.contains(self)) {
+    && liveFilled == configured    // every slot live-filled ⇒ converged, no room for me; while < configured, WAIT
+    && !boundToConnectedSlot(self)) {
     selfDrain();                   // Runtime.halt via SelfDrainCoordinator
 }
 ```
 
-**Why this is the converged-read:** Rabia sync transfers a whole-state snapshot from a responding
+"Filled" means the occupant is in the node's **connected-members view**, not merely that the slot
+atom has an `assignedNodeId`. This makes the rule wait through a **dead-occupant slot** (occupant gone
+but slot not yet freed): such a slot is *not* live-filled, so `liveFilled < configured` → the node
+keeps waiting (it could be rebound into that slot once §3/freeDeadSlots clears it) instead of falsely
+concluding "all full → I'm surplus." This replaces the fixed `grace` + `slotSet.size()==configured`
+guard with a dynamic converging-vs-converged signal, and it subsumes the systemic-binding-sanity
+backstop: if the slots were bound to nodes that aren't even connected, they read as not-live-filled →
+the node waits rather than drains.
+
+**Why the gate is the converged-read:** Rabia sync transfers a whole-state snapshot from a responding
 quorum, choosing the highest `lastCommittedPhase` (`RabiaEngine.java:749-787`). By quorum
 intersection, a synced node holds the latest committed state — **synced == converged**. `isActive()`
 is false during the `Syncing`/`Paused`/`Stopped` buffering windows where the local view is stale, so
