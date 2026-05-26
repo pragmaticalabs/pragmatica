@@ -361,8 +361,11 @@ class ClusterMembershipReducerTest {
             assertThat(outcome.effects()).contains(new CancelDrain(PEER));
         }
 
-        @Test void draining_slotClaimed_isErr() {
-            assertIllegal(state, new SlotClaimed(PEER, SLOT_ID, T1));
+        @Test void draining_slotClaimed_isNop_idempotentReProjection() {
+            // A SlotClaimed re-delivered for a DRAINING peer is a benign idempotent re-projection
+            // (CTM slot re-PUT / KV-notification replay). It must NOT throw — a throwing reducer
+            // cell aborts the FSM tick on the KV-notification thread (mirrors ON_DUTY, Spike-2).
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void draining_forceDrain_isNop_alreadyDraining() {
@@ -423,8 +426,12 @@ class ClusterMembershipReducerTest {
             assertNop(reducer.apply(state, new SwimDeparted(PEER, 1L, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
-        @Test void stopped_slotClaimed_isErr() {
-            assertIllegal(state, new SlotClaimed(PEER, SLOT_ID, T1));
+        @Test void stopped_slotClaimed_isNop_idempotentReProjection() {
+            // A SlotClaimed re-delivered for an already-STOPPED (terminal) peer is a benign
+            // idempotent re-projection (CTM reseed re-binding a dead occupant / KV-notification
+            // replay). It must NOT throw — a throwing reducer cell aborts the FSM tick on the
+            // KV-notification thread, killing the apply loop (mirrors ON_DUTY, Spike-2 2026-05-24).
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void stopped_forceDrain_isNop() {
@@ -484,8 +491,10 @@ class ClusterMembershipReducerTest {
             assertDecommissioned(outcome, T1, "swim-departed");
         }
 
-        @Test void stoppedDrainFailed_slotClaimed_isErr() {
-            assertIllegal(state, new SlotClaimed(PEER, SLOT_ID, T1));
+        @Test void stoppedDrainFailed_slotClaimed_isNop_idempotentReProjection() {
+            // SlotClaimed re-delivered for a terminal STOPPED(DRAIN_FAILED) peer is a benign
+            // idempotent re-projection — nop, not a throw (mirrors ON_DUTY, Spike-2 2026-05-24).
+            assertNop(reducer.apply(state, new SlotClaimed(PEER, SLOT_ID, T1), ReachabilityGate.ALWAYS_CONFIRMED), state);
         }
 
         @Test void stoppedDrainFailed_forceDrain_isNop_operatorRecoveryRequired() {

@@ -199,7 +199,11 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case SwimHealthy _ -> Outcome.nop(state);
             case SwimFaulty _ -> Outcome.nop(state);
             case SwimDeparted e -> drainingHardDeparted(state, e.at());
-            case SlotClaimed _ -> illegal(state, event);
+            // A SlotClaimed re-delivered for a DRAINING peer is a benign idempotent re-projection
+            // (CTM slot re-PUT / KV-notification replay): nop rather than illegal() — a throwing
+            // reducer cell aborts the FSM tick on the KV-notification thread (mirrors the ON_DUTY
+            // :180 rationale, Spike-2 2026-05-24).
+            case SlotClaimed _ -> Outcome.nop(state);
             case DrainOutcome e -> drainingDrainOutcome(state, e);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
             case TransportReachable _ -> Outcome.nop(state);
@@ -224,7 +228,11 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case SwimDeparted e -> state.reason() == StopReason.DRAIN_FAILED
                                    ? stoppedDrainFailedDeparted(state, e.at())
                                    : Outcome.nop(state);
-            case SlotClaimed _ -> illegal(state, event);
+            // A SlotClaimed re-delivered for an already-STOPPED (terminal) peer is a benign
+            // idempotent re-projection (CTM reseed re-binding a dead occupant / KV-notification
+            // replay): nop rather than illegal() — a throwing reducer cell aborts the FSM tick on
+            // the KV-notification thread (mirrors the ON_DUTY :180 rationale, Spike-2 2026-05-24).
+            case SlotClaimed _ -> Outcome.nop(state);
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
             case TransportReachable _ -> Outcome.nop(state);
