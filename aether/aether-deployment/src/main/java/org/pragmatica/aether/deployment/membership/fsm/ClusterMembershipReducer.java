@@ -157,7 +157,10 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     private Outcome applyJoining(Joining state, MembershipFsmEvent event) {
         return switch (event) {
             case SwimHealthy e -> joiningToOnDuty(state, e.at());
-            case SwimFaulty _ -> Outcome.nop(state);
+            // SPIKE #231 (THROWAWAY): was Outcome.nop(state) — flip to decommission so a killed
+            // JOINING node SWIM-marked FAULTY is removed fast instead of waiting for the join
+            // deadline (~45-60s). REVERT to restore Outcome.nop(state).
+            case SwimFaulty e -> joiningToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED);
             case SwimDeparted e -> joiningToStopped(state, e.at(), REASON_SWIM_DEPARTED, StopReason.FORCED);
             case SlotClaimed _ -> Outcome.nop(state);
             case DrainOutcome _ -> illegal(state, event);
@@ -168,11 +171,13 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     }
 
     private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event, ReachabilityGate gate) {
+        // SPIKE #231 (THROWAWAY): gate check dropped — decommission unconditionally on the
+        // signal to observe whether the leader-side quorum aggregator was masking fast SWIM/
+        // transport death detection. `gate` is now unused in these cells. REVERT to restore
+        // gate.isConfirmedUnreachable(...) ? ... : Outcome.nop(state).
         return switch (event) {
             case SwimHealthy _ -> Outcome.nop(state);
-            case SwimFaulty e -> gate.isConfirmedUnreachable(state.peer())
-                                 ? onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED)
-                                 : Outcome.nop(state);
+            case SwimFaulty e -> onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED);
             case SwimDeparted e -> onDutyToStopped(state, e.at(), REASON_SWIM_DEPARTED, StopReason.FORCED);
             // A late/duplicate SlotClaimed for an already-ON_DUTY peer is benign (auto-heal
             // replacement re-claim / event re-delivery): nop rather than illegal() — a
@@ -181,9 +186,7 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
             case TransportReachable _ -> Outcome.nop(state);
-            case TransportUnreachable e -> gate.isConfirmedUnreachable(state.peer())
-                                           ? onDutyToStopped(state, e.at(), REASON_TRANSPORT_FAILURE, StopReason.FORCED)
-                                           : Outcome.nop(state);
+            case TransportUnreachable e -> onDutyToStopped(state, e.at(), REASON_TRANSPORT_FAILURE, StopReason.FORCED);
         };
     }
 
