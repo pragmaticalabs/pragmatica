@@ -23,7 +23,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -53,6 +55,8 @@ class MembershipFsmSwimWriteTest {
     private static final NodeId SELF = NodeId.nodeId("self-node").unwrap();
 
     private static final NodeId PEER_A = NodeId.nodeId("peer-a").unwrap();
+
+    private static final String SLOT_A = "0";
 
     private static final long T0 = 1_000L;
 
@@ -272,6 +276,64 @@ class MembershipFsmSwimWriteTest {
             assertThat(commandApplier.calls).isEmpty();
             assertThat(fsm.get(PEER_A).unwrap()).isInstanceOf(OnDuty.class);
         }
+    }
+
+    /// slot-based-core-membership-redesign §3/§1 Part C: when CTM binds an EXISTING connected node
+    /// into an empty slot (slot PUT with assignedNodeId), the FSM must land it ON_DUTY rather than
+    /// leave it stuck JOINING (coherence: bound ⟺ ON_DUTY). For an Untracked/Provisioning peer the
+    /// SlotClaimed enters JOINING; the bind-time SwimHealthy synthesis (gated on the swimHealthGate)
+    /// drives it to ON_DUTY. For an already-ON_DUTY peer the re-bind is a benign nop that keeps it
+    /// ON_DUTY.
+    @Nested @DisplayName("§1/§3 Part C: binding an existing connected node lands ON_DUTY")
+    class BindExistingConnectedNode {
+        @Test void slotClaimed_untrackedConnectedNode_synthesizesSwimHealthy_landsOnDuty() {
+            var fsm = startedFsm();
+            // The bound node is SWIM-healthy (connected) per the gate.
+            fsm.setSwimHealthGate(peer -> peer.equals(PEER_A));
+            commandApplier.calls.clear();
+
+            fsm.onProvisioningSlotPut(slotBind(SLOT_A, PEER_A));
+
+            assertThat(fsm.get(PEER_A).unwrap())
+                    .as("an existing connected node bound to a slot lands ON_DUTY, not stuck JOINING")
+                    .isInstanceOf(OnDuty.class);
+            assertSingleLifecyclePut(commandApplier.calls.get(commandApplier.calls.size() - 1),
+                                     PEER_A,
+                                     NodeLifecycleState.ON_DUTY);
+        }
+
+        @Test void slotClaimed_connectedNodeNotYetSwimHealthy_staysJoining_awaitsEdge() {
+            var fsm = startedFsm();
+            // Gate reports NOT healthy (fresh provision) → no synthesis → stays JOINING until the
+            // genuine SwimHealthy edge, exactly as for a freshly-provisioned node.
+            fsm.setSwimHealthGate(peer -> false);
+            commandApplier.calls.clear();
+
+            fsm.onProvisioningSlotPut(slotBind(SLOT_A, PEER_A));
+
+            assertThat(fsm.get(PEER_A).unwrap())
+                    .as("a not-yet-SWIM-healthy bound node waits in JOINING for the genuine edge")
+                    .isInstanceOf(Joining.class);
+        }
+
+        @Test void slotClaimed_alreadyOnDutyNode_staysOnDuty_idempotent() {
+            seedOnDuty(PEER_A, T0);
+            var fsm = startedFsm();
+            fsm.setSwimHealthGate(peer -> true);
+            commandApplier.calls.clear();
+
+            fsm.onProvisioningSlotPut(slotBind(SLOT_A, PEER_A));
+
+            assertThat(fsm.get(PEER_A).unwrap())
+                    .as("re-binding an already-ON_DUTY node is a benign nop that keeps it ON_DUTY")
+                    .isInstanceOf(OnDuty.class);
+        }
+    }
+
+    private static ValuePut<ProvisioningSlotKey, ProvisioningSlotValue> slotBind(String slotId, NodeId occupant) {
+        return new ValuePut<>(new KVCommand.Put<>(ProvisioningSlotKey.provisioningSlotKey(slotId),
+                                                  new ProvisioningSlotValue(1L, Long.MAX_VALUE, Option.some(occupant), 1L, Option.none())),
+                              Option.none());
     }
 
     private void seedOnDuty(NodeId peer, long updatedAt) {

@@ -147,11 +147,12 @@ class ReducerAggregatorGateTest {
             var outcome = reducer().apply(state, new TransportUnreachable(PEER, T1), gate);
 
             assertThat(outcome.newState()).isInstanceOf(Stopped.class);
-            // Phase 1 step J co-write: lifecycle put + join-deadline remove + slot remove (3).
-            assertThat(outcome.writes()).hasSize(3);
+            // Durable slots (#230, spec §3.1): a JOINING node stopping writes the lifecycle STOPPED
+            // atom + removes the join-deadline (2). The slot atom is NOT deleted — it persists so
+            // CTM `classifyOccupancy` → DEAD → `freeSlot` clears the occupant in place and refills.
+            assertThat(outcome.writes()).hasSize(2);
             assertLifecyclePut(outcome.writes().get(0), NodeLifecycleState.STOPPED);
             assertThat(outcome.writes().get(1)).isInstanceOf(KVCommand.Remove.class);
-            assertThat(outcome.writes().get(2)).isInstanceOf(KVCommand.Remove.class);
         }
     }
 

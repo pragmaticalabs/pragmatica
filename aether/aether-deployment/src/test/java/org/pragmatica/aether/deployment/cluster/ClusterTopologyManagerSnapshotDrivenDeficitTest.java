@@ -112,14 +112,18 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                                             () -> AetherValue.ClusterPhase.NORMAL);
     }
 
+    /// §4 provisioning FALLBACK: a slot with NO connected candidate (here the 4-node observer
+    /// knows only SELF/A/B/C while configured=5) is filled by provisioning. Universal fill (§3
+    /// step 1) binds the 4 connected members; the 5th slot has no spare connected node → provision.
     @Test
-    void reconcile_provisionsIntoEmptySlots_whenSnapshotReportsDeficit() throws InterruptedException {
+    void reconcile_provisionsIntoEmptySlots_whenNoConnectedCandidate() throws InterruptedException {
+        var fallbackCtm = createCtmWithFourNodeObserver(() -> true);
         publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), 5);
-        ctm.activate();
-        ctm.onNodeReady(PEER_A);
+        fallbackCtm.activate();
+        fallbackCtm.onNodeReady(PEER_A);
         awaitProvision(1);
         assertThat(lifecycleManager.provisionCount.get())
-                .as("one EMPTY slot filled for the 4-of-5 cluster")
+                .as("the 5th slot has no connected candidate → provisioning fallback fills it")
                 .isGreaterThanOrEqualTo(1);
     }
 
@@ -136,11 +140,11 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
 
     /// LAYER 3 (anti-flood quorum gate): below committed-healthy quorum the CTM must NOT provision
     /// replacement nodes — it defers to SelfDrainCoordinator to dissolve the minority partition.
-    /// `inQuorum=() -> false` simulates a minority-side leader; a clear 4-of-5 deficit that would
-    /// otherwise provision must result in ZERO provisions.
+    /// `inQuorum=() -> false` simulates a minority-side leader; a slot with no connected candidate
+    /// that would otherwise provision must result in ZERO provisions.
     @Test
     void reconcile_doesNotProvision_whenBelowQuorum() throws InterruptedException {
-        var belowQuorumCtm = createCtmWithQuorum(() -> false);
+        var belowQuorumCtm = createCtmWithFourNodeObserver(() -> false);
         publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), 5);
         belowQuorumCtm.activate();
         belowQuorumCtm.onNodeReady(PEER_A);
@@ -150,26 +154,28 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                 .isZero();
     }
 
-    /// LAYER 3 (gate-open preserves existing behavior): with `inQuorum=() -> true` the same deficit
-    /// provisions normally — the gate is a pure suppressor, not a behavior change above quorum.
+    /// LAYER 3 (gate-open preserves existing behavior): with `inQuorum=() -> true` the same
+    /// no-candidate slot provisions normally — the gate is a pure suppressor, not a behavior change
+    /// above quorum.
     @Test
     void reconcile_provisionsIntoEmptySlots_whenInQuorum() throws InterruptedException {
-        var inQuorumCtm = createCtmWithQuorum(() -> true);
+        var inQuorumCtm = createCtmWithFourNodeObserver(() -> true);
         publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), 5);
         inQuorumCtm.activate();
         inQuorumCtm.onNodeReady(PEER_A);
         awaitProvision(1);
         assertThat(lifecycleManager.provisionCount.get())
-                .as("in quorum — normal deficit provisioning proceeds")
+                .as("in quorum — provisioning fallback proceeds for the no-candidate slot")
                 .isGreaterThanOrEqualTo(1);
     }
 
-    /// LAYER 2 (reseed skips STOPPED occupants): on leader activation the reseed binds occupants
-    /// from the ON_DUTY snapshot, but a peer whose committed lifecycle is already STOPPED (the
-    /// SENSE plane lagging the DECIDE plane) must NOT be re-bound — re-binding fires a SlotClaimed
-    /// for a dead peer. Its slot must be left EMPTY for normal convergence to refill.
+    /// §3 universal slot-fill excludes terminal nodes: on first formation the leader binds the
+    /// CONNECTED, non-terminal core members into the empty slots. A peer whose committed lifecycle
+    /// is already STOPPED must NOT be bound (binding would fire a SlotClaimed for a dead peer); its
+    /// slot is filled by another connected member or provisioned. The enduring invariant: the
+    /// STOPPED occupant is NEVER bound, and the live connected members ARE bound.
     @Test
-    void activate_reseedSkipsStoppedOccupant_leavesSlotEmptyForRefill() throws InterruptedException {
+    void activate_universalFillSkipsStoppedOccupant_neverBindsDeadNode() throws InterruptedException {
         clusterStore.seed(5);
         // 5 occupants present in the ON_DUTY snapshot, but PEER_D is already STOPPED in lifecycle KV.
         var epoch = 0L;
@@ -183,27 +189,62 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             Set.of()),
                                snapshotSource.term.get() + 1L);
         ctm.activate();
-        Thread.sleep(150L);
+        Thread.sleep(200L);
         var boundToDead = clusterStore.slots()
                                       .values()
                                       .stream()
                                       .filter(slot -> slot.assignedNodeId().map(PEER_D::equals).or(false))
                                       .count();
         assertThat(boundToDead)
-                .as("no slot is re-bound to the already-STOPPED occupant PEER_D")
+                .as("the already-STOPPED occupant PEER_D is never bound by universal fill (§3)")
                 .isZero();
-        var boundCount = clusterStore.slots()
-                                     .values()
-                                     .stream()
-                                     .filter(slot -> slot.assignedNodeId().isPresent())
-                                     .count();
-        assertThat(boundCount)
-                .as("the 4 live occupants are bound; the dead occupant's slot is left EMPTY")
-                .isEqualTo(4L);
+        var connectedBound = clusterStore.slots()
+                                         .values()
+                                         .stream()
+                                         .flatMap(slot -> slot.assignedNodeId().stream())
+                                         .collect(java.util.stream.Collectors.toSet());
+        assertThat(connectedBound)
+                .as("the 4 live connected members are bound by universal fill")
+                .contains(SELF, PEER_A, PEER_B, PEER_C);
     }
 
     private ClusterTopologyManager createCtmWithQuorum(java.util.function.BooleanSupplier inQuorum) {
         return createCtm(() -> AetherValue.ClusterPhase.NORMAL, inQuorum);
+    }
+
+    /// Builds a CTM whose observer knows only 4 connected core nodes (SELF, A, B, C) while
+    /// `configured = 5`. The 5th slot therefore has NO connected candidate for §3 step-1 binding,
+    /// so the provisioning FALLBACK (§4) is the only way to fill it — this is the setup that
+    /// exercises provisioning under the universal-fill regime (a connected node always binds first).
+    private ClusterTopologyManager createCtmWithFourNodeObserver(java.util.function.BooleanSupplier inQuorum) {
+        var config = new TopologyConfig(SELF,
+                                        5,
+                                        timeSpan(60).seconds(),
+                                        timeSpan(1).seconds(),
+                                        List.of(INFO_SELF, INFO_A, INFO_B, INFO_C));
+        var fourNodeObserver = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
+                                                      timeSpan(1).millis(),
+                                                      AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
+                                                      AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                                      AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
+                                                      timeSpan(0).millis())
+                                            .unwrap();
+        return ClusterTopologyManager.clusterTopologyManager(fourNodeObserver,
+                                                             lifecycleManager,
+                                                             autoHeal,
+                                                             DeploymentMap.deploymentMap(),
+                                                             snapshotSource,
+                                                             clusterStore::current,
+                                                             clusterStore::lifecycle,
+                                                             clusterStore::slots,
+                                                             clusterStore::apply,
+                                                             new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
+                                                             LegacyLifecycleWriterFixture.create(clusterStore::apply,
+                                                                                                  clusterStore::lifecycle,
+                                                                                                  System::currentTimeMillis),
+                                                             () -> AetherValue.ClusterPhase.NORMAL,
+                                                             inQuorum);
     }
 
     private ClusterTopologyManager createCtm(java.util.function.Supplier<AetherValue.ClusterPhase> phase,
@@ -296,14 +337,14 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                 .isEqualTo(provisionsAtConverge);
     }
 
-    /// BUG 2 regression GUARD (activation double-seed clobber — async/timing; Docker is the
-    /// decisive gate). With a DEFERRED `commandApplier` (resolves the reseed write on a LATER tick,
-    /// recreating the stale-read window the real async Rabia KV has), activation with 5 ON_DUTY
-    /// occupants must leave all 5 slots BOUND. Old code ran `maintainSlotSetSize` against the
-    /// pre-commit (empty) map → re-seeded indices 0-4 EMPTY → clobbered the bindings (fails-before).
-    /// New: the activation reconcile is chained onto the reseed COMMIT → bindings survive.
+    /// PRESERVE-PATH regression GUARD (async/timing; Docker is the decisive gate). With a DEFERRED
+    /// `commandApplier` (resolves writes on a LATER tick, recreating the stale-read window the real
+    /// async Rabia KV has) and KV that ALREADY holds 5 bound slots (leader-change / preserve path,
+    /// §2), activation must NOT clobber the existing bindings: `maintainSlotSetSize` finds no missing
+    /// indices, so it issues no EMPTY seed, and the universal fill finds every connected member
+    /// already bound, so it binds nothing new. All 5 bindings survive the stale-read window.
     @Test
-    void activate_withDeferredCommandApplier_keepsBindings_noClobber() throws InterruptedException {
+    void activate_withDeferredCommandApplier_preservesExistingBindings_noClobber() throws InterruptedException {
         var deferred = new DeferredCommandApplier(clusterStore);
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
                                                       timeSpan(1).millis(),
@@ -327,8 +368,11 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                                                                                             System::currentTimeMillis),
                                                                         () -> AetherValue.ClusterPhase.NORMAL);
         clusterStore.seed(5);
+        // KV ALREADY holds 5 slots bound to the 5 keepers (preserve path).
+        var keepers = List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        for (var index = 0; index < keepers.size(); index++) {clusterStore.seedSlot(index, keepers.get(index));}
         var epoch = 0L;
-        for (var id : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {clusterStore.installOnDuty(id, epoch++);}
+        for (var id : keepers) {clusterStore.installOnDuty(id, epoch++);}
         snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
                                             5,
@@ -337,8 +381,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                             Set.of()),
                                snapshotSource.term.get() + 1L);
         deferredCtm.activate();
-        // The reseed write is queued but not yet committed (stale-read window open). Now flush it —
-        // the chained activation reconcile runs against the committed map.
+        // Flush any queued writes — the chained activation reconcile runs against the committed map.
         deferred.flush();
         Thread.sleep(100L);
         var boundCount = clusterStore.slots()
@@ -347,7 +390,7 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                                      .filter(slot -> slot.assignedNodeId().isPresent())
                                      .count();
         assertThat(boundCount)
-                .as("all 5 reseeded slots stay BOUND through the stale-read window — no EMPTY clobber")
+                .as("all 5 pre-bound slots stay BOUND through the stale-read window — no EMPTY clobber")
                 .isEqualTo(5L);
         assertThat(lifecycleManager.provisionCount.get())
                 .as("no surplus provisioning at a fully-occupied cluster")
@@ -450,6 +493,115 @@ class ClusterTopologyManagerSnapshotDrivenDeficitTest {
                 .hasSize(3);
         assertThat(lifecycleManager.terminateCount.get())
                 .as("the leader does NOT terminate scale-down occupants — they self-drain via §5")
+                .isZero();
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // slot-based-core-membership-redesign Phase 2b: universal slot-fill (§3) tests.
+    // ---------------------------------------------------------------------------------------
+
+    /// §3 formation: N connected unbound seeds + empty slots → universal fill (step 1) BINDS them
+    /// from the connected-members view — NO provisioning, NO boot latency. All 5 become occupants.
+    @Test
+    void formation_universalFillBindsConnectedSeeds_noProvisioning() throws InterruptedException {
+        clusterStore.seed(5);
+        // The 5 configured nodes are all connected in the observer (added healthy at construction),
+        // but NONE has a lifecycle entry yet (genuine formation: connected, not yet ON_DUTY).
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(),
+                                            0,
+                                            5,
+                                            Set.of(),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        ctm.activate();
+        Thread.sleep(200L);
+        var boundOccupants = clusterStore.slots()
+                                         .values()
+                                         .stream()
+                                         .flatMap(slot -> slot.assignedNodeId().stream())
+                                         .collect(java.util.stream.Collectors.toSet());
+        assertThat(boundOccupants)
+                .as("universal fill binds the connected seeds from the connected-members view")
+                .containsExactlyInAnyOrder(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("no provisioning — connected nodes claimed every slot (§3 step 1)")
+                .isZero();
+    }
+
+    /// §3 late-join: an empty slot + a connected unbound node → BOUND (step 1), not provisioned.
+    /// 4 slots are pre-bound to SELF/A/B/C; slot 4 is empty; PEER_D is connected and unbound →
+    /// universal fill binds PEER_D into slot 4 with zero provisioning.
+    @Test
+    void lateJoin_bindsConnectedUnboundNode_notProvisioned() throws InterruptedException {
+        clusterStore.seed(5);
+        var preBound = List.of(SELF, PEER_A, PEER_B, PEER_C);
+        for (var index = 0; index < preBound.size(); index++) {clusterStore.seedSlot(index, preBound.get(index));}
+        // slot 4 created empty by maintainSlotSetSize; PEER_D is connected (observer) and unbound.
+        var epoch = 0L;
+        for (var id : preBound) {clusterStore.installOnDuty(id, epoch++);}
+        snapshotSource.publish(new StubView(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D),
+                                            Set.of(SELF, PEER_A, PEER_B, PEER_C),
+                                            4,
+                                            5,
+                                            Set.of(),
+                                            Set.of()),
+                               snapshotSource.term.get() + 1L);
+        ctm.activate();
+        Thread.sleep(200L);
+        var boundOccupants = clusterStore.slots()
+                                         .values()
+                                         .stream()
+                                         .flatMap(slot -> slot.assignedNodeId().stream())
+                                         .collect(java.util.stream.Collectors.toSet());
+        assertThat(boundOccupants)
+                .as("the connected unbound node claims the empty slot (no provisioning)")
+                .contains(PEER_D);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("late join binds an existing connected node — never provisions")
+                .isZero();
+    }
+
+    /// §3 formation suppression: phase != NORMAL (COLD_BOOT) + an empty slot with NO connected
+    /// candidate → NO provisioning (provisioning is suppressed during formation until the
+    /// formation-timeout). The 4-node observer leaves the 5th slot candidate-less; COLD_BOOT phase
+    /// must keep provisioning suppressed.
+    @Test
+    void formationPhase_emptySlotNoCandidate_doesNotProvision() throws InterruptedException {
+        var config = new TopologyConfig(SELF,
+                                        5,
+                                        timeSpan(60).seconds(),
+                                        timeSpan(1).seconds(),
+                                        List.of(INFO_SELF, INFO_A, INFO_B, INFO_C));
+        var fourNodeObserver = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
+                                                      timeSpan(1).millis(),
+                                                      AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
+                                                      AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+                                                      AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
+                                                      timeSpan(0).millis())
+                                            .unwrap();
+        var coldBootCtm = ClusterTopologyManager.clusterTopologyManager(fourNodeObserver,
+                                                                        lifecycleManager,
+                                                                        autoHeal,
+                                                                        DeploymentMap.deploymentMap(),
+                                                                        snapshotSource,
+                                                                        clusterStore::current,
+                                                                        clusterStore::lifecycle,
+                                                                        clusterStore::slots,
+                                                                        clusterStore::apply,
+                                                                        new org.pragmatica.aether.deployment.drain.NoOpDrainCoordinator(),
+                                                                        LegacyLifecycleWriterFixture.create(clusterStore::apply,
+                                                                                                            clusterStore::lifecycle,
+                                                                                                            System::currentTimeMillis),
+                                                                        () -> AetherValue.ClusterPhase.COLD_BOOT,
+                                                                        () -> true);
+        clusterStore.seed(5);
+        publishOnDuty(Set.of(SELF, PEER_A, PEER_B, PEER_C), 5);
+        coldBootCtm.activate();
+        Thread.sleep(200L);
+        assertThat(lifecycleManager.provisionCount.get())
+                .as("formation phase (COLD_BOOT) suppresses provisioning even with a candidate-less empty slot")
                 .isZero();
     }
 

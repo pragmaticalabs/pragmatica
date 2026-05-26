@@ -89,11 +89,15 @@ class ClusterTopologyManagerReserveThenProvisionTest {
     @BeforeEach
     void setUp() {
         snapshotSource = new StubSnapshotSource();
+        // 4-node observer (SELF, A, B, C connected) while configured=5: the 5th slot has NO
+        // connected candidate for §3 step-1 binding, so the reserve-then-provision FALLBACK (§4) —
+        // the path these tests exercise — is the only way to fill it. Under universal fill a
+        // connected unbound node would otherwise claim an empty slot before any reservation/provision.
         var config = new TopologyConfig(SELF,
                                         5,
                                         timeSpan(60).seconds(),
                                         timeSpan(1).seconds(),
-                                        List.of(INFO_SELF, INFO_A, INFO_B, INFO_C, INFO_D));
+                                        List.of(INFO_SELF, INFO_A, INFO_B, INFO_C));
         observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         lifecycleManager = new RecordingLifecycleManager();
         clusterStore = new RecordingClusterStore();

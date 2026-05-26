@@ -1348,23 +1348,37 @@ public interface AetherNode extends ManageableNode {
         //   * `inQuorum()` is the committed-healthy quorum bit — same source the CTM uses; below
         //     quorum the orphan decision is suppressed and the SelfDrainCoordinator quorum-loss
         //     trigger owns the outcome (mutually exclusive).
-        //   * `boundSet` = the set of `assignedNodeId`s across the durable slot atoms; the orphan
-        //     fires only when it is full of distinct occupants (`size == configuredSize()`) and
-        //     this node is absent — never on a partial set.
-        java.util.function.Supplier<java.util.Set<NodeId>> slotBoundSetSupplier = () -> {
+        //   * `slotOccupants` = the set of `assignedNodeId`s across the durable slot atoms.
+        //   * `connectedMembers` = the SWIM/transport-derived connected core node ids (the SAME
+        //     signal the CTM universal fill uses), plus self. A slot whose occupant is NOT in this
+        //     set is dead/disconnected → NOT live-filled → `liveFilled < configured` → the node
+        //     WAITS (it could be rebound there) rather than false-draining (§5 dynamic predicate).
+        java.util.function.Supplier<java.util.Set<NodeId>> slotOccupantsSupplier = () -> {
             var bound = new java.util.HashSet<NodeId>();
             slotReader.get().values().forEach(slot -> slot.assignedNodeId().onPresent(bound::add));
             return bound;
+        };
+        var orphanTopologyObserver = (org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager();
+        java.util.function.Supplier<java.util.Set<NodeId>> connectedMembersSupplier = () -> {
+            var connected = new java.util.HashSet<NodeId>();
+            orphanTopologyObserver.topology()
+                                  .stream()
+                                  .filter(id -> !orphanTopologyObserver.isPassive(id))
+                                  .filter(id -> orphanTopologyObserver.getState(id)
+                                                                      .map(state -> state.health() == org.pragmatica.consensus.topology.NodeHealth.HEALTHY)
+                                                                      .or(false))
+                                  .forEach(connected::add);
+            connected.add(config.self());
+            return connected;
         };
         var orphanSelfDrainChecker = org.pragmatica.aether.deployment.drain.OrphanSelfDrainChecker.orphanSelfDrainChecker(
             config.self(),
             () -> !clusterNode.isObserving(),
             clusterNode::isActive,
-            ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
-            slotBoundSetSupplier,
+            orphanTopologyObserver.inQuorum(),
+            slotOccupantsSupplier,
+            connectedMembersSupplier,
             clusterTopologyManager::configuredSize,
-            org.pragmatica.aether.deployment.drain.OrphanSelfDrainChecker.DEFAULT_GRACE,
-            System::currentTimeMillis,
             selfDrainCoordinator::onOrphanDetected);
         SharedScheduler.scheduleAtFixedRate(orphanSelfDrainChecker::check,
                                             TimeSpan.timeSpan(5).seconds(),

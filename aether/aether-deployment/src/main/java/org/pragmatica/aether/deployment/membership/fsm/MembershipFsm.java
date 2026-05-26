@@ -808,9 +808,31 @@ public final class MembershipFsm {
             // `isLeaderWritingEvent` so external callers using `enqueueOperatorEvent`
             // (test paths) remain safe on followers — see that method's docstring.
             processOperatorEventLocked(new SlotClaimed(peer, slotId, hlcClock.now()));
+            // slot-based-core-membership-redesign §3/§1 (Part C): when CTM binds an EXISTING
+            // connected node into an empty slot, SlotClaimed lands it JOINING — but an already-
+            // SWIM-healthy node may never emit a fresh SwimHealthy edge, leaving it stuck JOINING
+            // until JOIN_DEADLINE → STOPPED (a coherence leak: bound but never ON_DUTY). Mirror
+            // the `resumeJoinDeadline` synthesis: if the bound peer is SWIM-healthy and now JOINING,
+            // synthesize SwimHealthy so binding immediately DRIVES ON_DUTY (bound ⟺ ON_DUTY, §1).
+            promoteBoundConnectedPeer(peer);
         } finally {
             fsmLock.unlock();
         }
+    }
+
+    /// §1 coherence (Part C): drive a freshly-bound, SWIM-healthy JOINING peer to ON_DUTY by
+    /// synthesizing a SwimHealthy. Leader-gated (only the leader writes lifecycle); no-op unless
+    /// the peer is in JOINING and the SWIM health gate reports it healthy. For a freshly-provisioned
+    /// node (not yet SWIM-healthy) the gate is false and promotion waits for the genuine SwimHealthy
+    /// edge, exactly as before.
+    private void promoteBoundConnectedPeer(NodeId peer) {
+        if (!isLeader.getAsBoolean()) {return;}
+        if (! (fsmStates.get(peer) instanceof MembershipFsmState.Joining)) {return;}
+        if (!swimHealthGate.apply(peer)) {return;}
+
+        log.info("MembershipFsm: bound existing connected peer={} is SWIM-healthy — synthesizing SwimHealthy to drive ON_DUTY (§1 Part C)",
+                 peer.id());
+        onSwimObservation(new HealthyObserved(peer, 0L));
     }
 
     private void ensureProvisioningTracked(NodeId peer, String slotId) {

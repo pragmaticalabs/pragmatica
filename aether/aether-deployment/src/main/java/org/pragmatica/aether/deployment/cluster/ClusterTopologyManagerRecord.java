@@ -13,7 +13,6 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
-import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
@@ -103,6 +102,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicInteger consecutiveProvisioningFailures,
                                     AtomicLong nextProvisioningAllowedMs,
                                     AtomicLong lastProvisioningFailureMs,
+                                    AtomicLong formationAnchorMs,
                                     AtomicBoolean autoHealEnabled,
                                     LongSupplier clock) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
@@ -131,6 +131,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private static final long PROVISIONING_BACKOFF_BASE_MS = 30_000L;
     private static final long PROVISIONING_BACKOFF_MAX_MS = 300_000L;
     private static final long PROVISIONING_AUTO_RESET_QUIESCENCE_MS = 3_600_000L;
+    /// §3 formation-timeout: while the cluster is forming (phase != NORMAL) provisioning is
+    /// suppressed and empty slots are filled only from connected nodes (step 1). If a slot whose
+    /// expected bootstrap node never appears is still empty this long after activation, the
+    /// suppression lifts so the never-appearing seed's slot is eventually provisioned post-
+    /// formation. Generous on purpose — the common case is that phase reaches NORMAL well first.
+    private static final long FORMATION_PROVISION_TIMEOUT_MS = 120_000L;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -171,6 +177,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicInteger(0),
                                                 new AtomicLong(0L),
                                                 new AtomicLong(0L),
+                                                new AtomicLong(clock.getAsLong()),
                                                 new AtomicBoolean(true),
                                                 clock);
     }
@@ -305,7 +312,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// Classifies an OCCUPIED slot on the DECIDE plane (`lifecycleReader` — the sovereign-FSM
-    /// committed lifecycle, the SAME source `occupantStopped` reads). CTM is an actuator on the
+    /// committed lifecycle). CTM is an actuator on the
     /// FSM's committed lifecycle, NOT a SENSE-plane reader: an occupant that the FSM committed
     /// ON_DUTY is HEALTHY even while it still lags the SWIM-derived `onDutyMemberIds()`. Mapping:
     /// `STOPPED→DEAD`, `ON_DUTY→HEALTHY`, `JOINING/DRAINING→FILLING`, absent→FILLING (occupied,
@@ -323,12 +330,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             case ON_DUTY -> SlotOccupancy.HEALTHY;
             case JOINING, DRAINING -> SlotOccupancy.FILLING;
         };
-    }
-
-    private boolean occupantStopped(NodeId occupant) {
-        return lifecycleReader.apply(occupant)
-                              .map(lv -> lv.state() == NodeLifecycleState.STOPPED)
-                              .or(false);
     }
 
     @Contract
@@ -568,6 +569,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         bumpRealActualStability("activate");
         resetProvisioningCircuit("activate (leader handoff)");
+        formationAnchorMs.set(nowMs());
         // Establish the reconciler state (Forming/Converged) FIRST so the activation reconcile —
         // chained onto the reseed commit inside seedOrReseedSlots — reaches reconcileActive rather
         // than early-returning on Inactive.
@@ -614,62 +616,29 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         seedFirstFormation(configured);
     }
 
-    /// First formation (KV has no slots): create the slot set and bind the present non-stopped
-    /// occupants. Surplus beyond `configured` is NOT reaped here — any excess self-drains in Phase 2
-    /// (§5); on first formation with <= configured bootstrap nodes there is no surplus.
+    /// First formation (KV has no slots): create the slot set as `configured` UNBOUND empty slots
+    /// `0..configured-1` and let the universal fill (§3 step 1, `bindExistingNodesToEmptySlots`)
+    /// bind the present connected seeds on the chained activation reconcile. This is the root fix
+    /// for the formation-collapse class: the prior cut bound from `onDutyOccupantsBySeniority()`
+    /// (the lifecycle-ON_DUTY snapshot), which is EMPTY at real formation (the bootstrap seeds are
+    /// connected-joined but not yet ON_DUTY) → zero seeds bound → CTM provisioned replacements into
+    /// the empty slots → the real seeds were never occupants → §5 drained them → cascade collapse.
+    /// Binding from the CONNECTED set (step 1) instead means the seeds claim their slots before any
+    /// provisioning, and provisioning is suppressed during formation (`provisioningAllowedInPhase`).
     @Contract
     private void seedFirstFormation(int configured) {
-        var occupants = onDutyOccupantsBySeniority().stream()
-                                                    .filter(occupant -> !occupantStopped(occupant))
-                                                    .toList();
-        var bound = occupants.stream().limit(configured).toList();
-        var puts = buildReseedPuts(bound, configured);
+        var puts = java.util.stream.IntStream.range(0, configured)
+                                             .mapToObj(index -> putSlotCommand(slotKeyForIndex(index), emptySlotValue()))
+                                             .toList();
         commandApplier.apply(puts)
-                      .onFailure(cause -> log.warn("CTM: failed to seed {} slot(s): {}", puts.size(), cause.message()))
-                      .onSuccess(_ -> log.info("CTM: seeded {} slot(s) ({} bound to live occupants, {} empty) for configured={} (first formation)",
+                      .onFailure(cause -> log.warn("CTM: failed to seed {} empty slot(s): {}", puts.size(), cause.message()))
+                      .onSuccess(_ -> log.info("CTM: seeded {} empty slot(s) for configured={} (first formation) — connected seeds bind via universal fill (§3)",
                                                puts.size(),
-                                               bound.size(),
-                                               puts.size() - bound.size(),
                                                configured))
-                      // Run the activation reconcile only AFTER the complete seed write-set has
-                      // committed, so maintainSlotSetSize observes the bound slots (not a stale
-                      // pre-commit map) and does not clobber them with EMPTY seeds.
+                      // Run the activation reconcile only AFTER the complete empty seed write-set
+                      // has committed, so the universal fill observes the slot set (not a stale
+                      // pre-commit map) and binds the connected seeds.
                       .onResult(_ -> reconcile());
-    }
-
-    /// ON_DUTY occupants (from the generation snapshot) sorted by seniority: `observedCoreEpoch`
-    /// ascending (oldest first), tie-break NodeId lexical (determinism only — NOT a time order).
-    private List<NodeId> onDutyOccupantsBySeniority() {
-        return snapshotSource.currentMembershipView()
-                             .map(MembershipView::onDutyMemberIds)
-                             .or(Set.of())
-                             .stream()
-                             .sorted(Comparator.comparing(this::nodeJoinEpoch)
-                                               .thenComparing(NodeId::id))
-                             .toList();
-    }
-
-    private List<KVCommand<AetherKey>> buildReseedPuts(List<NodeId> bound, int configured) {
-        var nowMs = nowMs();
-        var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
-        var puts = new ArrayList<KVCommand<AetherKey>>(configured);
-
-        for (var index = 0;index <configured;index++) {
-            puts.add(reseedSlotPut(index, bound, nowMs, deadlineMs));
-        }
-
-        return puts;
-    }
-
-    private KVCommand<AetherKey> reseedSlotPut(int index, List<NodeId> bound, long nowMs, long deadlineMs) {
-        var key = slotKeyForIndex(index);
-
-        if (index >= bound.size()) {return putSlotCommand(key, emptySlotValue());}
-
-        var occupant = bound.get(index);
-        slotKeyByNodeId.put(occupant, key);
-
-        return putSlotCommand(key, new ProvisioningSlotValue(nowMs, deadlineMs, Option.some(occupant), 1L, Option.none()));
     }
 
     @SuppressWarnings("unchecked")
@@ -858,7 +827,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void reconcile() {
         if (!active.get()) {return;}
-        if (suspendedByPhase()) {return;}
 
         var currentState = stateRef.get();
 
@@ -872,14 +840,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         reconcileActive(currentState);
     }
 
-    private boolean suspendedByPhase() {
+    /// §3 provisioning suppression: step-1 binding (bind an existing connected node) runs in EVERY
+    /// phase — it has no provisioning side-effect, so a forming cluster's bootstrap seeds acquire
+    /// their slots immediately. Step-2 provisioning is suppressed while the cluster is forming
+    /// (phase != NORMAL) UNTIL the formation-timeout elapses (so a never-appearing bootstrap node's
+    /// slot is eventually provisioned post-formation). NORMAL always permits provisioning.
+    private boolean provisioningAllowedInPhase() {
         var phase = phaseSupplier.get();
 
-        if (phase == ClusterPhase.NORMAL) {return false;}
+        if (phase == ClusterPhase.NORMAL) {return true;}
+        if (nowMs() - formationAnchorMs.get() >= FORMATION_PROVISION_TIMEOUT_MS) {
+            log.info("CTM: formation-provision timeout elapsed in phase {} — lifting provisioning suppression", phase);
 
-        log.debug("CTM: reconcile suspended — cluster phase is {}", phase);
+            return true;
+        }
 
-        return true;
+        log.debug("CTM: provisioning suppressed during formation (phase {}) — slot-fill from connected nodes only (§3)", phase);
+
+        return false;
     }
 
     @Contract
@@ -913,10 +891,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         convergeSlotOccupancy(currentState, view, configured);
     }
 
-    /// Slot-occupancy convergence (slot-based-membership-convergence-spec §5.1/§5.2). Frees DEAD
-    /// slots (D2, no drain), computes post-free EMPTY occupancy in memory, then provisions into
-    /// empty slots not already FILLING — bounded by `MAX_WAVE_SIZE` and the retained
-    /// stability/circuit/backoff gates.
+    /// Slot-occupancy convergence (slot-based-membership-convergence-spec §5.1/§5.2 +
+    /// slot-based-core-membership-redesign §3 universal slot-fill). Frees DEAD slots (D2, no
+    /// drain), computes post-free EMPTY occupancy in memory, then runs the universal fill:
+    ///
+    ///   1. **Bind an existing connected node** into each empty slot (deterministic pairing of
+    ///      sorted candidates × sorted empty indices) — no provisioning, no boot latency. This is
+    ///      how the bootstrap seeds acquire slots at formation and how a spare/late node is reused.
+    ///   2. **Provision** (`fillEmptySlots`) into the slots STILL empty after step 1 — the
+    ///      FALLBACK, gated by stability/circuit/backoff AND suppressed during formation (§3:
+    ///      `provisioningAllowedInPhase`).
+    ///
+    /// Step 1 binds via a conditional slot PUT chained on the bind commit, so the same-tick
+    /// `emptyToFill` selection is re-derived from KV next tick; the slots bound this pass are
+    /// excluded from the provisioning fallback in memory.
     @Contract
     private void convergeSlotOccupancy(NodeReconcilerState currentState, MembershipView view, int configured) {
         var nowMs = nowMs();
@@ -925,20 +913,141 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var healthy = countHealthy(slots, view, nowMs);
         var emptyToFill = selectEmptySlotsToFill(slots, view, nowMs, freedIndices);
         observeRealActualForStability(healthy);
-        log.info("CTM reconcile(slot): configured={} healthy={} freedDead={} emptyToFill={} occupancy={}",
+        var boundThisPass = bindExistingNodesToEmptySlots(slots, emptyToFill, nowMs);
+        var remainingEmpty = emptyToFill.stream()
+                                        .filter(slot -> !boundThisPass.contains(slot.index()))
+                                        .toList();
+        log.info("CTM reconcile(slot): configured={} healthy={} freedDead={} emptyToFill={} boundExisting={} remainingEmpty={} occupancy={}",
                   configured,
                   healthy,
                   freedIndices.size(),
                   emptyToFill.size(),
+                  boundThisPass.size(),
+                  remainingEmpty.size(),
                   summarizeOccupancy(slots, view, nowMs));
 
-        if (emptyToFill.isEmpty() && freedIndices.isEmpty()) {
+        if (remainingEmpty.isEmpty() && freedIndices.isEmpty() && boundThisPass.isEmpty()) {
             settleConverged(currentState, healthy, configured);
 
             return;
         }
+        if (remainingEmpty.isEmpty()) {return;}
 
-        fillEmptySlots(currentState, emptyToFill, healthy, configured);
+        fillEmptySlots(currentState, remainingEmpty, healthy, configured);
+    }
+
+    /// §3 step 1 (universal slot-fill — bind an existing node). For each empty slot, in ascending
+    /// index order, pair it with a deterministically-sorted connected candidate (a core node that
+    /// is CONNECTED in the SWIM/transport view, JOINED, NOT already a slot occupant, and NOT
+    /// draining/terminal). Binds the slot to the candidate via a conditional PUT keyed on the slot
+    /// still being empty (the FILLING-marker `occupantEpoch` is bumped to fence a stale predecessor).
+    /// Returns the set of slot indices bound this pass so the provisioning fallback can exclude
+    /// them in memory (the bind PUT has not round-tripped yet).
+    ///
+    /// No provisioning here — this is the fast path that subsumes formation (the bootstrap seeds
+    /// are connected-joined-unbound), late-join (a spare node claims a freed slot before any
+    /// provision), and descale-rebalance. Provisioning (§4) is the fallback in `fillEmptySlots`.
+    private Set<Integer> bindExistingNodesToEmptySlots(List<IndexedSlot> slots,
+                                                       List<IndexedSlot> emptyToFill,
+                                                       long nowMs) {
+        if (emptyToFill.isEmpty()) {return Set.of();}
+
+        var candidates = bindableConnectedCandidates(slots);
+
+        if (candidates.isEmpty()) {return Set.of();}
+
+        var orderedEmpty = emptyToFill.stream()
+                                      .sorted(Comparator.comparingInt(IndexedSlot::index))
+                                      .toList();
+        var pairings = Math.min(candidates.size(), orderedEmpty.size());
+        var boundIndices = new java.util.HashSet<Integer>(pairings);
+
+        for (var i = 0; i < pairings; i++) {
+            var slot = orderedEmpty.get(i);
+
+            if (inFlightSlotIndices.putIfAbsent(slot.index(), nowMs + autoHealConfig.provisioningTimeout().millis()) != null) {continue;}
+
+            bindExistingNodeToSlot(slot, candidates.get(i), nowMs);
+            boundIndices.add(slot.index());
+        }
+
+        return boundIndices;
+    }
+
+    /// Connected, joined, unbound, non-draining core candidates for slot binding, sorted
+    /// deterministically (NodeId lexical) so the pairing is stable across leaders. "Connected" =
+    /// in the SWIM/transport-derived connected-members set (`connectedCoreMembers`); "joined" =
+    /// not Untracked-only — we accept any connected core member whose lifecycle is not
+    /// draining/terminal (a fresh connected seed with no lifecycle entry is bindable: binding
+    /// DRIVES its JOINING→ON_DUTY, §1 coherence). Already-bound occupants are excluded.
+    private List<NodeId> bindableConnectedCandidates(List<IndexedSlot> slots) {
+        var bound = boundOccupants(slots);
+
+        return connectedCoreMembers().stream()
+                                     .filter(id -> !bound.contains(id))
+                                     .filter(id -> !isDrainingOrTerminal(id))
+                                     .sorted(Comparator.comparing(NodeId::id))
+                                     .toList();
+    }
+
+    /// The set of node ids currently holding a slot binding (`assignedNodeId` present).
+    private Set<NodeId> boundOccupants(List<IndexedSlot> slots) {
+        return slots.stream()
+                    .flatMap(slot -> slot.value().assignedNodeId().stream())
+                    .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// Connected core members from the SWIM/transport view (the SAME signal §5 self-drain uses):
+    /// non-passive nodes in `observer.topology()` whose `NodeState.health` is HEALTHY, plus self
+    /// (always implicitly connected and not in its own SWIM peer list). This is the "connected,
+    /// joined" predicate of §3 — a node the leader can reach right now.
+    private Set<NodeId> connectedCoreMembers() {
+        var connected = observer.topology()
+                                .stream()
+                                .filter(id -> !observer.isPassive(id))
+                                .filter(this::isConnected)
+                                .collect(Collectors.toCollection(java.util.HashSet::new));
+        connected.add(observer.self().id());
+
+        return connected;
+    }
+
+    private boolean isConnected(NodeId id) {
+        return observer.getState(id)
+                       .map(state -> state.health() == NodeHealth.HEALTHY)
+                       .or(false);
+    }
+
+    private boolean isDrainingOrTerminal(NodeId id) {
+        return lifecycleReader.apply(id)
+                              .map(lv -> lv.state() == NodeLifecycleState.DRAINING
+                                         || lv.state() == NodeLifecycleState.STOPPED)
+                              .or(false);
+    }
+
+    /// Binds one empty slot to an existing connected node (§3 step 1). The PUT carries
+    /// `assignedNodeId = some(existingNode)` and bumps `occupantEpoch` to fence a stale
+    /// predecessor's late ON_DUTY write (D4). The FSM observes the SlotClaimed and lands the node
+    /// ON_DUTY (Part C — `applySlotPutAssigned` synthesizes SwimHealthy for the connected peer).
+    /// The slot-index claim is released on the bind commit so a later free-then-rebind can reuse it.
+    @Contract
+    private void bindExistingNodeToSlot(IndexedSlot slot, NodeId existing, long nowMs) {
+        var bound = new ProvisioningSlotValue(nowMs,
+                                              nowMs + autoHealConfig.provisioningTimeout().millis(),
+                                              Option.some(existing),
+                                              slot.value().occupantEpoch() + 1L,
+                                              slot.value().supersededNodeId());
+        slotKeyByNodeId.put(existing, slot.key());
+        commandApplier.apply(List.of(putSlotCommand(slot.key(), bound)))
+                      .onFailure(cause -> log.warn("CTM: failed to bind existing node {} to slot {} ({})",
+                                                   existing,
+                                                   slot.index(),
+                                                   cause.message()))
+                      .onSuccess(_ -> log.info("CTM: bound existing connected node {} to empty slot {} (epoch={}) — no provisioning (§3 step 1)",
+                                               existing,
+                                               slot.index(),
+                                               bound.occupantEpoch()))
+                      .onResult(_ -> inFlightSlotIndices.remove(slot.index()));
     }
 
     @Contract
@@ -968,6 +1077,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                       configured);
             return;
         }
+        if (!provisioningAllowedInPhase()) {return;}
         if (!provisioningGatesPass(healthy, configured)) {return;}
         if (!lifecycleManager.isCloudManaged()) {
             log.debug("CTM: {} empty slot(s) but no ComputeProvider, cannot auto-provision", emptyToFill.size());
@@ -1331,12 +1441,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         return elapsed >= autoHealConfig.provisionStabilityWindow()
                                         .millis();
-    }
-
-    private Epoch nodeJoinEpoch(NodeId nodeId) {
-        return lifecycleReader.apply(nodeId)
-                              .map(NodeLifecycleValue::observedCoreEpoch)
-                              .or(Epoch.ZERO);
     }
 
     @Contract
