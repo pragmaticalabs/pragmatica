@@ -39,6 +39,7 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -94,6 +95,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicBoolean active,
                                     ConcurrentHashMap<NodeId, Promise<?>> inFlightProvisions,
                                     ConcurrentHashMap<NodeId, ProvisioningSlotKey> slotKeyByNodeId,
+                                    ConcurrentHashMap<Integer, Long> inFlightSlotIndices,
                                     CancellableTask safetyNetTimer,
                                     AtomicLong realActualStableSinceMs,
                                     AtomicInteger lastObservedRealActual,
@@ -159,6 +161,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 inQuorum,
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
+                                                new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 CancellableTask.cancellableTask(),
@@ -700,6 +703,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                       .onFailure(cause -> log.warn("CTM: failed to wipe {} legacy slot atom(s) on reseed: {}", deletes.size(), cause.message()))
                       .onSuccess(_ -> log.info("CTM: wiped {} legacy slot atom(s) on reseed", deletes.size()));
         slotKeyByNodeId.clear();
+        // Reseed rebuilds the entire slot set from scratch — drop any stale per-index in-flight
+        // claims so the post-reseed reconcile can re-target freshly EMPTY indices.
+        inFlightSlotIndices.clear();
     }
 
     @SuppressWarnings("unchecked")
@@ -1077,13 +1083,40 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// Selects EMPTY slots eligible to fill: classified EMPTY now, OR just-freed this pass (the
     /// async clear-occupant write has not yet round-tripped, so we treat freed indices as EMPTY
     /// in memory — same-tick free-then-fill).
+    ///
+    /// In-flight guard: a slot whose index is claimed is normally skipped (a concurrent reconcile
+    /// owns the fill, or a provision is in flight in the TOCTOU window where the FILLING reservation
+    /// has not yet round-tripped to KV). BUT a claim whose recorded deadline has lapsed is STALE —
+    /// the provision was abandoned (e.g. a container that never booted/joined, or a hung provider) —
+    /// so the claim is reaped here and the slot is included for refill. The claim deadline equals
+    /// the FILLING-marker `provisioningTimeout`, so this is the FILLING-deadline-expiry release path
+    /// for the in-memory claim, mirroring the classification-based expiry that resets the slot to
+    /// EMPTY.
     private List<IndexedSlot> selectEmptySlotsToFill(List<IndexedSlot> slots,
                                                      MembershipView view,
                                                      long nowMs,
                                                      Set<Integer> freedIndices) {
         return slots.stream()
                     .filter(slot -> isEmptyToFill(slot, view, nowMs, freedIndices))
+                    .filter(slot -> claimAvailableForRefill(slot.index(), nowMs))
                     .toList();
+    }
+
+    /// True when the slot index may be (re)filled: not currently claimed, OR the claim's deadline
+    /// has lapsed (stale leftover from an abandoned provision — reaped here so the slot can refill).
+    /// Returns false only while a genuine in-flight provision still owns the index (claim deadline
+    /// in the future) — the EMPTY-in-KV TOCTOU window between selection and reservation commit.
+    private boolean claimAvailableForRefill(int index, long nowMs) {
+        var claimDeadline = inFlightSlotIndices.get(index);
+
+        if (claimDeadline == null) {return true;}
+        if (nowMs <claimDeadline) {return false;}
+
+        log.info("CTM: reaping stale in-flight claim on slot {} — claim deadline lapsed (abandoned provision); allowing refill",
+                 index);
+        inFlightSlotIndices.remove(index);
+
+        return true;
     }
 
     private boolean isEmptyToFill(IndexedSlot slot, MembershipView view, long nowMs, Set<Integer> freedIndices) {
@@ -1239,6 +1272,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         commandApplier.apply(List.of(putSlotCommand(slot.key(), freed)))
                       .onFailure(cause -> log.warn("CTM: failed to free DEAD slot {}: {}", slot.index(), cause.message()))
                       .onSuccess(_ -> log.info("CTM: freed DEAD slot {} (superseded={})", slot.index(), deadOccupant));
+        // Release any lingering per-index claim: the slot is now free and selectEmptySlotsToFill
+        // treats freed indices as EMPTY this same pass, so the index must be claimable for refill.
+        inFlightSlotIndices.remove(slot.index());
         deadOccupant.onPresent(this::fastFreeDeadOccupant);
     }
 
@@ -1254,12 +1290,30 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                       cause.message()));
     }
 
-    /// Fills one EMPTY slot (§5.3). Stamps the FILLING marker (`spawnedAtMs`/`deadlineMs`) +
-    /// `occupantEpoch++` + `supersededNodeId = prior occupant` BEFORE the provider call (OQ2
-    /// dedup marker), then assigns the provider-allocated occupant on success. `occupantEpoch`
-    /// advances here only — `provisionIntoSlot` is the single writer of slot occupancy.
+    /// Fills one EMPTY slot (§5.3) under the reserve-then-provision contract. The provider call is
+    /// chained INSIDE the FILLING-reservation commit: `lifecycleManager.provisionNode` runs ONLY
+    /// after `commandApplier.apply(FILLING)` commits, so no container is ever spawned without a
+    /// committed slot reservation. A reservation failure records a provisioning failure (feeding
+    /// the circuit-breaker/backoff) and spawns nothing.
+    ///
+    /// A slot-index in-flight guard (`inFlightSlotIndices`) is claimed atomically before the
+    /// reservation: if the index is already claimed by an overlapping reconcile this pass skips it
+    /// (the other reconcile owns it). The claim is released on EVERY terminal outcome — reservation
+    /// failure, provider failure, provider-reports-no-id (slot left FILLING to expire), and after
+    /// the occupant is bound (assignOccupant terminal). A genuinely stuck FILLING slot whose
+    /// container never joins expires on its `deadlineMs`, reclassifies EMPTY, and — its index long
+    /// since released here — refills on a later reconcile tick.
     @Contract
     private void provisionIntoSlot(IndexedSlot slot) {
+        var nowMs = nowMs();
+        var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
+
+        if (inFlightSlotIndices.putIfAbsent(slot.index(), deadlineMs) != null) {
+            log.debug("CTM: slot {} already in-flight (claimed by a concurrent reconcile) — skipping this pass", slot.index());
+
+            return;
+        }
+
         var contextBase = buildProvisionContext();
 
         if (contextBase.peers().or("").isEmpty()) {
@@ -1267,14 +1321,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                     + "next reconcile tick retries once at least one peer is HEALTHY.",
                      slot.index());
             recordProvisioningFailure("no healthy peers visible in topology");
+            inFlightSlotIndices.remove(slot.index());
 
             return;
         }
 
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", contextBase).unwrap();
         var spec = computePlacementHint().map(baseSpec::withPlacement).or(baseSpec);
-        var nowMs = nowMs();
-        var deadlineMs = nowMs + autoHealConfig.provisioningTimeout().millis();
         var filling = new ProvisioningSlotValue(nowMs,
                                                 deadlineMs,
                                                 Option.none(),
@@ -1282,27 +1335,57 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 slot.value().supersededNodeId());
         var fillingSlot = new IndexedSlot(slot.index(), slot.key(), filling);
         commandApplier.apply(List.of(putSlotCommand(slot.key(), filling)))
-                      .onFailure(cause -> log.warn("CTM: failed to stamp FILLING marker on slot {}: {}", slot.index(), cause.message()))
-                      .onSuccess(_ -> log.info("CTM: stamped FILLING marker on slot {} (epoch={}, superseded={})",
-                                               slot.index(),
-                                               filling.occupantEpoch(),
-                                               filling.supersededNodeId()));
+                      .onFailure(cause -> onReservationFailed(fillingSlot, cause))
+                      .onSuccess(_ -> onReservationCommitted(fillingSlot, spec));
+    }
+
+    /// Reservation commit failed (e.g. consensus down): record the failure so the circuit-breaker
+    /// /backoff observes it, release the slot-index claim, and spawn NOTHING.
+    @Contract
+    private void onReservationFailed(IndexedSlot slot, Cause cause) {
+        log.warn("CTM: failed to commit FILLING reservation on slot {} ({}); not provisioning", slot.index(), cause.message());
+        recordProvisioningFailure("FILLING reservation commit failed: " + cause.message());
+        inFlightSlotIndices.remove(slot.index());
+    }
+
+    /// Reservation committed: NOW spawn the container, chained to the committed reservation.
+    @Contract
+    private void onReservationCommitted(IndexedSlot slot, ProvisionSpec spec) {
+        log.info("CTM: committed FILLING reservation on slot {} (epoch={}, superseded={}) — provisioning",
+                 slot.index(),
+                 slot.value().occupantEpoch(),
+                 slot.value().supersededNodeId());
         lifecycleManager.provisionNode(spec)
-                        .onSuccess(info -> bindSlotToRealNode(fillingSlot, info))
-                        .onFailure(cause -> recordProvisioningFailure("API rejection: " + cause.message()));
+                        .onSuccess(info -> bindSlotToRealNode(slot, info))
+                        .onFailure(cause -> onProvisionFailed(slot, cause));
+    }
+
+    /// Provider rejected/failed the spawn: record the failure and release the slot-index claim. The
+    /// FILLING marker is left to expire on its deadline and reclassify EMPTY for a later refill.
+    @Contract
+    private void onProvisionFailed(IndexedSlot slot, Cause cause) {
+        recordProvisioningFailure("API rejection: " + cause.message());
+        inFlightSlotIndices.remove(slot.index());
     }
 
     /// Provider-owns-identity completion: assign the provider-allocated id to the FILLING slot,
     /// preserving the slot's `occupantEpoch` and `supersededNodeId`. When the provider reports no
-    /// id the slot is left FILLING to expire and reset to EMPTY — no ghost JOINING is written.
+    /// id the slot is left FILLING to expire and reset to EMPTY — no ghost JOINING is written — and
+    /// the slot-index claim is released so the expired slot can be re-filled later.
     @Contract
     private void bindSlotToRealNode(IndexedSlot slot, InstanceInfo info) {
         info.nodeId()
             .flatMap(idStr -> NodeId.nodeId(idStr).option())
-            .apply(() -> log.warn("CTM: fill of slot {} returned no node id ({}); leaving slot FILLING to expire and reset",
-                                  slot.index(),
-                                  info.id().value()),
+            .apply(() -> onBindNoProviderId(slot, info),
                    realId -> assignOccupant(slot, realId));
+    }
+
+    @Contract
+    private void onBindNoProviderId(IndexedSlot slot, InstanceInfo info) {
+        log.warn("CTM: fill of slot {} returned no node id ({}); leaving slot FILLING to expire and reset",
+                 slot.index(),
+                 info.id().value());
+        inFlightSlotIndices.remove(slot.index());
     }
 
     @Contract
@@ -1318,7 +1401,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                       .onSuccess(_ -> log.info("CTM: assigned slot {} to provider-allocated node {} (epoch={})",
                                                slot.index(),
                                                realId,
-                                               assigned.occupantEpoch()));
+                                               assigned.occupantEpoch()))
+                      .onResult(_ -> inFlightSlotIndices.remove(slot.index()));
     }
 
     private static ProvisioningSlotValue emptySlotValue() {
@@ -1406,6 +1490,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.info("CTM: cancelling {} in-flight provision(s) ({})", size, reason);
         inFlightProvisions.values().forEach(Promise::cancel);
         inFlightProvisions.clear();
+        // Release every slot-index claim: a cancelled provisionNode Promise may never resolve its
+        // chained onFailure/onSuccess, so the per-index claim would leak and permanently block that
+        // slot from being refilled. The FILLING slots themselves are durable (D1) and expire to
+        // EMPTY on their own deadline, then refill on the next eligible reconcile tick.
+        inFlightSlotIndices.clear();
         // Durable slots (D1) are NOT wiped here — only the transient in-flight provision promises
         // are cancelled. FILLING slots whose provider call was cancelled expire to EMPTY on their
         // own deadline and refill on the next eligible reconcile tick.
