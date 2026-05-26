@@ -1332,7 +1332,43 @@ public interface AetherNode extends ManageableNode {
                                                                                    // (anti-flood) and defers to SelfDrainCoordinator to dissolve the
                                                                                    // minority partition.
                                                                                    ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum());
-        // Phase 4 PR-D (cluster-convergence-reconciler) — leader-only periodic
+        // slot-based-core-membership-redesign §5: core-only orphan self-drain. A core node
+        // with no durable slot binding removes ITSELF (there is no leader-side surplus reaper,
+        // §6). The OrphanSelfDrainChecker reads the local-KV slot bindings (via the same
+        // `slotReader` the CTM uses) and evaluates the full §5 predicate; on fire it calls
+        // `SelfDrainCoordinator.onOrphanDetected(..)`, which executes the KV-free drain. The
+        // checker — not the coordinator — owns the KV read, preserving the coordinator's
+        // no-KV/consensus invariant.
+        //
+        //   * core-role gate (strict, FIRST): `!clusterNode.isObserving()`. A worker enters
+        //     observer mode (`authorizeObservation()`), so an observing node short-circuits and
+        //     never touches the slot-binding logic (Scope). A core node is active or pre-active,
+        //     never observing.
+        //   * `rabia.isActive()` excludes the Syncing/Paused/Stopped stale-view windows.
+        //   * `inQuorum()` is the committed-healthy quorum bit — same source the CTM uses; below
+        //     quorum the orphan decision is suppressed and the SelfDrainCoordinator quorum-loss
+        //     trigger owns the outcome (mutually exclusive).
+        //   * `boundSet` = the set of `assignedNodeId`s across the durable slot atoms; the orphan
+        //     fires only when it is full of distinct occupants (`size == configuredSize()`) and
+        //     this node is absent — never on a partial set.
+        java.util.function.Supplier<java.util.Set<NodeId>> slotBoundSetSupplier = () -> {
+            var bound = new java.util.HashSet<NodeId>();
+            slotReader.get().values().forEach(slot -> slot.assignedNodeId().onPresent(bound::add));
+            return bound;
+        };
+        var orphanSelfDrainChecker = org.pragmatica.aether.deployment.drain.OrphanSelfDrainChecker.orphanSelfDrainChecker(
+            config.self(),
+            () -> !clusterNode.isObserving(),
+            clusterNode::isActive,
+            ((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager()).inQuorum(),
+            slotBoundSetSupplier,
+            clusterTopologyManager::configuredSize,
+            org.pragmatica.aether.deployment.drain.OrphanSelfDrainChecker.DEFAULT_GRACE,
+            System::currentTimeMillis,
+            selfDrainCoordinator::onOrphanDetected);
+        SharedScheduler.scheduleAtFixedRate(orphanSelfDrainChecker::check,
+                                            TimeSpan.timeSpan(5).seconds(),
+                                            TimeSpan.timeSpan(5).seconds());
         // `LifecycleReconciler`. Dormant on construction; activated on leader gain via
         // `toggleReconcilerOnLeaderChange` (registered alongside the CTM toggle further down
         // in `assembleNode`). Pulls live SWIM from `swimHealthDetector` (set on quorum) and

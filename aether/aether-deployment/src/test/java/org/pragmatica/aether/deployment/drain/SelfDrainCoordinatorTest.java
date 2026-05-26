@@ -135,6 +135,25 @@ class SelfDrainCoordinatorTest {
             await().atMost(1, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
             assertThat(coord.phase()).isEqualTo(SelfDrainCoordinator.Phase.EXITED);
         }
+
+        @Test
+        void onOrphanDetected_isImmediate() {
+            var exits = exitCounter();
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            // Orphan path fires while a FULL quorum is visible (it requires inQuorum upstream) —
+            // proves the orphan trigger is independent of the connectivity/quorum-loss path.
+            var coord = SelfDrainCoordinator.selfDrainCoordinator(SELF,
+                                                                  () -> Set.of(PEER_A, PEER_B, PEER_C, PEER_D),
+                                                                  () -> 3,
+                                                                  tracker,
+                                                                  fastConfig(),
+                                                                  exits::incrementAndGet,
+                                                                  SelfDrainEventPublisher.NO_OP);
+
+            coord.onOrphanDetected("no slot binding");
+            await().atMost(1, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
+            assertThat(coord.phase()).isEqualTo(SelfDrainCoordinator.Phase.EXITED);
+        }
     }
 
     @Nested class Uninterruptible {

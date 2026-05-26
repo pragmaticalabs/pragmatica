@@ -52,6 +52,13 @@ import org.slf4j.Logger;
 ///      Currently re-uses the QuorumStateNotification.DISAPPEARED route (Rabia exposes
 ///      no separate paused-listener API in RC1). Kept as a distinct entry point so a
 ///      future Rabia listener can be wired without changing the FSM.
+///   4. `onOrphanDetected(reason)` — invoked by the core-only `OrphanSelfDrainChecker`
+///      when this node is a genuine slot orphan under a converged KV view
+///      (slot-based-core-membership-redesign §5). The whole orphan predicate (KV slot
+///      read, `isActive`, `inQuorum`, grace, `boundSet.size() == configured`,
+///      `!boundSet.contains(self)`) lives in the checker — this coordinator stays
+///      KV/consensus-free. Mutually exclusive with trigger #1: orphan requires
+///      `inQuorum()`, quorum-loss requires `!inQuorum`.
 ///
 /// Phase state machine (single CAS guard per transition):
 ///
@@ -172,6 +179,28 @@ public final class SelfDrainCoordinator {
 
         log.warn("Self-drain: Rabia paused on {} — initiating drain", self.id());
         initiateDrain("rabia-paused");
+    }
+
+    /// Orphan self-drain trigger (slot-based-core-membership-redesign §5). Invoked by the
+    /// core-only `OrphanSelfDrainChecker` when this node holds no durable slot binding while
+    /// its KV view is provably converged (`core && rabia.isActive() && inQuorum() &&
+    /// graceElapsed && boundSet.size() == configured && !boundSet.contains(self)`). The
+    /// orphan predicate — including the converged-read KV gate — lives entirely in the
+    /// checker; this coordinator stays KV/consensus-free (see the class-level invariant and
+    /// `SelfDrainCoordinatorTest.noConsensusOrKvImports`). Immediate, like the other hard
+    /// triggers: the checker has already re-confirmed the predicate immediately before this
+    /// call, so there is no debounce here.
+    ///
+    /// Mutually exclusive with the quorum-loss path by construction: the orphan predicate
+    /// requires `inQuorum()`, the periodic quorum-loss trigger requires `visible < quorum`
+    /// (i.e. `!inQuorum`). The single CAS in `initiateDrain` makes a double-fire a no-op
+    /// regardless.
+    @Contract
+    public void onOrphanDetected(String reason) {
+        if (phase.get() != Phase.ACTIVE) {return;}
+
+        log.warn("Self-drain: orphan detected on {} ({}) — initiating drain", self.id(), reason);
+        initiateDrain("orphan:" + reason);
     }
 
     /// Current phase. Exposed for diagnostics (`/api/status` projection, tests).
