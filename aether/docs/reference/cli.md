@@ -1727,42 +1727,6 @@ events — only the KV write is suppressed. Note that `JoiningStuckAlert` and
 `StoppedZombie` are audit-only forever per spec §7.1 and do not honour a
 `enforce = true` override.
 
-### `aether cluster tasks`
-
-Inspect and reassign task group delegation. Without a subcommand, lists all assignments (same as `list`).
-
-```bash
-aether cluster tasks                          # list (legacy default)
-aether cluster tasks list                     # explicit list form
-aether cluster tasks status <group>           # single-group view
-aether cluster tasks reassign --group <g> --target <node-id>
-```
-
-Subcommands:
-
-| Subcommand | Purpose |
-|------------|---------|
-| `list` | List all task group assignments. Mirrors the bare `aether cluster tasks` default. |
-| `status <group>` | Show the assignment for a single task group. `<group>` is case-insensitive; common values: `METRICS`, `SCALING`, `STRATEGIES`, `DEPLOYMENT`, `STORAGE`, `STREAMING`. Returns exit code ERROR with `Error: task group '<input>' not found` on stderr when the group is absent. |
-| `reassign` | Move a task group to a specific node (`--group <name> --target <node-id>`). |
-
-Examples:
-
-```bash
-# Inspect a single group's status field via --format value
-aether cluster tasks status METRICS --format value --field assignments.0.status
-# -> ACTIVE
-
-# Inspect which node currently owns a group
-aether cluster tasks status SCALING --format value --field assignments.0.assignedTo
-# -> node-3
-
-# Reassign STORAGE to node-4
-aether cluster tasks reassign --group STORAGE --target node-4
-```
-
-The output JSON shape mirrors `GET /api/cluster/tasks` — see [`management-api.md`](management-api.md) for the per-record fields (`group`, `assignedTo`, `assignedAt`, `status`, `failureReason`).
-
 ### `aether cluster generation`
 
 Show the current cluster generation snapshot as observed by the queried node. The snapshot summarises the leader-projected epoch, core members, communities, and DHT partition ownership. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.

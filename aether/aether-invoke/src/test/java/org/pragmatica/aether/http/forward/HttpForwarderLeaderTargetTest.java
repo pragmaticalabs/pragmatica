@@ -33,17 +33,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Bug A coverage: leader-target management forwarding.
 ///
-/// `ManagementRoute.CLUSTER_TASK_REASSIGN` (and any other LEADER-bound route) must
-/// route to the cluster leader, not the task-group owner. When this node is the
-/// leader the forwarder must signal `NotLeader` so the local handler runs; when no
-/// leader is elected, surface `NoLeaderElected`; when the leader is offline,
-/// surface `LeaderDisconnected`.
+/// LEADER-bound routes (e.g. `ManagementRoute.NODE_PROMOTE`) must route to the
+/// cluster leader, not the task-group owner. When this node is the leader the
+/// forwarder must signal `NotLeader` so the local handler runs; when no leader is
+/// elected, surface `NoLeaderElected`; when the leader is offline, surface
+/// `LeaderDisconnected`.
 class HttpForwarderLeaderTargetTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId LEADER = nodeId("node-leader").unwrap();
     private static final NodeId OTHER = nodeId("node-other").unwrap();
 
-    private static final String REASSIGN_PATH = "/api/cluster/tasks/reassign/METRICS";
+    private static final String REASSIGN_PATH = "/api/nodes/promote/node-other";
 
     private static final String SCALE_PATH = "/api/cluster/scale";
 
@@ -112,7 +112,7 @@ class HttpForwarderLeaderTargetTest {
                                                     group -> org.pragmatica.aether.slice.delegation.TaskAssignmentError.notAssigned(group).result(),
                                                     () -> Option.some(LEADER));
 
-        var ctx = HttpRequestContext.httpRequestContext(REASSIGN_PATH, "PUT", Map.of(), Map.of(), "req-1");
+        var ctx = HttpRequestContext.httpRequestContext(REASSIGN_PATH, "POST", Map.of(), Map.of(), "req-1");
         forwarder.forwardManagement(ctx, "req-1");
 
         assertThat(network.sendTargets())
@@ -134,7 +134,7 @@ class HttpForwarderLeaderTargetTest {
                                                     group -> org.pragmatica.aether.slice.delegation.TaskAssignmentError.notAssigned(group).result(),
                                                     () -> Option.some(SELF));
 
-        var ctx = HttpRequestContext.httpRequestContext(REASSIGN_PATH, "PUT", Map.of(), Map.of(), "req-2");
+        var ctx = HttpRequestContext.httpRequestContext(REASSIGN_PATH, "POST", Map.of(), Map.of(), "req-2");
         var promise = forwarder.forwardManagement(ctx, "req-2");
         var result = promise.await();
 
@@ -160,7 +160,7 @@ class HttpForwarderLeaderTargetTest {
                                                     group -> org.pragmatica.aether.slice.delegation.TaskAssignmentError.notAssigned(group).result(),
                                                     Option::none);
 
-        var ctx = HttpRequestContext.httpRequestContext(REASSIGN_PATH, "PUT", Map.of(), Map.of(), "req-3");
+        var ctx = HttpRequestContext.httpRequestContext(REASSIGN_PATH, "POST", Map.of(), Map.of(), "req-3");
         var result = forwarder.forwardManagement(ctx, "req-3").await();
 
         assertThat(result.isFailure()).isTrue();
@@ -182,7 +182,7 @@ class HttpForwarderLeaderTargetTest {
                                                     group -> org.pragmatica.aether.slice.delegation.TaskAssignmentError.notAssigned(group).result(),
                                                     () -> Option.some(LEADER));
 
-        var ctx = HttpRequestContext.httpRequestContext(REASSIGN_PATH, "PUT", Map.of(), Map.of(), "req-4");
+        var ctx = HttpRequestContext.httpRequestContext(REASSIGN_PATH, "POST", Map.of(), Map.of(), "req-4");
         var result = forwarder.forwardManagement(ctx, "req-4").await();
 
         assertThat(result.isFailure()).isTrue();

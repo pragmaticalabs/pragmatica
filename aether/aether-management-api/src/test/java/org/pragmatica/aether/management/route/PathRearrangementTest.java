@@ -11,7 +11,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.management.route.ManagementRoute.AB_TEST_CONCLUDE;
 import static org.pragmatica.aether.management.route.ManagementRoute.AB_TEST_METRICS;
 import static org.pragmatica.aether.management.route.ManagementRoute.BLUEPRINT_STATUS;
-import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TASK_REASSIGN;
 import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_COMPLETE;
 import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_PROMOTE;
 import static org.pragmatica.aether.management.route.ManagementRoute.DEPLOY_ROLLBACK;
@@ -80,12 +79,6 @@ class PathRearrangementTest {
     void storageSnapshot_paramAtTail() {
         assertThat(STORAGE_SNAPSHOT.prefix()).isEqualTo("/api/storage/snapshot");
         assertThat(STORAGE_SNAPSHOT.paramNames()).containsExactly("name");
-    }
-
-    @Test
-    void clusterTaskReassign_paramAtTail() {
-        assertThat(CLUSTER_TASK_REASSIGN.prefix()).isEqualTo("/api/cluster/tasks/reassign");
-        assertThat(CLUSTER_TASK_REASSIGN.paramNames()).containsExactly("group");
     }
 
     @Test

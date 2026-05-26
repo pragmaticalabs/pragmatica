@@ -22,11 +22,4 @@ class ManagementRouteTargetTest {
                 .as("CLUSTER_SCALE must dispatch to the leader — CTM.onClusterConfigChanged is leader-gated")
                 .isEqualTo(RouteTarget.LEADER);
     }
-
-    @Test
-    void clusterTaskReassign_routesToLeaderTarget() {
-        assertThat(ManagementRoute.CLUSTER_TASK_REASSIGN.target())
-                .as("CLUSTER_TASK_REASSIGN must dispatch to the leader (Bug A coverage)")
-                .isEqualTo(RouteTarget.LEADER);
-    }
 }

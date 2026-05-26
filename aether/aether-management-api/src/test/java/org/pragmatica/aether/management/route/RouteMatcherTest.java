@@ -96,10 +96,11 @@ class RouteMatcherTest {
 
     @Test
     void match_handlesPutRoute() {
-        var result = matcher.match(PUT, "/api/cluster/tasks/reassign/STRATEGIES");
+        var result = matcher.match(PUT, "/repository/com/example/1.0/artifact.jar");
         result.onSuccess(matched -> {
-            assertThat(matched.route()).isEqualTo(ManagementRoute.CLUSTER_TASK_REASSIGN);
-            assertThat(matched.param("group").or((String) null)).isEqualTo("STRATEGIES");
+            assertThat(matched.route()).isEqualTo(ManagementRoute.ARTIFACT_PUT);
+            assertThat(matched.param("groupPath").or((String) null)).isEqualTo("com");
+            assertThat(matched.param("file").or((String) null)).isEqualTo("artifact.jar");
         });
         assertThat(result.isSuccess()).isTrue();
     }
