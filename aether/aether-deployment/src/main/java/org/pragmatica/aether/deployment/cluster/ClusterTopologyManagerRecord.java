@@ -937,7 +937,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
         if (remainingEmpty.isEmpty()) {return;}
 
-        fillEmptySlots(currentState, remainingEmpty, healthy, configured);
+        fillEmptySlots(currentState, remainingEmpty, healthy, view.healthyOnDutyCount(), configured);
     }
 
     /// §3 step 1 (universal slot-fill — bind an existing node). For each empty slot, in ascending
@@ -1073,6 +1073,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void fillEmptySlots(NodeReconcilerState currentState,
                                 List<IndexedSlot> emptyToFill,
                                 int healthy,
+                                int confirmedVoters,
                                 int configured) {
         if (!autoHealEnabled.get()) {
             log.debug("CTM: auto-heal disabled — skipping fill of {} empty slot(s) (healthy={}, configured={})",
@@ -1082,7 +1083,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
         if (!provisioningAllowedInPhase()) {return;}
-        if (!provisioningGatesPass(healthy, configured)) {return;}
+        if (!provisioningGatesPass(healthy, confirmedVoters, configured)) {return;}
         if (!lifecycleManager.isCloudManaged()) {
             log.debug("CTM: {} empty slot(s) but no ComputeProvider, cannot auto-provision", emptyToFill.size());
 
@@ -1100,8 +1101,31 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     /// Retained gate chain (slot-based-membership-convergence-spec §5.2): stability window,
     /// provisioning circuit breaker, and backoff. Unchanged from the deficit-era `handleDeficit`.
-    private boolean provisioningGatesPass(int healthy, int configured) {
+    private boolean provisioningGatesPass(int healthy, int confirmedVoters, int configured) {
         var nowMs = nowMs();
+
+        // #230 Fix 2 — confirmed-healthy fill-admission precondition. A FILLING reservation is
+        // only useful if consensus can COMMIT it: committing the slot PUT requires a quorum of
+        // CONFIRMED-HEALTHY voters. `confirmedVoters` is the membership-view's committed
+        // `healthyOnDutyCount` (the DECIDE-plane ON_DUTY count) — it EXCLUDES JOINING/FILLING
+        // phantoms that cannot yet vote, and (unlike the slot-occupancy `countHealthy`) it does
+        // NOT dip on the reseed/activation transient where bound slots are momentarily classified
+        // FILLING before their bind PUT round-trips. Below the confirmed-healthy quorum the
+        // reservation cannot commit, so a fill can never help — it would spawn a replacement that
+        // poisons the picture (counted toward `configured` N but unable to vote) while the cluster
+        // stays wedged. Abort the fill and let SelfDrainCoordinator dissolve the minority side
+        // (slot-based-core-membership-redesign §6, sub-quorum dissolve). This is STRICTER than the
+        // `inQuorum()` bit below, which counts SWIM-healthy JOINING peers toward the quorum edge
+        // (TopologyObserver `swimHealthyCorePeerCount`); a phantom that is SWIM-visible but never
+        // reaches ON_DUTY would pass `inQuorum()` yet must NOT unlock a fill.
+        if (!confirmedHealthyQuorum(confirmedVoters, configured)) {
+            log.info("CTM: below confirmed-healthy quorum (confirmedVoters={}, required={}, configured={}) — "
+                    + "aborting fill; a replacement cannot be committed below quorum. Deferring to SelfDrainCoordinator.",
+                     confirmedVoters,
+                     quorumThreshold(configured),
+                     configured);
+            return false;
+        }
 
         // Quorum gate (anti-flood): below committed-healthy quorum the cluster is a minority
         // partition. Provisioning replacements here is a runaway flood (5→28+ nodes) that never
@@ -1156,6 +1180,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return (int) slots.stream()
                           .filter(slot -> classifyOccupancy(slot.value(), view, nowMs) == SlotOccupancy.HEALTHY)
                           .count();
+    }
+
+    /// #230 Fix 2 — the simple-majority quorum threshold over the consensus voting set N. N is the
+    /// configured core size (`configured`, the desired/committed cluster size), which is exactly
+    /// the value the consensus layer derives its quorum from (`TopologyManager.quorumSize() =
+    /// clusterSize()/2 + 1`, where `clusterSize()` is the configured size, NOT a dynamic count of
+    /// JOINING peers). Keeping CTM's fill-admission quorum identical to the consensus quorum is
+    /// the whole point: a fill is admissible only when consensus can commit it.
+    private static int quorumThreshold(int configured) {
+        return configured / 2 + 1;
+    }
+
+    /// #230 Fix 2 — true when CONFIRMED-HEALTHY voters still meet the consensus quorum.
+    /// `confirmedVoters` is the membership-view's committed `healthyOnDutyCount` (DECIDE-plane
+    /// ON_DUTY count, excluding JOINING/FILLING phantoms). Below this, a FILLING reservation cannot
+    /// be committed, so filling is futile and must abort.
+    private static boolean confirmedHealthyQuorum(int confirmedVoters, int configured) {
+        return confirmedVoters >= quorumThreshold(configured);
     }
 
     /// Selects EMPTY slots eligible to fill: classified EMPTY now, OR just-freed this pass (the
