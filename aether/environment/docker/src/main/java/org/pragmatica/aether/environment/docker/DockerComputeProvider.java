@@ -13,6 +13,7 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -80,6 +81,7 @@ import static org.pragmatica.lang.Result.success;
     private Promise<InstanceInfo> provisionWithIdentity(ProvisionSpec spec, String containerName) {
         var command = buildRunCommand(spec, containerName);
         return runner.execute(command).map(containerId -> toProvisionedInfo(containerId, containerName, spec))
+                             .flatMap(info -> confirmRunning(info, ReadinessPolicy.dockerDefault()))
                              .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
     }
     /// bootstrap list (3-part `nodeId:host:port` entries) so the new container can join
@@ -352,8 +354,11 @@ import static org.pragmatica.lang.Result.success;
         // replacements carry no slot, so report the overlay-reachable form.
         var addresses = List.of(containerName + ":8080", containerName + ":8070");
         var tags = buildInstanceTags(spec, containerName);
+        // Created, not yet confirmed live: report PROVISIONING. confirmRunning() polls
+        // `docker inspect` and re-stamps this to RUNNING only after the container actually
+        // reaches `running`, or FAILS the provision if it never does (no phantom success).
         return new InstanceInfo(new InstanceId(containerId),
-                                InstanceStatus.RUNNING,
+                                InstanceStatus.PROVISIONING,
                                 addresses,
                                 spec.instanceType(),
                                 tags,

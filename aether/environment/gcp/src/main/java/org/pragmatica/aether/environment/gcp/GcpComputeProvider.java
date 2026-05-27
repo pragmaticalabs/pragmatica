@@ -13,6 +13,7 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.gcp.GcpClient;
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest;
 import org.pragmatica.cloud.gcp.api.InsertInstanceRequest.AccessConfig;
@@ -58,6 +59,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return client.insertInstance(buildInsertRequest(Option.empty(),
                                                         config.userData(),
                                                         defaultLabels())).map(GcpComputeProvider::toInstanceInfo)
+                                    .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
                                     .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
@@ -67,6 +69,7 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         var userData = spec.userData().or(config.userData());
         var labels = labelsFor(spec.context());
         return client.insertInstance(buildInsertRequest(zone, userData, labels)).map(GcpComputeProvider::toInstanceInfo)
+                                    .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
                                     .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
                                     .mapError(GcpComputeProvider::toProvisionError);
     }
@@ -74,11 +77,10 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     /// Rollback acknowledgment for GCP provisions. GCP's `insertInstance` is a single
     /// atomic operation: either it returns success with an Instance, or it returns
     /// failure with no resource created. There is no separate "partial" state the
-    /// provider can observe here — async post-create polling for `RUNNING` would be
-    /// needed to detect a stuck-PROVISIONING VM, and that polling is owned at a higher
-    /// layer (CTM auto-heal). Surface a WARN so operators can correlate provision-flow
-    /// failures with any orphan that DOES appear; if a future code path adds a tagging
-    /// or post-create step, plumb a real terminateInstance rollback through this hook.
+    /// provider can observe at create-time — but post-create readiness confirmation
+    /// (confirmRunning, infra-readiness only) can now surface a VM that never reached
+    /// RUNNING. That orphan IS a real resource; cleanup is owned at a higher layer
+    /// (CTM auto-heal terminate), so surface a WARN here so operators can correlate.
     private static void logProvisionFailureRollbackGap(Cause cause) {
         log.warn("GCP provision failed ({}); no instance-side rollback issued because insertInstance is atomic — relying on caller to retry or sweep",
                  cause.message());

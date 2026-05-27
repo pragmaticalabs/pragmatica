@@ -13,6 +13,7 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.aws.AwsClient;
 import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
 import org.pragmatica.cloud.aws.api.Instance;
@@ -54,6 +55,7 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         return client.runInstances(buildRunRequest(Option.empty(),
                                                    config.userData())).flatMap(response -> tagAndMapFirstInstance(response,
                                                                                                                   defaultTags()))
+                                  .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
     @Override public Promise<InstanceInfo> provision(ProvisionSpec spec) {
@@ -62,6 +64,7 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         var tags = tagsFor(spec.context());
         return client.runInstances(buildRunRequest(zone, userData)).flatMap(response -> tagAndMapFirstInstance(response,
                                                                                                                tags))
+                                  .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
                                   .mapError(AwsComputeProvider::toProvisionError);
     }
 

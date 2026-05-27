@@ -13,6 +13,7 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.ReadinessPolicy;
 import org.pragmatica.cloud.azure.AzureClient;
 import org.pragmatica.cloud.azure.api.CreateVmRequest;
 import org.pragmatica.cloud.azure.api.CreateVmRequest.HardwareProfile;
@@ -60,6 +61,7 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
 
     @Override public Promise<InstanceInfo> provision(InstanceType instanceType) {
         return client.createVm(buildCreateRequest(List.of(), defaultTags())).map(AzureComputeProvider::toInstanceInfo)
+                              .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
                               .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
                               .mapError(AzureComputeProvider::toProvisionError);
     }
@@ -68,17 +70,17 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         var zones = extractZones(spec.placement());
         var tags = tagsFor(spec.context());
         return client.createVm(buildCreateRequest(zones, tags)).map(AzureComputeProvider::toInstanceInfo)
+                              .flatMap(info -> confirmRunning(info, ReadinessPolicy.cloudDefault()))
                               .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
                               .mapError(AzureComputeProvider::toProvisionError);
     }
 
     /// Rollback acknowledgment for Azure provisions. `createVm` is atomic — failure
     /// returns no resource, success returns a `VirtualMachine` whose tags were bundled
-    /// into the create request. There is no separate post-create step that can leave
-    /// an orphan in this provider's current surface. If a future code path adds a
-    /// tagging or networking second step, plumb a real `deleteVm` rollback through
-    /// this hook; for now surface a WARN so operators can correlate failures with any
-    /// orphan that DOES appear.
+    /// into the create request. Post-create readiness confirmation (confirmRunning,
+    /// infra-readiness only) can now surface a VM that never reached RUNNING; that orphan
+    /// IS a real resource and its cleanup is owned at a higher layer (CTM auto-heal
+    /// deleteVm). Surface a WARN so operators can correlate failures with any orphan.
     private static void logProvisionFailureRollbackGap(Cause cause) {
         log.warn("Azure provision failed ({}); no VM-side rollback issued because createVm is atomic — relying on caller to retry or sweep",
                  cause.message());

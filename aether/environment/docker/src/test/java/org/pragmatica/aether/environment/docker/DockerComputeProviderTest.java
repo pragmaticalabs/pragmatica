@@ -31,6 +31,12 @@ class DockerComputeProviderTest {
 
     private static final DockerConfig CONFIG = DockerConfig.dockerConfig().unwrap();
 
+    /// `docker inspect` output reporting a RUNNING container, as parsed by
+    /// `parseInspectOutput`: `{{.State.Status}}\t{{.Name}}\t{{.Config.Hostname}}\t{{.Id}}`.
+    /// confirmRunning() issues this read right after `docker run`, so provisioning tests
+    /// must queue it to let infra-readiness confirmation pass.
+    private static final String RUNNING_INSPECT = "running\t/aether-node\taether-node\tabc";
+
     private TestDockerCommandRunner testRunner;
     private DockerComputeProvider provider;
 
@@ -45,13 +51,14 @@ class DockerComputeProviderTest {
 
         @Test
         void buildRunCommand_exposeHostPortsFalse_doesNotAddPortMapping() {
-            testRunner.nextResponse = Promise.success("container-id-0");
+            testRunner.queuedResponses.add(Promise.success("container-id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
 
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
-            assertThat(testRunner.lastCommand).doesNotContain("-p");
+            assertThat(testRunner.allCommands.getFirst()).doesNotContain("-p");
         }
 
         @Test
@@ -67,7 +74,8 @@ class DockerComputeProviderTest {
                                                             true)
                                               .unwrap();
             var exposingRunner = new TestDockerCommandRunner();
-            exposingRunner.nextResponse = Promise.success("container-id-0");
+            exposingRunner.queuedResponses.add(Promise.success("container-id-0"));
+            exposingRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
             var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, exposingConfig).unwrap();
 
             exposingProvider.provision(InstanceType.ON_DEMAND)
@@ -76,7 +84,7 @@ class DockerComputeProviderTest {
 
             // KSUID-minted replacements have no numeric slot, so the management port is
             // published to an ephemeral host port (`-p 8080`) rather than `base + slot`.
-            assertThat(exposingRunner.lastCommand).containsSequence("-p", "8080");
+            assertThat(exposingRunner.allCommands.getFirst()).containsSequence("-p", "8080");
         }
 
         @Test
@@ -84,13 +92,15 @@ class DockerComputeProviderTest {
             var exposingRunner = new TestDockerCommandRunner();
             var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, CONFIG).unwrap();
 
-            exposingRunner.nextResponse = Promise.success("container-id-0");
+            exposingRunner.queuedResponses.add(Promise.success("container-id-0"));
+            exposingRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
             exposingProvider.provision(InstanceType.ON_DEMAND).await();
-            var firstName = nameArg(exposingRunner.lastCommand);
+            var firstName = nameArg(exposingRunner.allCommands.getFirst());
 
-            exposingRunner.nextResponse = Promise.success("container-id-1");
+            exposingRunner.queuedResponses.add(Promise.success("container-id-1"));
+            exposingRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
             exposingProvider.provision(InstanceType.ON_DEMAND).await();
-            var secondName = nameArg(exposingRunner.lastCommand);
+            var secondName = nameArg(exposingRunner.allCommands.get(2));
 
             // Each provision mints a fresh KSUID identity — no slot reuse, always distinct.
             assertThat(firstName).startsWith("aether-default-node-");
@@ -104,7 +114,8 @@ class DockerComputeProviderTest {
 
         @Test
         void provision_success_returnsInstanceInfo() {
-            testRunner.nextResponse = Promise.success("abc123def456");
+            testRunner.queuedResponses.add(Promise.success("abc123def456"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
 
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
@@ -114,7 +125,8 @@ class DockerComputeProviderTest {
 
         @Test
         void provision_withSpec_passesTagsToCommand() {
-            testRunner.nextResponse = Promise.success("container-id-1");
+            testRunner.queuedResponses.add(Promise.success("container-id-1"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
             var ctx = ProvisionContext.provisionContext("test-cluster", "worker", "default",
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "staging", ctx).unwrap();
@@ -124,8 +136,8 @@ class DockerComputeProviderTest {
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(info -> assertThat(info.tags().get("aether.cluster")).isEqualTo("test-cluster"));
 
-            assertThat(testRunner.lastCommand).isNotEmpty();
-            assertThat(testRunner.lastCommand).contains("--network", "aether-network");
+            assertThat(testRunner.allCommands.getFirst()).isNotEmpty();
+            assertThat(testRunner.allCommands.getFirst()).contains("--network", "aether-network");
         }
 
         @Test
@@ -136,6 +148,26 @@ class DockerComputeProviderTest {
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(DockerComputeProviderTest::assertProvisionFailedError);
+        }
+
+        @Test
+        void provision_containerNeverReachesRunning_failsWithReadinessTimeout() {
+            // docker run succeeds, but inspect reports `exited` (boot crash). confirmRunning
+            // must FAIL the provision (not phantom-succeed) and trigger a rollback rm -f.
+            testRunner.queuedResponses.add(Promise.success("crashed-container-id"));
+            testRunner.queuedResponses.add(Promise.success("exited\t/aether-node\taether-node\tcrashed-container-id"));
+            testRunner.queuedResponses.add(Promise.success("removed"));
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> fail("Expected readiness failure but got phantom success: " + info))
+                    .onFailure(DockerComputeProviderTest::assertProvisionFailedError);
+
+            // run, inspect (exited), rollback rm -f.
+            assertThat(testRunner.allCommands).hasSize(3);
+            assertThat(testRunner.allCommands.get(1).getFirst()).isEqualTo("docker");
+            assertThat(testRunner.allCommands.get(1)).contains("inspect");
+            assertThat(testRunner.allCommands.get(2).subList(0, 3)).containsExactly("docker", "rm", "-f");
         }
 
         @Test
@@ -177,14 +209,16 @@ class DockerComputeProviderTest {
 
         @Test
         void provisionSuccess_noRollbackInvoked() {
-            testRunner.nextResponse = Promise.success("container-id-success");
+            testRunner.queuedResponses.add(Promise.success("container-id-success"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
 
             provider.provision(InstanceType.ON_DEMAND).await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
-            // Only `docker run` (no slot-probe, no rollback). One command total.
-            assertThat(testRunner.allCommands).hasSize(1);
-            assertThat(testRunner.allCommands.get(0)).contains("run");
+            // `docker run` then readiness `docker inspect` (running) — no rollback. Two commands.
+            assertThat(testRunner.allCommands).hasSize(2);
+            assertThat(testRunner.allCommands.getFirst()).contains("run");
+            assertThat(testRunner.allCommands.get(1)).contains("inspect");
         }
     }
 
@@ -193,7 +227,8 @@ class DockerComputeProviderTest {
 
         @Test
         void buildContainerName_mintsKsuidNameForCluster() {
-            testRunner.nextResponse = Promise.success("id-0");
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
             var ctx = ProvisionContext.provisionContext("test-cluster", "core", "default",
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
             var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "worker-pool", ctx).unwrap();
@@ -203,14 +238,15 @@ class DockerComputeProviderTest {
 
             // KSUID-minted identity: `aether-<cluster>-node-<ksuid>`. Cluster segment from
             // ProvisionContext.clusterName; the KSUID suffix is unique and k-sortable.
-            var name = nameArg(testRunner.lastCommand);
+            var name = nameArg(testRunner.allCommands.getFirst());
             assertThat(name).startsWith("aether-test-cluster-node-");
             assertThat(name).isNotEqualTo("aether-test-cluster-node-");
         }
 
         @Test
         void buildContainerName_honorsCallerSuppliedNodeId() {
-            testRunner.nextResponse = Promise.success("id-0");
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
             var ctx = ProvisionContext.provisionContext("test-cluster", "core", "default",
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP)
                                       .withNodeId("aether-test-cluster-node-1");
@@ -220,18 +256,19 @@ class DockerComputeProviderTest {
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             // Caller-supplied nodeId (bootstrap path) is used verbatim as the container name.
-            assertThat(nameArg(testRunner.lastCommand)).isEqualTo("aether-test-cluster-node-1");
+            assertThat(nameArg(testRunner.allCommands.getFirst())).isEqualTo("aether-test-cluster-node-1");
         }
 
         @Test
         void buildContainerName_defaultsClusterWhenAbsent() {
-            testRunner.nextResponse = Promise.success("id-0");
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
 
             provider.provision(InstanceType.ON_DEMAND).await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             // provision(InstanceType) hardcodes cluster="default"; KSUID-minted name.
-            assertThat(nameArg(testRunner.lastCommand)).startsWith("aether-default-node-");
+            assertThat(nameArg(testRunner.allCommands.getFirst())).startsWith("aether-default-node-");
         }
     }
 

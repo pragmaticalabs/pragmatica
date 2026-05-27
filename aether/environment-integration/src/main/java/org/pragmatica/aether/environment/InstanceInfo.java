@@ -31,6 +31,12 @@ public record InstanceInfo(InstanceId id,
         if (nodeId == null) {nodeId = Option.none();}
     }
 
+    /// Return a copy with the status replaced. Used by [ComputeProvider#confirmRunning]
+    /// to re-stamp a provision result to RUNNING once infra readiness is confirmed.
+    public InstanceInfo withStatus(InstanceStatus newStatus) {
+        return new InstanceInfo(id, newStatus, addresses, type, tags, nodeId);
+    }
+
     public InstanceInfo(InstanceId id,
                         InstanceStatus status,
                         List<String> addresses,

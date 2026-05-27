@@ -41,6 +41,26 @@ public sealed interface EnvironmentError extends Cause {
         }
     }
 
+    /// Raised when a freshly-created instance fails to reach [InstanceStatus#RUNNING]
+    /// within the provisioning-readiness window. The instance was created (or attempted)
+    /// but never confirmed live — surfacing this FAILURE (instead of a phantom success)
+    /// lets the caller (CTM) free the slot and avoids minting a node that poisons quorum.
+    /// `lastStatus` records the terminal status observed (e.g. `Provisioning` on timeout,
+    /// or `Terminated` when the container/VM exited during boot).
+    record ProvisionReadinessTimeout(InstanceId instanceId, InstanceStatus lastStatus, long timeoutMillis)
+            implements EnvironmentError {
+        public static Result<ProvisionReadinessTimeout> provisionReadinessTimeout(InstanceId instanceId,
+                                                                                  InstanceStatus lastStatus,
+                                                                                  long timeoutMillis) {
+            return success(new ProvisionReadinessTimeout(instanceId, lastStatus, timeoutMillis));
+        }
+
+        @Override public String message() {
+            return "Instance '" + instanceId.value() + "' did not reach RUNNING within " + timeoutMillis
+                   + "ms (last observed status: " + lastStatus + "); refusing to report a phantom provision success.";
+        }
+    }
+
     record ListInstancesFailed(Throwable cause) implements EnvironmentError {
         public static Result<ListInstancesFailed> listInstancesFailed(Throwable cause) {
             return success(new ListInstancesFailed(cause));
@@ -112,6 +132,12 @@ public sealed interface EnvironmentError extends Cause {
 
     static EnvironmentError instanceNotFound(InstanceId instanceId) {
         return InstanceNotFound.instanceNotFound(instanceId).unwrap();
+    }
+
+    static EnvironmentError provisionReadinessTimeout(InstanceId instanceId,
+                                                      InstanceStatus lastStatus,
+                                                      long timeoutMillis) {
+        return ProvisionReadinessTimeout.provisionReadinessTimeout(instanceId, lastStatus, timeoutMillis).unwrap();
     }
 
     static EnvironmentError listInstancesFailed(Throwable cause) {

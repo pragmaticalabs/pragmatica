@@ -4,8 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.List;
@@ -39,6 +41,45 @@ public interface ComputeProvider {
     }
 
     @Contract default void resetProvisionerState(String clusterName) {}
+
+    /// Confirm INFRASTRUCTURE readiness of a freshly-created instance: poll
+    /// [#instanceStatus] (this provider's OWN primitive) until it reports
+    /// [InstanceStatus#RUNNING], bounded by [ReadinessPolicy#timeout]. On success the
+    /// original [#provision] [InstanceInfo] is returned re-stamped to RUNNING; on a
+    /// boot-crash (STOPPING/TERMINATED) or timeout the returned [Promise] FAILS with
+    /// [EnvironmentError.ProvisionReadinessTimeout] so the caller (CTM) frees the slot
+    /// instead of minting a phantom node. Readiness here is infra-only — it does NOT
+    /// wait for cluster-join / first-pong / KV-registration (that is CTM's concern).
+    default Promise<InstanceInfo> confirmRunning(InstanceInfo created, ReadinessPolicy policy) {
+        return pollUntilRunning(created, policy)
+                .timeout(policy.timeout())
+                .mapError(cause -> toReadinessTimeout(created, policy, cause));
+    }
+
+    private Promise<InstanceInfo> pollUntilRunning(InstanceInfo created, ReadinessPolicy policy) {
+        return instanceStatus(created.id()).flatMap(observed -> routeByStatus(created, observed, policy));
+    }
+
+    private Promise<InstanceInfo> routeByStatus(InstanceInfo created, InstanceInfo observed, ReadinessPolicy policy) {
+        return switch (observed.status()) {
+            case InstanceStatus.Running ignored -> Promise.success(created.withStatus(InstanceStatus.RUNNING));
+            case InstanceStatus.Provisioning ignored -> retryPoll(created, policy);
+            default -> ComputeProviderLog.bootCrashed(created.id(), observed.status())
+                                         .promise();
+        };
+    }
+
+    private Promise<InstanceInfo> retryPoll(InstanceInfo created, ReadinessPolicy policy) {
+        return Promise.promise(policy.pollInterval(), Result::unitResult)
+                      .flatMap(ignored -> pollUntilRunning(created, policy));
+    }
+
+    private static Cause toReadinessTimeout(InstanceInfo created, ReadinessPolicy policy, Cause cause) {
+        return switch (cause) {
+            case EnvironmentError.ProvisionReadinessTimeout ignored -> cause;
+            default -> ComputeProviderLog.readinessTimeout(created.id(), policy.timeout().millis(), cause);
+        };
+    }
 
     private static List<InstanceInfo> filterByTags(List<InstanceInfo> instances, Map<String, String> tagFilter) {
         return instances.stream().filter(instance -> matchesTags(instance, tagFilter))
