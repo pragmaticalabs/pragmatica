@@ -649,14 +649,22 @@ public final class MembershipFsm {
     }
 
     /// KV-notification handler for `NodeLifecycleKey` removes. Returns the peer to `UNTRACKED`.
-    /// This fires only when `DecommissionedAtomGc` cleans up a fully-decommissioned atom — and that
-    /// GC removes ONLY `STOPPED` lifecycle atoms past retention, so a removed peer is always
-    /// terminal/dead. A removed peer is therefore ALWAYS untracked, even when it still owns a
-    /// provisioning slot: re-deriving the corpse to `PROVISIONING` would re-drive `SlotClaimed →
-    /// JOINING` and make CTM perpetually re-stamp the slot's FILLING deadline, defeating
-    /// `freeStaleFillingSlots` (the flaky stuck-at-3 chaos-recovery wedge, #230). Leaving it
-    /// UNTRACKED hands the durable KV slot to CTM's stale-FILLING reconcile, which frees it to EMPTY
-    /// once the deadline lapses and refills it with a FRESH occupant — matching the stated intent at
+    /// A `NodeLifecycleKey` remove arrives from EITHER of two sources, and UNTRACKED is the correct
+    /// end state for BOTH:
+    /// — (a) `DecommissionedAtomGc` cleaning up a fully-decommissioned atom. That GC removes ONLY
+    ///   `STOPPED` atoms past retention, so the peer is a terminal/dead corpse.
+    /// — (b) `RequestReJoin` (drain-cancel / operator forced re-join of a LIVE `Joining`/`Draining`
+    ///   peer): `LifecycleWriter.requestReJoin` (LifecycleWriter:184) removes the key, and the
+    ///   reducer's `ClusterMembershipReducer.applyRequestReJoin` (ClusterMembershipReducer:351,
+    ///   targets `untracked` at :373) ALREADY drives the peer to UNTRACKED — re-entry comes from the
+    ///   next SlotClaimed / SwimHealthy / RecordJoining, NOT from a re-bind here.
+    /// In BOTH cases the peer goes UNTRACKED even when it still owns a provisioning slot. Re-deriving
+    /// the removed peer to `PROVISIONING` would be wrong on both paths: (a) for the corpse it re-drives
+    /// `SlotClaimed → JOINING` and makes CTM perpetually re-stamp the slot's FILLING deadline, defeating
+    /// `freeStaleFillingSlots` (the flaky stuck-at-3 chaos-recovery wedge, #230); (b) for the re-join it
+    /// CONTRADICTS the reducer's explicit `untracked` intent. Leaving it UNTRACKED hands the durable KV
+    /// slot to CTM's stale-FILLING reconcile, which frees it to EMPTY once the deadline lapses and
+    /// refills it with a FRESH occupant — matching the stated intent at
     /// `ClusterTopologyManagerRecord.seedFirstFormation` ("re-binding would fire a SlotClaimed for a
     /// dead occupant; their slots are left EMPTY for normal convergence to fill").
     @Contract
@@ -781,14 +789,17 @@ public final class MembershipFsm {
         log.info("MembershipFsm: lifecycle-removed peer={} previous={} → UNTRACKED", peer.id(), describe(previous));
     }
 
-    /// A removed peer is terminal (`DecommissionedAtomGc` removes only STOPPED atoms), so even when
-    /// it still owns a durable slot it goes UNTRACKED — NOT re-bound to PROVISIONING. Re-binding the
-    /// corpse re-drove `SlotClaimed → JOINING`, which made CTM perpetually re-stamp the FILLING
-    /// deadline and starve `freeStaleFillingSlots` (the #230 stuck-at-3 wedge). The slot is left for
-    /// CTM's stale-FILLING reconcile to free (→ EMPTY) and refill with a fresh occupant.
+    /// A `NodeLifecycleKey` remove goes UNTRACKED even when the peer still owns a durable slot — NOT
+    /// re-bound to PROVISIONING — whether the remove came from `DecommissionedAtomGc` (terminal STOPPED
+    /// corpse) or `RequestReJoin` (live `Joining`/`Draining` peer, where
+    /// `ClusterMembershipReducer.applyRequestReJoin`:373 already targets `untracked`). Re-binding the
+    /// corpse re-drove `SlotClaimed → JOINING`, which made CTM perpetually re-stamp the FILLING deadline
+    /// and starve `freeStaleFillingSlots` (the #230 stuck-at-3 wedge); re-binding a re-join would also
+    /// contradict the reducer's `untracked` intent. The slot is left for CTM's stale-FILLING reconcile
+    /// to free (→ EMPTY) and refill with a fresh occupant.
     private void logLifecycleRemovedSlotLeftForReclaim(NodeId peer, String slotId, MembershipFsmState previous) {
-        log.info("MembershipFsm: lifecycle-removed terminal peer={} prior={} → UNTRACKED; slot={} left for CTM stale-FILLING reclaim "
-                + "(NOT re-bound to PROVISIONING — would re-stamp FILLING deadline, #230)",
+        log.info("MembershipFsm: lifecycle-removed peer={} prior={} → UNTRACKED; slot={} left for CTM stale-FILLING reclaim "
+                + "(NOT re-bound to PROVISIONING — would re-stamp FILLING deadline / contradict RequestReJoin untracked, #230)",
                  peer.id(),
                  describe(previous),
                  slotId);

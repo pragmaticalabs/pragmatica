@@ -11,6 +11,7 @@ import org.pragmatica.aether.deployment.drain.DrainCoordinator.DrainReason;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.LifecycleSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.SlotSnapshotReader;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.TimerScheduler;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Draining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Joining;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsmState.Provisioning;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -151,9 +152,78 @@ class MembershipFsmTerminalSlotReclaimTest {
                 .noneMatch(Provisioning.class::isInstance);
     }
 
+    /// #230 RequestReJoin-remove path. A `NodeLifecycleKey` remove is NOT always a terminal-STOPPED
+    /// corpse: `LifecycleWriter.requestReJoin` removes the key for a LIVE `Joining`/`Draining` peer
+    /// (drain-cancel / operator forced re-join), and `ClusterMembershipReducer.applyRequestReJoin`
+    /// already targets `untracked`. The FSM's `onNodeLifecycleRemove` must honour that: a re-joined
+    /// JOINING owner of a slot goes UNTRACKED, NOT re-bound to PROVISIONING (which would re-stamp the
+    /// FILLING deadline AND contradict the reducer's untracked intent).
+    @Test
+    void onNodeLifecycleRemove_reJoinOfJoiningSlotOwner_goesUntrackedNotProvisioning() {
+        sharedFsm = startedFsm();
+        claimSlot(FLAPPER, 1L);
+        assertThat(sharedFsm.get(FLAPPER).unwrap()).as("slot claim drives JOINING").isInstanceOf(Joining.class);
+
+        // RequestReJoin removes the live JOINING peer's lifecycle key (prior value carries JOINING).
+        sharedFsm.onNodeLifecycleRemove(lifecycleRemove(FLAPPER, NodeLifecycleState.JOINING));
+
+        assertThat(sharedFsm.get(FLAPPER))
+                .as("a RequestReJoin-removed JOINING slot owner MUST go UNTRACKED — re-binding to "
+                    + "PROVISIONING contradicts ClusterMembershipReducer.applyRequestReJoin's untracked intent (#230)")
+                .isEqualTo(Option.<MembershipFsmState>none());
+        assertThat(sharedFsm.snapshot().values())
+                .as("no peer left in PROVISIONING for a re-joined slot owner")
+                .noneMatch(Provisioning.class::isInstance);
+    }
+
+    @Test
+    void onNodeLifecycleRemove_reJoinOfDrainingSlotOwner_goesUntrackedNotProvisioning() {
+        sharedFsm = startedFsm();
+        claimSlot(FLAPPER, 1L);
+        // Drive the slot owner into DRAINING via a lifecycle put (the drain-cancel re-join target).
+        sharedFsm.onNodeLifecyclePut(lifecyclePut(FLAPPER, NodeLifecycleState.DRAINING));
+        assertThat(sharedFsm.get(FLAPPER).unwrap()).as("lifecycle put drives DRAINING").isInstanceOf(Draining.class);
+
+        // RequestReJoin (drain-cancel) removes the live DRAINING peer's lifecycle key.
+        sharedFsm.onNodeLifecycleRemove(lifecycleRemove(FLAPPER, NodeLifecycleState.DRAINING));
+
+        assertThat(sharedFsm.get(FLAPPER))
+                .as("a RequestReJoin-removed DRAINING slot owner MUST go UNTRACKED — not re-bound to PROVISIONING (#230)")
+                .isEqualTo(Option.<MembershipFsmState>none());
+        assertThat(sharedFsm.snapshot().values())
+                .as("no peer left in PROVISIONING for a re-joined draining slot owner")
+                .noneMatch(Provisioning.class::isInstance);
+    }
+
+    @Test
+    void onNodeLifecycleRemove_reJoinOfSlotOwner_reEntersJoiningOnNextSlotClaim() {
+        sharedFsm = startedFsm();
+        claimSlot(FLAPPER, 1L);
+        // RequestReJoin removes the live JOINING peer's lifecycle key → UNTRACKED.
+        sharedFsm.onNodeLifecycleRemove(lifecycleRemove(FLAPPER, NodeLifecycleState.JOINING));
+        assertThat(sharedFsm.get(FLAPPER)).as("re-join leaves the peer UNTRACKED").isEqualTo(Option.<MembershipFsmState>none());
+
+        // The next SlotClaimed (re-bind at a bumped epoch) re-enters the same peer into JOINING — re-join works.
+        claimSlot(FLAPPER, 2L);
+
+        assertThat(sharedFsm.get(FLAPPER).unwrap())
+                .as("a re-joined peer can re-enter JOINING on the next SlotClaimed (re-join works)")
+                .isInstanceOf(Joining.class);
+    }
+
     private static ValueRemove<NodeLifecycleKey, NodeLifecycleValue> lifecycleRemove(NodeId peer) {
+        return lifecycleRemove(peer, NodeLifecycleState.STOPPED);
+    }
+
+    private static ValueRemove<NodeLifecycleKey, NodeLifecycleValue> lifecycleRemove(NodeId peer, NodeLifecycleState priorState) {
         return new ValueRemove<>(new Remove<>(NodeLifecycleKey.nodeLifecycleKey(peer)),
-                                 Option.some(NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.STOPPED, T0)));
+                                 Option.some(NodeLifecycleValue.nodeLifecycleValue(priorState, T0)));
+    }
+
+    private static ValuePut<NodeLifecycleKey, NodeLifecycleValue> lifecyclePut(NodeId peer, NodeLifecycleState state) {
+        return new ValuePut<>(new Put<>(NodeLifecycleKey.nodeLifecycleKey(peer),
+                                        NodeLifecycleValue.nodeLifecycleValue(state, T0)),
+                              Option.none());
     }
 
     private static final class FakeLifecycleSnapshot implements LifecycleSnapshotReader {
