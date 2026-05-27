@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -166,6 +167,37 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                      PeerObservationStore observationStore,
                                                      Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
                                                      PeriodicObservationConfig periodicConfig) {
+        return clusterSyncScheduler(self,
+                                    network,
+                                    clusterSyncCollector,
+                                    interval,
+                                    rabiaTermSupplier,
+                                    signalSink,
+                                    pingTimeoutThreshold,
+                                    epochSupplier,
+                                    observationStore,
+                                    reachabilitySnapshotSupplier,
+                                    periodicConfig,
+                                    () -> true);
+    }
+
+    /// #231 regression fix entry point — ping DISPATCH is leader-only. `isLeader` MUST be the same
+    /// leader signal as the rest of AetherNode's leader-gated wiring
+    /// (`clusterNode.leaderManager()::isLeader`). Every node still enters Pinging on
+    /// QuorumEstablished (stays responsive + resumes promptly on becoming leader), but only the
+    /// leader runs the ping cycle. Followers respond to inbound pings unconditionally.
+    static ClusterSyncScheduler clusterSyncScheduler(NodeId self,
+                                                     ClusterNetwork network,
+                                                     ClusterSyncCollector clusterSyncCollector,
+                                                     TimeSpan interval,
+                                                     Supplier<Long> rabiaTermSupplier,
+                                                     HealthSignalSink signalSink,
+                                                     int pingTimeoutThreshold,
+                                                     Supplier<Epoch> epochSupplier,
+                                                     PeerObservationStore observationStore,
+                                                     Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
+                                                     PeriodicObservationConfig periodicConfig,
+                                                     BooleanSupplier isLeader) {
         var ctxHolder = new AtomicReference<ClusterSyncContext>();
         Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> initialStateFactory = fsm -> buildContextAndDormant(fsm,
                                                                                                                                ctxHolder,
@@ -179,7 +211,8 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                                                                                                epochSupplier,
                                                                                                                                observationStore,
                                                                                                                                reachabilitySnapshotSupplier,
-                                                                                                                               periodicConfig);
+                                                                                                                               periodicConfig,
+                                                                                                                               isLeader);
         var _fsm = Fsm.fsm("cluster-sync", self.id(), initialStateFactory);
         return new ClusterSyncSchedulerAdapter(ctxHolder.get());
     }
@@ -205,7 +238,8 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                                            Supplier<Epoch> epochSupplier,
                                                            PeerObservationStore observationStore,
                                                            Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
-                                                           PeriodicObservationConfig periodicConfig) {
+                                                           PeriodicObservationConfig periodicConfig,
+                                                           BooleanSupplier isLeader) {
         var ctx = new ClusterSyncContext(fsm,
                                          self,
                                          network,
@@ -217,7 +251,8 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
                                          epochSupplier,
                                          observationStore,
                                          reachabilitySnapshotSupplier,
-                                         periodicConfig);
+                                         periodicConfig,
+                                         isLeader);
         ctxHolder.set(ctx);
         return ctx.dormant();
     }

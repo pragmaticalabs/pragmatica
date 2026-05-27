@@ -32,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -54,6 +55,13 @@ public final class ClusterSyncContext {
     private final HealthSignalSink signalSink;
     private final int pingTimeoutThreshold;
     private final Supplier<Epoch> epochSupplier;
+
+    /// #231 regression fix — ping DISPATCH is leader-only. Sourced from the SAME leader signal as
+    /// the other leader-gated AetherNode wiring (`clusterNode.leaderManager()::isLeader`). When this
+    /// returns false the Pinging tick is a no-op (no dispatch, no missedPings, no eviction emission);
+    /// the node still RESPONDS to inbound pings. Defaults to always-leader for callers that don't
+    /// supply it (single-pinger tests / standalone use), preserving prior behavior.
+    private final BooleanSupplier isLeader;
 
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
 
@@ -96,7 +104,8 @@ public final class ClusterSyncContext {
              epochSupplier,
              observationStore,
              Option::none,
-             PeriodicObservationConfig.defaultConfig());
+             PeriodicObservationConfig.defaultConfig(),
+             () -> true);
     }
 
     public ClusterSyncContext(Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
@@ -121,7 +130,8 @@ public final class ClusterSyncContext {
              epochSupplier,
              observationStore,
              reachabilitySnapshotSupplier,
-             PeriodicObservationConfig.defaultConfig());
+             PeriodicObservationConfig.defaultConfig(),
+             () -> true);
     }
 
     public ClusterSyncContext(Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
@@ -136,6 +146,34 @@ public final class ClusterSyncContext {
                               PeerObservationStore observationStore,
                               Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
                               PeriodicObservationConfig periodicConfig) {
+        this(fsm,
+             self,
+             network,
+             collector,
+             interval,
+             rabiaTermSupplier,
+             signalSink,
+             pingTimeoutThreshold,
+             epochSupplier,
+             observationStore,
+             reachabilitySnapshotSupplier,
+             periodicConfig,
+             () -> true);
+    }
+
+    public ClusterSyncContext(Fsm<ClusterSyncState, ClusterFsmEvent> fsm,
+                              NodeId self,
+                              ClusterNetwork network,
+                              ClusterSyncCollector collector,
+                              TimeSpan interval,
+                              Supplier<Long> rabiaTermSupplier,
+                              HealthSignalSink signalSink,
+                              int pingTimeoutThreshold,
+                              Supplier<Epoch> epochSupplier,
+                              PeerObservationStore observationStore,
+                              Supplier<Option<AggregatedReachabilitySnapshot>> reachabilitySnapshotSupplier,
+                              PeriodicObservationConfig periodicConfig,
+                              BooleanSupplier isLeader) {
         this.fsm = fsm;
         this.self = self;
         this.network = network;
@@ -146,6 +184,9 @@ public final class ClusterSyncContext {
         this.pingTimeoutThreshold = pingTimeoutThreshold;
         this.epochSupplier = epochSupplier;
         this.observationStore = observationStore;
+        this.isLeader = isLeader == null
+                        ? () -> true
+                        : isLeader;
         this.reachabilitySnapshotSupplier = reachabilitySnapshotSupplier == null
                                             ? Option::none
                                             : reachabilitySnapshotSupplier;
@@ -174,6 +215,13 @@ public final class ClusterSyncContext {
 
     public NodeId self() {
         return self;
+    }
+
+    /// #231 regression fix — true only when this node is the current cluster leader. Gates the
+    /// Pinging tick so ping DISPATCH (and the missedPings / ping-timeout / eviction-hint cycle) is
+    /// leader-only. The pong-response path is independent and stays unconditional.
+    public boolean isLeader() {
+        return isLeader.getAsBoolean();
     }
 
     public Supplier<Epoch> epochSupplier() {

@@ -123,6 +123,20 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
         }
 
         private void handlePingTick(PingTick event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
+            // #231 regression fix: ping DISPATCH is leader-only. Every node enters Pinging on
+            // QuorumEstablished (so it stays ready/responsive and resumes promptly on becoming
+            // leader), but only the current leader runs the ping cycle — dispatch pings, increment
+            // missedPings, and emit ping-timeout / eviction hints. A non-leader tick is a no-op.
+            // Followers still RESPOND to incoming pings (the unconditional onClusterSyncPing→pong
+            // path in ClusterSyncCollector is untouched), so the leader's aggregator/φ keep getting
+            // data. This restores the pre-04cae266d single-pinger model: all-to-all amplified a
+            // stale-term fencing drop into a cluster-wide eviction storm (missed pongs → ping-timeout
+            // → DisconnectNode → quorum collapse). Resume-on-leader-change is automatic: the tick
+            // simply starts producing on the not-leader→leader edge and stops on the reverse edge.
+            if (!ctx.isLeader()) {
+                tx.ignore();
+                return;
+            }
             // Effective ping-target set: prefer the membership-seeded topology (unchanged
             // behavior), but when it is still empty fall back to the live transport peers
             // (same source the periodic emission reads). Spike-1 finding: entering Pinging on

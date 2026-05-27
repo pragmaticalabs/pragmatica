@@ -1115,7 +1115,8 @@ public interface AetherNode extends ManageableNode {
                                                                          leaderEpochSupplier,
                                                                          peerObservationStore,
                                                                          reachabilityAggregator::produceAndDispatch,
-                                                                         periodicConfig);
+                                                                         periodicConfig,
+                                                                         isLeaderSupplier);
         // Step 1 (Periodic Observation Mode): cap supplier honored externally so
         // the buffer absorbs one full emission cycle (N-1 observations per 5s tick)
         // plus per-peer transition burst. Floor of 64 from periodicConfig accommodates
