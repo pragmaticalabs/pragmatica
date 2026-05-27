@@ -2,7 +2,7 @@
 
 **Test-ID convention:** `TC-02-NNN` where `NNN` is a zero-padded 3-digit index assigned in `run_test` invocation order across all scripts in the suite. Scripts run alphabetically (`test-*.sh` glob): `test-joining-window-kill.sh` → `test-kill-leader.sh` → `test-kill-multiple.sh` → `test-kill-node.sh` → `test-kill-under-load.sh` → `test-self-drain-quorum-loss.sh`. Numbers are stable across reorganisations; do not reuse retired IDs.
 
-**Charter purpose:** Destructive failure-injection coverage on cluster B. Exercises SWIM failure detection, TransportUnreachable detection (spec §16 row S01), CTM auto-heal, leader re-election, multi-kill quorum boundaries, in-flight load resilience, and self-drain on quorum loss (spec §16 rows S19+S20).
+**Charter purpose:** Destructive failure-injection coverage on cluster B. Exercises SWIM failure detection, TransportUnreachable detection (`membership-architecture-spec.md §16` row S01), CTM auto-heal, leader re-election, multi-kill quorum boundaries, in-flight load resilience, and self-drain on quorum loss (`membership-architecture-spec.md §16` rows S19+S20).
 
 ---
 
@@ -11,27 +11,27 @@
 | ID | Contract | Spec citation |
 |---|---|---|
 | C1 | Cluster reaches the canonical "ready" state with N members, leader elected, ≥N-1 active cores | `aether/docs/specs/test-readiness-contract.md §1.1` |
-| C2 | Cluster reaches NORMAL phase (gates SWIM cold-boot suppression of NODE_FAILED events) | `aether/docs/specs/cluster-membership-fsm-spec.md §17 (cold-start fallback)` |
-| C3 | Non-leader kill → surviving nodes observe `NODE_LEFT`/`NODE_FAILED` via `/api/events` within budget | `aether/docs/specs/cluster-membership-fsm-spec.md §16 (S02 row, ON_DUTY → DECOMMISSIONED)` |
-| C4 | Leader kill → new leader elected within ~150s; new leader id differs from old leader id | `aether/docs/specs/leader-election-spec.md §re-election` `[CONTRACT-GAP]` (no canonical leader-election spec; behavior described in `aether/docs/internal/architecture/leader-election.md`) |
-| C5 | Cluster maintains quorum after kill (`member_count` ≥ quorum floor) and `/api/health` reports `"healthy"` | `aether/docs/specs/test-readiness-contract.md §3 (api/health row)`; `aether/docs/specs/cluster-membership-fsm-spec.md §quorum` |
-| C6 | CTM auto-heal restores cluster to exactly N members within budget after kill | `aether/docs/specs/cluster-deployment-manager-spec.md §auto-heal` `[CONTRACT-GAP]` (CDM auto-heal SLA not formally specced; behavior is in `aether/docs/internal/architecture/cdm.md`) |
-| C7 | Two staggered non-leader kills → cluster survives with quorum (`member_count >= 3`), eventually auto-heals to N | `aether/docs/specs/cluster-membership-fsm-spec.md §16 (S02 staggered)` + C6 |
+| C2 | Cluster reaches NORMAL phase (gates SWIM cold-boot suppression of NODE_FAILED events) | `aether/docs/specs/cluster-membership-fsm-spec.md §I5 (Bootstrap-safe — subsumes cold-boot suppression)` |
+| C3 | Non-leader kill → surviving nodes observe `NODE_LEFT`/`NODE_FAILED` via `/api/events` within budget | `aether/docs/specs/membership-architecture-spec.md §16 (S02 row, ON_DUTY → DECOMMISSIONED)` |
+| C4 | Leader kill → new leader elected within ~150s; new leader id differs from old leader id | `aether/docs/specs/membership-architecture-spec.md §16 (S18 row, leader kill + re-election)` + `§4.6 (Layer 5 — Leader Election)`; re-election timing SLA `[CONTRACT-GAP]` (no canonical leader-election spec pins the ~150s budget; election FSM behavior is in `membership-architecture-spec.md §4.6` / `§7.4`) |
+| C5 | Cluster maintains quorum after kill (`member_count` ≥ quorum floor) and `/api/health` reports `"healthy"` | `aether/docs/specs/test-readiness-contract.md §2.1 (cluster_member_count — quorum floor)` + `§3 (api/health row)` |
+| C6 | CTM auto-heal restores cluster to exactly N members within budget after kill | `aether/docs/specs/slot-based-membership-convergence-spec.md §2 (The Invariant — exactly S slots, never more than S)` |
+| C7 | Two staggered non-leader kills → cluster survives with quorum (`member_count >= 3`), eventually auto-heals to N | `aether/docs/specs/membership-architecture-spec.md §16 (S02 row, staggered)` + C6 |
 | C8 | Kill under sustained load → error rate stays below the chaos-tier 10.0% threshold | `aether/docs/specs/test-readiness-contract.md §4` (Simultaneous chaos tier = 10.0%) |
-| C9 | JOINING-window TransportUnreachable: replacement R provisioned by CTM, killed before SWIM HEALTHY, reaches `DECOMMISSIONED` in KV within ≤25s budget | `aether/docs/specs/cluster-membership-fsm-spec.md §16 row S01`; `aether/docs/specs/test-readiness-contract.md §2.1` |
-| C10 | Smoking-gun log signature on survivors carries `reason=transport-failure` OR `reason=swim-faulty` for R's NodeId | `aether/docs/specs/cluster-membership-fsm-spec.md §16 row S01 (REASON_TRANSPORT_FAILURE / REASON_SWIM_FAULTY)` |
-| C11 | `pick_non_leader()` MUST exclude decommissioned NodeIds (single-writer + MembershipView projection) | `aether/docs/specs/cluster-membership-fsm-spec.md §single-writer rule` |
-| C12 | Quorum loss (3 of 5 killed simultaneously) → each survivor self-drains and exits within 8s threshold + 30s grace + 7s headroom = 45s budget | `aether/docs/specs/cluster-membership-fsm-spec.md §16 row S19`; `aether/docs/specs/self-drain-spec.md §performExit` `[CONTRACT-GAP]` (self-drain spec lives only in code comments) |
-| C13 | Self-drained survivor exits with `Runtime.halt(2)` (exit code exactly 2; distinguishes from clean=0, SIGKILL=137, SIGTERM=143) | `aether/docs/specs/cluster-membership-fsm-spec.md §16 row S19 (Runtime.halt(2))` |
-| C14 | `SELF_DRAIN_INITIATED` event published from survivor at `ACTIVE → DRAINING` CAS (soft signal — Rabia publish may lose race vs `Runtime.halt(2)`) | `aether/docs/specs/cluster-membership-fsm-spec.md §16 row S19`; T3.1 of `aether/docs/specs/test-readiness-contract.md §6 (resolved)` |
-| C15 | No KV/consensus writes from survivor after drain trigger (negative assertion; compile-time guard is the canonical contract) | `aether/docs/specs/self-drain-spec.md` `[CONTRACT-GAP]` (asserted via `SelfDrainCoordinatorTest.noConsensusOrKvImports` unit test) |
-| C16 | Post-self-drain restart → cluster recovers to N ON_DUTY healthy cores within 60s | `aether/docs/specs/cluster-membership-fsm-spec.md §16 row S20` |
+| C9 | JOINING-window TransportUnreachable: replacement R provisioned by CTM, killed before SWIM HEALTHY, reaches `DECOMMISSIONED` in KV within ≤25s budget | `aether/docs/specs/membership-architecture-spec.md §16 (S01 row — Put(DECOMMISSIONED) within ≤25s)`. **Budget drift:** spec S01 = ≤25s; live `test_decommission_within_budget` currently relaxed to 90s, flagged #231 (forward-decommission slowness). Contract number unchanged |
+| C10 | Smoking-gun log signature on survivors carries `reason=transport-failure` OR `reason=swim-faulty` for R's NodeId | `aether/docs/specs/membership-architecture-spec.md §16 (S01 row — TransportUnreachable, ungated)`. Note: the `reason=transport-failure` / `reason=swim-faulty` token strings are the code-level signatures, not literal spec text `[CONTRACT-GAP]` |
+| C11 | `pick_non_leader()` MUST exclude decommissioned NodeIds (single-writer + MembershipView projection) | `aether/docs/specs/cluster-membership-fsm-spec.md §I2 (Single-writer)` |
+| C12 | Quorum loss (3 of 5 killed simultaneously) → each survivor self-drains and exits within 8s threshold + 30s grace + 7s headroom = 45s budget | `aether/docs/specs/membership-architecture-spec.md §16 (S19 row)` + `§16.1 (Self-Drain Protocol — "self-drains when it cannot reach (N/2)+1 peers")`; self-drain *spec proper* `[CONTRACT-GAP]` (the `performExit` state machine lives in code) |
+| C13 | Self-drained survivor exits with `Runtime.halt(2)` (exit code exactly 2; distinguishes from clean=0, SIGKILL=137, SIGTERM=143) | `aether/docs/specs/membership-architecture-spec.md §16 (S19 row)` + `§16.1 (Runtime.getRuntime().halt(2))` |
+| C14 | `SELF_DRAIN_INITIATED` event published from survivor at `ACTIVE → DRAINING` CAS (soft signal — Rabia publish may lose race vs `Runtime.halt(2)`) | `aether/docs/specs/membership-architecture-spec.md §16 (S19 row)`; T3.1 of `aether/docs/specs/test-readiness-contract.md §6 (resolved)` |
+| C15 | No KV/consensus writes from survivor after drain trigger (negative assertion; compile-time guard is the canonical contract) | `aether/docs/specs/membership-architecture-spec.md §16.1 (Key invariants — no KV/consensus writes during self-drain)`; self-drain spec proper `[CONTRACT-GAP]` (asserted via `SelfDrainCoordinatorTest.noConsensusOrKvImports` unit test) |
+| C16 | Post-self-drain restart → cluster recovers to N ON_DUTY healthy cores within 60s | `aether/docs/specs/membership-architecture-spec.md §16 (S20 row — ON_DUTY within ≤60s)` |
 
 ---
 
 ## Test-to-contract map
 
-### test-joining-window-kill.sh (spec §16 S01)
+### test-joining-window-kill.sh (membership-architecture-spec.md §16 S01)
 
 | TC ID | Test function | File:line | Contract(s) | Severity | Notes |
 |---|---|---|---|---|---|
@@ -81,7 +81,7 @@
 | TC-02-024 | `test_cluster_survives` | `test-kill-under-load.sh:77` | C5 | core | `aether_field health status == "healthy"` post-load |
 | TC-02-025 | `test_auto_heal` | `test-kill-under-load.sh:83` | C6 | core | `wait_for_node_count 5 180` + strict `assert_eq 5` |
 
-### test-self-drain-quorum-loss.sh (spec §16 S19+S20)
+### test-self-drain-quorum-loss.sh (membership-architecture-spec.md §16 S19+S20)
 
 | TC ID | Test function | File:line | Contract(s) | Severity | Notes |
 |---|---|---|---|---|---|
@@ -110,6 +110,7 @@
 | TC-02-001, TC-02-007, TC-02-012, TC-02-017, TC-02-022, TC-02-026 | `wait_for_phase NORMAL 180` is warn-then-continue across every `test_initial_state`. Cluster stuck in COLD_BOOT triggers `log_warn` and the test still passes; downstream chaos kill may produce UnknownObserved silently | Audit §1.5 (PARTIAL warn-on-phase, severity LOW) |
 | TC-02-003 | ON_DUTY pre-kill state widened acceptance — S01 spec specifically targets the `(JOINING, TransportUnreachable)` cell, but the test passes if R races into ON_DUTY before kill (acceptance widened to `(ON_DUTY, TransportUnreachable)` cell with `log_warn`). Documented relaxation, not hidden green-sticker | Audit §1.5 (SOUND-widened, severity LOW) |
 | TC-02-005 | Smoking-gun reason regex is strict (`reason=transport-failure\|reason=swim-faulty`) when R is killed in the JOINING window — the only ungated S01 cell. When R races to ON_DUTY before the kill, the gated `transport-failure` / `swim-faulty` cells produce `Outcome.nop` and decommission proceeds via the ungated `SwimDeparted` cell (reason=swim-departed); the smoking-gun assertion `skip_test`s in that branch and the 25s budget assertion (always strict) carries the contract | Audit §1.5 (SOUND-with-branch, severity LOW; F3 fix 2026-05-21) |
+| TC-02-004 | Budget drift: C9 contract / spec S01 = ≤25s decommission budget, but `test_decommission_within_budget` currently uses a relaxed 90s budget. Records forward-decommission slowness; contract number unchanged | #231 (forward-decommission) |
 | TC-02-006 | If `pick_non_leader` returns no candidates (post-2-kills cluster mid-recovery), exclusion assertion is skipped via `log_warn`. A regression returning "no candidates" universally would not be caught | Audit §1.5 (PARTIAL skip-via-warn, severity LOW) |
 | TC-02-013 | Quiescence to 5 after 2 kills is warn-then-continue (`wait_for_node_count 5 240 \|\| log_warn`); residual `assert_ge 3` masks stuck auto-heal in this function. Mitigated downstream by TC-02-016's strict `assert_eq 5` | Audit §1.5 (PARTIAL warn-on-quiesce, severity LOW) |
 | TC-02-015 | Name claims "still active" (no churn) but check is existence only (`assert_ne ""`) | Audit §1.5 (WEAK name/check mismatch, severity LOW) |
@@ -117,6 +118,7 @@
 | TC-02-023 | `start_load` counts `200..399` as success — 3xx-as-success green-sticker in error-rate denominator. Low impact: app route deliberately returns 200 | Audit §1.5 (SOUND-with-3xx-caveat, severity LOW) |
 | TC-02-030 | Warn-then-pass demotion — missing `SELF_DRAIN_INITIATED` event downgrades to `log_warn`. Justified by Rabia publish race vs `Runtime.halt(2)`; hard contract remains exit-code-2 (TC-02-029) | Audit §1.5 (WARN-THEN-PASS, severity LOW) |
 | TC-02-031 | WARN-ONLY (cannot fail): positive match on post-drain KV/consensus-write log lines downgrades to `log_warn`. A real KV-write leak would never fail this test. Compile-time `noConsensusOrKvImports` unit test is the canonical guard | Audit §1.5 (WARN-ONLY cannot fail, severity MEDIUM) |
+| TC-02-027, TC-02-028, TC-02-029 | **RESOLVED** — victim/survivor selection no longer assumes static compose ordinals. `test_pick_victims_and_kill_three_simultaneously` enumerates the REAL running core containers (ordinal AND KSUID-named CTM replacements) via `docker ps --filter status=running` (test-self-drain-quorum-loss.sh:113-133, :279-292), so a cluster whose slots rotated to KSUID-named replacements is selected correctly. Precedent: `test-readiness-contract.md §1.1` Property-4 retirement (per-port/ordinal probing breaks under CTM auto-heal) | RESOLVED 2026-05-27 (membership-based enumeration) |
 
 ---
 
@@ -125,4 +127,5 @@
 | Date | Author | Change |
 |---|---|---|
 | 2026-05-21 | charter author | Initial charter from audit §1.5 |
+| 2026-05-27 | charter author | Citations repointed to existing specs: S-rows (C3/C7/C9/C10/C12/C13/C14/C16) → `membership-architecture-spec.md §16` + `§16.1`; C2 → `cluster-membership-fsm-spec.md §I5`; C11 → `§I2`; C5 → `§6.4`; C4 → S18 + `§4.6`. C6 de-gapped → `slot-based-membership-convergence-spec.md §2` (exactly-S invariant). Removed dead anchors (`self-drain-spec.md`, `cluster-deployment-manager-spec.md`, `leader-election-spec.md`, internal `architecture/*.md`). Recorded C9 budget drift (spec 25s vs live 90s, #231). S19/S20 ordinal-enumeration limitation (TC-02-027/028/029) marked RESOLVED — suite now enumerates running cores via `docker ps`. |
 

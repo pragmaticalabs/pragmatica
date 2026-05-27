@@ -110,42 +110,51 @@ KILL_TS_FILE="/tmp/s19-kill-ts.$$"
 # accepted by /api/events?since= and produced by `topology_now`.
 EVENT_BASELINE_FILE="/tmp/s19-event-baseline.$$"
 
-# Resolve the docker container name for a fixed compose ordinal (1..N).
-# This is intentionally label-free: at the point of S19 we want to kill
-# fixed compose slots (so the killed set is reproducible across runs)
-# rather than chasing NodeIds. Returns "aether-${CLUSTER_ID}-node-${i}".
-compose_container_name() {
-    local ordinal="$1"
-    printf 'aether-%s-node-%s' "${CLUSTER_ID:-b}" "$ordinal"
+# Enumerate the REAL running core containers in this cluster by docker name.
+#
+# History (test-readiness-contract.md §1.1, "Property 4 retirement"): we used
+# to enumerate by fixed compose ordinals 1..NODE_COUNT. That broke under CTM
+# auto-heal: replacement cores are provisioned with KSUID names like
+# `aether-b-node-3EJfeb32h1qsy4MUXETqOntBWcA` that fall outside the 1..N
+# ordinal range, so an ordinal scan reported only the survivors of earlier
+# scenarios as "running". The fix mirrors `pick_non_leader` (cluster.sh:247):
+# enumerate by ACTUAL running containers / membership, never by static
+# ordinal.
+#
+# The `name=aether-<cluster>-node-` filter is a SUBSTRING match — it matches
+# both `aether-b-node-1` and `aether-b-node-3EJ...` but NOT
+# `aether-b-mgmt-gateway`. We additionally defend against any surprise match
+# by confirming the prefix and excluding the mgmt-gateway explicitly. Emits
+# one container NAME per line (sorted for determinism).
+running_core_containers() {
+    local prefix
+    prefix="aether-${CLUSTER_ID:-b}-node-"
+    local out names line
+    out=$(remote_exec "docker ps --filter name=${prefix} --filter status=running --format '{{.Names}}'" 2>&1)
+    names=$(printf '%s' "$out" | tr -d '\r')
+    printf '%s\n' "$names" | while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        # Defensive: only accept real core containers carrying the prefix, and
+        # never the mgmt-gateway (which does not share this prefix, but guard
+        # anyway in case of future naming drift).
+        case "$line" in
+            "${prefix}"*) ;;
+            *) continue ;;
+        esac
+        case "$line" in
+            *mgmt-gateway*) continue ;;
+        esac
+        printf '%s\n' "$line"
+    done | sort
 }
 
-# Snapshot of fixed compose ordinals currently running in this cluster.
-# Cluster B baseline is 5 (NODE_COUNT). We scan ordinals 1..NODE_COUNT and
-# report the ones whose container is in state=running. Used to identify
-# survivors after the simultaneous kill.
-running_compose_ordinals() {
-    local total="${NODE_COUNT:-5}"
-    local i name state out
-    for i in $(seq 1 "$total"); do
-        name=$(compose_container_name "$i")
-        out=$(remote_exec "docker inspect --format '{{.State.Status}}' ${name} 2>&1" 2>&1)
-        # `docker inspect` on a missing container returns rc=1 with "No such
-        # object" on stdout/stderr — we tolerate both as "not running".
-        state=$(printf '%s' "$out" | head -1 | tr -d '\r')
-        if [ "$state" = "running" ]; then
-            printf '%s\n' "$i"
-        fi
-    done
-}
-
-# Read `docker inspect --format '{{.State.ExitCode}}'` for an ordinal.
+# Read `docker inspect --format '{{.State.ExitCode}}'` for a container NAME.
 # Returns the exit code on stdout (or empty + rc=1 if the container is
 # missing / still running). The caller decides whether "still running"
 # is a failure.
 container_exit_code() {
-    local ordinal="$1"
-    local name out rc
-    name=$(compose_container_name "$ordinal")
+    local name="$1"
+    local out rc
     out=$(remote_exec "docker inspect --format '{{.State.ExitCode}}' ${name} 2>&1")
     rc=$?
     if [ $rc -ne 0 ]; then
@@ -154,17 +163,16 @@ container_exit_code() {
     printf '%s' "$out" | head -1 | tr -d '\r '
 }
 
-# Read `docker inspect --format '{{.State.Status}}'` for an ordinal.
+# Read `docker inspect --format '{{.State.Status}}'` for a container NAME.
 # Returns the status string (running / exited / created / ...) on stdout.
 container_status() {
-    local ordinal="$1"
-    local name out
-    name=$(compose_container_name "$ordinal")
+    local name="$1"
+    local out
     out=$(remote_exec "docker inspect --format '{{.State.Status}}' ${name} 2>&1" 2>&1)
     printf '%s' "$out" | head -1 | tr -d '\r '
 }
 
-# Poll until the named ordinal's container is in state=exited, capped at
+# Poll until the named container is in state=exited, capped at
 # $2 seconds. Returns 0 on observed exit; 1 on timeout.
 #
 # Race fix (2026-05-22): the 1s sleep can land *after* deadline expires,
@@ -175,11 +183,11 @@ container_status() {
 # observation — failure log already evidenced this ("Current state: exited"
 # alongside a wait_for_container_exit timeout).
 wait_for_container_exit() {
-    local ordinal="$1" timeout="$2"
+    local name="$1" timeout="$2"
     local deadline=$((SECONDS + timeout))
     local status
     while [ $SECONDS -lt $deadline ]; do
-        status=$(container_status "$ordinal")
+        status=$(container_status "$name")
         if [ "$status" = "exited" ]; then
             return 0
         fi
@@ -187,7 +195,7 @@ wait_for_container_exit() {
     done
     # Final post-deadline sample — guards against the 1s sleep landing past
     # deadline and missing a container that exited within the budget.
-    status=$(container_status "$ordinal")
+    status=$(container_status "$name")
     if [ "$status" = "exited" ]; then
         return 0
     fi
@@ -237,9 +245,8 @@ SELF_DRAIN_EVENT_TIMEOUT_S=60
 # artifact (e.g. an unrelated background task logged after drain but
 # before halt). We log_warn rather than log_fail on a match.
 verify_no_kv_writes_after_drain() {
-    local ordinal="$1"
-    local name lines drain_line post drain_kv_writes
-    name=$(compose_container_name "$ordinal")
+    local name="$1"
+    local drain_kv_writes
     # Capture full log, split at the drain-trigger line. `awk` is portable
     # and avoids spawning grep -A with an unknown line count.
     drain_kv_writes=$(remote_exec "docker logs ${name} 2>&1 | awk '/Self-drain: DRAINING on/{seen=1; next} seen' | grep -E 'ConsensusEngine|RabiaEngine|KvStoreCommand|NodeLifecycleKey write|applyAtomic' | head -5 || true" 2>/dev/null)
@@ -270,32 +277,45 @@ test_initial_state() {
 }
 
 test_pick_victims_and_kill_three_simultaneously() {
-    # We pick fixed compose ordinals 1, 2, 3 as victims. This is
-    # deterministic (no dependency on which NodeId currently occupies
-    # slot 1) and reproducible across runs. The cluster is breaking
-    # whichever 3 we pick — leader inclusion is incidental, not load-
-    # bearing for S19 (the surviving 2 will lose quorum visibility
-    # regardless of who held the lease before the kill).
-    local victims="1 2 3"
+    # Enumerate the REAL running core containers (ordinal AND KSUID-named
+    # CTM replacements alike). After earlier 02-chaos scenarios, auto-heal
+    # may have rotated some compose slots out for KSUID-named replacements,
+    # so we MUST NOT assume names are 1..NODE_COUNT. See running_core_containers
+    # and pick_non_leader (cluster.sh:247) for the precedent.
+    local running
+    running=$(running_core_containers)
+    local running_count
+    running_count=$(printf '%s\n' "$running" | grep -c '.' || true)
+    # S19 contract: the scenario starts from a healthy 5-core cluster. A
+    # different count is a genuine precondition failure, not a slot to paper
+    # over.
+    assert_eq "$running_count" "5" "Pre-kill: 5 running core containers ($(printf '%s' "$running" | tr '\n' ' '))"
+
+    # Pick exactly 3 victims (first 3 of the sorted set) and record the
+    # remaining 2 as survivors. `running` is already sorted for determinism
+    # (reproducible victim set across runs). Which 3 we pick is incidental
+    # for S19 — the surviving 2 lose quorum visibility regardless of who held
+    # the leader lease.
+    local victims survivors
+    victims=$(printf '%s\n' "$running" | grep -v '^$' | head -3)
+    survivors=$(printf '%s\n' "$running" | grep -v '^$' | tail -n +4)
     printf '%s\n' "$victims" > "$VICTIMS_FILE"
 
-    # Pre-kill: snapshot which compose ordinals are currently running, so
-    # the survivor identification below is exact (handles the corner case
-    # where the cluster started with a degraded slot — survivors must be
-    # drawn from "running before kill" minus "victims", not just
-    # 1..NODE_COUNT minus victims).
-    local pre_running
-    pre_running=$(running_compose_ordinals)
-    local pre_count
-    pre_count=$(printf '%s\n' "$pre_running" | grep -c '.' || true)
-    assert_eq "$pre_count" "5" "Pre-kill: 5 compose ordinals running"
+    local victim_count survivor_count
+    victim_count=$(printf '%s\n' "$victims" | grep -c '.' || true)
+    survivor_count=$(printf '%s\n' "$survivors" | grep -c '.' || true)
+    assert_eq "$victim_count" "3" "Victims identified (3 containers): $(printf '%s' "$victims" | tr '\n' ' ')"
+    assert_eq "$survivor_count" "2" "Survivors identified (2 containers): $(printf '%s' "$survivors" | tr '\n' ' ')"
 
-    log_info "Killing compose ordinals ${victims} simultaneously (single docker kill invocation)"
+    # Assemble the kill list as space-separated real container names.
+    local victim_list
+    victim_list=$(printf '%s\n' "$victims" | tr '\n' ' ' | sed 's/ *$//')
+    log_info "Killing core containers [${victim_list}] simultaneously (single docker kill invocation)"
     local kill_cmd kill_out kill_rc
     # Single remote_exec → single SSH RTT → single docker daemon call:
     # the three SIGKILLs are issued within microseconds of each other.
     # This is the closest practical approximation to "simultaneous".
-    kill_cmd="docker kill aether-${CLUSTER_ID:-b}-node-1 aether-${CLUSTER_ID:-b}-node-2 aether-${CLUSTER_ID:-b}-node-3"
+    kill_cmd="docker kill ${victim_list}"
     # T3.1: capture the /api/events baseline timestamp BEFORE issuing the
     # kill so the SELF_DRAIN_INITIATED poll later sees only events emitted
     # AFTER the kill landed. The since-filter is exclusive on the server
@@ -311,19 +331,11 @@ test_pick_victims_and_kill_three_simultaneously() {
     kill_out=$(remote_exec "$kill_cmd" 2>&1)
     kill_rc=$?
     if [ $kill_rc -ne 0 ]; then
-        log_fail "docker kill of victims 1,2,3 failed (rc=${kill_rc}): ${kill_out}"
+        log_fail "docker kill of victims [${victim_list}] failed (rc=${kill_rc}): ${kill_out}"
         return 1
     fi
     log_info "Kill issued; docker daemon response: $(printf '%s' "$kill_out" | head -c 200)"
 
-    # Survivors = running-before-kill minus victims. Compute via line-set
-    # difference (comm -23 needs sorted inputs).
-    local victims_sorted survivors
-    victims_sorted=$(printf '%s\n' 1 2 3)
-    survivors=$(printf '%s\n' "$pre_running" | sort -n | comm -23 - <(printf '%s\n' "$victims_sorted" | sort -n) | grep -v '^$' || true)
-    local survivor_count
-    survivor_count=$(printf '%s\n' "$survivors" | grep -c '.' || true)
-    assert_eq "$survivor_count" "2" "Survivors identified (2 ordinals): $(printf '%s' "$survivors" | tr '\n' ' ')"
     printf '%s\n' "$survivors" > "$SURVIVORS_FILE"
 }
 
@@ -354,10 +366,10 @@ test_survivors_self_drain_and_exit() {
         return 1
     fi
     if ! wait_for_container_exit "$s1" "$remaining"; then
-        log_fail "S19 violation: survivor node-${s1} did not exit within budget. Current state: $(container_status "$s1")"
+        log_fail "S19 violation: survivor ${s1} did not exit within budget. Current state: $(container_status "$s1")"
         return 1
     fi
-    log_info "Survivor node-${s1} exited"
+    log_info "Survivor ${s1} exited"
 
     now=$(date +%s)
     elapsed=$((now - kill_ts))
@@ -369,14 +381,14 @@ test_survivors_self_drain_and_exit() {
         remaining=5
     fi
     if ! wait_for_container_exit "$s2" "$remaining"; then
-        log_fail "S19 violation: survivor node-${s2} did not exit within budget. Current state: $(container_status "$s2")"
+        log_fail "S19 violation: survivor ${s2} did not exit within budget. Current state: $(container_status "$s2")"
         return 1
     fi
-    log_info "Survivor node-${s2} exited"
+    log_info "Survivor ${s2} exited"
 
     now=$(date +%s)
     elapsed=$((now - kill_ts))
-    log_pass "S19: both survivors (node-${s1}, node-${s2}) exited within ${elapsed}s (budget=${SURVIVOR_EXIT_BUDGET_S}s)"
+    log_pass "S19: both survivors (${s1}, ${s2}) exited within ${elapsed}s (budget=${SURVIVOR_EXIT_BUDGET_S}s)"
 }
 
 test_survivor_exit_codes_are_two() {
@@ -393,8 +405,8 @@ test_survivor_exit_codes_are_two() {
     s2=$(sed -n '2p' "$SURVIVORS_FILE")
     ec1=$(container_exit_code "$s1" || true)
     ec2=$(container_exit_code "$s2" || true)
-    assert_eq "$ec1" "2" "Survivor node-${s1} exit code is 2 (Runtime.halt(2) from SelfDrainCoordinator)"
-    assert_eq "$ec2" "2" "Survivor node-${s2} exit code is 2 (Runtime.halt(2) from SelfDrainCoordinator)"
+    assert_eq "$ec1" "2" "Survivor ${s1} exit code is 2 (Runtime.halt(2) from SelfDrainCoordinator)"
+    assert_eq "$ec2" "2" "Survivor ${s2} exit code is 2 (Runtime.halt(2) from SelfDrainCoordinator)"
 }
 
 test_drain_trigger_log_signature_present() {
@@ -421,15 +433,15 @@ test_drain_trigger_log_signature_present() {
     if [ -z "$baseline" ]; then
         log_warn "Missing /api/events baseline (s19-event-baseline file empty) — SELF_DRAIN_INITIATED poll will scan from epoch=0"
     fi
-    if wait_for_self_drain_event "node-${s1}" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
-        log_pass "SELF_DRAIN_INITIATED observed via /api/events for node-${s1}"
+    if wait_for_self_drain_event "$s1" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
+        log_pass "SELF_DRAIN_INITIATED observed via /api/events for ${s1}"
     else
-        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for node-${s1} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
+        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for ${s1} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
     fi
-    if wait_for_self_drain_event "node-${s2}" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
-        log_pass "SELF_DRAIN_INITIATED observed via /api/events for node-${s2}"
+    if wait_for_self_drain_event "$s2" "$baseline" "$SELF_DRAIN_EVENT_TIMEOUT_S"; then
+        log_pass "SELF_DRAIN_INITIATED observed via /api/events for ${s2}"
     else
-        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for node-${s2} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
+        log_warn "No SELF_DRAIN_INITIATED event observed on /api/events for ${s2} within ${SELF_DRAIN_EVENT_TIMEOUT_S}s — Rabia publish may have lost the race against Runtime.halt(2); exit-code-2 assertion above remains the hard contract"
     fi
 }
 
@@ -448,15 +460,15 @@ test_no_kv_writes_after_drain_trigger() {
     s2=$(sed -n '2p' "$SURVIVORS_FILE")
     leak=$(verify_no_kv_writes_after_drain "$s1" || true)
     if [ -n "$leak" ]; then
-        log_warn "Post-drain KV-write evidence on node-${s1} (investigate, may be benign): $(printf '%s' "$leak" | head -c 300)"
+        log_warn "Post-drain KV-write evidence on ${s1} (investigate, may be benign): $(printf '%s' "$leak" | head -c 300)"
     else
-        log_pass "No KV-write log signatures after drain trigger on node-${s1}"
+        log_pass "No KV-write log signatures after drain trigger on ${s1}"
     fi
     leak=$(verify_no_kv_writes_after_drain "$s2" || true)
     if [ -n "$leak" ]; then
-        log_warn "Post-drain KV-write evidence on node-${s2} (investigate, may be benign): $(printf '%s' "$leak" | head -c 300)"
+        log_warn "Post-drain KV-write evidence on ${s2} (investigate, may be benign): $(printf '%s' "$leak" | head -c 300)"
     else
-        log_pass "No KV-write log signatures after drain trigger on node-${s2}"
+        log_pass "No KV-write log signatures after drain trigger on ${s2}"
     fi
 }
 
