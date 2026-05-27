@@ -171,13 +171,17 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
     }
 
     private Outcome applyOnDuty(OnDuty state, MembershipFsmEvent event, ReachabilityGate gate) {
-        // SPIKE #231 (THROWAWAY): gate check dropped — decommission unconditionally on the
-        // signal to observe whether the leader-side quorum aggregator was masking fast SWIM/
-        // transport death detection. `gate` is now unused in these cells. REVERT to restore
-        // gate.isConfirmedUnreachable(...) ? ... : Outcome.nop(state).
+        // Decommissioning a LIVE ON_DUTY node requires gate co-confirmation: a single transient
+        // SWIM/transport signal must NOT remove a healthy node (a momentary leader→follower SWIM
+        // gap would otherwise STOP the node, CTM frees the slot as DEAD, and a replacement is
+        // over-provisioned). The gate confirms unreachability across both planes
+        // (SWIM-not-HEALTHY AND transport-unreachable) before allowing decommission.
+        // φ-accrual will refine this co-confirmation later (#231).
         return switch (event) {
             case SwimHealthy _ -> Outcome.nop(state);
-            case SwimFaulty e -> onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED);
+            case SwimFaulty e -> gate.isConfirmedUnreachable(state.peer())
+                                 ? onDutyToStopped(state, e.at(), REASON_SWIM_FAULTY, StopReason.FORCED)
+                                 : Outcome.nop(state);
             case SwimDeparted e -> onDutyToStopped(state, e.at(), REASON_SWIM_DEPARTED, StopReason.FORCED);
             // A late/duplicate SlotClaimed for an already-ON_DUTY peer is benign (auto-heal
             // replacement re-claim / event re-delivery): nop rather than illegal() — a
@@ -186,7 +190,9 @@ public record ClusterMembershipReducer(MembershipFsmConfig config) {
             case DrainOutcome _ -> illegal(state, event);
             case JoinDeadlineExpired _ -> Outcome.nop(state);
             case TransportReachable _ -> Outcome.nop(state);
-            case TransportUnreachable e -> onDutyToStopped(state, e.at(), REASON_TRANSPORT_FAILURE, StopReason.FORCED);
+            case TransportUnreachable e -> gate.isConfirmedUnreachable(state.peer())
+                                           ? onDutyToStopped(state, e.at(), REASON_TRANSPORT_FAILURE, StopReason.FORCED)
+                                           : Outcome.nop(state);
         };
     }
 
