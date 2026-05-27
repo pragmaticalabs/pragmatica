@@ -587,6 +587,7 @@ public interface AetherNode extends ManageableNode {
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
+                          Runnable startSwimTrigger,
                           Supplier<Option<ClusterGenerationSnapshot>> generationSnapshotSupplier,
                           Runnable refreshGenerationSnapshot,
                           Option<ManagementServer> managementServer,
@@ -650,6 +651,7 @@ public interface AetherNode extends ManageableNode {
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.start())
                                        .flatMap(_ -> startClusterAsync())
+                                       .onSuccess(_ -> startSwimTrigger.run())
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
             }
@@ -1781,12 +1783,13 @@ public interface AetherNode extends ManageableNode {
                                                                                swimSeeds,
                                                                                () -> clusterNode.network()
                                                                                                 .connectedNodeCount() + 1 >= quorumThreshold);
-        allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
-                                                 notification -> startSwimOnQuorum(notification,
-                                                                                   swimHealthDetector,
-                                                                                   clusterNode.network(),
-                                                                                   rotatingEncryptor,
-                                                                                   announceJoinTrigger)));
+        // SWIM start is deferred to transport-ready (invoked from the boot chain after
+        // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
+        // closes over the encryptor + announce trigger that are only in scope here.
+        Runnable startSwimTrigger = () -> startSwim(swimHealthDetector,
+                                                    clusterNode.network(),
+                                                    rotatingEncryptor,
+                                                    announceJoinTrigger);
         swimHealthDetector.addObservationListener(membershipFsm::onSwimObservation);
         membershipFsm.setSwimHealthGate(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // SwimProtocol → router wire-up: SWIM-detected FAULTY peers are forwarded to the
@@ -2075,6 +2078,7 @@ public interface AetherNode extends ManageableNode {
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
+                                  startSwimTrigger,
                                   spokesmanSnapshotSupplier,
                                   generationSnapshotPublisher::markDirty,
                                   Option.empty(),
@@ -2184,6 +2188,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                       clusterTopologyManager,
                                                                                                       eventLoopMetricsCollector,
                                                                                                       swimHealthDetector,
+                                                                                                      startSwimTrigger,
                                                                                                       spokesmanSnapshotSupplier,
                                                                                                       generationSnapshotPublisher::markDirty,
                                                                                                       Option.some(managementServer),
@@ -2679,16 +2684,19 @@ public interface AetherNode extends ManageableNode {
         if (change.localNodeIsLeader()) {storageAdapter.activate();} else {storageAdapter.deactivate();}
     }
 
-    private static void startSwimOnQuorum(QuorumStateNotification notification,
-                                          CoreSwimHealthDetector swimHealthDetector,
-                                          ClusterNetwork network,
-                                          RotatingGossipEncryptor encryptor,
-                                          Runnable announceJoinTrigger) {
-        if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
-            var workerGroup = network.server().map(org.pragmatica.net.tcp.Server::workerGroup);
-            swimHealthDetector.start(workerGroup, encryptor);
-            announceJoinTrigger.run();
-        }
+    // SWIM now starts at transport-ready (after `startClusterAsync()` brings the QUIC
+    // server up), NOT gated on consensus quorum. The join ANNOUNCE is bootstrap-discovery:
+    // it is the only way survivors dial a freshly-provisioned replacement on the consensus
+    // plane, so gating it behind the replacement's own quorum deadlocked sub-quorum
+    // auto-heal. The gossip encryptor is ready at boot (createGossipEncryptor), and the
+    // COLD_BOOT/`isBooting` FAULTY-suppression keeps pre-quorum SWIM safe.
+    private static void startSwim(CoreSwimHealthDetector swimHealthDetector,
+                                  ClusterNetwork network,
+                                  RotatingGossipEncryptor encryptor,
+                                  Runnable announceJoinTrigger) {
+        var workerGroup = network.server().map(org.pragmatica.net.tcp.Server::workerGroup);
+        swimHealthDetector.start(workerGroup, encryptor);
+        announceJoinTrigger.run();
     }
 
     @SuppressWarnings({"JBCT-RET-01"})
